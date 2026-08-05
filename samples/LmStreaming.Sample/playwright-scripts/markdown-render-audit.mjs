@@ -357,17 +357,29 @@ async (page) => {
     // Deliberately NOT pass/fail: needs an npm dependency and is held pending a decision.
     notes.htmlSanitizer = 'none (marked output goes straight into v-html)';
 
-    // Screenshots are supporting evidence here, not the deliverable -- the 23 DOM assertions
-    // above are. An unwritable output dir must therefore NOT fail the audit: before this was
-    // isolated, a throwing screenshot escaped to the outer catch and reported every check as
-    // failed. Recorded as a note instead.
-    try {
-      await page.screenshot({ path: `${OUT_DIR}/markdown-after-viewport.png` });
-      await tid('assistant-text').last().screenshot({ path: `${OUT_DIR}/markdown-after-bubble.png` }).catch(() => {});
-      notes.screenshots = [`${OUT_DIR}/markdown-after-viewport.png`, `${OUT_DIR}/markdown-after-bubble.png`];
-    } catch (shotErr) {
-      notes.screenshots = `NOT captured (non-fatal): ${String((shotErr && shotErr.message) || shotErr)}`;
+    // Screenshots are supporting evidence here, not the deliverable -- the DOM assertions above
+    // are. An unwritable output dir must therefore NOT fail the audit: before this was isolated,
+    // a throwing screenshot escaped to the outer catch and reported every check as failed.
+    //
+    // Each capture is tracked SEPARATELY, and `captured` lists only files actually written. A
+    // shared try/catch (or a blanket `.catch(() => {})` on the second capture) reports a path
+    // that was never written, sending a reviewer to hunt for an artifact that does not exist --
+    // a swallowed error reported as a success, which is the bug this block exists to prevent.
+    const captures = [
+      ['markdown-after-viewport.png', () => page.screenshot({ path: `${OUT_DIR}/markdown-after-viewport.png` })],
+      ['markdown-after-bubble.png', () => tid('assistant-text').last().screenshot({ path: `${OUT_DIR}/markdown-after-bubble.png` })],
+    ];
+    const captured = [];
+    const captureErrors = {};
+    for (const [name, take] of captures) {
+      try {
+        await take();
+        captured.push(`${OUT_DIR}/${name}`);
+      } catch (shotErr) {
+        captureErrors[name] = String((shotErr && shotErr.message) || shotErr);
+      }
     }
+    notes.screenshots = { captured, failed: captureErrors };
   } catch (e) {
     record('exception', false, String((e && e.stack) || e));
   }

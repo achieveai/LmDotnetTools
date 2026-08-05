@@ -116,20 +116,37 @@ const splitGroups = computed(() => {
 });
 
 /**
- * The one assistant bubble that is still growing: the last assistant text item of the active
- * (current) group while a run is in flight. Its markdown is re-parsed on EVERY streamed delta,
- * so it renders without syntax highlighting and gets highlighted once the run ends -- see
- * `parseMarkdown`'s `highlight` option. Scoped to a single item on purpose: disabling it for
- * the whole active group would turn already-finished code blocks monochrome mid-run.
+ * The one assistant bubble that is still growing. Its markdown is re-parsed on EVERY streamed
+ * delta, so it renders without syntax highlighting and gets highlighted once the run ends -- see
+ * `parseMarkdown`'s `highlight` option.
+ *
+ * Scanned over the FLAT `displayItems`, not `splitGroups.current`: MessageList has two consumers
+ * and only one of them has user messages. `SubAgentTranscript` passes an assistant-only
+ * transcript with `isLoading` true, which leaves `splitGroups.current` empty (`splitGroups`
+ * returns `current: []` when there is no user group at all), so a group-scoped search silently
+ * never fires for a child transcript.
+ *
+ * Walking back from the end, each item type means something different about whether the last
+ * assistant bubble is still growing -- these are the semantics `buildDisplayItems` gives them:
+ *  - `assistant-message`: the bubble in question. Match.
+ *  - `user-message`: the human already sent the NEXT turn, so the assistant text before it is
+ *    finished. Stop -- marking it incomplete is what turns a rendered code block monochrome
+ *    mid-run.
+ *  - `pill`: reasoning/tool content is buffered and only flushed as a pill once something else
+ *    follows it, so a TRAILING pill means the assistant moved off the text and onto a tool call.
+ *    That text is done and must stay highlighted for however long the tool runs. Stop.
+ *  - `notification`: out-of-band (sub-agent completion, agent message, context discovery). It can
+ *    land mid-stream and says nothing about the text, so skip past it and keep looking.
+ * Anything unrecognised stops the scan: losing the optimization is cheap, a monochrome flicker
+ * is not.
  */
 const streamingItemId = computed<string | null>(() => {
   if (!props.isLoading) return null;
-  const groups = splitGroups.value.current;
-  for (let g = groups.length - 1; g >= 0; g--) {
-    const items = groups[g].items;
-    for (let i = items.length - 1; i >= 0; i--) {
-      if (items[i].type === 'assistant-message') return items[i].id;
-    }
+  for (let i = props.displayItems.length - 1; i >= 0; i--) {
+    const item = props.displayItems[i];
+    if (item.type === 'assistant-message') return item.id;
+    if (item.type === 'notification') continue;
+    return null;
   }
   return null;
 });
@@ -250,7 +267,17 @@ watch(
 
               <!-- Assistant text message -->
               <div v-else-if="item.type === 'assistant-message'" class="text-bubble" data-testid="assistant-text">
-                <TextMessage :message="item.content" :is-streaming="false" />
+                <!-- `is-complete` is bound here too, not just in the active section below: an
+                     assistant-only transcript (SubAgentTranscript) has no user group, so every
+                     group lands in `history` and the growing child bubble renders through THIS
+                     branch. It cannot mis-fire for the main chat -- an assistant item only reaches
+                     `history` when a later user message exists, and `streamingItemId`'s scan stops
+                     at that user message before it could ever reach the older bubble. -->
+                <TextMessage
+                  :message="item.content"
+                  :is-streaming="false"
+                  :is-complete="item.id !== streamingItemId"
+                />
               </div>
             </template>
           </div>
