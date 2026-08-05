@@ -187,10 +187,17 @@ internal sealed class AdoPrProvider : IPrProvider
             : null;
 
     /// <summary>
-    /// Reads <c>&lt;property&gt;.uniqueName</c> from an ADO PR payload, falling back to
-    /// <c>displayName</c>, or null when neither is a usable string. Unlike a GitHub login this value is
-    /// typically an email address and is NOT constrained to filename-safe characters, so it is returned
-    /// verbatim and left for the consumer to slug and confine.
+    /// Reads <c>&lt;property&gt;.uniqueName</c> from an ADO PR payload, or null when it is not a usable
+    /// string. Unlike a GitHub login this value is typically an email address and is NOT constrained to
+    /// filename-safe characters, so it is returned verbatim and left for the consumer to slug and confine.
+    /// <para>
+    /// There is deliberately <b>no <c>displayName</c> fallback</b>. The one consumer of this value keys a
+    /// per-developer record file off it, and <c>displayName</c> is not an identity — ADO lets two people
+    /// carry the same one, so two developers would share a record no slugging scheme could tell apart.
+    /// Returning null costs a record the daemon was never able to address correctly; falling back would
+    /// have filed one person's mistakes under another's name in a public repository. A null author is an
+    /// ordinary outcome on this path, not an error.
+    /// </para>
     /// </summary>
     private static string? UniqueNameOf(JsonElement pr, string property)
     {
@@ -199,17 +206,11 @@ internal sealed class AdoPrProvider : IPrProvider
             return null;
         }
 
-        foreach (var field in (ReadOnlySpan<string>)["uniqueName", "displayName"])
-        {
-            if (identity.TryGetProperty(field, out var value)
-                && value.ValueKind is JsonValueKind.String
-                && !string.IsNullOrWhiteSpace(value.GetString()))
-            {
-                return value.GetString();
-            }
-        }
-
-        return null;
+        return identity.TryGetProperty("uniqueName", out var value)
+            && value.ValueKind is JsonValueKind.String
+            && !string.IsNullOrWhiteSpace(value.GetString())
+            ? value.GetString()
+            : null;
     }
 
     /// <summary>Raw per-PR metadata materialized from one ADO PR-list page, before the async recency

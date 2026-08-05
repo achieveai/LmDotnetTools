@@ -73,11 +73,13 @@ public sealed class ReviewFeedbackAgentTests : LoggingTestBase
     [InlineData("AchieveAI\\gautam", "achieveai-gautam")]
     [InlineData("../../.git/hooks/pre-commit", "git-hooks-pre-commit")]
     public async Task TryExtractAsync_writes_the_record_under_a_slugged_name_inside_developers(
-        string author, string expectedSlug)
+        string author, string expectedStem)
     {
         // No component of this path comes from the model — it is derived here from the provider-reported
-        // author — so the traversal class is removed rather than defended against. The slug is [a-z0-9-]
+        // author — so the traversal class is removed rather than defended against. The stem is [a-z0-9-]
         // by construction, which is what makes an ADO uniqueName email and a crafted path both harmless.
+        // The readable part leads so the file is still recognizable as a person's; the fingerprint that
+        // follows it is what keeps two people out of one record (pinned separately below).
         var fs = new FakeSandboxFileSystem();
         var agent = AgentReturning(ValidRecord);
 
@@ -85,12 +87,53 @@ public sealed class ReviewFeedbackAgentTests : LoggingTestBase
             RepoRoot, author, "notes", SourcePr, Today, CancellationToken.None);
 
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
-        result.EntryFileName.Should().Be($"developers/{expectedSlug}.reviewfeedbacks.md");
-        fs.Files.Should().ContainKey($"{DevDir}/{expectedSlug}.reviewfeedbacks.md");
+        var slug = Slug(author);
+        slug.Should().StartWith(expectedStem + "-").And.MatchRegex("^[a-z0-9-]+$");
+        result.EntryFileName.Should().Be($"developers/{slug}.reviewfeedbacks.md");
+        fs.Files.Should().ContainKey($"{DevDir}/{slug}.reviewfeedbacks.md");
         fs.Files.Keys.Should().OnlyContain(
             key => key.StartsWith(DevDir + "/", StringComparison.Ordinal),
             "every write stays inside the reserved per-developer directory");
     }
+
+    /// <summary>
+    /// Two people, two records. Collapsing every run of non-alphanumerics to one hyphen is many-to-one, so
+    /// the readable part of the stem cannot be the key: <c>Jane.Doe</c> and <c>Jane-Doe</c> read alike. The
+    /// record is a public file bearing one person's name, and the reviewer is handed it as "this author's
+    /// recurring mistakes" — sharing it would attribute one developer's mistakes and source PRs to another.
+    /// </summary>
+    [Theory]
+    [InlineData("Jane.Doe", "Jane-Doe")]
+    [InlineData("jane.doe@contoso.com", "jane-doe@contoso.com")]
+    [InlineData("a.b", "a_b")]
+    [InlineData("AchieveAI\\gautam", "achieveai gautam")]
+    public void SlugifyAuthor_never_lands_two_identities_on_one_record(string first, string second)
+    {
+        var a = Slug(first);
+        var b = Slug(second);
+
+        Stem(a).Should().Be(Stem(b), "these identities are exactly the ones the readable part cannot tell apart");
+        a.Should().NotBe(b, "so the stem must carry something the readable part threw away");
+    }
+
+    /// <summary>
+    /// The other half of the same rule, and the reason the fingerprint is taken over the CASE-FOLDED
+    /// identity. Providers vary the casing of one login across payloads; splitting a developer into two
+    /// records on that would lose half their history and inject the wrong half back.
+    /// </summary>
+    [Theory]
+    [InlineData("Jane.Doe", "jane.doe")]
+    [InlineData("OctoCat", "octocat")]
+    [InlineData("  octocat  ", "octocat")]
+    public void SlugifyAuthor_keeps_one_developer_in_one_record(string first, string second) =>
+        Slug(first).Should().Be(Slug(second));
+
+    private static string Slug(string author) =>
+        ReviewFeedbackAgent.SlugifyAuthor(author)
+        ?? throw new InvalidOperationException($"'{author}' should be addressable.");
+
+    /// <summary>The readable, lossy leading part of a stem — everything before the fingerprint.</summary>
+    private static string Stem(string slug) => slug[..slug.LastIndexOf('-')];
 
     [Fact]
     public async Task TryExtractAsync_refuses_an_oversized_record_instead_of_rewriting_it_from_a_partial_view()
@@ -99,7 +142,7 @@ public sealed class ReviewFeedbackAgentTests : LoggingTestBase
         // large to show in full would delete every pattern outside the window — turning a damaged record
         // into a permanently truncated one. Refusing leaves the damage readable and repairable.
         var fs = new FakeSandboxFileSystem();
-        var path = DevDir + "/octocat.reviewfeedbacks.md";
+        var path = DevDir + $"/{Slug("octocat")}.reviewfeedbacks.md";
         var huge = new string('x', 40_000);
         fs.Files[path] = huge;
         var agent = AgentReturning(ValidRecord);
@@ -121,7 +164,7 @@ public sealed class ReviewFeedbackAgentTests : LoggingTestBase
         // is not a missed injection — it is a WRITE over a record we never saw, deleting every pattern in
         // it. That is strictly worse than the partial-view case, so it has to fail the same closed way.
         var fs = new FakeSandboxFileSystem();
-        var path = DevDir + "/octocat.reviewfeedbacks.md";
+        var path = DevDir + $"/{Slug("octocat")}.reviewfeedbacks.md";
         var beyondSandbox = new string('x', (int)SandboxReadLimits.KnowledgeEntryBytes + 1);
         fs.Files[path] = beyondSandbox;
         var agent = AgentReturning(ValidRecord);
@@ -141,7 +184,7 @@ public sealed class ReviewFeedbackAgentTests : LoggingTestBase
     public async Task TryExtractAsync_declines_and_leaves_the_record_byte_identical_when_the_gate_fires()
     {
         var fs = new FakeSandboxFileSystem();
-        var path = DevDir + "/octocat.reviewfeedbacks.md";
+        var path = DevDir + $"/{Slug("octocat")}.reviewfeedbacks.md";
         var seeded = "---\ndeveloper: octocat\nsourcePrs: [\"github/o-r/1\"]\nupdated: 2026-07-01\n---\n\n## PATTERNS\n\n### Old\n";
         fs.Files[path] = seeded;
         var agent = AgentReturning("NO_FEEDBACK");
@@ -223,7 +266,7 @@ public sealed class ReviewFeedbackAgentTests : LoggingTestBase
         // The prompt has an unambiguous way to say "nothing" — NO_FEEDBACK — so an empty block is a
         // malformed reply, not an instruction to erase.
         var fs = new FakeSandboxFileSystem();
-        var path = DevDir + "/octocat.reviewfeedbacks.md";
+        var path = DevDir + $"/{Slug("octocat")}.reviewfeedbacks.md";
         var seeded = "---\ndeveloper: octocat\nsourcePrs: [\"github/o-r/1\"]\nupdated: 2026-07-01\n---\n\n## PATTERNS\n\n### Old\n";
         fs.Files[path] = seeded;
         var agent = AgentReturning("## PATTERNS\n\n   \n").ThenReplies(Assistant("## PATTERNS\n"));
@@ -242,7 +285,7 @@ public sealed class ReviewFeedbackAgentTests : LoggingTestBase
     public async Task TryExtractAsync_injects_the_frontmatter_and_merges_the_source_prs()
     {
         var fs = new FakeSandboxFileSystem();
-        var path = DevDir + "/octocat.reviewfeedbacks.md";
+        var path = DevDir + $"/{Slug("octocat")}.reviewfeedbacks.md";
         fs.Files[path] =
             "---\ndeveloper: octocat\nsourcePrs: [\"github/o-r/1\"]\nupdated: 2026-07-01\n---\n\n## PATTERNS\n\n### Old pattern\n";
         var agent = AgentReturning(ValidRecord);
@@ -257,7 +300,7 @@ public sealed class ReviewFeedbackAgentTests : LoggingTestBase
         written.Should().Contain("Drops the CancellationToken");
 
         // The evidence trail accumulates: the earlier PR is not dropped when a later one contributes.
-        var meta = KnowledgeIndex.ParseFrontmatter("developers/octocat.reviewfeedbacks.md", written);
+        var meta = KnowledgeIndex.ParseFrontmatter($"developers/{Slug("octocat")}.reviewfeedbacks.md", written);
         meta!.SourcePrs.Should().Equal("github/o-r/1", SourcePr);
 
         // Deliberately NO title: a per-developer record must not be able to masquerade as a curated
@@ -272,7 +315,7 @@ public sealed class ReviewFeedbackAgentTests : LoggingTestBase
         // the body, where the next run would read them as content. It DOES need the existing patterns, so a
         // second instance updates the pattern it belongs to instead of appending a near-duplicate.
         var fs = new FakeSandboxFileSystem();
-        fs.Files[DevDir + "/octocat.reviewfeedbacks.md"] =
+        fs.Files[DevDir + $"/{Slug("octocat")}.reviewfeedbacks.md"] =
             "---\ndeveloper: octocat\nsourcePrs: [\"github/o-r/1\"]\nupdated: 2026-07-01\n---\n\n"
             + "## PATTERNS\n\n### Drops the CancellationToken on async calls\n- **Seen in:** github/o-r/1\n";
         var agent = AgentReturning("NO_FEEDBACK");

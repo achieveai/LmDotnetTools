@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
@@ -32,6 +33,14 @@ internal sealed class ReviewFeedbackAgent
 
     /// <summary>The suffix the owner specified for the record file: <c>&lt;developer&gt;.reviewfeedbacks.md</c>.</summary>
     private const string RecordSuffix = ".reviewfeedbacks.md";
+
+    /// <summary>
+    /// Bytes of the SHA-256 identity digest carried in the file stem (rendered as twice this many hex
+    /// characters). Six gives a 48-bit space: a birthday collision needs on the order of sixteen million
+    /// distinct authors in one Knowledge Base, which is far past any repository this daemon reviews, while
+    /// keeping the stem short enough to read at a glance.
+    /// </summary>
+    private const int FingerprintBytes = 6;
 
     /// <summary>The gate sentinel: the agent replies with this when this PR adds nothing to the record.</summary>
     private const string NoFeedbackSentinel = "NO_FEEDBACK";
@@ -321,10 +330,23 @@ internal sealed class ReviewFeedbackAgent
     /// <item>a GitHub App identity (<c>dependabot[bot]</c>) yields <c>null</c> — there is no developer to
     /// give feedback to;</item>
     /// <item>everything else is lowercased with each run of non-alphanumerics collapsed to a hyphen, so an
-    /// ADO <c>uniqueName</c> email becomes <c>jane-doe-contoso-com</c> and the stem is <c>[a-z0-9-]</c> by
-    /// construction — a crafted <c>../../.git/hooks/x</c> cannot survive it;</item>
+    /// ADO <c>uniqueName</c> email becomes <c>jane-doe-contoso-com</c> and the readable part of the stem is
+    /// <c>[a-z0-9-]</c> by construction — a crafted <c>../../.git/hooks/x</c> cannot survive it;</item>
     /// <item>a value that slugs to nothing yields <c>null</c> rather than a shared fallback stem.</item>
     /// </list>
+    /// <para>
+    /// <b>The readable part alone is not a key.</b> Collapsing every run of non-alphanumerics to one hyphen
+    /// is many-to-one: <c>Jane.Doe</c> and <c>Jane-Doe</c>, or <c>jane.doe@contoso.com</c> and
+    /// <c>jane-doe@contoso.com</c>, land on the same stem. Since the stem is the ONLY thing
+    /// <see cref="RecordRelPath"/> keys on, that would put two people in one public file bearing one of
+    /// their names — each one's extraction merging into or overwriting the other's, and the review-input
+    /// injection then handing an author the wrong person's recurring mistakes and source-PR references.
+    /// So the stem carries a fingerprint of the identity it came from, making distinct identities distinct
+    /// records. The fingerprint is taken over the CASE-FOLDED identity on purpose: provider payloads vary
+    /// the casing of the same login (<c>Jane.Doe</c> / <c>jane.doe</c>), and splitting one developer across
+    /// two records is its own bug — the collision to prevent is between different people, not between two
+    /// spellings of one.
+    /// </para>
     /// </summary>
     internal static string? SlugifyAuthor(string? author)
     {
@@ -360,7 +382,21 @@ internal sealed class ReviewFeedbackAgent
         }
 
         var slug = builder.ToString();
-        return slug.Length == 0 ? null : slug;
+        return slug.Length == 0 ? null : slug + "-" + IdentityFingerprint(trimmed);
+    }
+
+    /// <summary>
+    /// A short, stable, lowercase-hex fingerprint of one provider identity, appended to the readable stem so
+    /// two identities that slug alike still address two records. SHA-256 over the case-folded identity,
+    /// truncated to <see cref="FingerprintBytes"/> bytes — enough that a collision between two real
+    /// developers in one repository is not a practical concern, short enough to leave the file name legible.
+    /// It is not a secret and is not defending against a chosen-prefix attacker: the author string is
+    /// provider-reported, and the traversal class is already closed by the charset filter above.
+    /// </summary>
+    private static string IdentityFingerprint(string identity)
+    {
+        var digest = SHA256.HashData(Encoding.UTF8.GetBytes(identity.ToLowerInvariant()));
+        return Convert.ToHexStringLower(digest.AsSpan(0, FingerprintBytes));
     }
 
     /// <summary>

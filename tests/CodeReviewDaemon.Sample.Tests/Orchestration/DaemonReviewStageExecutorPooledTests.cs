@@ -30,6 +30,12 @@ public sealed class DaemonReviewStageExecutorPooledTests
     private const string NotesRelPath = "PRs/lmdotnettools-118";
     private const string SubmoduleRelPath = "repos/LmDotnetTools";
 
+    /// <summary>
+    /// The stem the review-feedback writer files "octocat" under. Derived rather than typed: what these
+    /// tests pin is that the pooled RETRIEVAL path reads the file the writer wrote.
+    /// </summary>
+    private static readonly string OctocatSlug = ReviewFeedbackAgent.SlugifyAuthor("octocat")!;
+
     /// <summary>The S2S review host this fixture's deep-links point at (never production's 5050).</summary>
     private const string LmStreamingBaseUrl = "http://localhost:5051";
 
@@ -217,7 +223,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // "absent", which is indistinguishable from an author who has no record yet, so the feature would
         // simply never fire on the supported path.
         fixture.HostFileSystem.Seed(
-            "/pool/slot-0/store/KnowledgeBase/developers/octocat.reviewfeedbacks.md",
+            $"/pool/slot-0/store/KnowledgeBase/developers/{OctocatSlug}.reviewfeedbacks.md",
             "---\ndeveloper: octocat\n---\n\n## Patterns\n\n- FEEDBACK-PATTERN-XYZ\n");
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -228,7 +234,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         text.Should().Contain("## Recurring feedback for this PR's author", "the record is prepended as a labelled block");
         text.Should().Contain("FEEDBACK-PATTERN-XYZ", "the seeded record body is surfaced to the pooled reviewer");
         text.Should().Contain(
-            "/workspace/store/KnowledgeBase/developers/octocat.reviewfeedbacks.md",
+            $"/workspace/store/KnowledgeBase/developers/{OctocatSlug}.reviewfeedbacks.md",
             "the heading hands over an exact absolute path, not a bare file name");
     }
 
@@ -243,7 +249,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // than a missing one: it propagates an unopenable path to every child that was dispatched to look
         // for exactly these mistakes. Read host-side out of the leased slot, render at the mounted root.
         fixture.HostFileSystem.Seed(
-            "/pool/review-slot-0/store/KnowledgeBase/developers/octocat.reviewfeedbacks.md",
+            $"/pool/review-slot-0/store/KnowledgeBase/developers/{OctocatSlug}.reviewfeedbacks.md",
             "---\ndeveloper: octocat\n---\n\n## Patterns\n\n- Leaves `ConfigureAwait(false)` off library awaits.\n");
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -253,7 +259,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         var block = text[text.IndexOf("## Recurring feedback", StringComparison.Ordinal)..];
         block.Should().Contain(
-            "/workspace/store/KnowledgeBase/developers/octocat.reviewfeedbacks.md",
+            $"/workspace/store/KnowledgeBase/developers/{OctocatSlug}.reviewfeedbacks.md",
             "the record was READ from the host slot but must be RENDERED at the root the agent sees");
         block.Should().NotContain(
             "/pool/review-slot-0",

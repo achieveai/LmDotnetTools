@@ -866,6 +866,13 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         return fixture;
     }
 
+    /// <summary>
+    /// The stem the review-feedback writer files "octocat" under. Derived, not typed: these tests are about
+    /// the RETRIEVAL side finding what the writer wrote, and a literal would pin the two together only by
+    /// coincidence.
+    /// </summary>
+    private static readonly string OctocatSlug = ReviewFeedbackAgent.SlugifyAuthor("octocat")!;
+
     private static void SeedFeedbackRecord(Fixture fixture, string slug, string body) =>
         fixture.FileSystem.Seed(
             $"/workspace/store/KnowledgeBase/developers/{slug}.reviewfeedbacks.md",
@@ -884,14 +891,17 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     /// The point of the whole feature: the author's own recurring mistakes reach the reviewer of THEIR PR.
     /// The record is looked up under the slug the extraction wrote it under, so a display name that is not
     /// already a slug ("Jane.Doe@contoso.com") must still find its file — reader and writer deriving the path
-    /// differently would silently inject nothing forever.
+    /// differently would silently inject nothing forever. That is why the seed goes through the writer's own
+    /// <see cref="ReviewFeedbackAgent.SlugifyAuthor"/> rather than a literal: the retrieval side is the code
+    /// under test, and a literal would only pin whatever the test author happened to type.
     /// </summary>
     [Theory]
-    [InlineData("octocat", "octocat")]
-    [InlineData("Jane.Doe@contoso.com", "jane-doe-contoso-com")]
-    [InlineData("AchieveAI\\gautam", "achieveai-gautam")]
-    public async Task Reviewed_prepends_the_pr_authors_own_feedback_record(string author, string slug)
+    [InlineData("octocat")]
+    [InlineData("Jane.Doe@contoso.com")]
+    [InlineData("AchieveAI\\gautam")]
+    public async Task Reviewed_prepends_the_pr_authors_own_feedback_record(string author)
     {
+        var slug = ReviewFeedbackAgent.SlugifyAuthor(author)!;
         using var fixture = FeedbackFixture(LoggerFactory);
         SeedFeedbackRecord(fixture, slug, "- Leaves `ConfigureAwait(false)` off awaits in library code.");
         var run = fixture.SeedRun(prAuthor: author);
@@ -918,7 +928,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     public async Task Reviewed_injects_no_feedback_when_no_developer_is_addressable(string? author)
     {
         using var fixture = FeedbackFixture(LoggerFactory);
-        SeedFeedbackRecord(fixture, "octocat", "- Leaves `ConfigureAwait(false)` off awaits in library code.");
+        SeedFeedbackRecord(fixture, OctocatSlug, "- Leaves `ConfigureAwait(false)` off awaits in library code.");
         var run = fixture.SeedRun(prAuthor: author);
 
         var text = await RunAndReadReviewInputAsync(fixture, run);
@@ -943,7 +953,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     public async Task Reviewed_injects_no_feedback_when_the_feature_is_disabled()
     {
         using var fixture = FeedbackFixture(LoggerFactory, enableReviewFeedbackAgent: false);
-        SeedFeedbackRecord(fixture, "octocat", "- Leaves `ConfigureAwait(false)` off awaits in library code.");
+        SeedFeedbackRecord(fixture, OctocatSlug, "- Leaves `ConfigureAwait(false)` off awaits in library code.");
         var run = fixture.SeedRun(prAuthor: "octocat");
 
         var text = await RunAndReadReviewInputAsync(fixture, run);
@@ -958,7 +968,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     public async Task Reviewed_degrades_and_does_not_fail_when_the_feedback_record_read_throws()
     {
         using var fixture = FeedbackFixture(LoggerFactory);
-        SeedFeedbackRecord(fixture, "octocat", "- Leaves `ConfigureAwait(false)` off awaits in library code.");
+        SeedFeedbackRecord(fixture, OctocatSlug, "- Leaves `ConfigureAwait(false)` off awaits in library code.");
         var run = fixture.SeedRun(prAuthor: "octocat");
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -983,7 +993,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     public async Task Reviewed_truncates_an_oversized_feedback_record_and_marks_it()
     {
         using var fixture = FeedbackFixture(LoggerFactory);
-        SeedFeedbackRecord(fixture, "octocat", new string('x', 40_000) + "\n- TAIL PATTERN");
+        SeedFeedbackRecord(fixture, OctocatSlug, new string('x', 40_000) + "\n- TAIL PATTERN");
         var run = fixture.SeedRun(prAuthor: "octocat");
 
         var text = await RunAndReadReviewInputAsync(fixture, run);
@@ -1004,7 +1014,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     public async Task Reviewed_tells_the_reviewer_to_hand_the_feedback_record_to_its_sub_agents()
     {
         using var fixture = FeedbackFixture(LoggerFactory);
-        SeedFeedbackRecord(fixture, "octocat", "- Leaves `ConfigureAwait(false)` off awaits in library code.");
+        SeedFeedbackRecord(fixture, OctocatSlug, "- Leaves `ConfigureAwait(false)` off awaits in library code.");
         var run = fixture.SeedRun(prAuthor: "octocat");
 
         var text = await RunAndReadReviewInputAsync(fixture, run);
@@ -1026,14 +1036,14 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     public async Task Reviewed_names_the_feedback_record_by_the_path_the_agent_can_open()
     {
         using var fixture = FeedbackFixture(LoggerFactory);
-        SeedFeedbackRecord(fixture, "octocat", "- Leaves `ConfigureAwait(false)` off awaits in library code.");
+        SeedFeedbackRecord(fixture, OctocatSlug, "- Leaves `ConfigureAwait(false)` off awaits in library code.");
         var run = fixture.SeedRun(prAuthor: "octocat");
 
         var text = await RunAndReadReviewInputAsync(fixture, run);
 
         var block = text[text.IndexOf("## Recurring feedback", StringComparison.Ordinal)..];
         block.Should().Contain(
-            "/workspace/store/KnowledgeBase/developers/octocat.reviewfeedbacks.md",
+            $"/workspace/store/KnowledgeBase/developers/{OctocatSlug}.reviewfeedbacks.md",
             "the heading names the record's exact ABSOLUTE path as the agent sees it, not a relative one");
         block.Should().Contain(
             "do NOT ", "the agent is steered off Grep/Glob, which can miss the file even when it exists");
