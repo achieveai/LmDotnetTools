@@ -4,7 +4,9 @@
 //
 //   browser_run_code_unsafe({ filename: "samples/LmStreaming.Sample/playwright-scripts/ask-question-notify-client.mjs" })
 //
-// Returns { pass, failures, steps }. Assert only DETERMINISTIC, browser-observable state. Uses the
+// Returns { pass, failures, steps, diagnostics } — `pass` reflects product assertions only;
+// `diagnostics` carries non-fatal screenshot write errors. Assert only DETERMINISTIC,
+// browser-observable state. Uses the
 // mock provider `test-anthropic` (wide streaming window) so there are no real LLM calls — both
 // tools are registered unconditionally by MultiTurnAgentLoop, so this drives REAL production
 // tool-handling code, not a stub.
@@ -25,22 +27,25 @@
 // Prereq: the app must serve the CURRENT client code. In Development it does NOT serve
 // wwwroot/dist — it proxies /dist to a Vite dev server (VITE_DEV_PORT, default 5173), so a stale or
 // foreign Vite instance will silently serve another tree's bundle and this script will time out on
-// selectors that exist in your tree. Launch with your own ports to be sure:
+// selectors that exist in your tree. The repo default (README.md) is a backend on :5000 paired with
+// Vite on :5173, which BASE below matches. To run an ISOLATED instance beside another worktree's,
+// launch with your own ports and change BASE to match (the runner has no `process`, so BASE is a
+// plain constant):
 //
 //   VITE_DEV_PORT=5199 VITE_BACKEND_ORIGIN=http://localhost:5077 \
 //     ASPNETCORE_URLS=http://localhost:5077 dotnet run --no-launch-profile
 //
-// then point BASE at the BACKEND port (the runner has no `process`, so this is a plain constant).
-// VITE_BACKEND_ORIGIN is belt-and-braces: because BASE is the backend origin, the page's own
-// /api and /ws calls are same-origin and never traverse Vite's proxy — but vite.config.ts defaults
-// that proxy to :5000, so anyone who browses the Vite port directly would hit the wrong backend.
+// BASE must be the BACKEND origin either way: the page's /api and /ws calls are then same-origin
+// and never traverse Vite's proxy. VITE_BACKEND_ORIGIN only matters if you browse the Vite port
+// directly, where vite.config.ts would otherwise default that proxy to :5000.
 async (page) => {
-  const BASE = 'http://localhost:5077';
+  const BASE = 'http://localhost:5000';
   const PROVIDER = 'test-anthropic';
-  // Relative on purpose: Playwright resolves a relative screenshot path against the MCP server's
-  // own output directory (alongside its console logs), which exists on every machine. An absolute
-  // path pinned to one checkout's drive letter silently writes nowhere else.
-  const SHOT_DIR = 'ask-question-notify';
+  // Relative, and under `.logs/` on purpose. Playwright resolves a relative screenshot path against
+  // the SERVER process cwd, which is the repo/worktree root (verified in markdown-render-audit.mjs).
+  // `.logs/` is gitignored; a bare directory name would leave untracked PNGs at the root, ready to
+  // be swept into a `git add -A`.
+  const SHOT_DIR = '.logs/ask-question-notify';
 
   // Build each instruction chain programmatically (JSON.stringify) rather than hand-escaping, per
   // this folder's convention (see subagent-tabs.mjs) — also lets the exact same object literal
@@ -98,14 +103,17 @@ async (page) => {
   const steps = [];
   const record = (name, pass, detail) => steps.push({ name, pass, detail });
   const tid = (id) => page.locator(`[data-testid="${id}"]`);
-  // Screenshots are diagnostics, so a failure to write one is reported rather than swallowed --
-  // silently losing every screenshot looks identical to a clean run. It does not fail the script
-  // (a missing screenshot is not a product defect), it just surfaces as its own step.
+  // Screenshot failures land HERE, never in `steps`. They are reported rather than swallowed --
+  // silently losing every screenshot looks identical to a clean run -- but an unwritable diagnostics
+  // directory is not a product defect, and `pass` is computed from `steps` alone so it cannot turn a
+  // clean five-scenario run red. Keep the full error text: these are almost always ENOENT/EACCES,
+  // where the resolved PATH is the entire diagnostic value.
+  const diagnostics = [];
   const shot = async (name) => {
     try {
       await page.screenshot({ path: `${SHOT_DIR}/${name}.png` });
     } catch (e) {
-      record(`screenshot ${name}`, false, String((e && e.message) || e));
+      diagnostics.push({ name: `screenshot ${name}`, error: String((e && e.message) || e) });
     }
   };
   const waitIdle = async (timeout = 30000) => {
@@ -319,5 +327,5 @@ async (page) => {
   }
 
   const failures = steps.filter((s) => !s.pass).map((s) => s.name);
-  return { pass: failures.length === 0, failures, steps };
+  return { pass: failures.length === 0, failures, steps, diagnostics };
 }
