@@ -976,6 +976,52 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         text.Should().NotContain("TAIL PATTERN", "content past the cap is dropped, not smuggled in");
     }
 
+    /// <summary>
+    /// A sub-agent sees only what the parent copies into its brief, so a block the parent never forwards is
+    /// one the dimension reviewers never get — they would review this author's PR blind to exactly the
+    /// mistakes the record exists to catch. The ranked prior-knowledge digest makes this promise; the two
+    /// blocks carry the same kind of payload into the same prompt, and a guarantee that holds on only one of
+    /// them is the recurring defect on this path.
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_tells_the_reviewer_to_hand_the_feedback_record_to_its_sub_agents()
+    {
+        using var fixture = FeedbackFixture(LoggerFactory);
+        SeedFeedbackRecord(fixture, "octocat", "- Leaves `ConfigureAwait(false)` off awaits in library code.");
+        var run = fixture.SeedRun(prAuthor: "octocat");
+
+        var text = await RunAndReadReviewInputAsync(fixture, run);
+
+        var block = text[text.IndexOf("## Recurring feedback", StringComparison.Ordinal)..];
+        block.Should().Contain(
+            "sub-agent", "the parent must be told to forward this, exactly as the prior-knowledge digest is");
+        block.Should().Contain(
+            "copy that path into its brief",
+            "forwarding the PATH is what a sub-agent can act on; it has no other route to the record");
+    }
+
+    /// <summary>
+    /// The path the block names must be the one the AGENT's tools resolve. A store-relative path — or, in
+    /// pooled mode, the daemon's own host path — is one the agent can never open, and a Grep for it can come
+    /// back empty even though the file is right there, so the reviewer would conclude the record is missing.
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_names_the_feedback_record_by_the_path_the_agent_can_open()
+    {
+        using var fixture = FeedbackFixture(LoggerFactory);
+        SeedFeedbackRecord(fixture, "octocat", "- Leaves `ConfigureAwait(false)` off awaits in library code.");
+        var run = fixture.SeedRun(prAuthor: "octocat");
+
+        var text = await RunAndReadReviewInputAsync(fixture, run);
+
+        var block = text[text.IndexOf("## Recurring feedback", StringComparison.Ordinal)..];
+        block.Should().Contain(
+            "/workspace/store/KnowledgeBase/developers/octocat.reviewfeedbacks.md",
+            "the heading names the record's exact ABSOLUTE path as the agent sees it, not a relative one");
+        block.Should().Contain(
+            "do NOT ", "the agent is steered off Grep/Glob, which can miss the file even when it exists");
+    }
+
     [Fact]
     public async Task Reviewed_persists_a_review_artifact_and_skips_optional_arms_by_default()
     {

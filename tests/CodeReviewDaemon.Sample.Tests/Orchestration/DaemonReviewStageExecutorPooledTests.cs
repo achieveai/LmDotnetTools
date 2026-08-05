@@ -205,6 +205,62 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task Reviewed_prepends_the_authors_feedback_record_read_from_the_leased_slots_host_store()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun(prAuthor: "octocat");
+
+        // Same guarantee as the prior-knowledge ToC above, on the payload that ships beside it. The record
+        // lives in the LEASED SLOT's store checkout and must be read HOST-side via _slotWorkspace
+        // .HostFileSystem + lease.Prepared.StoreRoot; the boot-lifetime sandbox session is never registered
+        // for a pooled run and 404s. Reading through the wrong file system does not throw here — it reports
+        // "absent", which is indistinguishable from an author who has no record yet, so the feature would
+        // simply never fire on the supported path.
+        fixture.HostFileSystem.Seed(
+            "/pool/slot-0/store/KnowledgeBase/developers/octocat.reviewfeedbacks.md",
+            "---\ndeveloper: octocat\n---\n\n## Patterns\n\n- FEEDBACK-PATTERN-XYZ\n");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        text.Should().Contain("## Recurring feedback for this PR's author", "the record is prepended as a labelled block");
+        text.Should().Contain("FEEDBACK-PATTERN-XYZ", "the seeded record body is surfaced to the pooled reviewer");
+        text.Should().Contain(
+            "/workspace/store/KnowledgeBase/developers/octocat.reviewfeedbacks.md",
+            "the heading hands over an exact absolute path, not a bare file name");
+    }
+
+    [Fact]
+    public async Task Reviewed_renders_a_container_rooted_feedback_path_when_the_leased_store_is_a_host_path()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun(prAuthor: "octocat");
+
+        // The read/render split, mirrored onto the feedback record. This block tells the agent to open the
+        // path with the Read tool AND to copy it into every sub-agent's brief, so a host path here is worse
+        // than a missing one: it propagates an unopenable path to every child that was dispatched to look
+        // for exactly these mistakes. Read host-side out of the leased slot, render at the mounted root.
+        fixture.HostFileSystem.Seed(
+            "/pool/review-slot-0/store/KnowledgeBase/developers/octocat.reviewfeedbacks.md",
+            "---\ndeveloper: octocat\n---\n\n## Patterns\n\n- Leaves `ConfigureAwait(false)` off library awaits.\n");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        var block = text[text.IndexOf("## Recurring feedback", StringComparison.Ordinal)..];
+        block.Should().Contain(
+            "/workspace/store/KnowledgeBase/developers/octocat.reviewfeedbacks.md",
+            "the record was READ from the host slot but must be RENDERED at the root the agent sees");
+        block.Should().NotContain(
+            "/pool/review-slot-0",
+            "a host path is unopenable inside the review container, and this block tells the agent to forward it to sub-agents");
+    }
+
+    [Fact]
     public async Task Reviewed_prepends_the_reviewed_repos_root_guidance_read_from_the_leased_checkout()
     {
         using var fixture = Fixture.Create();
@@ -1219,6 +1275,10 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 // Host-side posting is the ONLY delivery path on S2S, so the S2S fixture authorizes it — that is
                 // what makes the posted body (and its deep-link) observable on the fake publisher.
                 EnableCommentPosting = s2s,
+                // On for every pooled fixture, not just the feedback tests: the injection is inert unless the
+                // run carries a sluggable PrAuthor (SeedRun leaves it null by default), so this changes nothing
+                // for the other cases while keeping the flag from being the reason a real defect goes unseen.
+                EnableReviewFeedbackAgent = true,
             };
             // Only the HOSTED path's turns are durable, and the executor now refuses an S2S review whose loop
             // cannot checkpoint them — so the double has to be resumable on exactly the path production is.
@@ -1353,7 +1413,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// Seeds (or resumes) a review run for <paramref name="prId"/>. Distinct PR ids give distinct runs —
         /// which is how the isolation gate drives two reviews at once.
         /// </summary>
-        public ReviewRun SeedRun(string prId = "118")
+        public ReviewRun SeedRun(string prId = "118", string? prAuthor = null)
         {
             var repoId = Store.EnsureRepo(new RepoIdentity
             {
@@ -1366,6 +1426,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
             {
                 RepoId = repoId,
                 PrId = prId,
+                PrAuthor = prAuthor,
                 HeadSha = "head-sha",
                 BaseSha = "base-sha",
                 TriggerWatermark = "wm-1",

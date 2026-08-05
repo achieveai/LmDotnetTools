@@ -165,22 +165,33 @@ internal sealed class ReviewFeedbackAgent
         var relPath = RecordRelPath(slug);
         var recordPath = JoinPath(developersDir, slug + RecordSuffix);
 
-        var existing = await _fileSystem.ReadFileAsync(recordPath, cancellationToken).ConfigureAwait(false);
-        if (existing is not null && existing.Length > MaxExistingRecordChars)
+        var read = await _fileSystem
+            .ReadFileAsync(recordPath, SandboxReadLimits.KnowledgeEntryBytes, cancellationToken)
+            .ConfigureAwait(false);
+
+        // Two ceilings sit over this read and BOTH mean the same thing here. The sandbox refuses anything
+        // past SandboxReadLimits.KnowledgeEntryBytes and reports TooLarge with no content;
+        // MaxExistingRecordChars is the tighter prompt budget below it. Either way we hold a partial view of
+        // a record the model rewrites WHOLESALE, so writing would delete every pattern we could not see.
+        // A refusal must never fall through as "no record": that is exactly the presence-check hazard
+        // SandboxFileRead was introduced to name, and on this path it would blank a real developer's record
+        // rather than merely re-seed an empty store. Leaving the file untouched keeps a damaged record
+        // readable instead of making the damage permanent (the knowledge-extraction merge+delete defect).
+        if (read.TooLarge || read.Content?.Length > MaxExistingRecordChars)
         {
-            // Refusing here is the whole point: the model rewrites the record wholesale, so running it
-            // against a record we could only partially show would delete every pattern outside the window.
-            // Leaving the file untouched keeps a damaged record readable instead of making the damage
-            // permanent (see the knowledge-extraction merge+delete defect).
             _logger.LogWarning(
-                "Review-feedback record '{Record}' is {Length} chars, over the {Limit} limit; leaving it "
-                    + "untouched rather than rewriting it from a partial view.",
+                "Review-feedback record '{Record}' is too large to show the model in full ({Length} chars "
+                    + "read, prompt limit {Limit}, sandbox refused: {Refused}); leaving it untouched rather "
+                    + "than rewriting it from a partial view.",
                 relPath,
-                existing.Length,
-                MaxExistingRecordChars
+                read.Content?.Length ?? 0,
+                MaxExistingRecordChars,
+                read.TooLarge
             );
             return KnowledgeExtractionResult.Failed();
         }
+
+        var existing = read.Content;
 
         var extractionInput = BuildExtractionInput(author!, relPath, existing, notesInput);
         var collected = await AgentTextCollector

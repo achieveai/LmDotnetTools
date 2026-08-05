@@ -3,6 +3,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
+using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using Microsoft.Extensions.Logging;
 using Xunit.Abstractions;
 
@@ -110,6 +111,28 @@ public sealed class ReviewFeedbackAgentTests : LoggingTestBase
         fs.Writes.Should().BeEmpty();
         fs.Files[path].Should().Be(huge, "the existing record survives byte-identical");
         agent.ReceivedInputs.Should().BeEmpty("the model is never shown a record it cannot be given in full");
+    }
+
+    [Fact]
+    public async Task TryExtractAsync_refuses_a_record_the_sandbox_would_not_hand_over_at_all()
+    {
+        // The sibling above is the PROMPT budget; this is the sandbox's own read ceiling, above it. A read
+        // refused for size comes back with no content, and reading that as "this developer has no record"
+        // is not a missed injection — it is a WRITE over a record we never saw, deleting every pattern in
+        // it. That is strictly worse than the partial-view case, so it has to fail the same closed way.
+        var fs = new FakeSandboxFileSystem();
+        var path = DevDir + "/octocat.reviewfeedbacks.md";
+        var beyondSandbox = new string('x', (int)SandboxReadLimits.KnowledgeEntryBytes + 1);
+        fs.Files[path] = beyondSandbox;
+        var agent = AgentReturning(ValidRecord);
+
+        var result = await Feedback(agent, fs).TryExtractAsync(
+            RepoRoot, "octocat", "notes", SourcePr, Today, CancellationToken.None);
+
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Failed, "retryable once the record shrinks");
+        fs.Writes.Should().BeEmpty("a refused read must never fall through to the first-time-author write path");
+        fs.Files[path].Should().Be(beyondSandbox, "the existing record survives byte-identical");
+        agent.ReceivedInputs.Should().BeEmpty("the model is never run against a record nobody could read");
     }
 
     // ---- The gate: most PRs add nothing --------------------------------------------------------------
