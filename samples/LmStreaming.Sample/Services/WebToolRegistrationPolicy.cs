@@ -15,16 +15,41 @@ internal static class WebToolRegistrationPolicy
 {
     /// <summary>
     /// <see cref="ProviderRegistry" /> ids that have NO native web capability and therefore receive
-    /// the Jina fallback tools. Plain <c>copilot</c> is intentionally excluded: it returns early on
-    /// the <c>CopilotAgentLoop</c> (CLI) path before the per-conversation registry is built, so it
-    /// never reaches this seam. Dynamically discovered Copilot models (Anthropic/OpenAI) route through
-    /// the normal middleware agent loop and are included via the <c>isCopilotBackedModel</c> flag the
-    /// caller passes, not by literal id.
+    /// the Jina fallback tools. Plain <c>copilot</c> and dynamically discovered Copilot models are
+    /// included through the <c>isCopilotBackedModel</c> flag the caller passes, not by literal id.
+    /// Keeping them out of this static set ensures the caller explicitly establishes Copilot context
+    /// before enabling fallback tools.
     /// </summary>
     private static readonly HashSet<string> FallbackProviderIds = new(StringComparer.OrdinalIgnoreCase)
     {
         "openai",
+        // Deterministic mock providers exercise the same function-tool surface in manual/E2E validation.
+        "test",
+        "test-anthropic",
     };
+
+    /// <summary>
+    /// Resolves function-tool intent for web-capable modes. A dedicated built-in <c>web_search</c>
+    /// declaration also enables the function-shaped hosted/Jina search and Jina fetch equivalents.
+    /// </summary>
+    public static IReadOnlyList<string>? ResolveEnabledTools(
+        IReadOnlyList<string>? enabledTools,
+        IReadOnlyList<string>? enabledBuiltInTools
+    )
+    {
+        if (enabledBuiltInTools is null || !enabledBuiltInTools.Contains("web_search"))
+        {
+            return enabledTools;
+        }
+
+        var resolved = new HashSet<string>(enabledTools ?? [], StringComparer.Ordinal)
+        {
+            "web_search",
+            WebSearchTool.ToolName,
+            WebFetchTool.ToolName,
+        };
+        return [.. resolved];
+    }
 
     /// <summary>
     /// Registers the Jina <c>WebFetch</c>/<c>WebSearch</c> function tools into <paramref name="registry" />
@@ -50,6 +75,8 @@ internal static class WebToolRegistrationPolicy
     /// provider-family model (e.g. DeepSeek). Those models likewise lack a native web capability and so
     /// receive the Jina fallback tools, alongside <paramref name="isCopilotBackedModel" /> and the
     /// statically allow-listed ids in <see cref="FallbackProviderIds" />.</param>
+    /// <param name="suppressWebSearch"><c>true</c> when Copilot hosted <c>web_search</c> was registered;
+    /// Jina <c>WebSearch</c> is then skipped while Jina <c>WebFetch</c> remains eligible.</param>
     /// <returns>A small list of human-readable status strings describing what was registered, skipped,
     /// or disabled (for diagnostics/logging). Never contains secret values.</returns>
     public static IReadOnlyList<string> Apply(
@@ -60,7 +87,8 @@ internal static class WebToolRegistrationPolicy
         WebToolsOptions options,
         ILoggerFactory loggerFactory,
         bool isCopilotBackedModel = false,
-        bool isAnthropicCompatModel = false
+        bool isAnthropicCompatModel = false,
+        bool suppressWebSearch = false
     )
     {
         ArgumentNullException.ThrowIfNull(registry);
@@ -117,8 +145,13 @@ internal static class WebToolRegistrationPolicy
             }
         }
 
+        // Copilot's hosted web_search takes precedence; Jina remains the fallback.
+        if (suppressWebSearch)
+        {
+            statuses.Add("WebSearch skipped: Copilot web_search registered");
+        }
         // WebSearch requires the Jina API key; without it the tool is not advertised at all.
-        if (string.IsNullOrWhiteSpace(options.JinaApiKey))
+        else if (string.IsNullOrWhiteSpace(options.JinaApiKey))
         {
             logger.LogInformation("WebSearch disabled: JINA_API_KEY not set");
             statuses.Add("WebSearch disabled: JINA_API_KEY not set");

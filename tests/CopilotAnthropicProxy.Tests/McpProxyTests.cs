@@ -96,7 +96,7 @@ public sealed class McpProxyTests
         using var client = factory.CreateClient();
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "/mcp/readonly") { Content = JsonRpc("{}") };
-        request.Headers.TryAddWithoutValidation("X-MCP-Tools", "get_file_contents,search_code");
+        request.Headers.TryAddWithoutValidation("X-MCP-Tools", "web_search");
         request.Headers.TryAddWithoutValidation("X-MCP-Readonly", "true");
         request.Headers.TryAddWithoutValidation("X-MCP-Host", "copilot-cli");
 
@@ -108,7 +108,7 @@ public sealed class McpProxyTests
             .Should()
             .ContainSingle()
             .Which.Should()
-            .Be("get_file_contents,search_code");
+            .Be("web_search");
         forwarded.Headers.GetValues("X-MCP-Readonly").Should().ContainSingle().Which.Should().Be("true");
         forwarded.Headers.GetValues("X-MCP-Host").Should().ContainSingle().Which.Should().Be("copilot-cli");
     }

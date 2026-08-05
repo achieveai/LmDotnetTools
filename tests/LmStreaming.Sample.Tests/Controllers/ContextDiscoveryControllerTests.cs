@@ -4,6 +4,8 @@ using System.Text;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using LmStreaming.Sample.Configuration;
+using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Services.Discovery;
 using LmStreaming.Sample.Tests.TestDoubles;
 using Microsoft.AspNetCore.Http;
@@ -56,6 +58,7 @@ public class ContextDiscoveryControllerTests
             loader,
             injector,
             diagnostics,
+            new AgentOutputTokenPolicy(new AgentOutputTokenOptions()),
             NullLogger<ContextDiscoveryController>.Instance);
 
         var httpContext = new DefaultHttpContext();
