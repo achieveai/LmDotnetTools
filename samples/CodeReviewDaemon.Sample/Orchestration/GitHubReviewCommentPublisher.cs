@@ -25,9 +25,14 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
     /// <summary>
     /// Cap on pages fetched by any one listing (<see cref="PageSize"/> per page). Every listing here is
     /// paginated: a single page silently truncates the discussion the reviewer dedups against, which makes
-    /// the daemon repost a finding it already posted or miss a question addressed to it. Where GitHub
-    /// accepts <c>sort</c>/<c>direction</c> the listing is ordered newest-first, so reaching this cap drops
-    /// the oldest items rather than the recent ones that actually drive dedup.
+    /// the daemon repost a finding it already posted or miss a question addressed to it.
+    /// <para>
+    /// A cap is only safe if it drops the OLDEST items, so every listing here is walked newest-first — by
+    /// query where GitHub honours <c>sort</c>/<c>direction</c>, and by following the <c>Link</c> header to
+    /// the last page and walking backwards where it does not. Whether an endpoint honours those parameters
+    /// is not a detail: reading the cap the wrong way round keeps a window of ancient comments and hides the
+    /// bot's own most recent post, which is the one that decides whether to post again.
+    /// </para>
     /// </summary>
     private const int MaxListPages = 5;
 
@@ -57,12 +62,12 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
     {
         ArgumentNullException.ThrowIfNull(target);
 
-        // Paginated newest-first: this scan is the exactly-once backstop, so it must be able to see the
-        // comment a crashed prior attempt posted. On a PR whose conversation already exceeds one page that
-        // comment is not on page 1 by GitHub's default (oldest-first) order, and a single-page scan would
-        // report "not posted" and post a duplicate. Newest-first puts a just-posted comment on page 1.
-        await foreach (var comment in EnumeratePagedAsync(
-            $"{CommentsUrl(target)}?sort=created&direction=desc", cancellationToken))
+        // Walked from the LAST page backwards: this scan is the exactly-once backstop, so it must be able to
+        // see the comment a crashed prior attempt posted. That comment is the NEWEST one, and this endpoint
+        // returns oldest-first with no way to ask otherwise, so a forward walk finds it only after paging
+        // through the entire conversation — and under the page cap, never. It would then report "not posted"
+        // for a comment that exists and the daemon would post a duplicate.
+        await foreach (var comment in EnumerateNewestFirstAsync(CommentsUrl(target), cancellationToken))
         {
             var body = comment.TryGetProperty("body", out var b) ? b.GetString() : null;
             if (IdempotencyMarker.Matches(body, idempotencyKey))
@@ -112,12 +117,11 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
         // Review-level summaries (the top-level "Reviewed PR X…" bodies). Fetched FIRST so we can collect the ids of
         // PENDING/unsubmitted drafts before scanning inline comments below. Skip PENDING drafts: a draft is not
         // posted discussion, and treating its body as such lets a stale draft from a failed posting run suppress the
-        // valid submitted replacement on the next review. Paginated: missing a draft on a later page would let its
-        // inline comments through and suppress the submitted review they belong to. This is the one listing GitHub
-        // gives no sort/direction control over — it is always oldest-first — so the cap drops the newest reviews
-        // rather than the oldest; MaxListPages * PageSize reviews on one PR is far past anything observed.
+        // valid submitted replacement on the next review. Walked newest-first (see EnumerateNewestFirstAsync — this
+        // endpoint takes no sort/direction): missing a recent draft would let its inline comments through and
+        // suppress the submitted review they belong to, and the recent drafts are the ones that can still do that.
         var pendingReviewIds = new HashSet<long>();
-        await foreach (var review in EnumeratePagedAsync($"{pullsBase}/reviews", cancellationToken))
+        await foreach (var review in EnumerateNewestFirstAsync($"{pullsBase}/reviews", cancellationToken))
         {
             if (IsPendingReview(review))
             {
@@ -137,11 +141,14 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
             }
         }
 
-        // Inline review comments — the actual per-line findings. Fetched NEWEST-first (sort=created&direction=desc)
-        // so that once a PR exceeds the page cap we keep the most RECENT findings/replies (which drive dedup +
-        // reply handling) rather than the oldest. A comment whose pull_request_review_id belongs to a PENDING
-        // draft (above) is skipped — GitHub still returns the draft's per-line comments to the authenticated
-        // author, and letting one seed dedup would suppress its valid submitted replacement.
+        // Inline review comments — the actual per-line findings. This is the one listing here that GitHub really
+        // does order on request (verified against the live API: sending sort/direction flips the ids, whereas the
+        // issue-comment and review endpoints return byte-identical ascending output either way), so it can take
+        // the cheap forward walk. Newest-first so that once a PR exceeds the page cap we keep the most RECENT
+        // findings/replies (which drive dedup + reply handling) rather than the oldest. A comment whose
+        // pull_request_review_id belongs to a PENDING draft (above) is skipped — GitHub still returns the draft's
+        // per-line comments to the authenticated author, and letting one seed dedup would suppress its valid
+        // submitted replacement.
         await foreach (var comment in EnumeratePagedAsync(
             $"{pullsBase}/comments?sort=created&direction=desc", cancellationToken))
         {
@@ -164,11 +171,12 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
         // Ordinary PR-conversation (issue) comments — this publisher posts its summaries via /issues/{pr}/comments,
         // so prior summaries AND the human PR-conversation (questions directed at the bot) live here, not on the
         // review-comment endpoints; fold them into the model so dedup/reply handling can see them. PR-level (no
-        // path/line). Paginated newest-first for the same reason as the inline findings above: this is the listing
-        // that carries the bot's own prior summaries and any question addressed to it, so truncating it to the
-        // oldest page is what makes the daemon repost a resolved finding or leave a question unanswered.
-        await foreach (var comment in EnumeratePagedAsync(
-            $"{repoBase}/issues/{target.PrId}/comments?sort=created&direction=desc", cancellationToken))
+        // path/line). Walked newest-first (see EnumerateNewestFirstAsync — this endpoint ignores sort/direction):
+        // this is the listing that carries the bot's own prior summaries and any question addressed to it, so
+        // keeping the OLDEST window is what makes the daemon repost a resolved finding or leave a question
+        // unanswered — precisely the discussion still under argument is what a forward walk drops.
+        await foreach (var comment in EnumerateNewestFirstAsync(
+            $"{repoBase}/issues/{target.PrId}/comments", cancellationToken))
         {
             var body = GetString(comment, "body");
             if (!string.IsNullOrWhiteSpace(body))
@@ -189,16 +197,20 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
         string.Equals(GetString(review, "state"), "PENDING", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Walks a GitHub listing page by page, yielding every item, and stops at the first short page (GitHub
-    /// returns fewer than <see cref="PageSize"/> only on the last one) or at <see cref="MaxListPages"/>.
+    /// Walks a GitHub listing forwards from page 1, yielding every item, and stops at the first short page
+    /// (GitHub returns fewer than <see cref="PageSize"/> only on the last one) or at <see cref="MaxListPages"/>.
     /// <para>
     /// The single-request alternative is not a smaller version of this — it is a wrong one. Every caller
     /// here feeds either dedup or the exactly-once posting backstop, and both are decided by <em>absence</em>:
     /// a comment that was not seen is treated as never posted. A listing truncated at one page therefore does
     /// not degrade gracefully, it reports the opposite of the truth, and the daemon reposts a finding or
-    /// answers a question it has already answered. The page cap has the same failure mode, which is why every
-    /// listing that GitHub lets us order asks for newest-first: what the cap drops is then the discussion
-    /// least likely to still be under argument.
+    /// answers a question it has already answered.
+    /// </para>
+    /// <para>
+    /// The page cap has that same failure mode, so it must drop the OLDEST items — which makes this walk
+    /// correct only where the caller can order the listing newest-first in the query. That holds for
+    /// <c>GET /pulls/{pr}/comments</c> and nowhere else in this file; the endpoints that ignore
+    /// <c>sort</c>/<c>direction</c> use <see cref="EnumerateNewestFirstAsync"/> instead.
     /// </para>
     /// <paramref name="url"/> carries the caller's own query (ordering); paging parameters are appended here.
     /// </summary>
@@ -206,12 +218,11 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
         string url,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var separator = url.Contains('?', StringComparison.Ordinal) ? '&' : '?';
         for (var page = 1; page <= MaxListPages; page++)
         {
+            using var pageResult = await FetchPageAsync(url, page, cancellationToken);
             var count = 0;
-            await foreach (var element in EnumerateAsync(
-                $"{url}{separator}per_page={PageSize}&page={page}", cancellationToken))
+            foreach (var element in pageResult.Document.RootElement.EnumerateArray())
             {
                 count++;
                 yield return element;
@@ -224,21 +235,131 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
         }
     }
 
-    private async IAsyncEnumerable<JsonElement> EnumerateAsync(
+    /// <summary>
+    /// Walks a GitHub listing BACKWARDS from its last page, yielding items newest-first, for at most
+    /// <see cref="MaxListPages"/> pages.
+    /// <para>
+    /// This exists because most of the listings here cannot be ordered by the caller.
+    /// <c>GET /issues/{n}/comments</c> and <c>GET /pulls/{n}/reviews</c> return ascending creation order and
+    /// silently ignore <c>sort</c>/<c>direction</c> — sending those parameters yields byte-identical ascending
+    /// output, so a forward walk under a page cap keeps the oldest window and discards exactly the recent
+    /// discussion that dedup and the posting backstop are deciding about. Since every caller decides by
+    /// absence, that does not lose detail, it inverts the answer: the newest comment is the bot's own last
+    /// post, and not seeing it is what makes the daemon post a duplicate.
+    /// </para>
+    /// <para>
+    /// The tail is located from the <c>Link</c> header's <c>rel="last"</c> rather than by walking forward to
+    /// find it, so the cost stays bounded at <c>1 + MaxListPages</c> requests no matter how long the thread is.
+    /// Each page's items are reversed on the way out, so the sequence is newest-first across page boundaries
+    /// and not merely page-wise.
+    /// </para>
+    /// </summary>
+    private async IAsyncEnumerable<JsonElement> EnumerateNewestFirstAsync(
         string url,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        using var first = await FetchPageAsync(url, 1, cancellationToken);
+        var lastPage = first.LastPage;
+
+        if (lastPage <= 1)
+        {
+            foreach (var element in Reversed(first.Document))
+            {
+                yield return element;
+            }
+
+            yield break;
+        }
+
+        // Page 1 is the OLDEST page, so it is the one the cap should drop; it is re-fetched below only if it
+        // falls inside the newest MaxListPages window.
+        var stopPage = Math.Max(1, lastPage - MaxListPages + 1);
+        for (var page = lastPage; page >= stopPage; page--)
+        {
+            using var current = await FetchPageAsync(url, page, cancellationToken);
+            foreach (var element in Reversed(current.Document))
+            {
+                yield return element;
+            }
+        }
+    }
+
+    private static IEnumerable<JsonElement> Reversed(JsonDocument document) =>
+        document.RootElement.EnumerateArray().Reverse();
+
+    /// <summary>One page of a listing, plus the last page number GitHub advertised for it.</summary>
+    private sealed record ListPage(JsonDocument Document, int LastPage) : IDisposable
+    {
+        public void Dispose() => Document.Dispose();
+    }
+
+    private async Task<ListPage> FetchPageAsync(
+        string url, int page, CancellationToken cancellationToken)
+    {
+        var separator = url.Contains('?', StringComparison.Ordinal) ? '&' : '?';
+        var pagedUrl = $"{url}{separator}per_page={PageSize}&page={page}";
+
         using var request = await BuildRequestAsync(
-            HttpMethod.Get, url, SandboxOperation.ReadProviderMetadata, cancellationToken);
+            HttpMethod.Get, pagedUrl, SandboxOperation.ReadProviderMetadata, cancellationToken);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
 
+        var lastPage = LastPageOf(response);
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-        foreach (var element in document.RootElement.EnumerateArray())
+        // The document is parsed (not streamed) so it outlives the response scope the caller has already left.
+        var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        return new ListPage(document, lastPage);
+    }
+
+    /// <summary>
+    /// Reads the last page number from GitHub's <c>Link</c> header, or 1 when the header carries no
+    /// <c>rel="last"</c> — which is what GitHub sends when the listing fits on a single page.
+    /// </summary>
+    private static int LastPageOf(HttpResponseMessage response)
+    {
+        if (!response.Headers.TryGetValues("Link", out var values))
         {
-            yield return element;
+            return 1;
         }
+
+        foreach (var segment in string.Join(',', values).Split(','))
+        {
+            if (!segment.Contains("rel=\"last\"", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            // Anchored on the parameter separator: a bare "page=" also matches inside "per_page=100", which
+            // would read the page SIZE as the last page number and truncate the walk to one page.
+            var marker = segment.IndexOf("&page=", StringComparison.Ordinal);
+            var offset = marker >= 0 ? marker + "&page=".Length : -1;
+            if (offset < 0)
+            {
+                marker = segment.IndexOf("?page=", StringComparison.Ordinal);
+                offset = marker >= 0 ? marker + "?page=".Length : -1;
+            }
+
+            if (offset < 0)
+            {
+                continue;
+            }
+
+            var end = offset;
+            while (end < segment.Length && char.IsAsciiDigit(segment[end]))
+            {
+                end++;
+            }
+
+            if (end > offset
+                && int.TryParse(
+                    segment.AsSpan(offset, end - offset), CultureInfo.InvariantCulture, out var parsed)
+                && parsed >= 1)
+            {
+                return parsed;
+            }
+        }
+
+        return 1;
     }
 
     private static string? GetString(JsonElement element, string name) =>
