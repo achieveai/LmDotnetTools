@@ -182,25 +182,42 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     }
 
     [Fact]
-    public async Task Reviewed_passes_the_file_manifest_to_the_review_agent_input()
+    public async Task Reviewed_sends_the_changed_paths_not_the_patch_or_the_tracked_file_manifest()
     {
         using var fixture = Fixture.GitHub(LoggerFactory);
         fixture.Runner.OnArgvContains(
             "ls-files", new SandboxCommandResult(0, "src/Foo/Bar.cs\nsrc/Foo/Baz.cs\n", string.Empty));
+        // Registered FIRST: the fixture's broad "diff" rule would otherwise answer the listing with a patch.
+        fixture.Runner.OnArgvContainsFirst(
+            "diff --name-only", new SandboxCommandResult(0, "src/Foo/Bar.cs\n", string.Empty));
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
-        // The primary review agent must actually SEE the manifest in its user input so it can Read files by
-        // exact path instead of globbing the repo root.
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var input = reviewAgent.ReceivedInputs[0];
         var text = input.Messages.OfType<TextMessage>().Single().Text;
+
+        // Changed files, yes — the reviewer needs the blast radius up front and cannot derive it from the
+        // checkout alone without knowing the range.
         text.Should().Contain("src/Foo/Bar.cs");
 
-        // The checkout root is now templated into the review agent's SYSTEM PROMPT (not duplicated into
-        // the input) via DaemonAgentFactory.CreateReviewProfile's workspace-layout variables.
+        // The two payloads this brief used to carry. Both are things the reviewer holds a checkout of and can
+        // fetch itself, and inlining them cost most of the input budget (measured on run 226: 117k of patch and
+        // 15.6k of manifest in a 173,567-char brief).
+        text.Should().NotContain(
+            "src/Foo/Baz.cs",
+            "Baz.cs is tracked but UNCHANGED - listing the whole tree is the manifest coming back in");
+        text.Should().NotContain(
+            "\n\nDiff:\n", "the patch is read from git now, not copied into the brief");
+        text.Should().Contain(
+            $"diff {run.BaseSha}...{run.HeadSha}",
+            "the fetch instruction must carry the range, the one thing the reviewer cannot derive");
+
+        // The checkout root is templated into the review agent's SYSTEM PROMPT via
+        // DaemonAgentFactory.CreateReviewProfile's workspace-layout variables, and stays load-bearing now that
+        // the brief tells the reviewer to go read from it.
         var profile = fixture.Factory.CreatedProfiles.Should().ContainSingle().Subject;
         profile.SystemPrompt.Should().Contain("/workspace/target");
     }

@@ -261,6 +261,76 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task Reviewed_points_the_reviewer_at_git_instead_of_inlining_the_patch_and_the_file_tree()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+
+        // The two payloads that used to dominate the brief. On a real run (226) they were 117k and 15.6k chars
+        // of a 173,567-char input, and the reviewer holds a checkout of the head that answers both.
+        text.Should().NotContain(
+            "Tracked files in the reviewed repository",
+            "the reviewer has the checkout and can Glob/ls-files it; listing every tracked file is dead weight");
+        text.Should().NotContain(
+            "\n\nDiff:\n",
+            "the patch is read from git now, not copied into the brief");
+
+        // What replaces them has to leave the reviewer able to get there on its own: the range, the root, and
+        // the changed-file listing (which the KB ranking already computes, so this costs nothing new).
+        text.Should().Contain("Files changed (", "the reviewer still needs to know the blast radius up front");
+        text.Should().Contain(
+            $"diff {run.BaseSha}...{run.HeadSha}",
+            "the fetch instruction must carry the range, which is the one thing the reviewer cannot derive");
+        text.Should().Contain(
+            "git -C ",
+            "the instruction must be runnable as written, not assembled by the model");
+        text.Should().NotContain(
+            "/pool/slot-0",
+            "the brief now tells the reviewer to run git at this root, so a HOST path here would be a command "
+                + "that cannot run inside the review container (cf. the sub-agent block above)");
+        text.Should().Contain(
+            "UNTRUSTED DATA",
+            "the injection warning the inlined diff/guidance used to carry must survive their removal - the "
+                + "reviewer is now reading that same attacker-controlled content through its own tools");
+    }
+
+    /// <summary>
+    /// The degrade path. A context artifact carries no changed-path listing either because
+    /// <c>git diff --name-only</c> failed (pinned here, since that is the trigger a live run can hit) or because
+    /// the artifact predates the field and is being resumed now — run 220 in the achieveai daemon's store is
+    /// exactly that second shape, a null listing beside a 44,649-char diff, while 221-224 carry the listing.
+    /// Either way the reviewer must still be told what the PR touched, so the brief falls back to inlining the
+    /// patch rather than shipping a range with no blast radius attached.
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_falls_back_to_the_inlined_patch_when_there_is_no_changed_path_listing()
+    {
+        using var fixture = Fixture.Create();
+        fixture.Provisioner.NameOnlyResult = new SandboxCommandResult(128, string.Empty, "fatal: bad object");
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+
+        text.Should().Contain(
+            "diff --git a/Foo.cs",
+            "with no listing the patch is the only record of what the PR touched, so it is inlined rather than "
+                + "leaving the reviewer to review blind");
+        text.Should().NotContain(
+            "Files changed (",
+            "there is no listing to report, and an empty one would read as 'this PR changed nothing'");
+    }
+
+    [Fact]
     public async Task Reviewed_prepends_the_reviewed_repos_root_guidance_read_from_the_leased_checkout()
     {
         using var fixture = Fixture.Create();
@@ -1632,6 +1702,13 @@ public sealed class DaemonReviewStageExecutorPooledTests
         public FakeSandboxCommandRunner SdkRunner { get; } = new();
         public FakeSandboxFileSystem SdkFileSystem { get; } = new();
 
+        /// <summary>
+        /// What <c>git diff --name-only</c> answers in the session. Settable so a test can make it FAIL, which is
+        /// how the changed-path listing goes missing on a live run — <c>BuildChangedPathsAsync</c> degrades to an
+        /// empty listing on a non-zero exit rather than failing the run.
+        /// </summary>
+        public SandboxCommandResult NameOnlyResult { get; set; } = new(0, "Foo.cs\n", string.Empty);
+
         /// <summary>Shared cleanup-order log (with <see cref="FakeReviewSlotPool"/>).</summary>
         public List<string>? Order { get; set; }
 
@@ -1666,6 +1743,9 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 "/workspace/store/.gitmodules",
                 "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n"
                     + "\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+            // Registered FIRST so it wins over the broader patch rule below: the two commands differ only by
+            // flags, and a runner rule that matched the patch would otherwise answer the listing with a patch.
+            SdkRunner.OnArgvContainsFirst("diff --name-only", NameOnlyResult);
             SdkRunner.OnArgvContains(
                 "diff base-sha...head-sha",
                 new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ x", string.Empty));
