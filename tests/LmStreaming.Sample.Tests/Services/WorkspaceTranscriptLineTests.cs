@@ -74,12 +74,9 @@ public sealed class WorkspaceTranscriptLineTests
     [Fact]
     public void EveryEmittedLine_HasNonEmptyUid()
     {
-        var lines = WorkspaceTranscriptLine
-            .ChainMessages(FiveMessageKinds())
-            .Append(WorkspaceTranscriptLine.ForState(ThreadId, "title", "Fix the login bug", DateTimeOffset.UnixEpoch))
-            .ToList();
+        var lines = WorkspaceTranscriptLine.ChainMessages(FiveMessageKinds());
 
-        lines.Should().HaveCount(6);
+        lines.Should().HaveCount(5);
         foreach (var line in lines)
         {
             line.Uid.Should().NotBeNullOrWhiteSpace();
@@ -209,8 +206,6 @@ public sealed class WorkspaceTranscriptLineTests
     public void SchemaVersion_IsStampedOnEveryLine()
     {
         Parse(WorkspaceTranscriptLine.ForMessage(Persisted("id")))
-            .GetProperty("schema_version").GetInt32().Should().Be(WorkspaceTranscriptLine.CurrentSchemaVersion);
-        Parse(WorkspaceTranscriptLine.ForState(ThreadId, "mode", "chat", DateTimeOffset.UnixEpoch))
             .GetProperty("schema_version").GetInt32().Should().Be(WorkspaceTranscriptLine.CurrentSchemaVersion);
     }
 
@@ -396,87 +391,6 @@ public sealed class WorkspaceTranscriptLineTests
         var shortIds = ids.Select(WorkspaceTranscriptLine.ShortId).ToList();
 
         shortIds.Distinct(StringComparer.Ordinal).Should().HaveCount(ids.Length);
-    }
-
-    // ---- AC 22: state lines are constructible and distinguishable by type ------------------------
-
-    [Theory]
-    [InlineData("title", "Fix the login bug")]
-    [InlineData("mode", "chat")]
-    [InlineData("provider", "claude-opus-5")]
-    public void StateLine_IsConstructible_AndDistinguishableFromAMessageLineByType(string key, string value)
-    {
-        var at = DateTimeOffset.FromUnixTimeMilliseconds(1_700_000_000_000);
-
-        var state = WorkspaceTranscriptLine.ForState(ThreadId, key, value, at, parentUid: "aaaaaaaa");
-        var json = Parse(state);
-
-        state.Type.Should().Be(WorkspaceTranscriptLine.StateLineType);
-        json.GetProperty("type").GetString().Should().Be("state");
-        json.GetProperty("key").GetString().Should().Be(key);
-        json.GetProperty("value").GetString().Should().Be(value);
-        json.GetProperty("parent_uid").GetString().Should().Be("aaaaaaaa");
-        json.GetProperty("thread_id").GetString().Should().Be(ThreadId);
-
-        // A state line carries none of PersistedMessage's seven required members — that is exactly why
-        // the message-specific envelope fields are nullable.
-        KeysOf(json).Should().Equal("schema_version", "type", "uid", "parent_uid", "thread_id", "timestamp", "key", "value");
-    }
-
-    [Fact]
-    public void StateAndMessageLines_AreTellableApartByTypeAlone()
-    {
-        var lines = new[]
-        {
-            WorkspaceTranscriptLine.ForMessage(Persisted("id-text")),
-            WorkspaceTranscriptLine.ForState(ThreadId, "title", "t", DateTimeOffset.UnixEpoch),
-        };
-
-        lines.Count(l => l.Type == WorkspaceTranscriptLine.MessageLineType).Should().Be(1);
-        lines.Count(l => l.Type == WorkspaceTranscriptLine.StateLineType).Should().Be(1);
-    }
-
-    [Fact]
-    public void StateLine_ForTheSameKeyAtADifferentInstant_GetsADistinctUid()
-    {
-        var first = WorkspaceTranscriptLine.ForState(ThreadId, "title", "one", DateTimeOffset.UnixEpoch);
-        var again = WorkspaceTranscriptLine.ForState(ThreadId, "title", "one", DateTimeOffset.UnixEpoch);
-        var later = WorkspaceTranscriptLine.ForState(
-            ThreadId, "title", "one", DateTimeOffset.UnixEpoch.AddSeconds(1));
-
-        again.Uid.Should().Be(first.Uid, "the derivation is pure");
-        later.Uid.Should().NotBe(first.Uid);
-    }
-
-    /// <summary>
-    /// A cleared value and an absent one are DIFFERENT lines — one serialises <c>"value": ""</c>, the other
-    /// <c>"value": null</c> — so they cannot share a uid. Both the watermark and every reader's dedupe key
-    /// off uid alone, so a collision here means the second of the two is treated as already written: the
-    /// state change is silently dropped and never appears in the mirror at all. Joining fields with a
-    /// separator does not save it, because null and empty both contribute nothing between the separators.
-    /// </summary>
-    [Fact]
-    public void StateLine_TellsAClearedValueApartFromAnAbsentOne()
-    {
-        var absent = WorkspaceTranscriptLine.ForState(ThreadId, "title", null, DateTimeOffset.UnixEpoch);
-        var cleared = WorkspaceTranscriptLine.ForState(ThreadId, "title", "", DateTimeOffset.UnixEpoch);
-
-        cleared.Uid.Should().NotBe(absent.Uid);
-    }
-
-    /// <summary>
-    /// The field encoding has to survive its own delimiter appearing inside a value. A conversation title
-    /// is user-authored and reaches this method verbatim, so "no caller would ever pass U+001F" is an
-    /// assumption about input the type does not control — and if it is wrong, two genuinely different state
-    /// changes fuse into one uid and one of them is dropped.
-    /// </summary>
-    [Fact]
-    public void StateLine_TellsValuesApartWhenOneContainsTheFieldDelimiter()
-    {
-        var split = WorkspaceTranscriptLine.ForState(ThreadId, "title", "a\u001fb", DateTimeOffset.UnixEpoch);
-        var shifted = WorkspaceTranscriptLine.ForState(ThreadId, "title\u001fa", "b", DateTimeOffset.UnixEpoch);
-
-        shifted.Uid.Should().NotBe(split.Uid);
     }
 
     // ---- AC 16: parent_uid chains over a sequence -------------------------------------------------

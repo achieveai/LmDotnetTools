@@ -55,13 +55,19 @@ public sealed record WorkspaceTranscriptLine
     ///     RETYPED. Adding a new nullable field does NOT bump — a reader that ignores unknown keys keeps
     ///     working, which is the whole point of versioning per line rather than per file.
     /// </summary>
+    /// <remarks>
+    ///     <b>Still 1 after the state line was deleted, and that is the rule applied rather than an
+    ///     exception to it.</b> A <c>state</c> line type once existed here with its own <c>key</c> /
+    ///     <c>value</c> pair, but nothing in the app ever constructed one — only a unit test did — so no
+    ///     such line was ever written to any file. The keys removed were never on disk, and the message
+    ///     line's key set is untouched, so every transcript ever produced serializes to the same bytes
+    ///     before and after. Bumping would have announced a shape change to readers that cannot observe
+    ///     one. See issue #264 for why the feature was unreachable in the first place.
+    /// </remarks>
     public const int CurrentSchemaVersion = 1;
 
     /// <summary>Discriminator value for a persisted-message line.</summary>
     public const string MessageLineType = "message";
-
-    /// <summary>Discriminator value for a conversation-state line (title / mode / provider).</summary>
-    public const string StateLineType = "state";
 
     /// <summary>Length in characters of a derived <see cref="Uid"/>.</summary>
     public const int UidLength = 8;
@@ -108,11 +114,19 @@ public sealed record WorkspaceTranscriptLine
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
 
     /// <summary>
-    ///     The discriminator — <see cref="MessageLineType"/> or <see cref="StateLineType"/>. Every
-    ///     message-specific member below is nullable precisely so a state line is constructible:
-    ///     <see cref="PersistedMessage"/> has seven <c>required</c> members and a state line has none of
-    ///     them.
+    ///     The discriminator. <see cref="MessageLineType"/> is the only value produced today.
     /// </summary>
+    /// <remarks>
+    ///     Kept as an open <c>string</c> rather than collapsed into a constant, because it is what lets a
+    ///     second line type be added later without every existing reader having to be taught that a line
+    ///     it does not recognize is still a line. It is also why five members below
+    ///     (<see cref="RunId"/>, <see cref="MessageType"/>, <see cref="Role"/>, <see cref="Id"/>,
+    ///     <see cref="MessageJson"/>) are nullable while their <see cref="PersistedMessage"/> sources are
+    ///     <c>required</c>: they were widened for a <c>state</c> line that has since been deleted, and are
+    ///     left widened deliberately rather than tightened and re-widened. <see cref="ForMessage"/> is the
+    ///     only writer and copies each one from a <c>required</c> source, so none of them is ever null in
+    ///     practice.
+    /// </remarks>
     public required string Type { get; init; }
 
     /// <summary>
@@ -168,12 +182,6 @@ public sealed record WorkspaceTranscriptLine
     /// </summary>
     public string? MessageJson { get; init; }
 
-    /// <summary>State key (<c>title</c> / <c>mode</c> / <c>provider</c>). State lines only.</summary>
-    public string? Key { get; init; }
-
-    /// <summary>State value. State lines only.</summary>
-    public string? Value { get; init; }
-
     /// <summary>
     ///     Builds a message line from a persisted row. <paramref name="parentUid"/> is the previous
     ///     line's <see cref="Uid"/> in store order (null for the first line of a file);
@@ -210,67 +218,6 @@ public sealed record WorkspaceTranscriptLine
     }
 
     /// <summary>
-    ///     Builds a conversation-state line (<c>title</c> / <c>mode</c> / <c>provider</c>). Its
-    ///     <see cref="Uid"/> is derived from the whole tuple including the instant, so a retitle back to
-    ///     an earlier value is still a distinct line rather than a silent duplicate.
-    /// </summary>
-    /// <exception cref="ArgumentException"><paramref name="threadId"/> or <paramref name="key"/> is blank.</exception>
-    public static WorkspaceTranscriptLine ForState(
-        string threadId,
-        string key,
-        string? value,
-        DateTimeOffset timestamp,
-        string? parentUid = null)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(key);
-
-        var millis = timestamp.ToUnixTimeMilliseconds();
-
-        return new WorkspaceTranscriptLine
-        {
-            Type = StateLineType,
-            Uid = DeriveUid(
-                "state"
-                + SeedField(threadId)
-                + SeedField(key)
-                + SeedField(value)
-                + SeedField(millis.ToString(CultureInfo.InvariantCulture))
-            ),
-            ParentUid = parentUid,
-            ThreadId = threadId,
-            Timestamp = FormatTimestamp(millis),
-            Key = key,
-            Value = value,
-        };
-    }
-
-    /// <summary>
-    ///     Encodes one field into a uid seed as <c>{charCount}:{chars}</c>, or <c>~</c> when it is null.
-    /// </summary>
-    /// <remarks>
-    ///     <para>
-    ///     Length-prefixed rather than separator-joined, and the null marker is the point of it. A state
-    ///     line's <c>value</c> is nullable, and null and empty serialise to DIFFERENT lines
-    ///     (<c>"value": null</c> against <c>"value": ""</c>) — but interpolated into a joined seed both
-    ///     contribute nothing, so "the title was cleared" and "the title was removed" minted ONE uid for
-    ///     two lines. The uid is the whole identity here: the watermark and every reader's dedupe key off
-    ///     it alone, so the second of the two would be read as already written and dropped for good.
-    ///     </para>
-    ///     <para>
-    ///     What this guarantees, and only this: the field list is recoverable from the seed — a reader
-    ///     takes <c>~</c>, or a count and then exactly that many characters — so no field can absorb the
-    ///     next one's text or fake a boundary. That covers the case a delimiter cannot, a value CONTAINING
-    ///     the delimiter (a key/value split moved one character left no longer produces identical text).
-    ///     It claims nothing about collisions beyond that: equal seeds mean equal fields, and the uid is
-    ///     still a TRUNCATED hash of the seed, which is <see cref="UidLength"/>'s business rather than
-    ///     this method's.
-    ///     </para>
-    /// </remarks>
-    private static string SeedField(string? value) =>
-        value is null ? "~" : $"{value.Length.ToString(CultureInfo.InvariantCulture)}:{value}";
-
-    /// <summary>
     ///     Projects a sequence of persisted rows into chained message lines: each line's
     ///     <see cref="ParentUid"/> is the previous line's <see cref="Uid"/>, and the first line's is
     ///     <paramref name="rootParentUid"/>. For an <c>_agents/</c> file that root pointer is the
@@ -299,7 +246,7 @@ public sealed record WorkspaceTranscriptLine
 
     /// <summary>
     ///     Serializes one line to its exact on-disk JSON — compact, single-line, snake_case, with a
-    ///     PINNED key order and a PINNED key SET per <see cref="Type"/>.
+    ///     PINNED key order and a PINNED key SET.
     /// </summary>
     /// <remarks>
     ///     Written by hand rather than via reflection so two guarantees are structural instead of
@@ -323,35 +270,25 @@ public sealed record WorkspaceTranscriptLine
             writer.WriteString("uid", line.Uid);
             WriteNullableString(writer, "parent_uid", line.ParentUid);
 
-            if (string.Equals(line.Type, StateLineType, StringComparison.Ordinal))
+            WriteNullableString(writer, "agent", line.Agent);
+            writer.WriteString("thread_id", line.ThreadId);
+            WriteNullableString(writer, "run_id", line.RunId);
+            WriteNullableString(writer, "parent_run_id", line.ParentRunId);
+            WriteNullableString(writer, "generation_id", line.GenerationId);
+            if (line.MessageOrderIdx is { } idx)
             {
-                writer.WriteString("thread_id", line.ThreadId);
-                writer.WriteString("timestamp", line.Timestamp);
-                WriteNullableString(writer, "key", line.Key);
-                WriteNullableString(writer, "value", line.Value);
+                writer.WriteNumber("message_order_idx", idx);
             }
             else
             {
-                WriteNullableString(writer, "agent", line.Agent);
-                writer.WriteString("thread_id", line.ThreadId);
-                WriteNullableString(writer, "run_id", line.RunId);
-                WriteNullableString(writer, "parent_run_id", line.ParentRunId);
-                WriteNullableString(writer, "generation_id", line.GenerationId);
-                if (line.MessageOrderIdx is { } idx)
-                {
-                    writer.WriteNumber("message_order_idx", idx);
-                }
-                else
-                {
-                    writer.WriteNull("message_order_idx");
-                }
-
-                writer.WriteString("timestamp", line.Timestamp);
-                WriteNullableString(writer, "message_type", line.MessageType);
-                WriteNullableString(writer, "role", line.Role);
-                WriteNullableString(writer, "id", line.Id);
-                WriteNullableString(writer, "message_json", line.MessageJson);
+                writer.WriteNull("message_order_idx");
             }
+
+            writer.WriteString("timestamp", line.Timestamp);
+            WriteNullableString(writer, "message_type", line.MessageType);
+            WriteNullableString(writer, "role", line.Role);
+            WriteNullableString(writer, "id", line.Id);
+            WriteNullableString(writer, "message_json", line.MessageJson);
 
             writer.WriteEndObject();
         }
