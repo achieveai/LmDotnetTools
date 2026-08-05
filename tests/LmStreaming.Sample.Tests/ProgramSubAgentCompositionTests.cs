@@ -6,6 +6,7 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
+using LmStreaming.Sample.Configuration;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Services.Discovery;
 using LmStreaming.Sample.Tests.TestDoubles;
@@ -14,6 +15,52 @@ namespace LmStreaming.Sample.Tests;
 
 public sealed class ProgramSubAgentCompositionTests
 {
+    [Fact]
+    public void OutputTokenPolicyHelpers_ApplyConfiguredDefaults_AndPreserveExplicitValues()
+    {
+        var policy = new AgentOutputTokenPolicy(
+            new AgentOutputTokenOptions { Primary = 24_576, Delegated = 16_384 }
+        );
+
+        global::Program.ApplyPrimaryOutputTokens(new GenerateReplyOptions(), policy)
+            .MaxToken.Should().Be(24_576);
+        global::Program.ApplyPrimaryOutputTokens(
+                new GenerateReplyOptions(),
+                policy,
+                useDelegatedFallback: true
+            )
+            .MaxToken.Should().Be(16_384);
+        global::Program.ApplyPrimaryOutputTokens(
+                new GenerateReplyOptions { MaxToken = 4_096 },
+                policy,
+                useDelegatedFallback: true
+            )
+            .MaxToken.Should().Be(4_096);
+        global::Program.ApplyDelegatedOutputTokens(
+                new GenerateReplyOptions { ModelId = "controller" },
+                policy
+            )
+            .MaxToken.Should().Be(16_384);
+
+        var subAgentOptions = global::Program.ApplyDelegatedOutputTokens(
+            new SubAgentOptions
+            {
+                Templates = new Dictionary<string, SubAgentTemplate>
+                {
+                    ["unset"] = Template("unset", () => Mock.Of<IStreamingAgent>()),
+                    ["explicit"] = Template("explicit", () => Mock.Of<IStreamingAgent>()) with
+                    {
+                        DefaultOptions = new GenerateReplyOptions { MaxToken = 7_000 },
+                    },
+                },
+            },
+            policy
+        );
+
+        subAgentOptions.Templates["unset"].DefaultOptions!.MaxToken.Should().Be(16_384);
+        subAgentOptions.Templates["explicit"].DefaultOptions!.MaxToken.Should().Be(7_000);
+    }
+
     [Fact]
     public void ApplyCharacteristicsAgentFactory_InheritedModelPreservesTemplateAgentAndRequestProperties()
     {

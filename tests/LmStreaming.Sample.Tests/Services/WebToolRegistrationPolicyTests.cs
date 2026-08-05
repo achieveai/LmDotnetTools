@@ -83,16 +83,34 @@ public class WebToolRegistrationPolicyTests
         RegisteredNames(registry).Should().Contain("WebFetch").And.Contain("WebSearch");
     }
 
-    // ---- Provider matrix: providers with native web (or mocks/test/unknown) receive nothing ----
+    [Theory]
+    [InlineData("test")]
+    [InlineData("test-anthropic")]
+    public void Apply_RegistersJinaTools_ForMockProviders_WhenKeyPresent(string providerId)
+    {
+        var registry = new FunctionRegistry();
+        var (provider, options) = Backend(ApiKey);
+
+        _ = WebToolRegistrationPolicy.Apply(
+            registry,
+            providerId,
+            enabledTools: ["WebSearch", "WebFetch"],
+            provider,
+            options,
+            NullLoggerFactory.Instance
+        );
+
+        RegisteredNames(registry).Should().Contain("WebFetch").And.Contain("WebSearch");
+    }
+
+    // ---- Provider matrix: providers with native web (or unsupported/unknown) receive nothing ----
 
     [Theory]
     [InlineData("anthropic")]
-    [InlineData("test-anthropic")]
     [InlineData("claude")]
     [InlineData("claude-mock")]
     [InlineData("codex")]
     [InlineData("codex-mock")]
-    [InlineData("test")]
     [InlineData("copilot")]
     [InlineData("copilot-mock")]
     [InlineData("unknown")]
@@ -159,6 +177,17 @@ public class WebToolRegistrationPolicyTests
         );
 
         RegisteredNames(registry).Should().Contain("WebFetch").And.Contain("WebSearch");
+    }
+
+    [Fact]
+    public void ResolveEnabledTools_WhenModeRequestsBuiltInWebSearch_EnablesJinaSearchAndFetch()
+    {
+        var enabled = WebToolRegistrationPolicy.ResolveEnabledTools(
+            enabledTools: [],
+            enabledBuiltInTools: ["web_search"]
+        );
+
+        enabled.Should().BeEquivalentTo("web_search", "WebSearch", "WebFetch");
     }
 
     // ---- EnabledTools gate (the function-tool allow-list: null = all) ----
@@ -242,6 +271,49 @@ public class WebToolRegistrationPolicyTests
         );
 
         RegisteredNames(registry).Should().NotContain("WebFetch").And.NotContain("WebSearch");
+    }
+
+    // ---- Hosted Copilot search takes precedence over Jina search, not Jina fetch ----
+
+    [Fact]
+    public void Apply_WhenHostedSearchRegistered_StillRegistersJinaFetchButSuppressesJinaSearch()
+    {
+        var registry = new FunctionRegistry();
+        var (provider, options) = Backend(ApiKey);
+
+        var statuses = WebToolRegistrationPolicy.Apply(
+            registry,
+            "claude-sonnet-5",
+            enabledTools: ["web_search", "WebFetch", "WebSearch"],
+            provider,
+            options,
+            NullLoggerFactory.Instance,
+            isCopilotBackedModel: true,
+            suppressWebSearch: true
+        );
+
+        RegisteredNames(registry).Should().Contain("WebFetch").And.NotContain("WebSearch");
+        statuses.Should().Contain("WebSearch skipped: Copilot web_search registered");
+    }
+
+    [Fact]
+    public void Apply_WhenHostedSearchUnavailable_RegistersJinaSearchAndFetch()
+    {
+        var registry = new FunctionRegistry();
+        var (provider, options) = Backend(ApiKey);
+
+        _ = WebToolRegistrationPolicy.Apply(
+            registry,
+            "claude-sonnet-5",
+            enabledTools: ["web_search", "WebFetch", "WebSearch"],
+            provider,
+            options,
+            NullLoggerFactory.Instance,
+            isCopilotBackedModel: true,
+            suppressWebSearch: false
+        );
+
+        RegisteredNames(registry).Should().Contain("WebFetch").And.Contain("WebSearch");
     }
 
     // ---- Missing key: WebFetch still registers, WebSearch does not (and reports a status) ----
