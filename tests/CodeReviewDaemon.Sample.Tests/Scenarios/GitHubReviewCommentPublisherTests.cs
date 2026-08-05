@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Orchestration;
@@ -258,5 +259,148 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
         var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
 
         existing.Should().BeEmpty();
+    }
+
+    // ---- Pagination -------------------------------------------------------------------------------------
+    // Every listing below feeds either dedup or the exactly-once posting backstop, and both are decided by
+    // ABSENCE: an item that was not seen is treated as never posted. A listing truncated at GitHub's first
+    // page therefore does not degrade, it inverts — so each of these tests puts the item that matters on
+    // page 2 behind a full first page, which is exactly the shape a single-request enumerator cannot see.
+
+    /// <summary>A full page of JSON objects — enough to make the enumerator ask for the page after it.</summary>
+    private static string FullPage(int startId, string bodyPrefix) => Page(PageSize, startId, bodyPrefix);
+
+    private static string Page(int count, int startId, string bodyPrefix) =>
+        JsonSerializer.Serialize(Enumerable.Range(0, count).Select(i => new
+        {
+            id = startId + i,
+            body = $"{bodyPrefix}-{i}",
+            state = "COMMENTED",
+            submitted_at = "2026-07-20T10:00:00Z",
+            created_at = "2026-07-20T10:00:00Z",
+            user = new { login = "alice" },
+        }).ToArray());
+
+    private const int PageSize = 100;
+
+    /// <summary>Routes one URL by page number, so page 2 can carry what page 1 does not.</summary>
+    private static FakeHttpMessageHandler OnPage(
+        FakeHttpMessageHandler handler, string pathContains, int page, string json) =>
+        handler.On(
+            req => req.Method == HttpMethod.Get
+                && req.RequestUri is not null
+                && req.RequestUri.ToString().Contains(pathContains, StringComparison.Ordinal)
+                && req.RequestUri.ToString().Contains($"page={page}", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json"),
+            });
+
+    [Fact]
+    public async Task ListExisting_reads_a_question_that_falls_beyond_the_first_page_of_conversation()
+    {
+        // The bot's own prior summaries AND questions addressed to it live on /issues/{pr}/comments. Stopping at
+        // page 1 of a busy PR is what makes the daemon repost a resolved finding or leave a question unanswered.
+        var handler = new FakeHttpMessageHandler();
+        OnPage(handler, "/issues/7/comments", 2, JsonSerializer.Serialize(new[]
+        {
+            new { id = 9001, body = "@revobot is this still needed?", user = new { login = "alice" }, created_at = "2026-07-21T09:00:00Z" },
+        }));
+        OnPage(handler, "/issues/7/comments", 1, FullPage(8000, "older-chatter"));
+        handler.OnJson(HttpMethod.Get, "/pulls/7/comments", "[]").OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]");
+
+        var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        existing.Should().ContainSingle(
+            e => e.Body.Contains("still needed"),
+            "a question on the second page is still discussion the reviewer must answer");
+    }
+
+    [Fact]
+    public async Task ListExisting_reads_a_pending_draft_that_falls_beyond_the_first_page_of_reviews()
+    {
+        // Pagination on /pulls/{pr}/reviews is not merely about returning more rows: the ids collected there are
+        // what suppress a stale draft's inline comments. Miss the draft on page 2 and its finding seeds dedup,
+        // suppressing the valid submitted replacement — the very failure the PENDING filter exists to prevent.
+        var handler = new FakeHttpMessageHandler();
+        OnPage(handler, "/pulls/7/reviews", 2, JsonSerializer.Serialize(new object[]
+        {
+            new { id = 5001, body = "", user = new { login = "revobot" }, state = "PENDING" },
+        }));
+        OnPage(handler, "/pulls/7/reviews", 1, FullPage(1000, "older-review"));
+        handler
+            .OnJson(HttpMethod.Get, "/pulls/7/comments", JsonSerializer.Serialize(new object[]
+            {
+                new { body = "DRAFT-inline-finding", path = "src/Foo.cs", line = 3, pull_request_review_id = 5001, user = new { login = "revobot" }, created_at = "2026-07-20T09:00:00Z" },
+            }))
+            .OnJson(HttpMethod.Get, "/issues/7/comments", "[]");
+
+        var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        existing.Should().NotContain(
+            e => e.Body.Contains("DRAFT-inline-finding"),
+            "the draft's id is on page 2, so only a paginated review listing can suppress its inline comment");
+    }
+
+    [Fact]
+    public async Task FindPostedComment_finds_a_marker_that_falls_beyond_the_first_page()
+    {
+        // The exactly-once backstop: this scan answers "did a crashed attempt already post this?". On a PR whose
+        // conversation exceeds one page, a single-request scan answers "no" for a comment that exists, and the
+        // daemon posts a duplicate. Absence is the answer that matters, so it is the one that must be earned.
+        var handler = new FakeHttpMessageHandler();
+        OnPage(handler, "/issues/7/comments", 2, JsonSerializer.Serialize(new[]
+        {
+            new { id = 777, body = $"## Review\nLGTM\n\n<!-- idempotency-key:{Key} -->" },
+        }));
+        OnPage(handler, "/issues/7/comments", 1, FullPage(6000, "unrelated"));
+
+        var found = await Publisher(handler).FindPostedCommentAsync(Target, Key, CancellationToken.None);
+
+        found.Should().NotBeNull();
+        found!.ProviderResponseId.Should().Be("777");
+    }
+
+    [Fact]
+    public async Task FindPostedComment_scans_newest_first()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/issues/7/comments", "[]");
+
+        await Publisher(handler).FindPostedCommentAsync(Target, Key, CancellationToken.None);
+
+        handler.Requests.Should().ContainSingle().Which.Uri.ToString().Should().Contain(
+            "direction=desc",
+            "a comment this daemon just posted is the newest one, so newest-first finds it on page 1");
+    }
+
+    [Fact]
+    public async Task ListExisting_requests_conversation_comments_newest_first()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/pulls/7/comments", "[]")
+            .OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]")
+            .OnJson(HttpMethod.Get, "/issues/7/comments", "[]");
+
+        await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        handler.Requests.Should().Contain(
+            r => r.Uri.ToString().Contains("/issues/7/comments") && r.Uri.ToString().Contains("direction=desc"),
+            "the page cap must drop the oldest conversation, not the discussion still under argument");
+    }
+
+    [Fact]
+    public async Task ListExisting_stops_at_the_page_cap_when_every_page_is_full()
+    {
+        // The cap is the counterweight to following pagination at all: an endpoint that never returns a short
+        // page must not be able to hold the daemon in a listing loop.
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/pulls/7/comments", "[]")
+            .OnJson(HttpMethod.Get, "/pulls/7/reviews", FullPage(2000, "endless-review"))
+            .OnJson(HttpMethod.Get, "/issues/7/comments", "[]");
+
+        await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        handler.CountRequests("/pulls/7/reviews").Should().Be(
+            5, "MaxListPages bounds a listing whose pages are always full");
     }
 }
