@@ -98,9 +98,10 @@ describe('NotificationPill.vue', () => {
       global: { provide: { [GET_AGENT_COLOR]: (id: string | null) => (id ? '#ff0000' : null) } },
     });
 
-    expect(wrapper.find('[data-testid="notification-pill"]').attributes('style')).toContain(
-      '#ff0000'
-    );
+    // The colour is what matters, not the notation: jsdom re-serializes a hex colour in the
+    // style attribute as `rgb(255, 0, 0)` (happy-dom kept the hex verbatim).
+    const style = wrapper.find('[data-testid="notification-pill"]').attributes('style') ?? '';
+    expect(style).toMatch(/#ff0000|rgb\(255,\s*0,\s*0\)/);
   });
 
   // #246 (fixed): a descendant (sub-agent) blocked on a browser-hosted client tool (e.g.

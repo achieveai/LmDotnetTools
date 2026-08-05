@@ -5,7 +5,17 @@ import { resolve } from 'path';
 export default defineConfig({
   plugins: [vue()],
   test: {
-    environment: 'happy-dom',
+    /*
+     * jsdom, NOT happy-dom: DOMPurify (utils/markdown.ts) silently fails to sanitize under
+     * happy-dom 20. It reports `isSupported: true` and populates `DOMPurify.removed`, but the
+     * removals do not take -- `<p>hi</p><script>alert(1)</script>` sanitizes to
+     * `hi<script>alert(1)</script>`, i.e. the first top-level element is UNWRAPPED and the script
+     * SURVIVES. (DOMPurify prepends a `<remove></remove>` sentinel and deletes `body.firstChild`
+     * afterwards; happy-dom parses the sentinel but its node removal misfires, so the deletion
+     * lands on real content instead.) Under that environment a sanitization test is worse than no
+     * test: it would report unfiltered `<script>` output as clean.
+     */
+    environment: 'jsdom',
     globals: true,
     include: ['src/**/*.test.ts'],
     coverage: {
