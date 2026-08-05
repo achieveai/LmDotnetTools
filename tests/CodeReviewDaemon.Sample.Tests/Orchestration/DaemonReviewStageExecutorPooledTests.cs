@@ -331,17 +331,15 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
-    public async Task Reviewed_prepends_the_reviewed_repos_root_guidance_read_from_the_leased_checkout()
+    public async Task Reviewed_points_the_reviewer_at_the_repos_root_guidance_instead_of_quoting_it()
     {
         using var fixture = Fixture.Create();
         var run = fixture.SeedRun();
 
         // The reviewed repo's own CLAUDE.md/AGENTS.md live in the LEASED SLOT's target checkout
-        // (lease.Prepared.TargetDir = <store>/repos/LmDotnetTools) and must be read HOST-side via
+        // (lease.Prepared.TargetDir = <store>/repos/LmDotnetTools) and must be PROBED host-side via
         // _slotWorkspace.HostFileSystem — the same host filesystem the KB / prior-notes reads use, NOT the
-        // boot-lifetime sandbox session (which the gateway never registers for a pooled run). A headless,
-        // collect-only reviewer must fold the repo's own guidance into the review INPUT up front; injecting
-        // it mid-run (the interactive chat path) would restart the collector and could discard the review.
+        // boot-lifetime sandbox session (which the gateway never registers for a pooled run).
         fixture.HostFileSystem.Seed(
             "/pool/slot-0/store/repos/LmDotnetTools/CLAUDE.md",
             "# LmDotnetTools\nUse CSharpier. REPO-GUIDANCE-MARKER.");
@@ -354,9 +352,25 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
-        text.Should().Contain("Repository guidance", "the reviewed repo's own guidance is prepended as a labelled block");
-        text.Should().Contain("REPO-GUIDANCE-MARKER", "the reviewed repo's CLAUDE.md is surfaced to the reviewer");
-        text.Should().Contain("AGENTS-MARKER", "the reviewed repo's AGENTS.md is surfaced to the reviewer");
+        text.Should().Contain("Repository guidance", "the reviewer still has to be told the files are there");
+        text.Should().Contain(
+            "/workspace/store/repos/LmDotnetTools/CLAUDE.md",
+            "the pointer is only useful at the root the AGENT's tools resolve; the host path the daemon "
+                + "probed through (/pool/slot-0/...) does not exist inside the review container");
+        text.Should().Contain("/workspace/store/repos/LmDotnetTools/AGENTS.md", "both files are named");
+        text.Should().NotContain(
+            "/pool/slot-0",
+            "rendering the daemon's own disk path fails silently - the block reads fine and every Read of it "
+                + "404s in the container");
+        text.Should().NotContain(
+            "REPO-GUIDANCE-MARKER",
+            "the file is pointed at, not quoted - on run 226 this content was ~24,500 chars of a 173,567-char "
+                + "brief, for a file the reviewer holds a checkout of");
+        text.Should().NotContain("AGENTS-MARKER", "same for AGENTS.md");
+        text.Should().Contain(
+            "prompt injection",
+            "the warning has to travel with the pointer: the reviewer now reads that attacker-controlled text "
+                + "through its own tools, where nothing else marks it as untrusted");
     }
 
     [Fact]
@@ -437,14 +451,15 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
-    public async Task Reviewed_tells_the_reviewer_repo_guidance_exists_when_it_is_too_large_to_read()
+    public async Task Reviewed_still_points_at_repo_guidance_that_is_too_large_for_the_daemon_to_read()
     {
         using var fixture = Fixture.Create();
         var run = fixture.SeedRun();
 
-        // An absent CLAUDE.md and a refused one both render nothing, and mean opposite things: one repository
-        // states no conventions, the other states them in a file the daemon declined to ingest. Skipping it
-        // silently has the reviewer fault a PR for conventions it was never shown.
+        // TooLarge is a POSITIVE existence signal, not a failure. It used to matter a great deal — the file
+        // was announced and never seen, because the daemon's ingest ceiling also decided what the reviewer
+        // could read. Now that nothing is quoted, that ceiling is the daemon's problem alone: a refused file
+        // is named exactly like a read one, and the reviewer opens it with its own budget.
         fixture.HostFileSystem.Seed(
             "/pool/slot-0/store/repos/LmDotnetTools/CLAUDE.md",
             "REPO-GUIDANCE-MARKER" + new string('x', (int)SandboxReadLimits.RepositoryFileBytes));
@@ -454,12 +469,14 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
-        text.Should().Contain("Repository guidance", "the block is rendered so the refusal can be stated in it");
-        text.Should().Contain("NOT READ BY THE DAEMON", "the reviewer is told the file exists and was not read");
-        text.Should().Contain("CLAUDE.md", "and told which file it was");
+        text.Should().Contain("Repository guidance", "the block is rendered - the file exists");
+        text.Should().Contain(
+            "/workspace/store/repos/LmDotnetTools/CLAUDE.md",
+            "an oversize file is pointed at like any other; skipping it silently would have the reviewer "
+                + "fault a PR for conventions it was never shown");
         text.Should().NotContain(
             "REPO-GUIDANCE-MARKER",
-            "the file was refused, so none of its attacker-controllable content reaches the input");
+            "no prefix of a refused file is quoted - and none of any other file either, now");
     }
 
     [Fact]

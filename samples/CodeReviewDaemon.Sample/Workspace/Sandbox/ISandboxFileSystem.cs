@@ -74,10 +74,10 @@ internal readonly record struct SandboxFileRead(string? Content, bool TooLarge)
 /// <summary>
 /// The byte ceilings the daemon reads with, named once so a call site picks a ceiling rather than inventing
 /// one. These bound INGESTION and are deliberately far above the kilobyte-scale presentation budgets
-/// downstream of them (<c>MaxExistingListingChars</c>, <c>MaxGuidanceFileChars</c>, the digest's character
-/// budget) — those decide how much of a legitimate file reaches a prompt, these decide how much of a
-/// pathological file reaches memory. Set so that no plausible real file is ever refused: a 5,000-entry
-/// <c>_index.jsonl</c> at ~300 bytes a record is ~1.5 MB.
+/// downstream of them (<c>MaxExistingListingChars</c>, the digest's character budget) — those decide how much
+/// of a legitimate file reaches a prompt, these decide how much of a pathological file reaches memory. Set so
+/// that no plausible real file is ever refused: a 5,000-entry <c>_index.jsonl</c> at ~300 bytes a record is
+/// ~1.5 MB.
 /// </summary>
 internal static class SandboxReadLimits
 {
