@@ -92,7 +92,12 @@ public sealed record LifecycleSubscriptionResponse
 /// <see cref="HttpContext.User"/> — established by whatever authentication the host wired in front of
 /// it — and resolves an owner from that alone. No route, header, or body field names an owner, so a
 /// caller cannot register into, rotate, or revoke another tenant's subscriptions. A host that wires no
-/// authentication scheme gets an endpoint that refuses everything, which is the safe direction.
+/// authentication scheme gets an endpoint that refuses everything, which is the safe direction — and,
+/// as the known gap recorded on <see cref="LifecycleApprovalController"/> notes, a heavier burden on
+/// the integrator than it should be. Note that registration is excluded from that gap on principle:
+/// it is the operation that <em>mints</em> the subscription secret, so a caller cannot present that
+/// secret as proof of identity beforehand. Host authentication stays mandatory here no matter what
+/// the existing-subscription routes (rotate, revoke, unregister) may later gain.
 /// </para>
 /// <para>
 /// <b>There is no listing route, and no route that reads a subscription back.</b> ADR 0005 leaves the

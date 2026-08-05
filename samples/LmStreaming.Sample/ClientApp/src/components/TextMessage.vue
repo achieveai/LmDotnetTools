@@ -3,12 +3,23 @@ import { computed } from 'vue';
 import type { TextMessage } from '@/types';
 import { parseMarkdown } from '@/utils/markdown';
 
-const props = defineProps<{
-  message: TextMessage;
-  isStreaming?: boolean;
-}>();
+const props = withDefaults(
+  defineProps<{
+    message: TextMessage;
+    isStreaming?: boolean;
+    /**
+     * `false` while this message is still being streamed into. Syntax highlighting is skipped
+     * for the growing text (it re-parses on every delta) and applied once the run completes.
+     * Distinct from `isStreaming`, which only controls the blinking cursor.
+     */
+    isComplete?: boolean;
+  }>(),
+  { isComplete: true }
+);
 
-const parsedText = computed(() => parseMarkdown(props.message.text));
+const parsedText = computed(() =>
+  parseMarkdown(props.message.text, { highlight: props.isComplete !== false })
+);
 </script>
 
 <template>
@@ -24,32 +35,7 @@ const parsedText = computed(() => parseMarkdown(props.message.text));
   position: relative;
 }
 
-.markdown-content {
-  overflow-wrap: break-word;
-}
-
-/* Deep selector for markdown content styles */
-.markdown-content :deep(p) {
-  margin: 0 0 1em 0;
-}
-
-.markdown-content :deep(p:last-child) {
-  margin-bottom: 0;
-}
-
-.markdown-content :deep(pre) {
-  background: #f4f4f4;
-  padding: 10px;
-  border-radius: 4px;
-  overflow-x: auto;
-}
-
-.markdown-content :deep(code) {
-  font-family: monospace;
-  background: rgba(0, 0, 0, 0.05);
-  padding: 2px 4px;
-  border-radius: 3px;
-}
+/* Markdown element styling lives in assets/markdown.css (shared with PendingMessage). */
 
 .text-message.thinking {
   font-style: italic;

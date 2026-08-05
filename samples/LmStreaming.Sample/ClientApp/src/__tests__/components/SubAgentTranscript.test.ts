@@ -4,7 +4,14 @@ import { mount } from '@vue/test-utils';
 import SubAgentTranscript from '@/components/SubAgentTranscript.vue';
 import { GET_RESULT_FOR_TOOL_CALL } from '@/composables/useToolResult';
 import { SUBMIT_CLIENT_TOOL_RESULT, type ClientToolSubmitFn } from '@/composables/useClientToolSubmit';
-import type { ToolCallResultMessage } from '@/types';
+import { MessageType, type ToolCallResultMessage } from '@/types';
+
+// The real MessageList (mounted in the last describe) observes its scroll container.
+(globalThis as any).ResizeObserver = class ResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+};
 
 // Stub MessageList so we assert wiring; it also injects the child tool-result resolver AND the
 // child-scoped submit function to prove the subtree provide points at the FOCUSED CHILD connection
@@ -126,5 +133,48 @@ describe('SubAgentTranscript', () => {
     const wrapper = mountView();
     await wrapper.get('[data-testid="stub-send"]').trigger('click');
     expect(wrapper.emitted('send')).toEqual([['hi child']]);
+  });
+
+  // Every other test here stubs MessageList, which is exactly how the streaming-highlight opt-out
+  // shipped broken for this consumer: MessageList's own tests were green, but they all had a user
+  // message, and a sub-agent transcript never does. This one mounts the REAL MessageList (and the
+  // real TextMessage under it) so the second consumer is covered end-to-end.
+  describe('streaming highlight opt-out (real MessageList)', () => {
+    const FENCE = ['```csharp', 'var s = "a & b";', 'if (x is null) { }', '```'].join('\n');
+    const tokenSpans = (html: string) => (html.match(/class="hljs-/g) || []).length;
+
+    const assistantItems = () => [
+      {
+        id: 'c-1',
+        type: 'assistant-message',
+        content: { $type: MessageType.Text, role: 'assistant', text: FENCE, isThinking: false },
+      },
+    ];
+
+    function mountReal(isStreaming: boolean) {
+      return mount(SubAgentTranscript, {
+        props: {
+          activeAgentId: 'a1',
+          focusedAgentId: 'a1',
+          displayItems: assistantItems(),
+          isStreaming,
+          error: null,
+          getResultForToolCall: vi.fn(() => null),
+          submitClientToolResult: vi.fn(() => Promise.resolve({ status: 'acked', duplicate: false })),
+        } as never,
+        global: { stubs: { ChatInput: ChatInputStub } },
+      });
+    }
+
+    it('renders the growing child bubble UNHIGHLIGHTED while the sub-agent streams', () => {
+      const wrapper = mountReal(true);
+      // The block itself still renders; only the per-token spans are skipped.
+      expect(wrapper.html()).toContain('hljs language-csharp');
+      expect(tokenSpans(wrapper.html())).toBe(0);
+    });
+
+    it('highlights the child bubble once the sub-agent run ends', () => {
+      expect(tokenSpans(mountReal(false).html())).toBeGreaterThan(0);
+    });
   });
 });
