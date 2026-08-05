@@ -5,6 +5,7 @@ import { GET_RESULT_FOR_TOOL_CALL } from '@/composables/useToolResult';
 import { SUBMIT_CLIENT_TOOL_RESULT, type ClientToolSubmitFn } from '@/composables/useClientToolSubmit';
 import MessageList from './MessageList.vue';
 import ChatInput from './ChatInput.vue';
+import PendingQuestionDock from './PendingQuestionDock.vue';
 
 /**
  * The center-pane view for the active sub-agent tab. Relocates the transcript + reply input + error
@@ -48,6 +49,10 @@ provide(SUBMIT_CLIENT_TOOL_RESULT, props.submitClientToolResult);
     <div class="subagent-view__transcript" data-testid="subagent-transcript">
       <MessageList :key="activeAgentId" :display-items="displayItems" :is-loading="isStreaming" />
     </div>
+    <!-- Inside this subtree on purpose: it inherits the two provides shadowed above, so a
+         descendant's question resolves against the CHILD's results and answers over the CHILD's
+         socket. -->
+    <PendingQuestionDock :display-items="displayItems" />
     <!-- Send-only: never streaming (so no Stop button) — a reply resumes a completed child. Disabled
          until the live connection for this exact tab is attached, so a send can't drop on a dead socket. -->
     <ChatInput
