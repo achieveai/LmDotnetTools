@@ -54,6 +54,22 @@ public sealed record ToolApprovalDecisionResponse
 /// misconfiguration rather than routine traffic.
 /// </para>
 /// <para>
+/// <b>Known gap, accepted for now: there is no supported way to turn a verified signature into a
+/// principal.</b> A subscriber already proves who it is on every delivery it answers — it holds a
+/// host-minted signing secret bound to one subscription and one owner — and yet that proof cannot be
+/// spent here, so an integrator who wants nothing more than "the holder of subscription X may decide
+/// X's approvals" must stand up a separate authentication scheme to express it. The refusal is
+/// correct (see the paragraph above: a controller cannot tell a verified header from a typed one, so
+/// trusting one would be trusting every deployment to have wired verification), but the burden it
+/// creates is larger than the problem it solves for the common case. The intended fix is a
+/// first-party <c>AuthenticationHandler</c> shipped alongside
+/// <see cref="Webhooks.WebhookRequestVerifier"/> that verifies the signature and, on success, emits a
+/// principal carrying the subscription id and its resolved owner — so the guarantee comes from a
+/// component the library owns and tests, rather than from each host's wiring. Until that exists, the
+/// host-supplied scheme documented above is the only supported path, and this endpoint stays
+/// fail-closed without it.
+/// </para>
+/// <para>
 /// The capability check is repeated here rather than trusted from registration time, because
 /// <see cref="LifecycleCapabilities.ToolApprovalDecide"/> can be revoked while an approval is
 /// pending, and the moment that matters is the moment the decision lands. It is checked against the
