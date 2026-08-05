@@ -3454,13 +3454,15 @@ public partial class Program
             : string.IsNullOrWhiteSpace(workingDirectory) ? null
             : workingDirectory;
 
-        IReadOnlyList<string>? enabledTools = mode.EnabledTools;
-        if (mode.EnabledBuiltInTools is not null)
-        {
-            var combinedTools = new HashSet<string>(mode.EnabledTools ?? [], StringComparer.Ordinal);
-            combinedTools.UnionWith(mode.EnabledBuiltInTools);
-            enabledTools = [.. combinedTools];
-        }
+        // Reuse the same allow-list expansion the FunctionRegistry-side wiring uses (Callsites A/B),
+        // so the CLI's dynamic tool-bridge policy engine never rejects a tool the registry actually
+        // advertises (e.g. Workspace Agent's EnabledBuiltInTools=["web_search"] must expand to
+        // include the renamed "WebSearch"/"WebFetch" function tools, not just the literal built-in
+        // name).
+        var enabledTools = WebToolRegistrationPolicy.ResolveEnabledTools(
+            mode.EnabledTools,
+            mode.EnabledBuiltInTools
+        );
 
         var copilotOptions = new CopilotSdkOptions
         {

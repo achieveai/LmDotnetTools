@@ -1,6 +1,8 @@
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.McpMiddleware;
+using AchieveAi.LmDotnetTools.Misc.Utils;
 using ModelContextProtocol.Client;
 
 namespace LmStreaming.Sample.Services;
@@ -86,7 +88,22 @@ internal static class CopilotWebSearchRegistration
                 return new(false, null, "Copilot web_search unavailable");
             }
 
-            _ = registry.AddProvider(provider);
+            // Expose the hosted tool to the model under the renamed "WebSearch" contract; the
+            // upstream wire name ("web_search") stays internal to this MCP handshake. Copy-with-
+            // new-Name mirrors the idiom FunctionRegistry.Build() already uses for collision-
+            // renamed contracts.
+            var descriptor = functions[0];
+            var renamedContract = new FunctionContract
+            {
+                Name = WebSearchTool.ToolName,
+                Description = descriptor.Contract.Description,
+                Namespace = descriptor.Contract.Namespace,
+                ClassName = descriptor.Contract.ClassName,
+                Parameters = descriptor.Contract.Parameters,
+                ReturnType = descriptor.Contract.ReturnType,
+                ReturnDescription = descriptor.Contract.ReturnDescription,
+            };
+            _ = registry.AddFunction(renamedContract, descriptor.Handler, providerName: ClientName);
             return new(true, new OwnedMcpResource(client, transport), "Copilot web_search registered");
         }
         catch (Exception ex)

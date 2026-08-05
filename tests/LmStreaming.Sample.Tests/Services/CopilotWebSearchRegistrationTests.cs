@@ -28,7 +28,9 @@ public sealed class CopilotWebSearchRegistrationTests
 
         result.Registered.Should().BeTrue();
         result.Resource.Should().NotBeNull();
-        RegisteredNames(registry).Should().Equal(CopilotWebSearchRegistration.ToolName);
+        // The upstream hosted tool is fetched under its wire name ("web_search"), but must be
+        // exposed to the model under the renamed contract "WebSearch" — never the lowercase leak.
+        RegisteredNames(registry).Should().Equal("WebSearch");
         upstream.Requests.Should().NotBeEmpty();
         upstream.Requests.Should().OnlyContain(request => request.WebSearchSelector == "web_search");
         upstream.Requests.Should().OnlyContain(request => request.Authorization == $"Bearer {Token}");
@@ -99,7 +101,8 @@ public sealed class CopilotWebSearchRegistrationTests
         );
         var (_, handlers) = registry.Build();
 
-        var handlerResult = await handlers[CopilotWebSearchRegistration.ToolName](
+        // The registered contract name is the renamed "WebSearch", not the upstream wire name.
+        var handlerResult = await handlers["WebSearch"](
             "{\"query\":\"current .NET release\"}",
             new ToolCallContext(),
             CancellationToken.None
@@ -168,7 +171,51 @@ public sealed class CopilotWebSearchRegistrationTests
             suppressWebSearch: hosted.Registered
         );
 
-        RegisteredNames(registry).Should().BeEquivalentTo("web_search", "WebFetch");
+        // Hosted search is exposed under the renamed "WebSearch" contract, never the lowercase leak.
+        RegisteredNames(registry).Should().BeEquivalentTo("WebSearch", "WebFetch");
+    }
+
+    [Fact]
+    public void WorkspaceAgentMode_RegistersRenamedWebSearchAndWebFetch_NeverLowercase()
+    {
+        // Mirrors the real Workspace Agent mode shape from Prompts.yaml: EnabledTools = [],
+        // EnabledBuiltInTools = ["web_search"]. Verifies the composed registry exposes both
+        // "WebSearch" and "WebFetch" to the model, and never leaks the lowercase upstream name.
+        var registry = new FunctionRegistry();
+        var enabledTools = WebToolRegistrationPolicy.ResolveEnabledTools(
+            enabledTools: [],
+            enabledBuiltInTools: ["web_search"]
+        );
+
+        var hosted = CopilotWebSearchRegistration.TryRegister(
+            registry,
+            enabledTools,
+            new StaticTokenProvider(Token),
+            new CopilotSessionContext(),
+            new CopilotOptions { BaseUrl = "https://copilot.test" },
+            NullLoggerFactory.Instance,
+            new FakeCopilotMcpHandler()
+        );
+        var webOptions = new AchieveAi.LmDotnetTools.Misc.Configuration.WebToolsOptions
+        {
+            JinaApiKey = "test-jina-key",
+        };
+        var jinaProvider = new AchieveAi.LmDotnetTools.Misc.Web.Jina.JinaWebProvider(webOptions);
+
+        _ = WebToolRegistrationPolicy.Apply(
+            registry,
+            "claude-sonnet-5",
+            enabledTools,
+            jinaProvider,
+            webOptions,
+            NullLoggerFactory.Instance,
+            isCopilotBackedModel: true,
+            suppressWebSearch: hosted.Registered
+        );
+
+        var names = RegisteredNames(registry);
+        names.Should().BeEquivalentTo("WebSearch", "WebFetch");
+        names.Should().NotContain("web_search");
     }
 
     [Fact]
