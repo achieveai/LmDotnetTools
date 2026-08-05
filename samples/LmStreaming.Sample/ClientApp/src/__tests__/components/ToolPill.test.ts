@@ -213,6 +213,31 @@ describe('ToolPill — question (#246 AskUserQuestion, awaiting-input + Question
     expect(w.find('[data-testid="question-dock-pointer"]').exists()).toBe(true);
   });
 
+  /**
+   * `awaiting-input` is set by `deriveToolPillState` for ANY deferred result, but only the
+   * `question` family is ever docked. A deferred block-mode `Wait` reaching this state must not
+   * tell the user to answer above the message box — there is no dock there for it.
+   */
+  it('does not point a deferred NON-question at the dock', async () => {
+    const tc: ToolCall = {
+      tool_call_id: 'w1',
+      function_name: 'Wait',
+      function_args: JSON.stringify({ seconds: 30 }),
+    };
+    const deferredResult: ToolCallResultMessage = {
+      $type: MessageType.ToolCallResult,
+      tool_call_id: 'w1',
+      result: '',
+      is_error: false,
+      is_deferred: true,
+      role: 'tool',
+    };
+    const w = mountPill(tc, deferredResult);
+    await w.get('.tool-pill__header').trigger('click');
+    expect(w.get('[data-testid="tool-call-pill"]').classes()).toContain('st-awaiting-input');
+    expect(w.find('[data-testid="question-dock-pointer"]').exists()).toBe(false);
+  });
+
   it('flips to the resolved (non-deferred) state once the follow-up result overwrites the placeholder', async () => {
     const tc: ToolCall = { tool_call_id: 'q3', function_name: 'AskUserQuestion', function_args: args };
     const resolvedResult: ToolCallResultMessage = {

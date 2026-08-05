@@ -86,12 +86,24 @@ const richMap: Partial<Record<string, Component>> = {
   weather: WeatherRich,
   question: QuestionRich,
 };
+/**
+ * True only when THIS pill's live form was moved out to `PendingQuestionDock`.
+ *
+ * Deliberately narrower than `view.state === 'awaiting-input'`, which `deriveToolPillState` sets
+ * for ANY deferred result — a block-mode `Wait` from `WaitToolProvider` reaches that state too.
+ * `findPendingQuestions` docks only the `question` family, so gating on the broader state would
+ * point a waiting `Wait` pill at a dock that does not exist.
+ */
+const isDockedQuestion = computed(
+  () => renderer.value.family === 'question' && view.value.isDeferred
+);
+
 const richComponent = computed<Component | null>(() => {
   // A question still awaiting an answer is rendered by PendingQuestionDock, above the chat input
   // (answering is a client capability, and inside this pill the form was routinely hidden). The
   // pill keeps the RESOLVED read-only Q&A as history -- so exactly one live `question-form` exists
   // at a time, which also keeps Playwright's strict-mode selectors unambiguous.
-  if (renderer.value.family === 'question' && view.value.isDeferred) return null;
+  if (isDockedQuestion.value) return null;
   return richMap[renderer.value.family] ?? null;
 });
 
@@ -178,7 +190,7 @@ async function copyResult() {
       </dl>
 
       <p
-        v-if="view.state === 'awaiting-input'"
+        v-if="isDockedQuestion"
         class="tool-pill__dock-pointer"
         data-testid="question-dock-pointer"
       >

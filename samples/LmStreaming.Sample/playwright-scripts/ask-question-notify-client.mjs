@@ -24,17 +24,23 @@
 //
 // Prereq: the app must serve the CURRENT client code. In Development it does NOT serve
 // wwwroot/dist — it proxies /dist to a Vite dev server (VITE_DEV_PORT, default 5173), so a stale or
-// foreign Vite instance will silently serve someone else's bundle and this script will time out on
-// selectors that exist in your tree. Launch with your own port to be sure:
-//   VITE_DEV_PORT=5199 ASPNETCORE_URLS=http://localhost:5077 dotnet run --no-launch-profile
-// then point BASE at that port (the runner has no `process`, so this is a plain constant).
+// foreign Vite instance will silently serve another tree's bundle and this script will time out on
+// selectors that exist in your tree. Launch with your own ports to be sure:
+//
+//   VITE_DEV_PORT=5199 VITE_BACKEND_ORIGIN=http://localhost:5077 \
+//     ASPNETCORE_URLS=http://localhost:5077 dotnet run --no-launch-profile
+//
+// then point BASE at the BACKEND port (the runner has no `process`, so this is a plain constant).
+// VITE_BACKEND_ORIGIN is belt-and-braces: because BASE is the backend origin, the page's own
+// /api and /ws calls are same-origin and never traverse Vite's proxy — but vite.config.ts defaults
+// that proxy to :5000, so anyone who browses the Vite port directly would hit the wrong backend.
 async (page) => {
   const BASE = 'http://localhost:5077';
   const PROVIDER = 'test-anthropic';
-  // Absolute on purpose (Playwright resolves relative screenshot paths against the SERVER's cwd,
-  // which is not this repo). Points at the main checkout so it lands in one place no matter which
-  // worktree you launch the app from.
-  const SHOT_DIR = 'B:/sources/LmDotnetTools/.logs/manual';
+  // Relative on purpose: Playwright resolves a relative screenshot path against the MCP server's
+  // own output directory (alongside its console logs), which exists on every machine. An absolute
+  // path pinned to one checkout's drive letter silently writes nowhere else.
+  const SHOT_DIR = 'ask-question-notify';
 
   // Build each instruction chain programmatically (JSON.stringify) rather than hand-escaping, per
   // this folder's convention (see subagent-tabs.mjs) — also lets the exact same object literal
@@ -92,7 +98,16 @@ async (page) => {
   const steps = [];
   const record = (name, pass, detail) => steps.push({ name, pass, detail });
   const tid = (id) => page.locator(`[data-testid="${id}"]`);
-  const shot = (name) => page.screenshot({ path: `${SHOT_DIR}/${name}.png` }).catch(() => {});
+  // Screenshots are diagnostics, so a failure to write one is reported rather than swallowed --
+  // silently losing every screenshot looks identical to a clean run. It does not fail the script
+  // (a missing screenshot is not a product defect), it just surfaces as its own step.
+  const shot = async (name) => {
+    try {
+      await page.screenshot({ path: `${SHOT_DIR}/${name}.png` });
+    } catch (e) {
+      record(`screenshot ${name}`, false, String((e && e.message) || e));
+    }
+  };
   const waitIdle = async (timeout = 30000) => {
     await tid('stop-button').waitFor({ state: 'hidden', timeout });
     await tid('send-button').waitFor({ state: 'visible', timeout });

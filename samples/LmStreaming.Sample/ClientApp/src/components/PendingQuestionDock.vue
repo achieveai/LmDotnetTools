@@ -69,6 +69,12 @@ const cards = computed(() =>
   flex-direction: column;
   gap: 8px;
   padding: 0 16px 8px;
+  /* Capped on the DOCK, not on each card: multiple pending questions are supported, so a per-card
+     cap would let N cards stack to N x 45vh, collapse the message list and let the surrounding
+     overflow-hidden layout clip the input itself. Sized generously so the common 1-2 question case
+     never scrolls at all -- the whole point of this component is that the form is not hidden. */
+  max-height: 45vh;
+  overflow-y: auto;
 }
 
 .question-dock__card {
@@ -77,11 +83,9 @@ const cards = computed(() =>
   border-radius: 8px;
   background: #fffdf7;
   padding: 12px 14px;
-  /* A pathological multi-question payload must not push the input off-screen; the dock scrolls
-     rather than growing without bound. Sized generously so the common 1-2 question case never
-     scrolls at all -- the whole point of this component is that the form is not hidden. */
-  max-height: 45vh;
-  overflow-y: auto;
+  /* Cards must not shrink when the dock scrolls, or a long card would compress instead of the
+     dock scrolling past it. */
+  flex-shrink: 0;
 }
 
 .question-dock__header {
