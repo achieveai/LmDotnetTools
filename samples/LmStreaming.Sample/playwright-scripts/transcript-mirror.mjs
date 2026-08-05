@@ -111,33 +111,72 @@ async (page) => {
   let BASE = null;
 
   // Same-origin, in-page fetch — the interactive path [InboundS2SAuth] deliberately lets through.
-  const api = (method, path, body) =>
+  // EVERY call is time-boxed. `page.evaluate` does not impose one, and a hung request inside the page
+  // blocks the whole script with no diagnostic: the run dies on the harness's own ceiling, after the
+  // steps array has stopped growing, so the report names a step that had already passed. A timeout
+  // surfaced as `{ok:false, status:0, timedOut:true}` flows through the same failure paths as any
+  // other bad response — and since `waitRunIdle` now demands an OK response, a timed-out poll retries
+  // instead of being mistaken for an idle run.
+  const API_TIMEOUT_MS = 20000;
+  const api = (method, path, body, timeoutMs) =>
     page.evaluate(
-      async ({ method, path, body }) => {
+      async ({ method, path, body, timeoutMs }) => {
         const init = { method, headers: { 'content-type': 'application/json' } };
         if (body !== undefined) init.body = JSON.stringify(body);
-        const res = await fetch(`${location.origin}${path}`, init);
-        const text = await res.text();
-        let json = null;
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+        init.signal = ctrl.signal;
         try {
-          json = text ? JSON.parse(text) : null;
-        } catch {
-          /* non-JSON body — the raw text is kept for the failure detail */
+          const res = await fetch(`${location.origin}${path}`, init);
+          const text = await res.text();
+          let json = null;
+          try {
+            json = text ? JSON.parse(text) : null;
+          } catch {
+            /* non-JSON body — the raw text is kept for the failure detail */
+          }
+          return { status: res.status, ok: res.ok, json, text: text.slice(0, 600) };
+        } catch (e) {
+          const aborted = ctrl.signal.aborted;
+          return {
+            status: 0,
+            ok: false,
+            json: null,
+            timedOut: aborted,
+            text: aborted ? `request aborted after ${timeoutMs}ms` : `fetch failed: ${String(e && e.message ? e.message : e)}`,
+          };
+        } finally {
+          clearTimeout(timer);
         }
-        return { status: res.status, ok: res.ok, json, text: text.slice(0, 600) };
       },
-      { method, path, body }
+      { method, path, body, timeoutMs: timeoutMs ?? API_TIMEOUT_MS }
     );
 
   // Raw workspace bytes (transcripts are JSONL; `preview` refuses dot-directories by design).
+  // Longer ceiling than `api`: this reads a whole transcript, not a small JSON envelope.
+  const DOWNLOAD_TIMEOUT_MS = 60000;
   const downloadWorkspaceFile = (threadId, wsPath) =>
     page.evaluate(
-      async ({ threadId, wsPath }) => {
+      async ({ threadId, wsPath, timeoutMs }) => {
         const url = `${location.origin}/api/conversations/${encodeURIComponent(threadId)}/files/download?path=${encodeURIComponent(wsPath)}`;
-        const res = await fetch(url);
-        return { status: res.status, ok: res.ok, text: res.ok ? await res.text() : null };
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+        try {
+          const res = await fetch(url, { signal: ctrl.signal });
+          return { status: res.status, ok: res.ok, text: res.ok ? await res.text() : null };
+        } catch (e) {
+          return {
+            status: 0,
+            ok: false,
+            text: null,
+            timedOut: ctrl.signal.aborted,
+            error: String(e && e.message ? e.message : e),
+          };
+        } finally {
+          clearTimeout(timer);
+        }
       },
-      { threadId, wsPath }
+      { threadId, wsPath, timeoutMs: DOWNLOAD_TIMEOUT_MS }
     );
 
   // Classifies a listing into the four states that mean different things here. `no_session_yet` is
@@ -169,10 +208,24 @@ async (page) => {
   // a 409 `mode_switch_while_streaming` — observed as AgentIsRunning=True, RunTaskCompleted=False,
   // IsStale=False, i.e. a genuinely live run, not a stale-state bug. Gate on the same signal the
   // guard reads rather than on a proxy for it.
+  //
+  // A FAILED request is NOT an idle run. `!(rs.json && rs.json.isInProgress)` is true for a 500, a
+  // dropped connection, and — most likely of all — a 404 that falls through to the SPA fallback and
+  // returns index.html, so `json` parses to null. Any of those would silently skip this gate and hand
+  // the 409 back at the switch: the exact failure the gate exists to prevent, wearing a green tick.
+  // Require an OK response that EXPLICITLY says `isInProgress === false`; anything else keeps polling
+  // and, if it never resolves, says which of the two it was.
   const waitRunIdle = (threadId, timeoutMs) =>
     pollUntil(async () => {
       const rs = await api('GET', `/api/conversations/${encodeURIComponent(threadId)}/run-state`);
-      return { done: !(rs.json && rs.json.isInProgress), runState: rs.json };
+      const readable = !!(rs.ok && rs.json && typeof rs.json.isInProgress === 'boolean');
+      return {
+        done: readable && rs.json.isInProgress === false,
+        readable,
+        status: rs.status,
+        body: readable ? undefined : rs.text,
+        runState: rs.json,
+      };
     }, timeoutMs);
 
   const result = {
@@ -229,9 +282,14 @@ async (page) => {
       availableIds,
       hint: cliOk ? undefined : 'codex-mock also requires MockProviderHostLifetime.IsRunning',
     });
-    if (!boundOk) {
+    // BOTH prerequisites gate here, before anything expensive. `cliOk` used to be checked only at the
+    // provider switch — after turn 1 had already provisioned a workspace, run a full agent turn and
+    // spawned two sub-agents, all of which is then discarded for an INCONCLUSIVE verdict. A missing
+    // prerequisite is knowable in the first second; paying minutes to rediscover it is pure waste,
+    // and it leaves a half-finished conversation behind in the workspace every time.
+    if (!boundOk || !cliOk) {
       result.failures.push('required providers available');
-      result.verdict = 'INCONCLUSIVE_NO_PROVIDER';
+      result.verdict = !boundOk ? 'INCONCLUSIVE_NO_PROVIDER' : 'INCONCLUSIVE_NO_CLI_PROVIDER';
       return result;
     }
 
@@ -416,11 +474,16 @@ async (page) => {
     }
 
     // ---- 7. The two named sub-agents exist (⇒ an `_agents/` child file is expected) ---------
+    const EXPECTED_AGENTS = ['mirror-alpha', 'mirror-beta'];
+    const nameOf = (r) => String((r && (r.name ?? r.agentName)) ?? '');
     let rows = [];
     for (let i = 0; i < 20; i++) {
       const sub = await api('GET', `/api/conversations/${threadId}/subagents`);
       rows = Array.isArray(sub.json) ? sub.json : [];
-      if (rows.length >= 2) break;
+      // Wait for the two we ASKED for, not for any two. Breaking on `rows.length >= 2` settles as
+      // soon as a pair exists, which on a partial spawn can be the wrong pair — and then the name
+      // assertion below fails against a listing that was never given time to complete.
+      if (EXPECTED_AGENTS.every((n) => rows.some((r) => nameOf(r) === n))) break;
       await page.waitForTimeout(1500);
     }
     result.subAgents = rows.map((r) => ({
@@ -429,10 +492,18 @@ async (page) => {
       threadId: r.threadId ?? null,
       status: r.status ?? null,
     }));
-    record('two named background sub-agents spawned', rows.length >= 2, {
+    // Identify them BY NAME, not by count. `rows.length >= 2` passes if the mock spawned two agents
+    // called something else entirely, or spawned one twice — and the whole point of this fixture is
+    // that the two NAMED agents are what the `_agents/` leaves are derived from. A count is satisfied
+    // by the wrong pair.
+    const spawnedNames = result.subAgents.map((a) => String(a.name ?? ''));
+    const missingAgents = EXPECTED_AGENTS.filter((n) => !spawnedNames.includes(n));
+    record('two named background sub-agents spawned', missingAgents.length === 0, {
       count: rows.length,
       subAgents: result.subAgents,
-      expectedNames: ['mirror-alpha', 'mirror-beta'],
+      expectedNames: EXPECTED_AGENTS,
+      spawnedNames,
+      missing: missingAgents,
     });
 
     // ---- 7b. THE POSITIVE ASSERTION: real bytes, read back through the gateway --------------
@@ -445,16 +516,31 @@ async (page) => {
 
     if (!appeared || !appeared.file) {
       const listable = appeared && appeared.listing.state !== 'error';
+      // The listing is CAPPED (FileBrowserController.cs:78 — `entries.Take(MaxListingRows)`, 500) and
+      // the overflow comes back as a count, not an error. `.conversations/` accumulates one file per
+      // conversation forever, so a long-lived workspace eventually pushes this run's file outside the
+      // window — and "not in the first 500 entries" would then read as FAILED_NO_TRANSCRIPT_AT_ALL
+      // against a mirror that wrote perfectly. moreCount is the only signal that the window was
+      // partial; without checking it, this step gets less trustworthy the longer the workspace lives.
+      const truncated = !!(appeared && appeared.listing.moreCount > 0);
       record(`transcript file created under ${TRANSCRIPT_DIR}`, false, {
         state: appeared && appeared.listing.state,
         entries: appeared ? appeared.listing.entries.map((e) => e.name) : [],
+        moreCount: appeared && appeared.listing.moreCount,
+        listingTruncated: truncated,
         expectedPrefix: EXPECTED_PREFIX,
-        note: listable
-          ? `directory readable but nothing matching ${EXPECTED_PREFIX} — the mirror wrote nothing on the ATTACHING provider`
-          : 'directory not readable through this API — fall back to disk-checks.ps1',
+        note: !listable
+          ? 'directory not readable through this API — fall back to disk-checks.ps1'
+          : truncated
+            ? `listing was CAPPED at ${appeared.listing.entries.length} of ${appeared.listing.entries.length + appeared.listing.moreCount} entries — this run's file may simply be past the cap. Prune ${TRANSCRIPT_DIR}/ or check disk-checks.ps1; this is NOT evidence of a mirror failure`
+            : `directory readable in full but nothing matching ${EXPECTED_PREFIX} — the mirror wrote nothing on the ATTACHING provider`,
       });
       result.failures.push(`transcript file created under ${TRANSCRIPT_DIR}`);
-      result.verdict = listable ? 'FAILED_NO_TRANSCRIPT_AT_ALL' : 'INCONCLUSIVE_NOT_LISTABLE';
+      result.verdict = !listable
+        ? 'INCONCLUSIVE_NOT_LISTABLE'
+        : truncated
+          ? 'INCONCLUSIVE_LISTING_TRUNCATED'
+          : 'FAILED_NO_TRANSCRIPT_AT_ALL';
       return result;
     }
 
@@ -494,52 +580,73 @@ async (page) => {
     // reads as "the second sub-agent was never mirrored". Observed exactly once: alpha present /
     // beta absent at list time, beta on disk (2431 bytes) moments later. This directory is
     // per-conversation, so a bare `.jsonl` filter is safe here (unlike `.conversations/` itself).
+    // Match each child by the leaf its NAME derives (`{slug(agentName)}-{shortAgentId}.jsonl`), not by
+    // counting `.jsonl`s. Two files is not evidence of the two agents: one agent mirrored twice, or an
+    // unrelated pair, satisfies a count identically. The filename contract is the thing under test.
+    const leafFor = (agentName) => (f) => String(f.name).startsWith(`${agentName}-`);
     const agentsPoll = await pollUntil(async () => {
       const listing = await listWorkspaceDir(threadId, agentsDir);
       const files = listing.entries.filter((e) => String(e.name).endsWith('.jsonl'));
-      return { done: files.length >= 2, listing, files };
+      return { done: EXPECTED_AGENTS.every((n) => files.some(leafFor(n))), listing, files };
     }, APPEAR_TIMEOUT_MS);
     const agentsListing = agentsPoll.listing;
     const agentFiles = agentsPoll.files;
     const agentTexts = {};
+    const agentDownloadFailures = [];
     let agentsBlob = '';
     for (const f of agentFiles) {
       const dl = await downloadWorkspaceFile(threadId, `${agentsDir}/${f.name}`);
       const text = (dl.ok && dl.text) || '';
       agentTexts[f.name] = text.length;
+      // A failed download yields '' and would quietly drag the marker checks below to false, blaming
+      // the mirror for a reader problem. Name it instead.
+      if (!dl.ok) agentDownloadFailures.push({ file: f.name, status: dl.status });
       agentsBlob += `${text}\n`;
     }
-    record('sub-agent transcripts mirrored', agentFiles.length >= 2, {
-      dir: agentsDir,
-      state: agentsListing.state,
-      files: agentFiles.map((f) => f.name),
-      byteCounts: agentTexts,
-      alphaPresent: agentsBlob.includes(ALPHA_TEXT),
-      betaPresent: agentsBlob.includes(BETA_TEXT),
-      expectedLeafShape: 'slug(agentName)-shortId(agentId).jsonl ⇒ mirror-alpha-… / mirror-beta-…',
-    });
+    const missingLeaves = EXPECTED_AGENTS.filter((n) => !agentFiles.some(leafFor(n)));
+    const alphaPresent = agentsBlob.includes(ALPHA_TEXT);
+    const betaPresent = agentsBlob.includes(BETA_TEXT);
+    // Assert the content markers too. They were already being COLLECTED here and reported in the
+    // detail while the pass/fail rode on the file count alone — so a pair of empty or wrong-agent
+    // files scored green with the disproof sitting in its own evidence block.
+    record(
+      'sub-agent transcripts mirrored',
+      missingLeaves.length === 0 && alphaPresent && betaPresent && agentDownloadFailures.length === 0,
+      {
+        dir: agentsDir,
+        state: agentsListing.state,
+        files: agentFiles.map((f) => f.name),
+        byteCounts: agentTexts,
+        missingLeaves,
+        alphaPresent,
+        betaPresent,
+        downloadFailures: agentDownloadFailures,
+        expectedLeafShape: 'slug(agentName)-shortId(agentId).jsonl ⇒ mirror-alpha-… / mirror-beta-…',
+      }
+    );
 
     // ---- 8. THE P1 SETUP: leave workspace mode, switch to the CLI-family provider -----------
     // Order matters: workspace-agent mode REJECTS codex-mock (Program.cs:822-856), so the mode must
     // drop first. The established sandbox binding survives both switches — PublishBindingIfStaged
     // only ever publishes, and ClearEstablishedBinding fires only on agent REMOVAL — so the
     // codex-mock agent's flush WOULD write, iff P1 attached the mirror to it.
-    if (!cliOk) {
-      record(`SKIPPED: switch to ${CLI_PROVIDER}`, false, {
-        why: `${CLI_PROVIDER} is not available on this host — the P1 case cannot be driven`,
-        availableIds,
-      });
-      result.failures.push(`SKIPPED: switch to ${CLI_PROVIDER}`);
-      result.verdict = 'INCONCLUSIVE_NO_CLI_PROVIDER';
-      return result;
-    }
+    // (`cliOk` was already required at step `required providers available` — reaching here without it
+    // is impossible, so there is no late SKIP branch to fall into after turn 1 has been paid for.)
     const runIdle = await waitRunIdle(threadId, APPEAR_TIMEOUT_MS);
     if (!record('run drained server-side before switching', !!(runIdle && runIdle.done), {
       runState: runIdle && runIdle.runState,
+      runStateReadable: !!(runIdle && runIdle.readable),
+      status: runIdle && runIdle.status,
+      body: runIdle && runIdle.body,
       why: 'the switch guards read agentPool.GetRunStateInfo; UI-idle is not run-idle when the turn spawned background sub-agents',
     })) {
       result.failures.push('run drained server-side before switching');
-      result.verdict = 'INCONCLUSIVE_RUN_NEVER_DRAINED';
+      // Two different problems wearing one symptom: the run genuinely never finished, versus the
+      // endpoint never answered. Naming the second one is the difference between "investigate the
+      // app" and "investigate the route".
+      result.verdict = runIdle && runIdle.readable
+        ? 'INCONCLUSIVE_RUN_NEVER_DRAINED'
+        : 'INCONCLUSIVE_RUN_STATE_UNREADABLE';
       return result;
     }
     const modeSwitch = await api('POST', `/api/conversations/${threadId}/mode`, { modeId: plainMode });
@@ -585,7 +692,18 @@ async (page) => {
     await waitIdle();
     // Drain server-side too: the mirror flushes at a TURN BOUNDARY, so reading the transcript while
     // the run is still in progress can miss MARKER2 for reasons that have nothing to do with P1.
-    await waitRunIdle(threadId, APPEAR_TIMEOUT_MS);
+    // RECORD the outcome — discarding it means a turn-2 run that never drained turns into a MARKER2
+    // read taken mid-flight, and the resulting `P1_REGRESSED` blames the mirror for a timing problem
+    // in this script. Not fatal on its own (the byte poll below still has APPEAR_TIMEOUT_MS to catch
+    // up) but it must appear in the report, because it changes how a subsequent failure reads.
+    const runIdle2 = await waitRunIdle(threadId, APPEAR_TIMEOUT_MS);
+    record('turn 2 run drained server-side before reading bytes', !!(runIdle2 && runIdle2.done), {
+      runState: runIdle2 && runIdle2.runState,
+      runStateReadable: !!(runIdle2 && runIdle2.readable),
+      status: runIdle2 && runIdle2.status,
+      body: runIdle2 && runIdle2.body,
+      why: 'if this failed, a MARKER2 miss below is inconclusive rather than a P1 regression',
+    });
     const afterUser = await tid('user-message-group').count();
     const afterAssistant = await tid('assistant-message-group').count();
     const err2 = await errorBanner();
@@ -609,14 +727,24 @@ async (page) => {
     const finalText = (turn2Bytes && turn2Bytes.dl.text) || '';
     const hasM1 = finalText.includes(MARKER1);
     const hasM2 = finalText.includes(MARKER2);
-    const p1 = record('P1 (458dbca1): the CLI-provider turn was mirrored too (MARKER2)', hasM2, {
+    const drained2 = !!(runIdle2 && runIdle2.done);
+    // BOTH markers, not just MARKER2. MARKER1 was already PROVEN present in this same file at step
+    // `turn 1 bytes are in the transcript` — and the transcript is append-only — so if it is missing
+    // now, previously-verified content was DESTROYED. That is strictly worse than the P1 hole this
+    // step is named for, and asserting `hasM2` alone reports it as a clean pass.
+    const p1 = record('P1 (458dbca1): the CLI-provider turn joined turn 1 in the same file', hasM1 && hasM2, {
       marker1Present: hasM1,
       marker2Present: hasM2,
       bytes: finalText.length,
       bytesAfterTurn1: turn1Text.length,
-      signature: hasM1 && !hasM2 ? 'MARKER1 without MARKER2 = the exact P1 bug: a silent hole mid-transcript' : undefined,
+      turn2Drained: drained2,
+      signature: hasM1 && !hasM2
+        ? 'MARKER1 without MARKER2 = the exact P1 bug: a silent hole mid-transcript'
+        : hasM2 && !hasM1
+          ? 'MARKER2 WITHOUT MARKER1 = turn 1 lines vanished from an append-only file after being verified present — a LOSS bug, not P1'
+          : undefined,
     });
-    if (!p1) result.failures.push('P1 (458dbca1): the CLI-provider turn was mirrored too (MARKER2)');
+    if (!p1) result.failures.push('P1 (458dbca1): the CLI-provider turn joined turn 1 in the same file');
 
     // ---- 11. P2 (57bf4200) best-effort: the FIFO drain neither duplicated nor re-ordered ----
     const lines = finalText.split('\n').filter((l) => l.trim());
@@ -655,17 +783,46 @@ async (page) => {
       const t = (r && r.message_type) || '(none)';
       byType[t] = (byType[t] || 0) + 1;
     }
-    const reasoningRows = Object.entries(byType)
-      .filter(([t]) => t.startsWith('Reasoning'))
-      .reduce((n, [, c]) => n + c, 0);
-    record('RAW fidelity: reasoning rows survived the mirror', reasoningRows > 0, {
+    const reasoningLines = parsed.filter((r) => r && String(r.message_type || '').startsWith('Reasoning'));
+    // …and then check the PAYLOAD, because the discriminator alone only proves a reasoning-shaped row
+    // EXISTS. A mirror that wrote the envelope and dropped its content — the precise failure "RAW
+    // fidelity" names — keeps `message_type` intact and scores green on a count.
+    // `reasoning:{length:30}` makes the mock emit the first 30 LOREM words
+    // (AnthropicSseStreamHttpContent.cs:630), so "lorem ipsum" is text that exists only if the actual
+    // thinking content made it through. It cannot leak in from the prompt the way the word
+    // "reasoning" does — the prompt carries the request, never the generated lorem.
+    const REASONING_SENTINEL = 'lorem ipsum';
+    const withPayload = reasoningLines.filter((r) =>
+      String(r.message_json || '').toLowerCase().includes(REASONING_SENTINEL)
+    );
+    const reasoningRows = reasoningLines.length;
+    const rawFidelity = reasoningRows > 0 && withPayload.length > 0;
+    record('RAW fidelity: reasoning rows survived the mirror WITH their content', rawFidelity, {
       reasoningRows,
+      reasoningRowsCarryingContent: withPayload.length,
+      sentinel: REASONING_SENTINEL,
+      payloadLengths: reasoningLines.map((r) => String(r.message_json || '').length),
       messageTypes: byType,
-      why: 'reasoning is part of the locked full-fidelity contract; counted by message_type because the prompt echoes the word "reasoning" into its own message_json',
+      why: 'counted by message_type because the prompt echoes the word "reasoning" into its own message_json; content proven by the generated lorem text, which the prompt never contains',
+      diagnosis:
+        reasoningRows === 0
+          ? 'no reasoning row at all — the mirror dropped thinking entirely'
+          : withPayload.length === 0
+            ? 'reasoning ENVELOPES present but empty of generated content — the exact failure a discriminator-only check misses'
+            : undefined,
     });
-    if (reasoningRows === 0) result.failures.push('RAW fidelity: reasoning rows survived the mirror');
+    if (!rawFidelity) result.failures.push('RAW fidelity: reasoning rows survived the mirror WITH their content');
 
-    result.verdict = hasM2 ? 'P1_HOLDS' : hasM1 ? 'P1_REGRESSED' : 'FAILED_NOTHING_MIRRORED';
+    // A MARKER2 miss only means "P1 regressed" if the run actually finished. If turn 2 never drained,
+    // the mirror was never given its turn boundary and the miss says nothing about the attach path.
+    result.verdict =
+      hasM1 && hasM2
+        ? 'P1_HOLDS'
+        : hasM2 && !hasM1
+          ? 'FAILED_TURN1_LINES_DISAPPEARED'
+          : hasM1
+            ? (drained2 ? 'P1_REGRESSED' : 'INCONCLUSIVE_TURN2_NEVER_DRAINED')
+            : 'FAILED_NOTHING_MIRRORED';
 
     // ---- 13. Optional second opinion (LOCAL gateway only) ----------------------------------
     result.diskChecks = {
