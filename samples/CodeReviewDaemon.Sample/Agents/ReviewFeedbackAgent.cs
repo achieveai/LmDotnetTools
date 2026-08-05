@@ -162,7 +162,7 @@ internal sealed class ReviewFeedbackAgent
         }
 
         var developersDir = JoinPath(JoinPath(repoRoot, KnowledgeBaseDirectory), DevelopersDirectory);
-        var relPath = $"{DevelopersDirectory}/{slug}{RecordSuffix}";
+        var relPath = RecordRelPath(slug);
         var recordPath = JoinPath(developersDir, slug + RecordSuffix);
 
         var existing = await _fileSystem.ReadFileAsync(recordPath, cancellationToken).ConfigureAwait(false);
@@ -285,6 +285,20 @@ internal sealed class ReviewFeedbackAgent
         _ = builder.Append(OutputContract);
         return builder.ToString();
     }
+
+    /// <summary>
+    /// The record's path relative to the Knowledge Base directory
+    /// (<c>developers/&lt;developer&gt;.reviewfeedbacks.md</c>) — the entry name reported in
+    /// <see cref="KnowledgeExtractionResult.EntryFileName"/> and the key its frontmatter is parsed under.
+    /// </summary>
+    internal static string RecordRelPath(string developer) => $"{DevelopersDirectory}/{developer}{RecordSuffix}";
+
+    /// <summary>
+    /// The record's path relative to the STORE ROOT — what a reader outside the Knowledge Base joins onto the
+    /// store root, e.g. the review-input injection that hands an author their own record back. Derived from
+    /// the same slug and suffix the write uses, so reader and writer can never drift onto different files.
+    /// </summary>
+    internal static string StoreRelPath(string developer) => $"{KnowledgeBaseDirectory}/{RecordRelPath(developer)}";
 
     /// <summary>
     /// The Knowledge Base file stem for <paramref name="author"/>, or <c>null</c> when no record is
@@ -414,9 +428,10 @@ internal sealed class ReviewFeedbackAgent
 
     /// <summary>
     /// Everything after the leading <c>---</c>…<c>---</c> frontmatter block, or the whole document when it
-    /// has none. Used to show the model the record without the daemon-owned fields it must not write.
+    /// has none. Used to show the model the record without the daemon-owned fields it must not write, and to
+    /// hand a reviewer the patterns without the bookkeeping.
     /// </summary>
-    private static string StripFrontmatter(string? content)
+    internal static string StripFrontmatter(string? content)
     {
         if (string.IsNullOrWhiteSpace(content))
         {

@@ -828,6 +828,154 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         text.Should().NotContain("Prior knowledge", "a missing _toc.md leaves the review input unchanged");
     }
 
+    /// <summary>
+    /// A fixture whose store carries curated knowledge AND a per-developer feedback record, with the
+    /// feedback agent enabled. The record path is the one <see cref="ReviewFeedbackAgent"/> writes to.
+    /// </summary>
+    private static Fixture FeedbackFixture(ILoggerFactory loggerFactory, bool enableReviewFeedbackAgent = true)
+    {
+        var fixture = Fixture.GitHub(
+            loggerFactory,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+                EnableReviewFeedbackAgent = enableReviewFeedbackAgent,
+            });
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
+        return fixture;
+    }
+
+    private static void SeedFeedbackRecord(Fixture fixture, string slug, string body) =>
+        fixture.FileSystem.Seed(
+            $"/workspace/store/KnowledgeBase/developers/{slug}.reviewfeedbacks.md",
+            $"---\ndeveloper: {slug}\nsourcePrs: [\"github/a-r/1\"]\nupdated: 2026-08-04\n---\n\n## PATTERNS\n\n{body}\n");
+
+    private static async Task<string> RunAndReadReviewInputAsync(Fixture fixture, ReviewRun run)
+    {
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        return reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+    }
+
+    /// <summary>
+    /// The point of the whole feature: the author's own recurring mistakes reach the reviewer of THEIR PR.
+    /// The record is looked up under the slug the extraction wrote it under, so a display name that is not
+    /// already a slug ("Jane.Doe@contoso.com") must still find its file — reader and writer deriving the path
+    /// differently would silently inject nothing forever.
+    /// </summary>
+    [Theory]
+    [InlineData("octocat", "octocat")]
+    [InlineData("Jane.Doe@contoso.com", "jane-doe-contoso-com")]
+    [InlineData("AchieveAI\\gautam", "achieveai-gautam")]
+    public async Task Reviewed_prepends_the_pr_authors_own_feedback_record(string author, string slug)
+    {
+        using var fixture = FeedbackFixture(LoggerFactory);
+        SeedFeedbackRecord(fixture, slug, "- Leaves `ConfigureAwait(false)` off awaits in library code.");
+        var run = fixture.SeedRun(prAuthor: author);
+
+        var text = await RunAndReadReviewInputAsync(fixture, run);
+
+        text.Should().Contain(
+            $"KnowledgeBase/developers/{slug}.reviewfeedbacks.md",
+            "the record is prepended as a labelled block naming the exact file it came from");
+        text.Should().Contain("ConfigureAwait(false)", "the seeded patterns are surfaced to the reviewer");
+        text.Should().NotContain(
+            "sourcePrs:", "the daemon-owned frontmatter is bookkeeping, not something the reviewer should read");
+    }
+
+    /// <summary>
+    /// No author, a bot author, or an author that slugs to nothing addresses no record — the reader must not
+    /// guess a file, and must certainly not fall back to a shared one.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("dependabot[bot]")]
+    [InlineData("???")]
+    public async Task Reviewed_injects_no_feedback_when_no_developer_is_addressable(string? author)
+    {
+        using var fixture = FeedbackFixture(LoggerFactory);
+        SeedFeedbackRecord(fixture, "octocat", "- Leaves `ConfigureAwait(false)` off awaits in library code.");
+        var run = fixture.SeedRun(prAuthor: author);
+
+        var text = await RunAndReadReviewInputAsync(fixture, run);
+
+        text.Should().NotContain("Recurring feedback", "an unaddressable author injects nothing");
+        text.Should().NotContain("ConfigureAwait(false)", "no other developer's record may be substituted");
+    }
+
+    [Fact]
+    public async Task Reviewed_injects_no_feedback_for_a_first_time_author()
+    {
+        using var fixture = FeedbackFixture(LoggerFactory);
+        // No record seeded — the normal case the first time someone opens a PR.
+        var run = fixture.SeedRun(prAuthor: "octocat");
+
+        var text = await RunAndReadReviewInputAsync(fixture, run);
+
+        text.Should().NotContain("Recurring feedback", "a missing record leaves the review input unchanged");
+    }
+
+    [Fact]
+    public async Task Reviewed_injects_no_feedback_when_the_feature_is_disabled()
+    {
+        using var fixture = FeedbackFixture(LoggerFactory, enableReviewFeedbackAgent: false);
+        SeedFeedbackRecord(fixture, "octocat", "- Leaves `ConfigureAwait(false)` off awaits in library code.");
+        var run = fixture.SeedRun(prAuthor: "octocat");
+
+        var text = await RunAndReadReviewInputAsync(fixture, run);
+
+        text.Should().NotContain(
+            "Recurring feedback",
+            "a store that carries records from another daemon must not leak them into a review here");
+    }
+
+    /// <summary>Design §6: reading the record must never fail the review.</summary>
+    [Fact]
+    public async Task Reviewed_degrades_and_does_not_fail_when_the_feedback_record_read_throws()
+    {
+        using var fixture = FeedbackFixture(LoggerFactory);
+        SeedFeedbackRecord(fixture, "octocat", "- Leaves `ConfigureAwait(false)` off awaits in library code.");
+        var run = fixture.SeedRun(prAuthor: "octocat");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        fixture.FileSystem.ReadFault = path =>
+            path.Contains("reviewfeedbacks.md", StringComparison.Ordinal)
+                ? new InvalidOperationException("Session not found: deadbeef")
+                : null;
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        await act.Should().NotThrowAsync("a feedback read failure must degrade, not kill the review (design §6)");
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        text.Should().NotContain("Recurring feedback", "the failed read is skipped, not prepended");
+    }
+
+    /// <summary>
+    /// The record accumulates over every PR its author opens, so an unbounded one would crowd the diff out of
+    /// the reviewer's context. Truncation is marked so the model knows it is reading a partial record.
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_truncates_an_oversized_feedback_record_and_marks_it()
+    {
+        using var fixture = FeedbackFixture(LoggerFactory);
+        SeedFeedbackRecord(fixture, "octocat", new string('x', 40_000) + "\n- TAIL PATTERN");
+        var run = fixture.SeedRun(prAuthor: "octocat");
+
+        var text = await RunAndReadReviewInputAsync(fixture, run);
+
+        text.Should().Contain("Recurring feedback", "an oversized record is still injected, just bounded");
+        text.Should().Contain("[record truncated]", "the model must know the record it read is partial");
+        text.Should().NotContain("TAIL PATTERN", "content past the cap is dropped, not smuggled in");
+    }
+
     [Fact]
     public async Task Reviewed_persists_a_review_artifact_and_skips_optional_arms_by_default()
     {
@@ -2058,7 +2206,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             IReviewCommentPublisher[]? publishersOverride = null) =>
             new(loggerFactory, "azure-devops", options, diffResult: null, publishersOverride, completionSource: null);
 
-        public ReviewRun SeedRun(string watermark = "wm-1", string mode = "collect-only")
+        public ReviewRun SeedRun(string watermark = "wm-1", string mode = "collect-only", string? prAuthor = null)
         {
             var repoId = Store.EnsureRepo(new RepoIdentity
             {
@@ -2081,6 +2229,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
                 Stage = ReviewStage.Discovered,
                 WorkflowStatus = WorkflowStatus.Running,
                 PrLifecycleState = PrLifecycleState.Open,
+                PrAuthor = prAuthor,
             });
         }
 
