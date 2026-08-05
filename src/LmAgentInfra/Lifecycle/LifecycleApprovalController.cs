@@ -54,20 +54,33 @@ public sealed record ToolApprovalDecisionResponse
 /// misconfiguration rather than routine traffic.
 /// </para>
 /// <para>
-/// <b>Known gap, accepted for now: there is no supported way to turn a verified signature into a
-/// principal.</b> A subscriber already proves who it is on every delivery it answers — it holds a
-/// host-minted signing secret bound to one subscription and one owner — and yet that proof cannot be
-/// spent here, so an integrator who wants nothing more than "the holder of subscription X may decide
-/// X's approvals" must stand up a separate authentication scheme to express it. The refusal is
-/// correct (see the paragraph above: a controller cannot tell a verified header from a typed one, so
-/// trusting one would be trusting every deployment to have wired verification), but the burden it
-/// creates is larger than the problem it solves for the common case. The intended fix is a
-/// first-party <c>AuthenticationHandler</c> shipped alongside
-/// <see cref="Webhooks.WebhookRequestVerifier"/> that verifies the signature and, on success, emits a
-/// principal carrying the subscription id and its resolved owner — so the guarantee comes from a
-/// component the library owns and tests, rather than from each host's wiring. Until that exists, the
-/// host-supplied scheme documented above is the only supported path, and this endpoint stays
-/// fail-closed without it.
+/// <b>Known gap, accepted for now: an integrator who wants nothing more than "the holder of
+/// subscription X may decide X's approvals" must stand up a whole separate authentication scheme to
+/// say it.</b> The refusal above is correct — a controller cannot tell a verified header from a
+/// merely typed one, so trusting one would be trusting every deployment to have wired verification —
+/// but the burden it creates is larger than the problem it solves for the common case. There is a
+/// latent capability here: a subscriber does hold a host-minted secret bound to one subscription and
+/// one owner. It is only a capability. Today that secret is used in one direction — the host signs
+/// outbound deliveries with it (<see cref="HttpLifecycleDeliverySender"/>), the subscriber verifies
+/// them — and no subscriber-to-host signing convention exists, so nothing a caller sends to this
+/// endpoint carries a signature for anyone to check.
+/// </para>
+/// <para>
+/// Closing the gap therefore means defining that inbound protocol first, not merely adding an
+/// <c>AuthenticationHandler</c>. Three prerequisites, none of them satisfied today, and all of them
+/// changes to contracts this type does not own:
+/// <list type="number">
+/// <item>a subscriber-to-host signing convention, which does not exist;</item>
+/// <item>a way to resolve a subscription id to its secret and owner <em>before</em> a principal
+/// exists, which <see cref="ILifecycleSubscriptionRegistry"/> deliberately forbids — every lookup on
+/// it is owner-scoped precisely so that a caller cannot reach another tenant's subscription by id;</item>
+/// <item>a signed payload that names its own direction and route domain. The current HMAC binds only
+/// <c>{timestamp}.{deliveryId}.{body}</c>, so reusing it unchanged for caller authentication would let
+/// a captured outbound delivery signature be replayed as an inbound credential.</item>
+/// </list>
+/// That is a design decision spanning the registry and the wire format, so it belongs in a superseding
+/// ADR rather than in this comment. Until it is made, the host-supplied scheme documented above is the
+/// only supported path, and this endpoint stays fail-closed without it.
 /// </para>
 /// <para>
 /// The capability check is repeated here rather than trusted from registration time, because

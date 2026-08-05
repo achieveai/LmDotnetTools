@@ -33,8 +33,8 @@ This directory's own rule is that ADRs are append-only and that a later decision
 an earlier one rather than editing it, and a record's number is part of the record — it is
 in the filename, in the `# ADR NNNN` heading, and in every link and citation already made
 to it. Renumbering would rewrite four accepted records to fix a defect in a fifth file that
-is not a record at all. It would also break references that live outside this repository's
-control, in issue #227 and PR #231.
+is not a record at all. It would also break a reference that lives outside this repository's
+control, in PR #231, which indexes the set as "ADRs 0002–0008".
 
 ## Decision
 

@@ -45,7 +45,7 @@ than renumbered away.
 
 1. Copy [templates/adr-template.md](templates/adr-template.md) into this directory.
 2. Name it with the next four-digit number and a short kebab-case title, e.g.
-   `0011-use-example-backend.md`.
+   `NNNN-use-example-backend.md`.
 3. Open it as `Proposed`, and move it to `Accepted` once the decision is made.
 4. **Before merging, re-check this directory on the target branch.** A number that was free
    when you drafted may have been taken by another branch since. Rename the file then —
