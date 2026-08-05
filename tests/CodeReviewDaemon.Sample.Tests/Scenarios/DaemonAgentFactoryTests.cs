@@ -12,11 +12,11 @@ public sealed class DaemonAgentFactoryTests
     /// <summary>Renders the AUTHORITATIVE synthesis prompt — the one and only turn that delivers — with the
     /// caller's real posting intent. The provider-specific posting contract lives here, never on the
     /// collect-only first turn.</summary>
-    private static string SynthesisPrompt(bool shouldPost, bool isAdo = false) =>
+    private static string SynthesisPrompt(bool shouldPost, bool isAdo = false, string botName = "Revobot") =>
         DaemonAgentFactory.CreateSynthesisPrompt(
             new Dictionary<string, object>
             {
-                ["bot_name"] = "Revobot",
+                ["bot_name"] = botName,
                 ["should_post"] = shouldPost,
                 ["is_ado"] = isAdo,
                 ["gh_owner"] = "acme",
@@ -331,6 +331,59 @@ public sealed class DaemonAgentFactoryTests
         // Only the OPENING delimiter can be checked here: the ADO request bodies are literal JSON and end
         // in "}}}", which is not Scriban output.
         prompt.Should().NotContain("{{");
+    }
+
+    [Fact]
+    public void CreateSynthesisPrompt_signs_every_github_comment_it_tells_the_agent_to_post()
+    {
+        // The daemon signs only what IT posts (the host-side fallback builds "[BotName]\n\n…"). The agent
+        // posts the review of record itself, straight to the provider through the egress proxy, so no C# ever
+        // sees those bodies — measured live, that left 613 inline comments across 25 PRs unsigned while every
+        // signed comment on those PRs came from the fallback. The signature has to be IN the request-body
+        // templates the agent copies, not only in a rule above them.
+        var prompt = SynthesisPrompt(shouldPost: true);
+
+        prompt.Should().Contain(@"""body"":""[Revobot] <ONE short overall summary line only>""");
+        prompt.Should().Contain(@"""body"":""[Revobot] <severity + finding + concrete suggestion>""");
+        prompt.Should().Contain(@"{""body"":""[Revobot] <answer>""}"); // the wrapper-free issues endpoint
+        prompt.Should().Contain("Each body must START with the literal marker `[Revobot]`");
+        prompt.Should().NotMatchRegex(@"\{\{|\}\}");
+    }
+
+    [Fact]
+    public void CreateSynthesisPrompt_signs_every_ado_comment_it_tells_the_agent_to_post()
+    {
+        // Same guarantee on the neighbouring route: ADO posts through a different API with differently-named
+        // body fields, so the GitHub templates carry none of it across.
+        var prompt = SynthesisPrompt(shouldPost: true, isAdo: true);
+
+        prompt.Should().Contain(@"""content"":""[Revobot] <finding markdown>""");
+        prompt.Should().Contain(@"""content"":""[Revobot] <reply markdown>""");
+        prompt.Should().Contain("Each body must START with the literal marker `[Revobot]`");
+        prompt.Should().MatchRegex("(?i)signed the same way"); // the PR-level summary thread
+        prompt.Should().NotContain("api.github.com");
+    }
+
+    [Fact]
+    public void CreateSynthesisPrompt_signs_with_the_configured_name_not_a_hardcoded_one()
+    {
+        // BotName is per-profile ("Revobot (MCQdb)" on the mcqdb daemon). A marker baked into the template
+        // would sign every daemon as the same bot and defeat the point of configuring the name at all.
+        var prompt = SynthesisPrompt(shouldPost: true, botName: "Revobot (MCQdb)");
+
+        prompt.Should().Contain(@"""body"":""[Revobot (MCQdb)] <severity + finding + concrete suggestion>""");
+        prompt.Should().NotContain("[Revobot]");
+    }
+
+    [Fact]
+    public void CreateSynthesisPrompt_omits_the_signature_rule_when_the_agent_posts_nothing()
+    {
+        // Collect-only: the daemon delivers and signs. A signature rule here would describe a comment the
+        // agent must never write, and read as licence to post one.
+        var prompt = SynthesisPrompt(shouldPost: false);
+
+        prompt.Should().NotContain("[Revobot]");
+        prompt.Should().NotMatchRegex("(?i)SIGNATURE");
     }
 
     [Fact]
