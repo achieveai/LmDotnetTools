@@ -13,6 +13,10 @@ dotnet run --project samples/LmStreaming.Sample        # serves API + /ws on :50
 npm --prefix samples/LmStreaming.Sample/ClientApp install
 npm --prefix samples/LmStreaming.Sample/ClientApp run dev   # http://localhost:5173
 ```
+For a one-command paired backend+Vite launch (including running multiple isolated instances side
+by side), use `./publish-launch.ps1` instead — see its comment-based help for the port-resolution
+rules and `ManualTesting.md`'s "Running a second, isolated instance" section for an example.
+
 Provider is chosen in the UI (header dropdown, `GET /api/providers`). GitHub Copilot models are
 **discovered dynamically** at startup from the Copilot `/models` API and listed by their raw model
 id (e.g. `claude-opus-4.8`, `gpt-5.5`), partitioned into "Copilot · Anthropic" / "Copilot · OpenAI"

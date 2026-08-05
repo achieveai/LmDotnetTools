@@ -24,6 +24,18 @@ dotnet run --project samples/LmStreaming.Sample
 The provider is chosen in the UI (header dropdown). Copilot-backed providers need a resolvable
 `gh`/Copilot token (no API key); Anthropic/OpenAI providers need `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`.
 
+### Multiple instances / one-command launcher
+
+To run a paired backend + Vite dev-server instance (or several side by side) without hand-wiring
+env vars, use `./publish-launch.ps1` (see its comment-based help, or `Get-Help ./publish-launch.ps1
+-Full`). It builds, resolves a free backend/Vite port pair (auto-falling back only for the ports
+you didn't explicitly pass), starts and supervises both processes, and prints the URLs/PIDs:
+
+```powershell
+./publish-launch.ps1                             # backend 5050, Vite 5173
+./publish-launch.ps1 -Port 5060 -VitePort 5183   # a second, explicit instance alongside the first
+```
+
 ## Sandbox Workspace Agent
 
 The **Workspace Agent** chat mode routes every file/shell/search tool call through the Rust

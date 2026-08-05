@@ -169,7 +169,7 @@ try
     _ = builder.Services.AddViteServices(options =>
     {
         options.Base = "/dist/";
-        options.Server.AutoRun = true;
+        options.Server.AutoRun = ResolveViteAutoRun();
         options.Server.PackageDirectory = "ClientApp";
         options.Server.Port = viteDevPort;
     });
@@ -3188,6 +3188,20 @@ public partial class Program
         listener.Stop();
         return assignedPort;
     }
+
+    /// <summary>
+    ///     Decides whether Vite.AspNetCore should spawn/supervise its own "npm run dev" child
+    ///     (AutoRun). Defaults to true (unchanged single-process behavior). An external supervisor
+    ///     (e.g. publish-launch.ps1, which starts and owns the Vite process itself to pair it with a
+    ///     specific backend instance) sets VITE_AUTO_RUN=false to avoid a double-spawn race on the
+    ///     same dev-server port.
+    /// </summary>
+    private static bool ResolveViteAutoRun() =>
+        !string.Equals(
+            Environment.GetEnvironmentVariable("VITE_AUTO_RUN"),
+            "false",
+            StringComparison.OrdinalIgnoreCase
+        );
 
     /// <summary>
     ///     Returns true when recording is explicitly enabled via query string (record=1 or record=true).
