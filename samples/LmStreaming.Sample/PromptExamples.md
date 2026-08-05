@@ -267,6 +267,33 @@ tab holds a substantial transcript (a MetadataPill with a thinking row + two too
 The browser-observable slice of the two-tab scenario is locked in CI by
 `tests/LmStreaming.Sample.Browser.E2E.Tests/Scenarios/SubAgentTabsTests.cs`.
 
+### Two named background sub-agents, text-only (transcript-mirror fixture)
+
+Same shape as "Two sub-agents → two distinct colored tabs", but the nested chains use **only `text`**
+— no `calculate` / `get_weather`. That matters because this fixture runs in **Workspace Agent mode**,
+where the mock's demo tools are not registered; the only tool the parent needs to exist is `Agent`.
+The parent turn also asks for `reasoning`, so the transcript carries raw reasoning content to assert
+on — the mirror stores full RAW fidelity, so reasoning must survive the round trip.
+
+Used by `playwright-scripts/transcript-mirror.mjs` (workspace transcript mirror, #251 / PR #252) to
+force a `{leaf}_agents/` directory holding two **named** child transcripts, `mirror-alpha.jsonl` and
+`mirror-beta.jsonl`. The names are load-bearing: the fixture asserts the sub-agent filename is
+`{agentName}-{shortAgentId}.jsonl`, which an unnamed sub-agent could not prove.
+
+Substitute your own run stamp for `<STAMP>` (the script uses a timestamp) so a re-run cannot pass on
+a previous run's transcript. Build the nested chains with `JSON.stringify` rather than hand-escaping.
+
+<|instruction_start|>{"instruction_chain":[{"id":"spawn-mirror-pair","id_message":"Spawn two named background sub-agents","reasoning":{"length":30},"messages":[{"tool_call":[{"name":"Agent","args":{"subagent_type":"researcher","name":"mirror-alpha","run_in_background":true,"prompt":"<|instruction_start|>{\"instruction_chain\":[{\"id\":\"ma1\",\"messages\":[{\"text\":\"mirror-alpha reporting MIRROR-TURN1-<STAMP>\"}]}]}<|instruction_end|>"}},{"name":"Agent","args":{"subagent_type":"general-purpose","name":"mirror-beta","run_in_background":true,"prompt":"<|instruction_start|>{\"instruction_chain\":[{\"id\":\"mb1\",\"messages\":[{\"text\":\"mirror-beta reporting MIRROR-TURN1-<STAMP>\"}]}]}<|instruction_end|>"}}]}]},{"id":"parent-done","messages":[{"text":"Spawned mirror-alpha and mirror-beta. MIRROR-TURN1-<STAMP>"}]}]}<|instruction_end|>
+
+Expected: two background `Agent` pills return immediately, a `mirror-alpha` and a `mirror-beta` tab
+appear within ~3s (the sub-agent poll), and the parent finishes with the "Spawned…" text.
+
+Reading the resulting transcripts back through the app: use the file browser's **`download`**
+endpoint, not `preview`. `preview` refuses any dot-directory outright
+(`FileBrowserController.cs` — the sole `FilePreviewPolicy.IsUnderDotDirectory` call site), by design,
+so a transcript fetched through `preview` returns `{"previewable":false,"reason":"excluded"}` — which
+is indistinguishable from a transcript that was never written, and reads as a false regression.
+
 ---
 
 ## Wait / Trigger (Park-and-Wake)

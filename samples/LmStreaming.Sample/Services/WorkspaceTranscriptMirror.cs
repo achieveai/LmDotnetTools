@@ -181,6 +181,26 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
     public int ResubscribeCount => Volatile.Read(ref _resubscribeCount);
 
     /// <summary>
+    ///     Whether <paramref name="threadId"/> currently has a live subscription.
+    /// </summary>
+    /// <remarks>
+    ///     A test seam, and specifically the one that makes "this provider was never attached" assertable.
+    ///     Every other symptom of a missed <see cref="Attach"/> is an <i>absence</i> — no root transcript,
+    ///     no descendant files — which only shows up long after the agent was built and looks identical to
+    ///     a conversation that simply had nothing to write yet. Six of the sample's provider branches
+    ///     shipped unattached precisely because nothing could ask this question.
+    /// </remarks>
+    internal bool IsMirroring(string threadId)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(threadId);
+
+        lock (_gate)
+        {
+            return _subscriptions.ContainsKey(threadId);
+        }
+    }
+
+    /// <summary>
     ///     Starts mirroring <paramref name="agent"/>'s conversation. Called from the sample's agent
     ///     factory for every agent the pool creates, including the replacement built by a mode switch —
     ///     that case cancels the previous subscription and keeps the existing writer.

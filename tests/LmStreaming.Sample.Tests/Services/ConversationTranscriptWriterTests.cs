@@ -36,16 +36,32 @@ public sealed class ConversationTranscriptWriterTests
     private const string GitignorePath = ".conversations/.gitignore";
 
     /// <summary>
-    /// The <c>guard</c> preamble every script opens with, duplicated here ON PURPOSE alongside the scripts
-    /// that use it. Its text is a contract: <c>[ -L ]</c> is the only test that does not follow a link, the
-    /// ANCESTOR walk is what catches a redirected <c>.conversations</c> whose leaf does not exist yet, and
-    /// <c>return</c> rather than <c>exit</c> is what lets the caller attach exit <c>44</c> to the failure —
-    /// an <c>exit</c> inside a function would end the script with the function's own status. The trailing
-    /// <c>return 0</c> is equally load-bearing: without it a safe path reports the failed <c>[ -L ]</c>.
+    /// The preamble every script opens with, duplicated here ON PURPOSE alongside the scripts that use it.
+    /// Its text is a contract. For <c>guard</c>: <c>[ -L ]</c> is the only test that does not follow a link,
+    /// the ANCESTOR walk is what catches a redirected <c>.conversations</c> whose leaf does not exist yet,
+    /// and <c>return</c> rather than <c>exit</c> is what lets the caller attach exit <c>44</c> to the
+    /// failure — an <c>exit</c> inside a function would end the script with the function's own status. The
+    /// trailing <c>return 0</c> is equally load-bearing: without it a safe path reports the failed
+    /// <c>[ -L ]</c>.
     /// </summary>
+    /// <remarks>
+    /// <c>solo</c> is the half <c>guard</c> structurally cannot do: a hard link is not a KIND of file, so
+    /// <c>[ -L ]</c> is blind to it, and <c>ln tracked-file .conversations/&lt;leaf&gt;.jsonl</c> gets the
+    /// unredacted transcript appended into a tracked file at exit 0. Three pieces of this text are each
+    /// load-bearing and each easy to "simplify" away. <c>[ -e "$1" ] || return 0</c> — these paths are
+    /// routinely written before they exist, so a missing path MUST pass or the feature never writes
+    /// anything. <c>ls -dn</c> rather than <c>stat</c> or <c>find</c> — <c>stat</c>'s format string is
+    /// GNU/BSD-specific (<c>%h</c> vs <c>%l</c>), and <c>find</c>, which looks like the portable answer,
+    /// resolves on a Windows host to <c>system32\find.exe</c> and silently declines every append; the
+    /// second field of a POSIX <c>-l</c> listing is the link count by definition. And the failure
+    /// direction: a failed <c>ls</c> returns 1 and any non-listing output leaves field two something other
+    /// than <c>1</c>, so every way this can go wrong is a refusal.
+    /// </remarks>
     private const string ExpectedGuardPreamble =
         "guard() { p=\"$1\"; while [ -n \"$p\" ] && [ \"$p\" != \".\" ] && [ \"$p\" != \"/\" ]; do "
-        + "if [ -L \"$p\" ]; then return 1; fi; p=$(dirname \"$p\"); done; return 0; }\n";
+        + "if [ -L \"$p\" ]; then return 1; fi; p=$(dirname \"$p\"); done; return 0; }\n"
+        + "solo() { [ -e \"$1\" ] || return 0; [ -f \"$1\" ] || return 1; "
+        + "sl=$(ls -dn \"$1\") || return 1; set -- $sl; [ \"$2\" = \"1\" ]; }\n";
 
     /// <summary>
     /// The splice script, duplicated here ON PURPOSE. It is the feature's only shell call site that writes,
@@ -56,11 +72,19 @@ public sealed class ConversationTranscriptWriterTests
     /// staged file because <c>cat</c> would read through a link into some other file. A test that read the
     /// constant back out of the production type could not notice any of them being edited away.
     /// </summary>
+    /// <remarks>
+    /// The <c>solo</c> lines cover the two FILE operands and pointedly NOT <c>$1</c>: a directory's link
+    /// count is at least two by construction, so a <c>solo "$1"</c> that looks like a consistency
+    /// improvement would refuse every append that has ever worked. That asymmetry is the reason this
+    /// constant spells the lines out one by one rather than looping.
+    /// </remarks>
     private const string ExpectedSpliceScript =
         ExpectedGuardPreamble
         + "guard \"$1\" || exit 44\n"
         + "guard \"$2\" || exit 44\n"
         + "guard \"$3\" || exit 44\n"
+        + "solo \"$2\" || exit 46\n"
+        + "solo \"$3\" || exit 46\n"
         + "mkdir -p \"$1\" || exit 1\n"
         + "if [ -s \"$3\" ] && [ -n \"$(tail -c1 \"$3\")\" ]; then printf '\\n' >> \"$3\" || exit 1; fi\n"
         + "cat \"$2\" >> \"$3\" && rm -f \"$2\"\n";
@@ -76,9 +100,16 @@ public sealed class ConversationTranscriptWriterTests
     /// without which a single multi-megabyte row makes the probe itself unanswerable. Exit <c>43</c> carries
     /// the one fact truncation destroys — whether the file ends mid-record.
     /// </summary>
+    /// <remarks>
+    /// The <c>solo</c> line here is about COST, not confidentiality — this script only reads. The watermark
+    /// is stored only after a SUCCESSFUL append, so an aliased destination keeps the probe cold on every
+    /// flush, and each doomed attempt PUTs the whole unredacted history into <c>.conversations/.tmp/</c>
+    /// before the splice declines it. Deleting this one line trades a shell call for that.
+    /// </remarks>
     private const string ExpectedProbeScript =
         ExpectedGuardPreamble
         + "guard \"$1\" || exit 44\n"
+        + "solo \"$1\" || exit 46\n"
         + "[ -e \"$1\" ] || exit 42\n"
         + "tail -n \"$2\" -- \"$1\" | cut -c \"1-$3\" || exit 1\n"
         + "end=$(tail -c1 -- \"$1\") || exit 1\n"
@@ -89,7 +120,13 @@ public sealed class ConversationTranscriptWriterTests
     /// payload and the containment file, both PUT directly by the gateway. Duplicated for the same reason:
     /// nothing else would notice if these writes stopped being checked.
     /// </summary>
-    private const string ExpectedGuardScript = ExpectedGuardPreamble + "guard \"$1\" || exit 44\n";
+    /// <remarks>
+    /// This is the ONLY place the alias check can defend those two writes: a PUT carries no shell, so an
+    /// in-script check would run after the bytes were already through. The containment file is the sharper
+    /// of the two — it is PUT whole, so an aliased path does not append to a tracked file, it REPLACES one.
+    /// </remarks>
+    private const string ExpectedGuardScript =
+        ExpectedGuardPreamble + "guard \"$1\" || exit 44\n" + "solo \"$1\" || exit 46\n";
 
     /// <summary>
     /// The rename script, duplicated for the same reason and carrying the same weight. Its text is a
@@ -103,6 +140,12 @@ public sealed class ConversationTranscriptWriterTests
     /// also fails on a real non-empty directory, which is exactly the <c>_agents</c> case, and a bare
     /// fallback would then nest.
     /// </summary>
+    /// <remarks>
+    /// The ABSENCE of a <c>solo</c> line is part of the contract here, not an oversight in it.
+    /// <c>rename(2)</c> unlinks the destination NAME and never opens the file behind it, so an aliased
+    /// destination loses one name and the shared file is not written to. Adding <c>solo "$2"</c> for
+    /// symmetry with the splice would buy nothing and would give every retitle a new way to fail.
+    /// </remarks>
     private const string ExpectedMoveScript =
         ExpectedGuardPreamble
         + "target() { guard \"$1\" || exit 44; [ ! -d \"$1\" ] || exit 45; }\n"

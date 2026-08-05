@@ -413,6 +413,79 @@ public sealed class TranscriptFlushSchedulerTests
         await recorder.WaitForFlushAsync("healthy");
     }
 
+    /// <summary>
+    /// PR #252 review round 8 (P1): a key that re-schedules ITSELF must not starve a key that has been
+    /// waiting longer. The mirror re-schedules from inside the flush on both <c>Progressing</c> (a capped
+    /// descendant sweep continuing) and <c>Deferred</c> (a failed attempt retrying), so this is the
+    /// scheduler's normal traffic, not an exotic case.
+    /// <para>
+    /// <b>Why the warm-up key is load-bearing.</b> The claim under test is about the order two keys that are
+    /// pending SIMULTANEOUSLY are drained in, so both have to be in the pending set before the loop picks
+    /// either. Flushing <c>warm-up</c> first parks the drain inside a callback that will not return until
+    /// this test says so, which is the only point at which <c>Schedule</c> is provably not racing the loop.
+    /// It also empties the set, so <c>a</c> and <c>b</c> land in slot order.
+    /// </para>
+    /// <para>
+    /// <b>What this catches.</b> Draining with <c>_pending.First()</c> takes the lowest-numbered
+    /// <see cref="HashSet{T}"/> slot. Removing <c>a</c> to flush it frees slot 0 onto the set's free list,
+    /// and <c>a</c>'s own re-schedule takes that slot straight back, so the next pick is <c>a</c> again
+    /// while <c>b</c> sits in slot 1 untouched — every round, deterministically. Against that
+    /// implementation the observed order is <c>a a a a a a b</c> and the assertion below fails on the very
+    /// first comparison; only a FIFO drain order produces <c>a b a …</c>.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Drain_FlushesAKeyThatHasBeenWaitingBeforeReflushingOneThatReschedulesItself()
+    {
+        const int reschedules = 5;
+        var recorder = new FlushRecorder();
+        var warmUpEntered = Signal();
+        var releaseWarmUp = Signal();
+        var remainingReschedules = reschedules;
+        TranscriptFlushScheduler? scheduler = null;
+
+        using var owned = scheduler = new TranscriptFlushScheduler(
+            async (key, _) =>
+            {
+                if (key == "warm-up")
+                {
+                    warmUpEntered.SetResult();
+                    await releaseWarmUp.Task;
+                    return;
+                }
+
+                recorder.Record(key);
+
+                // 'a' asks for itself again, exactly as the mirror does for a Progressing/Deferred flush.
+                // Bounded so the drain terminates whichever order it picks — an unbounded chain would hang
+                // the fixed implementation instead of failing it. Flushes are serialised on the one drain
+                // loop, so the plain decrement needs no interlock.
+                if (key == "a" && remainingReschedules-- > 0)
+                {
+                    scheduler!.Schedule("a");
+                }
+            }
+        );
+
+        owned.Schedule("warm-up");
+        await warmUpEntered.Task.WaitAsync(FailureTimeout);
+
+        // The drain is parked inside the warm-up flush, so both of these are pending before it picks again.
+        owned.Schedule("a");
+        owned.Schedule("b");
+        releaseWarmUp.SetResult();
+
+        await recorder.WaitForFlushAsync("b");
+
+        var order = recorder.Flushed.ToList();
+        order.Should().HaveCountGreaterThanOrEqualTo(2);
+        order[0].Should().Be("a", "'a' was scheduled first, so it is drained first");
+        order[1].Should().Be(
+            "b",
+            "'b' had been waiting since before 'a' was flushed, so 'a' re-scheduling itself must put it "
+                + "BEHIND 'b', not back at the front");
+    }
+
     [Fact]
     public void Constructor_RejectsANullFlushCallback()
     {
