@@ -115,6 +115,25 @@ const splitGroups = computed(() => {
   };
 });
 
+/**
+ * The one assistant bubble that is still growing: the last assistant text item of the active
+ * (current) group while a run is in flight. Its markdown is re-parsed on EVERY streamed delta,
+ * so it renders without syntax highlighting and gets highlighted once the run ends -- see
+ * `parseMarkdown`'s `highlight` option. Scoped to a single item on purpose: disabling it for
+ * the whole active group would turn already-finished code blocks monochrome mid-run.
+ */
+const streamingItemId = computed<string | null>(() => {
+  if (!props.isLoading) return null;
+  const groups = splitGroups.value.current;
+  for (let g = groups.length - 1; g >= 0; g--) {
+    const items = groups[g].items;
+    for (let i = items.length - 1; i >= 0; i--) {
+      if (items[i].type === 'assistant-message') return items[i].id;
+    }
+  }
+  return null;
+});
+
 // Track the last user message to scroll to it when it is added (pending or active)
 const lastScrolledMessageId = ref<string | null>(null);
 
@@ -282,7 +301,11 @@ watch(
 
                 <!-- Assistant text message -->
                 <div v-else-if="item.type === 'assistant-message'" class="text-bubble" data-testid="assistant-text">
-                  <TextMessage :message="item.content" :is-streaming="false" />
+                  <TextMessage
+                    :message="item.content"
+                    :is-streaming="false"
+                    :is-complete="item.id !== streamingItemId"
+                  />
                 </div>
               </template>
             </div>

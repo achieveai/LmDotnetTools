@@ -12,7 +12,17 @@
 async (page) => {
   const BASE = 'http://127.0.0.1:5000';
   const PROVIDER_ID = 'test-anthropic';
-  const OUT_DIR = 'B:/sources/LmDotnetTools/.worktrees/WT1/.logs/markdown-shots';
+  // Output dir must follow the checkout that RUNS the script, never a hardcoded clone.
+  //
+  // Observed in the Playwright MCP runner: `process` is NOT defined there (no `process`, no
+  // `Buffer`, no `require`), so `process.cwd()` / `process.env` would throw a ReferenceError --
+  // hence the `typeof` guard. What DOES work, and is the route this script relies on, is a
+  // relative path: Playwright resolves `path` against the server process's cwd, which is the
+  // repo/worktree root (verified: '.logs/_probe/rel.png' landed in this worktree's .logs).
+  // The env override is for other runners that do expose `process`.
+  const OUT_DIR =
+    ((typeof process !== 'undefined' && process.env && process.env.LMSTREAMING_OUT_DIR) || '.logs') +
+    '/markdown-shots';
 
   // The MCP browser context runs at deviceScaleFactor 1, so `page.screenshot()` writes CSS pixels:
   // a 1600x1000 viewport yields a 1600x1000 PNG that looks small on a high-DPI display and gains

@@ -3,12 +3,23 @@ import { computed } from 'vue';
 import type { TextMessage } from '@/types';
 import { parseMarkdown } from '@/utils/markdown';
 
-const props = defineProps<{
-  message: TextMessage;
-  isStreaming?: boolean;
-}>();
+const props = withDefaults(
+  defineProps<{
+    message: TextMessage;
+    isStreaming?: boolean;
+    /**
+     * `false` while this message is still being streamed into. Syntax highlighting is skipped
+     * for the growing text (it re-parses on every delta) and applied once the run completes.
+     * Distinct from `isStreaming`, which only controls the blinking cursor.
+     */
+    isComplete?: boolean;
+  }>(),
+  { isComplete: true }
+);
 
-const parsedText = computed(() => parseMarkdown(props.message.text));
+const parsedText = computed(() =>
+  parseMarkdown(props.message.text, { highlight: props.isComplete !== false })
+);
 </script>
 
 <template>

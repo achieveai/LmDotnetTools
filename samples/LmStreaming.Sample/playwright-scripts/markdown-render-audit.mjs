@@ -15,7 +15,16 @@
 async (page) => {
   const BASE = 'http://127.0.0.1:5000';
   const PROVIDER_ID = 'test-anthropic';
-  const OUT_DIR = 'B:/sources/LmDotnetTools/.worktrees/WT1/.logs';
+  // Output dir must follow the checkout that RUNS the script, never a hardcoded clone.
+  //
+  // Observed in the Playwright MCP runner: `process` is NOT defined there (no `process`, no
+  // `Buffer`, no `require`), so `process.cwd()` / `process.env` would throw a ReferenceError --
+  // hence the `typeof` guard. What DOES work, and is the route this script relies on, is a
+  // relative path: Playwright resolves `path` against the server process's cwd, which is the
+  // repo/worktree root (verified: '.logs/_probe/rel.png' landed in this worktree's .logs).
+  // The env override is for other runners that do expose `process`.
+  const OUT_DIR =
+    (typeof process !== 'undefined' && process.env && process.env.LMSTREAMING_OUT_DIR) || '.logs';
 
   // Professional markdown showcase — every construct the chat client is expected to render.
   const MARKDOWN = [
@@ -348,9 +357,17 @@ async (page) => {
     // Deliberately NOT pass/fail: needs an npm dependency and is held pending a decision.
     notes.htmlSanitizer = 'none (marked output goes straight into v-html)';
 
-    await page.screenshot({ path: `${OUT_DIR}/markdown-after-viewport.png` });
-    await tid('assistant-text').last().screenshot({ path: `${OUT_DIR}/markdown-after-bubble.png` }).catch(() => {});
-    record('screenshots-captured', true, [`${OUT_DIR}/markdown-after-viewport.png`, `${OUT_DIR}/markdown-after-bubble.png`]);
+    // Screenshots are supporting evidence here, not the deliverable -- the 23 DOM assertions
+    // above are. An unwritable output dir must therefore NOT fail the audit: before this was
+    // isolated, a throwing screenshot escaped to the outer catch and reported every check as
+    // failed. Recorded as a note instead.
+    try {
+      await page.screenshot({ path: `${OUT_DIR}/markdown-after-viewport.png` });
+      await tid('assistant-text').last().screenshot({ path: `${OUT_DIR}/markdown-after-bubble.png` }).catch(() => {});
+      notes.screenshots = [`${OUT_DIR}/markdown-after-viewport.png`, `${OUT_DIR}/markdown-after-bubble.png`];
+    } catch (shotErr) {
+      notes.screenshots = `NOT captured (non-fatal): ${String((shotErr && shotErr.message) || shotErr)}`;
+    }
   } catch (e) {
     record('exception', false, String((e && e.stack) || e));
   }

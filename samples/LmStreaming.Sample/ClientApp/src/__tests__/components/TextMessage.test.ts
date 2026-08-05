@@ -95,4 +95,50 @@ describe('TextMessage.vue', () => {
 
     expect(wrapper.find('.markdown-content').text()).toContain(longText);
   });
+
+  describe('isComplete (streaming highlight opt-out)', () => {
+    const FENCE = ['```csharp', 'var s = "a & b";', 'if (x is null) { }', '```'].join('\n');
+    // hljs TOKEN classes only -- the block's own `hljs language-csharp` class must survive both ways.
+    const tokenSpans = (html: string) => (html.match(/class="hljs-/g) || []).length;
+
+    it('skips syntax highlighting while the message is incomplete', () => {
+      const wrapper = mount(TextMessage, {
+        props: { message: createMessage({ text: FENCE }), isComplete: false },
+      });
+
+      expect(tokenSpans(wrapper.html())).toBe(0);
+      expect(wrapper.html()).toContain('hljs language-csharp');
+      expect(wrapper.html()).toContain('a &amp; b');
+    });
+
+    it('highlights when isComplete is true', () => {
+      const wrapper = mount(TextMessage, {
+        props: { message: createMessage({ text: FENCE }), isComplete: true },
+      });
+
+      expect(tokenSpans(wrapper.html())).toBeGreaterThan(0);
+    });
+
+    it('highlights when isComplete is absent (defaults to complete)', () => {
+      const wrapper = mount(TextMessage, {
+        props: { message: createMessage({ text: FENCE }) },
+      });
+
+      expect(tokenSpans(wrapper.html())).toBeGreaterThan(0);
+    });
+
+    it('highlights once isComplete flips true, without touching the cursor', async () => {
+      const wrapper = mount(TextMessage, {
+        props: { message: createMessage({ text: FENCE }), isComplete: false },
+      });
+      expect(tokenSpans(wrapper.html())).toBe(0);
+
+      await wrapper.setProps({ isComplete: true });
+
+      expect(tokenSpans(wrapper.html())).toBeGreaterThan(0);
+      // isComplete must not drag the blinking cursor along with it -- that is `isStreaming`'s job,
+      // and a stray '|' would land in [data-testid="assistant-text"] textContent.
+      expect(wrapper.find('.cursor').exists()).toBe(false);
+    });
+  });
 });

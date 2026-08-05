@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount } from '@vue/test-utils';
 import MessageList from '../../components/MessageList.vue';
+import TextMessage from '../../components/TextMessage.vue';
 import { nextTick } from 'vue';
 
 import { MessageType } from '@/types';
@@ -97,8 +98,94 @@ describe('MessageList', () => {
     expect(requestAnimationFrameMock).toHaveBeenCalled();
   });
 
-  describe('Layout containment (overflow regression)', () => {
-    const componentSource = (() => {
+  describe('Streaming highlight opt-out wiring', () => {
+    // hljs TOKEN classes only; the block's own `hljs language-csharp` class is present either way.
+    const tokenSpans = (html: string) => (html.match(/class="hljs-/g) || []).length;
+    const FENCE = ['```csharp', 'var s = "a & b";', 'if (x is null) { }', '```'].join('\n');
+
+    const userItem = (id: string) => ({
+      id,
+      type: 'user-message' as const,
+      content: { $type: MessageType.Text, role: 'user' as const, text: 'Show me code', isThinking: false },
+      status: 'active' as const,
+      timestamp: Date.now(),
+    });
+    const assistantItem = (id: string, text = FENCE) => ({
+      id,
+      type: 'assistant-message' as const,
+      content: { $type: MessageType.Text, role: 'assistant' as const, text, isThinking: false },
+    });
+
+    const isCompleteById = (wrapper: any) =>
+      Object.fromEntries(
+        wrapper
+          .findAllComponents(TextMessage)
+          .map((c: any) => [c.props('message').text.slice(0, 12), c.props('isComplete')])
+      );
+
+    const mountList = (displayItems: any[], isLoading: boolean) =>
+      mount(MessageList, { props: { displayItems, isLoading } });
+
+    it('marks only the LAST assistant bubble of the active group incomplete while loading', () => {
+      const wrapper = mountList(
+        [userItem('u-1'), assistantItem('a-1', 'first block'), assistantItem('a-2', 'second block')],
+        true
+      );
+
+      // Two bubbles in the same active group: the earlier one is finished and must stay
+      // highlighted, or already-rendered code goes monochrome mid-run.
+      expect(isCompleteById(wrapper)).toMatchObject({
+        'Show me code': true,
+        'first block': true,
+        'second block': false,
+      });
+    });
+
+    it('marks every bubble complete once the run ends', async () => {
+      const items = [userItem('u-1'), assistantItem('a-1', 'first block'), assistantItem('a-2', 'second block')];
+      const wrapper = mountList(items, true);
+
+      await wrapper.setProps({ isLoading: false });
+
+      expect(isCompleteById(wrapper)).toMatchObject({ 'first block': true, 'second block': true });
+    });
+
+    it('keeps HISTORY bubbles complete while a later turn streams', () => {
+      const wrapper = mountList(
+        [
+          userItem('u-1'),
+          assistantItem('a-1', 'history block'),
+          userItem('u-2'),
+          assistantItem('a-2', 'live block'),
+        ],
+        true
+      );
+
+      expect(isCompleteById(wrapper)).toMatchObject({
+        'history bloc': true,
+        'live block': false,
+      });
+    });
+
+    it('renders the streaming bubble UNHIGHLIGHTED and highlights it when the run ends', async () => {
+      const wrapper = mountList([userItem('u-1'), assistantItem('a-1')], true);
+
+      // End-to-end through MessageList -> TextMessage -> parseMarkdown, not just the prop.
+      expect(tokenSpans(wrapper.html())).toBe(0);
+      expect(wrapper.html()).toContain('hljs language-csharp');
+
+      await wrapper.setProps({ isLoading: false });
+
+      expect(tokenSpans(wrapper.html())).toBeGreaterThan(0);
+    });
+
+    it('highlights everything when not loading at all', () => {
+      const wrapper = mountList([userItem('u-1'), assistantItem('a-1')], false);
+      expect(tokenSpans(wrapper.html())).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Layout containment (overflow regression)', () => {    const componentSource = (() => {
       const fs = require('fs');
       const path = require('path');
       return fs.readFileSync(
