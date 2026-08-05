@@ -32,7 +32,11 @@ internal static class PrLifecycleSweepSeam
 
         var provider = string.Equals(row.Provider, "azure-devops", StringComparison.Ordinal) ? "ado" : row.Provider;
         return new ReviewedPr(
-            row.Repo, provider, row.PrId, ReviewBranchManager.BuildReviewBranchName(row.Repo, prNumber));
+            row.Repo,
+            provider,
+            row.PrId,
+            ReviewBranchManager.BuildReviewBranchName(row.Repo, prNumber),
+            row.Author);
     }
 
     /// <summary>
@@ -59,7 +63,7 @@ internal static class PrLifecycleSweepSeam
 /// (precomputed by the caller — the <c>ReviewStore</c> query supplies the rows and the caller derives the
 /// branch name via the <c>listReviewedPrsAsync</c> seam so this type stays test-constructible).
 /// </summary>
-internal sealed record ReviewedPr(RepoIdentity Repo, string Provider, string PrId, string Branch);
+internal sealed record ReviewedPr(RepoIdentity Repo, string Provider, string PrId, string Branch, string? Author = null);
 
 /// <summary>
 /// Resolves each reviewed PR's persistent notes branch (<c>review/{repo}-{pr}</c>,

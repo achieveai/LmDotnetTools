@@ -92,6 +92,38 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         Provider(new FakeHttpMessageHandler()).Provider.Should().Be("ado");
     }
 
+    /// <summary>
+    /// The author is only ever read from <c>uniqueName</c>. ADO also offers <c>displayName</c>, and falling
+    /// back to it looks harmless until you follow where the value goes: it keys
+    /// <c>KnowledgeBase/developers/&lt;slug&gt;.reviewfeedbacks.md</c>, a file committed to a PUBLIC repo and
+    /// handed to the next reviewer as "this author's recurring mistakes". Two people may share a display
+    /// name — ADO does not constrain it — so the fallback would file one developer's mistakes under the
+    /// other's, and no slugging scheme downstream can undo an identity that was ambiguous on arrival.
+    /// A null author is already an ordinary outcome here: it writes no record at all.
+    /// </summary>
+    [Theory]
+    [InlineData("""{ "uniqueName": "jane.doe@contoso.com", "displayName": "Jane Doe" }""", "jane.doe@contoso.com")]
+    [InlineData("""{ "displayName": "Jane Doe" }""", null)]
+    [InlineData("""{ "uniqueName": "   ", "displayName": "Jane Doe" }""", null)]
+    [InlineData("""{ "displayName": 7 }""", null)]
+    [InlineData("{ }", null)]
+    public async Task ListOpenPullRequests_takes_the_author_only_from_a_unique_identity(
+        string createdBy, string? expected)
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/pullrequests",
+            $$"""
+            { "value": [ { "pullRequestId": 42, "status": "active", "createdBy": {{createdBy}},
+                "lastMergeSourceCommit": { "commitId": "head-42" },
+                "lastMergeTargetCommit": { "commitId": "base-42" } } ] }
+            """);
+
+        var page = await Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        page.PullRequests.Should().ContainSingle().Which.Author.Should().Be(expected);
+    }
+
     [Fact]
     public async Task ListOpenPullRequests_maps_each_pr_to_a_descriptor()
     {

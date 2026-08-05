@@ -446,6 +446,17 @@ internal sealed class KnowledgeAgent
                     "Knowledge extraction rejected ## UPDATES '{Updates}' targeting a bookkeeping file; treating as a create.",
                     parsed.Updates);
             }
+            else if (IsDevelopersDirectory(ScopeSegment(updatesRel) ?? string.Empty))
+            {
+                // The per-developer records are not curated knowledge and are not this agent's to rewrite:
+                // ReviewFeedbackAgent replaces one wholesale from a prompt that shows it the whole file, so
+                // an entry landing there would be destroyed on the next feedback run — and, worse, would
+                // put PR-derived text into a public file bearing a named person's identity.
+                _logger.LogWarning(
+                    "Knowledge extraction rejected ## UPDATES '{Updates}' targeting the reserved per-developer "
+                        + "directory; treating as a create.",
+                    parsed.Updates);
+            }
             else if (StaysUnderKnowledgeBase(knowledgeBaseDir, updatesRel))
             {
                 // A PRESENCE check: an over-size entry is present, and this decides only whether the named
@@ -475,6 +486,16 @@ internal sealed class KnowledgeAgent
         if (!IsSafeSegment(scope))
         {
             _logger.LogWarning("Knowledge extraction rejected unsafe SCOPE '{Scope}'; nothing written.", scope);
+            return null;
+        }
+
+        if (IsDevelopersDirectory(scope))
+        {
+            // The per-developer namespace is reserved (see IsDevelopersDirectory). A model-chosen scope must
+            // never be able to place a knowledge entry among records that name real people, nor to collide
+            // with a record ReviewFeedbackAgent rewrites wholesale.
+            _logger.LogWarning(
+                "Knowledge extraction rejected reserved SCOPE '{Scope}'; nothing written.", scope);
             return null;
         }
 
@@ -733,7 +754,7 @@ internal sealed class KnowledgeAgent
 
         foreach (var child in children)
         {
-            if (IsBookkeeping(child))
+            if (IsBookkeeping(child) || IsDevelopersDirectory(child))
             {
                 continue;
             }
@@ -818,6 +839,17 @@ internal sealed class KnowledgeAgent
         name.StartsWith('.')
         || string.Equals(name, TocFileName, StringComparison.Ordinal)
         || string.Equals(name, IndexFileName, StringComparison.Ordinal);
+
+    /// <summary>
+    /// True for the reserved per-developer review-feedback directory
+    /// (<see cref="ReviewFeedbackAgent.DevelopersDirectory"/>). Those records are about ONE person and are
+    /// delivered by targeted injection into that person's own PRs; letting them into <c>_index.jsonl</c> /
+    /// <c>_toc.md</c> would put every developer's record into every reviewer's context and spend the shared
+    /// retrieval budget on it. Matched case-insensitively because a case-insensitive checkout (Windows)
+    /// collapses <c>Developers/</c> onto <c>developers/</c>.
+    /// </summary>
+    private static bool IsDevelopersDirectory(string name) =>
+        string.Equals(name, ReviewFeedbackAgent.DevelopersDirectory, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>The final path segment (file name) of a KB-relative path such as <c>system/x.md</c>.</summary>
     private static string LeafName(string relPath) => relPath[(relPath.LastIndexOf('/') + 1)..];

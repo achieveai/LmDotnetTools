@@ -17,6 +17,7 @@ internal static class SchemaMigrations
         new Migration(1, V1Sql),
         new Migration(2, V2Sql),
         new Migration(3, V3Sql),
+        new Migration(4, V4Sql),
     ];
 
     // ── v1: initial orchestration schema ─────────────────────────────────────────────────────────
@@ -131,5 +132,20 @@ internal static class SchemaMigrations
         );
 
         CREATE INDEX ix_deep_link_conversation_minted_at ON deep_link_conversation (minted_at);
+        """;
+
+    // ── v4: the PR author, for the per-developer review-feedback record ───────────────────────────
+    // Who OPENED the PR (GitHub user.login / ADO createdBy.uniqueName). The at-close feedback
+    // extraction runs long after the poll that observed the PR, and re-resolving the author then would
+    // mean an extra provider call against a PR that may already be closed — so it is captured on the
+    // run row when it is first seen.
+    //
+    // NULL-able with no default, deliberately: rows written before this migration genuinely have no
+    // known author, and NULL is the value every consumer already treats as "no feedback record is
+    // addressable". A default of '' would look like a real identity and could produce a record filed
+    // under an empty name; a fabricated 'unknown' would collapse every distinct pre-migration author
+    // into one shared public file. Neither is recoverable, so absence stays absence.
+    private const string V4Sql = """
+        ALTER TABLE review_run ADD COLUMN pr_author TEXT NULL;
         """;
 }

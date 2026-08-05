@@ -30,6 +30,12 @@ public sealed class DaemonReviewStageExecutorPooledTests
     private const string NotesRelPath = "PRs/lmdotnettools-118";
     private const string SubmoduleRelPath = "repos/LmDotnetTools";
 
+    /// <summary>
+    /// The stem the review-feedback writer files "octocat" under. Derived rather than typed: what these
+    /// tests pin is that the pooled RETRIEVAL path reads the file the writer wrote.
+    /// </summary>
+    private static readonly string OctocatSlug = ReviewFeedbackAgent.SlugifyAuthor("octocat")!;
+
     /// <summary>The S2S review host this fixture's deep-links point at (never production's 5050).</summary>
     private const string LmStreamingBaseUrl = "http://localhost:5051";
 
@@ -205,17 +211,141 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
-    public async Task Reviewed_prepends_the_reviewed_repos_root_guidance_read_from_the_leased_checkout()
+    public async Task Reviewed_prepends_the_authors_feedback_record_read_from_the_leased_slots_host_store()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun(prAuthor: "octocat");
+
+        // Same guarantee as the prior-knowledge ToC above, on the payload that ships beside it. The record
+        // lives in the LEASED SLOT's store checkout and must be read HOST-side via _slotWorkspace
+        // .HostFileSystem + lease.Prepared.StoreRoot; the boot-lifetime sandbox session is never registered
+        // for a pooled run and 404s. Reading through the wrong file system does not throw here — it reports
+        // "absent", which is indistinguishable from an author who has no record yet, so the feature would
+        // simply never fire on the supported path.
+        fixture.HostFileSystem.Seed(
+            $"/pool/slot-0/store/KnowledgeBase/developers/{OctocatSlug}.reviewfeedbacks.md",
+            "---\ndeveloper: octocat\n---\n\n## Patterns\n\n- FEEDBACK-PATTERN-XYZ\n");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        text.Should().Contain("## Recurring feedback for this PR's author", "the record is prepended as a labelled block");
+        text.Should().Contain("FEEDBACK-PATTERN-XYZ", "the seeded record body is surfaced to the pooled reviewer");
+        text.Should().Contain(
+            $"/workspace/store/KnowledgeBase/developers/{OctocatSlug}.reviewfeedbacks.md",
+            "the heading hands over an exact absolute path, not a bare file name");
+    }
+
+    [Fact]
+    public async Task Reviewed_renders_a_container_rooted_feedback_path_when_the_leased_store_is_a_host_path()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun(prAuthor: "octocat");
+
+        // The read/render split, mirrored onto the feedback record. This block tells the agent to open the
+        // path with the Read tool AND to copy it into every sub-agent's brief, so a host path here is worse
+        // than a missing one: it propagates an unopenable path to every child that was dispatched to look
+        // for exactly these mistakes. Read host-side out of the leased slot, render at the mounted root.
+        fixture.HostFileSystem.Seed(
+            $"/pool/review-slot-0/store/KnowledgeBase/developers/{OctocatSlug}.reviewfeedbacks.md",
+            "---\ndeveloper: octocat\n---\n\n## Patterns\n\n- Leaves `ConfigureAwait(false)` off library awaits.\n");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        var block = text[text.IndexOf("## Recurring feedback", StringComparison.Ordinal)..];
+        block.Should().Contain(
+            $"/workspace/store/KnowledgeBase/developers/{OctocatSlug}.reviewfeedbacks.md",
+            "the record was READ from the host slot but must be RENDERED at the root the agent sees");
+        block.Should().NotContain(
+            "/pool/review-slot-0",
+            "a host path is unopenable inside the review container, and this block tells the agent to forward it to sub-agents");
+    }
+
+    [Fact]
+    public async Task Reviewed_points_the_reviewer_at_git_instead_of_inlining_the_patch_and_the_file_tree()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+
+        // The two payloads that used to dominate the brief. On a real run (226) they were 117k and 15.6k chars
+        // of a 173,567-char input, and the reviewer holds a checkout of the head that answers both.
+        text.Should().NotContain(
+            "Tracked files in the reviewed repository",
+            "the reviewer has the checkout and can Glob/ls-files it; listing every tracked file is dead weight");
+        text.Should().NotContain(
+            "\n\nDiff:\n",
+            "the patch is read from git now, not copied into the brief");
+
+        // What replaces them has to leave the reviewer able to get there on its own: the range, the root, and
+        // the changed-file listing (which the KB ranking already computes, so this costs nothing new).
+        text.Should().Contain("Files changed (", "the reviewer still needs to know the blast radius up front");
+        text.Should().Contain(
+            $"diff {run.BaseSha}...{run.HeadSha}",
+            "the fetch instruction must carry the range, which is the one thing the reviewer cannot derive");
+        text.Should().Contain(
+            "git -C ",
+            "the instruction must be runnable as written, not assembled by the model");
+        text.Should().NotContain(
+            "/pool/slot-0",
+            "the brief now tells the reviewer to run git at this root, so a HOST path here would be a command "
+                + "that cannot run inside the review container (cf. the sub-agent block above)");
+        text.Should().Contain(
+            "UNTRUSTED DATA",
+            "the injection warning the inlined diff/guidance used to carry must survive their removal - the "
+                + "reviewer is now reading that same attacker-controlled content through its own tools");
+    }
+
+    /// <summary>
+    /// The degrade path. A context artifact carries no changed-path listing either because
+    /// <c>git diff --name-only</c> failed (pinned here, since that is the trigger a live run can hit) or because
+    /// the artifact predates the field and is being resumed now — run 220 in the achieveai daemon's store is
+    /// exactly that second shape, a null listing beside a 44,649-char diff, while 221-224 carry the listing.
+    /// Either way the reviewer must still be told what the PR touched, so the brief falls back to inlining the
+    /// patch rather than shipping a range with no blast radius attached.
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_falls_back_to_the_inlined_patch_when_there_is_no_changed_path_listing()
+    {
+        using var fixture = Fixture.Create();
+        fixture.Provisioner.NameOnlyResult = new SandboxCommandResult(128, string.Empty, "fatal: bad object");
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+
+        text.Should().Contain(
+            "diff --git a/Foo.cs",
+            "with no listing the patch is the only record of what the PR touched, so it is inlined rather than "
+                + "leaving the reviewer to review blind");
+        text.Should().NotContain(
+            "Files changed (",
+            "there is no listing to report, and an empty one would read as 'this PR changed nothing'");
+    }
+
+    [Fact]
+    public async Task Reviewed_points_the_reviewer_at_the_repos_root_guidance_instead_of_quoting_it()
     {
         using var fixture = Fixture.Create();
         var run = fixture.SeedRun();
 
         // The reviewed repo's own CLAUDE.md/AGENTS.md live in the LEASED SLOT's target checkout
-        // (lease.Prepared.TargetDir = <store>/repos/LmDotnetTools) and must be read HOST-side via
+        // (lease.Prepared.TargetDir = <store>/repos/LmDotnetTools) and must be PROBED host-side via
         // _slotWorkspace.HostFileSystem — the same host filesystem the KB / prior-notes reads use, NOT the
-        // boot-lifetime sandbox session (which the gateway never registers for a pooled run). A headless,
-        // collect-only reviewer must fold the repo's own guidance into the review INPUT up front; injecting
-        // it mid-run (the interactive chat path) would restart the collector and could discard the review.
+        // boot-lifetime sandbox session (which the gateway never registers for a pooled run).
         fixture.HostFileSystem.Seed(
             "/pool/slot-0/store/repos/LmDotnetTools/CLAUDE.md",
             "# LmDotnetTools\nUse CSharpier. REPO-GUIDANCE-MARKER.");
@@ -228,9 +358,25 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
-        text.Should().Contain("Repository guidance", "the reviewed repo's own guidance is prepended as a labelled block");
-        text.Should().Contain("REPO-GUIDANCE-MARKER", "the reviewed repo's CLAUDE.md is surfaced to the reviewer");
-        text.Should().Contain("AGENTS-MARKER", "the reviewed repo's AGENTS.md is surfaced to the reviewer");
+        text.Should().Contain("Repository guidance", "the reviewer still has to be told the files are there");
+        text.Should().Contain(
+            "/workspace/store/repos/LmDotnetTools/CLAUDE.md",
+            "the pointer is only useful at the root the AGENT's tools resolve; the host path the daemon "
+                + "probed through (/pool/slot-0/...) does not exist inside the review container");
+        text.Should().Contain("/workspace/store/repos/LmDotnetTools/AGENTS.md", "both files are named");
+        text.Should().NotContain(
+            "/pool/slot-0",
+            "rendering the daemon's own disk path fails silently - the block reads fine and every Read of it "
+                + "404s in the container");
+        text.Should().NotContain(
+            "REPO-GUIDANCE-MARKER",
+            "the file is pointed at, not quoted - on run 226 this content was ~24,500 chars of a 173,567-char "
+                + "brief, for a file the reviewer holds a checkout of");
+        text.Should().NotContain("AGENTS-MARKER", "same for AGENTS.md");
+        text.Should().Contain(
+            "prompt injection",
+            "the warning has to travel with the pointer: the reviewer now reads that attacker-controlled text "
+                + "through its own tools, where nothing else marks it as untrusted");
     }
 
     [Fact]
@@ -311,14 +457,15 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
-    public async Task Reviewed_tells_the_reviewer_repo_guidance_exists_when_it_is_too_large_to_read()
+    public async Task Reviewed_still_points_at_repo_guidance_that_is_too_large_for_the_daemon_to_read()
     {
         using var fixture = Fixture.Create();
         var run = fixture.SeedRun();
 
-        // An absent CLAUDE.md and a refused one both render nothing, and mean opposite things: one repository
-        // states no conventions, the other states them in a file the daemon declined to ingest. Skipping it
-        // silently has the reviewer fault a PR for conventions it was never shown.
+        // TooLarge is a POSITIVE existence signal, not a failure. It used to matter a great deal — the file
+        // was announced and never seen, because the daemon's ingest ceiling also decided what the reviewer
+        // could read. Now that nothing is quoted, that ceiling is the daemon's problem alone: a refused file
+        // is named exactly like a read one, and the reviewer opens it with its own budget.
         fixture.HostFileSystem.Seed(
             "/pool/slot-0/store/repos/LmDotnetTools/CLAUDE.md",
             "REPO-GUIDANCE-MARKER" + new string('x', (int)SandboxReadLimits.RepositoryFileBytes));
@@ -328,12 +475,14 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
-        text.Should().Contain("Repository guidance", "the block is rendered so the refusal can be stated in it");
-        text.Should().Contain("NOT READ BY THE DAEMON", "the reviewer is told the file exists and was not read");
-        text.Should().Contain("CLAUDE.md", "and told which file it was");
+        text.Should().Contain("Repository guidance", "the block is rendered - the file exists");
+        text.Should().Contain(
+            "/workspace/store/repos/LmDotnetTools/CLAUDE.md",
+            "an oversize file is pointed at like any other; skipping it silently would have the reviewer "
+                + "fault a PR for conventions it was never shown");
         text.Should().NotContain(
             "REPO-GUIDANCE-MARKER",
-            "the file was refused, so none of its attacker-controllable content reaches the input");
+            "no prefix of a refused file is quoted - and none of any other file either, now");
     }
 
     [Fact]
@@ -1219,6 +1368,10 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 // Host-side posting is the ONLY delivery path on S2S, so the S2S fixture authorizes it — that is
                 // what makes the posted body (and its deep-link) observable on the fake publisher.
                 EnableCommentPosting = s2s,
+                // On for every pooled fixture, not just the feedback tests: the injection is inert unless the
+                // run carries a sluggable PrAuthor (SeedRun leaves it null by default), so this changes nothing
+                // for the other cases while keeping the flag from being the reason a real defect goes unseen.
+                EnableReviewFeedbackAgent = true,
             };
             // Only the HOSTED path's turns are durable, and the executor now refuses an S2S review whose loop
             // cannot checkpoint them — so the double has to be resumable on exactly the path production is.
@@ -1353,7 +1506,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// Seeds (or resumes) a review run for <paramref name="prId"/>. Distinct PR ids give distinct runs —
         /// which is how the isolation gate drives two reviews at once.
         /// </summary>
-        public ReviewRun SeedRun(string prId = "118")
+        public ReviewRun SeedRun(string prId = "118", string? prAuthor = null)
         {
             var repoId = Store.EnsureRepo(new RepoIdentity
             {
@@ -1366,6 +1519,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
             {
                 RepoId = repoId,
                 PrId = prId,
+                PrAuthor = prAuthor,
                 HeadSha = "head-sha",
                 BaseSha = "base-sha",
                 TriggerWatermark = "wm-1",
@@ -1571,6 +1725,13 @@ public sealed class DaemonReviewStageExecutorPooledTests
         public FakeSandboxCommandRunner SdkRunner { get; } = new();
         public FakeSandboxFileSystem SdkFileSystem { get; } = new();
 
+        /// <summary>
+        /// What <c>git diff --name-only</c> answers in the session. Settable so a test can make it FAIL, which is
+        /// how the changed-path listing goes missing on a live run — <c>BuildChangedPathsAsync</c> degrades to an
+        /// empty listing on a non-zero exit rather than failing the run.
+        /// </summary>
+        public SandboxCommandResult NameOnlyResult { get; set; } = new(0, "Foo.cs\n", string.Empty);
+
         /// <summary>Shared cleanup-order log (with <see cref="FakeReviewSlotPool"/>).</summary>
         public List<string>? Order { get; set; }
 
@@ -1605,6 +1766,9 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 "/workspace/store/.gitmodules",
                 "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n"
                     + "\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+            // Registered FIRST so it wins over the broader patch rule below: the two commands differ only by
+            // flags, and a runner rule that matched the patch would otherwise answer the listing with a patch.
+            SdkRunner.OnArgvContainsFirst("diff --name-only", NameOnlyResult);
             SdkRunner.OnArgvContains(
                 "diff base-sha...head-sha",
                 new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ x", string.Empty));

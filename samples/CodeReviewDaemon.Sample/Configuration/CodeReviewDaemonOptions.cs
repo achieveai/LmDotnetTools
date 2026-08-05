@@ -30,6 +30,15 @@ internal sealed class CodeReviewDaemonOptions
     /// <summary>When <c>false</c> (default) the knowledge-base agent does not run.</summary>
     public bool EnableKnowledgeAgent { get; init; }
 
+    /// <summary>
+    /// When <c>false</c> (default) the per-developer review-feedback agent does not run. Enabling it makes the
+    /// daemon write a record NAMED AFTER each PR author into the store's <c>KnowledgeBase/developers/</c>
+    /// directory, which for a public store is public, searchable and effectively permanent — an operator
+    /// decision, never a default. Independent of <see cref="EnableKnowledgeAgent"/> so either half of the
+    /// at-close extraction can be turned off alone, but both share the same notes-branch commit.
+    /// </summary>
+    public bool EnableReviewFeedbackAgent { get; init; }
+
     /// <summary>When <c>false</c> (default) the judge agent does not run (no grading is persisted).</summary>
     public bool EnableJudgeAgent { get; init; }
 

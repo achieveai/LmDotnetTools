@@ -539,6 +539,175 @@ public sealed class AgentTranscriptAccessTests
         }
     }
 
+    [Fact]
+    public async Task ReadTranscript_SucceedsForARetainedChild_AfterTheLoopLeftThePool()
+    {
+        // The daemon's actual failure mode, and the one the restart test above does NOT cover: it keeps a
+        // live loop on the far side of the restart, so a collaboration is still in hand. Here NOTHING is
+        // live — the conversation was evicted from the pool (or the host restarted and nobody reopened
+        // it), which is the state every reader is in AFTER a review terminates. BuildAsync returns
+        // loop?.Collaboration, so the collaboration is null purely because the loop is gone, and the route
+        // used to answer collaboration_unavailable for a hierarchy that is sitting on disk, fully
+        // persisted, right next to the transcript it is refusing.
+        await WithRetainedRootAsync(async (store, registry, alphaId) =>
+        {
+            await using var coldPool = CreateFakeAgentPool();
+            var result = await CreateController(coldPool, registry, store)
+                .GetAgentTranscript(RootThread, alphaId);
+
+            var ok = Assert.IsType<OkObjectResult>(result);
+            var messages = Assert.IsAssignableFrom<IReadOnlyCollection<PersistedMessage>>(ok.Value).ToList();
+
+            messages.Select(m => m.Id).Should().Equal(
+                ["m2"],
+                "a retained read is the same read, so reasoning is excluded exactly as it is when live");
+            JsonSerializer.Serialize(messages).Should().NotContain("deliberation");
+        });
+    }
+
+    [Fact]
+    public async Task ReadTranscript_StillRefusesARetainedChild_ForANamedViewer()
+    {
+        // The retained path answers only for the conversation root, whose verdict is knowable without the
+        // live bundle: root-reads-descendant resolves to Ancestor, which is allowed under BOTH visibility
+        // modes, so the cold answer is the answer the live path would have given. A NAMED reader is a
+        // genuinely different question — cross-collaboration, ancestry and the configured mode all matter,
+        // and the mode is not persisted — so it must keep saying the hierarchy is unavailable rather than
+        // guess. This is also what keeps the in-agent tool, which always names its reader, untouched.
+        await WithRetainedRootAsync(async (store, registry, alphaId) =>
+        {
+            await using var coldPool = CreateFakeAgentPool();
+            var result = await CreateController(coldPool, registry, store)
+                .GetAgentTranscript(RootThread, alphaId, viewer: "some-other-agent");
+
+            var notFound = Assert.IsType<NotFoundObjectResult>(result);
+            JsonSerializer.Serialize(notFound.Value).Should()
+                .Contain(AgentTranscriptReasons.CollaborationUnavailable);
+        });
+    }
+
+    [Fact]
+    public async Task ReadTranscript_DoesNotServeARetainedRowThatCarriesNoCollaborationIdentity()
+    {
+        // The gate that keeps this from becoming a new door on a host that never enabled collaboration.
+        // Such a host persists workflow tabs unenriched, so the row carries no CollaborationId/AgentKind
+        // and ToNodeRecord() returns null for it — there is no hierarchy that ever authorized this agent,
+        // and the retained path must not invent one just because the row survived on disk.
+        var indexDir = NewIndexDir();
+        try
+        {
+            var registry = new WorkflowRunRegistry(indexDir);
+            registry.PersistTabs(
+                RootThread,
+                [
+                    new SubAgentSummary
+                    {
+                        AgentId = "plain-1",
+                        Template = "worker",
+                        Task = "a task",
+                        Status = "completed",
+                        ThreadId = "subagent-plain-1",
+                    },
+                ]);
+
+            var store = new InMemoryConversationStore();
+            await store.AppendMessagesAsync(
+                "subagent-plain-1",
+                [Persisted("m1", new TextMessage { Text = "the finding", Role = Role.Assistant })]);
+
+            await using var coldPool = CreateFakeAgentPool();
+            var result = await CreateController(coldPool, registry, store)
+                .GetAgentTranscript(RootThread, "plain-1");
+
+            var notFound = Assert.IsType<NotFoundObjectResult>(result);
+            JsonSerializer.Serialize(notFound.Value).Should()
+                .Contain(AgentTranscriptReasons.CollaborationUnavailable);
+        }
+        finally
+        {
+            DeleteIndexDir(indexDir);
+        }
+    }
+
+    [Fact]
+    public async Task ReadTranscript_ReportsAnUnknownTargetOnTheRetainedPath()
+    {
+        // A retained conversation that does have a hierarchy still owes the same content-free answer for
+        // an agent it has never heard of — the retained path must not become the one place a 404/403 split
+        // tells a caller which agent ids are real.
+        await WithRetainedRootAsync(async (store, registry, _) =>
+        {
+            await using var coldPool = CreateFakeAgentPool();
+            var result = await CreateController(coldPool, registry, store)
+                .GetAgentTranscript(RootThread, "agent-that-never-existed");
+
+            AssertDenied(result, TranscriptAccessReasons.UnknownTarget);
+        });
+    }
+
+    /// <summary>
+    /// Drives one conversation to the state every retained read starts from: a collaborating child was
+    /// spawned, <see cref="AgentHierarchyService.BuildAsync"/> wrote its enriched row through to the
+    /// durable index, its transcript was persisted, and then everything live went away. The callback is
+    /// handed the store, a registry over the same on-disk index, and the child's id — with no live agent
+    /// anywhere, exactly as the daemon finds the host after a review terminates.
+    /// </summary>
+    private static async Task WithRetainedRootAsync(
+        Func<IConversationStore, WorkflowRunRegistry, string, Task> assert)
+    {
+        var indexDir = NewIndexDir();
+        try
+        {
+            var store = new InMemoryConversationStore();
+            string alphaId;
+
+            var registryWhileLive = new WorkflowRunRegistry(indexDir);
+            await using (var loop = CreateLoop(CreateRootCollaboration()))
+            await using (var pool = CreatePoolReturning(loop))
+            {
+                _ = pool.GetOrCreateAgent(RootThread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+                alphaId = await SpawnAsync(loop, "alpha");
+                await store.AppendMessagesAsync(
+                    $"subagent-{alphaId}",
+                    [
+                        Persisted("m1", new ReasoningMessage { Reasoning = "private deliberation" }),
+                        Persisted("m2", new TextMessage { Text = "the finding", Role = Role.Assistant }),
+                    ]);
+
+                _ = await new AgentHierarchyService(
+                        pool,
+                        registryWhileLive,
+                        store,
+                        NullLogger<AgentHierarchyService>.Instance,
+                        new SubAgentScanCoverageCache())
+                    .BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+            }
+
+            // A fresh registry over the same index, and below this the caller brings a pool that never
+            // held this conversation — no loop, no directory, no collaboration. Only what is on disk.
+            await assert(store, new WorkflowRunRegistry(indexDir), alphaId);
+        }
+        finally
+        {
+            DeleteIndexDir(indexDir);
+        }
+    }
+
+    private static string NewIndexDir() =>
+        Path.Combine(Path.GetTempPath(), "wf-index-transcript-" + Guid.NewGuid().ToString("N"));
+
+    private static void DeleteIndexDir(string indexDir)
+    {
+        try
+        {
+            Directory.Delete(indexDir, recursive: true);
+        }
+        catch (IOException)
+        {
+            // Best-effort temp cleanup; a directory that was never written throws here too.
+        }
+    }
+
     /// <summary>Runs the tool exactly as the loop would: one handler, one args string, one reader.</summary>
     private static async Task<ToolHandlerResult.Resolved> InvokeToolAsync(
         MultiTurnAgentPool pool,

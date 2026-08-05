@@ -260,6 +260,16 @@ synthesis:
        line-anchored comment on the exact file+line it concerns. A short overall summary may go on top. Where
        the PR already has OPEN review threads or questions, answer them as described below.
 
+    SIGNATURE — sign EVERY comment you post. Each body must START with the literal marker `[{{ bot_name }}]`,
+    before any other character: each inline finding, the review summary body, every reply, and any
+    PR-conversation comment. No exceptions, and nothing ahead of it — not a heading, not a severity, not a
+    blank line. Never translate, abbreviate, restyle or re-bracket it; it is matched as text.
+    This is not decoration. The PR carries comments from humans and from several other bots, and the next
+    review reads that leading `[...]` back to tell which prior findings were YOURS — that is how it computes
+    which comments arrived since you last reviewed, and the review input's "New comments since your last
+    review" section is built from it. An unsigned comment is not merely anonymous: it is counted as somebody
+    else's, and it corrupts that cutoff for every later round.
+
     AUTHENTICATION: you do NOT have, and do not need, a token. The sandbox's egress proxy automatically
     attaches the bot's authentication to every request you send to the provider's API host, for reads AND
     writes — just make the HTTP request. `curl` needs nothing. If a tool insists a token be present (e.g.
@@ -274,23 +284,24 @@ synthesis:
       https://dev.azure.com/{{ ado_org }}/{{ ado_project }}/_apis/git/repositories/{{ ado_repo }}/pullRequests/{{ pr_number }}
     - GET `{base}/threads` first to see existing threads and which are still open.
     - INLINE finding — POST `{base}/threads` with body:
-      {"comments":[{"parentCommentId":0,"content":"<finding markdown>","commentType":1}],"status":1,
+      {"comments":[{"parentCommentId":0,"content":"[{{ bot_name }}] <finding markdown>","commentType":1}],"status":1,
        "threadContext":{"filePath":"/<path relative to repo root>",
          "rightFileStart":{"line":<line>,"offset":1},"rightFileEnd":{"line":<line>,"offset":1}}}
     - REPLY to an open thread — POST `{base}/threads/{threadId}/comments` with
-      {"content":"<reply markdown>","parentCommentId":<last comment id in that thread>,"commentType":1}
-    - SUMMARY — POST one `{base}/threads` with a single comment and NO threadContext (a PR-level thread).
+      {"content":"[{{ bot_name }}] <reply markdown>","parentCommentId":<last comment id in that thread>,"commentType":1}
+    - SUMMARY — POST one `{base}/threads` with a single comment and NO threadContext (a PR-level thread),
+      its content signed the same way.
     Verify each POST returned 200/201.
     {{ else ~}}
     This is a GitHub PR. Post ONE review that is SUBMITTED and carries your findings as INLINE comments, in a
     single request (the egress proxy authenticates it):
       POST https://api.github.com/repos/{{ gh_owner }}/{{ gh_repo }}/pulls/{{ pr_number }}/reviews
       body: {"event":"COMMENT",
-             "body":"<ONE short overall summary line only>",
+             "body":"[{{ bot_name }}] <ONE short overall summary line only>",
              "comments":[
                 {"path":"<file path from repo root>","line":<a changed line in the PR diff>,"side":"RIGHT",
-                 "body":"<severity + finding + concrete suggestion>"}
-                /* one entry per finding, each on its exact file+line */
+                 "body":"[{{ bot_name }}] <severity + finding + concrete suggestion>"}
+                /* one entry per finding, each on its exact file+line, each signed */
              ]}
     CRITICAL — the exact mistakes to avoid (they happened last time):
     - "event":"COMMENT" is REQUIRED — it SUBMITS the review. Omitting "event" leaves an invisible PENDING
@@ -324,7 +335,7 @@ synthesis:
     question in the PR's main conversation, not on a code line — its id is an issue-comment id, not a
     review-comment id, so it CANNOT be answered on any review endpoint) is answered EITHER by a line in that same
     summary body OR by ONE wrapper-free comment:
-      POST /repos/{{ gh_owner }}/{{ gh_repo }}/issues/{{ pr_number }}/comments  body {"body":"<answer>"}
+      POST /repos/{{ gh_owner }}/{{ gh_repo }}/issues/{{ pr_number }}/comments  body {"body":"[{{ bot_name }}] <answer>"}
     That issues endpoint is a PR-conversation comment, not a review, so it never creates an empty review.
     Verify the ONE review SUBMITTED (HTTP 200/201).
     {{ end ~}}
@@ -425,3 +436,72 @@ knowledge-extraction:
     Do NOT write YAML frontmatter — the daemon deterministically injects title, tags, scope,
     sourcePrs, and updated. Do not attempt to post comments, push commits, or otherwise act on the
     repository — the daemon owns all writes.
+
+# Maintains one record per PR AUTHOR of the mistakes they repeat, so a future review of their work can
+# check their known patterns first. Kept separate from `knowledge-extraction` because the two answer
+# different questions: that one asks "what should EVERY future review know?", this one asks "what does
+# THIS developer keep getting wrong?" — and a lesson can be durable for one and noise for the other.
+#
+# Shares knowledge-extraction v1.1's hard-won shape, for the same reasons: on the S2S path this prompt
+# is only an APPENDIX to the host's `workspace-agent` MODE prompt, which mandates tool use, task memory
+# and an action summary. The mode prompt wins unless this one opens by overriding it and pins the FIRST
+# line of the reply, which is why every August 2026 extraction run silently wrote nothing.
+#
+# Unlike knowledge-extraction there are no SCOPE/UPDATES markers: the output path is
+# `developers/<slug(author)>.reviewfeedbacks.md`, derived by the daemon from the provider's PR author.
+# The model never names a file, which removes the model-supplied-path traversal class outright.
+review-feedback-extraction:
+  v1.0: |
+    This turn is a DATA EXTRACTION turn, not a workspace task. It overrides any workspace, mode, or
+    sandbox instructions you were given: do NOT use tools, do NOT read/write/create/edit files, do NOT
+    record task memory, and do NOT summarize actions you took. Everything you need is in the message.
+
+    You read ONE pull request's accumulated review notes — every round of them — and maintain a running
+    record of the mistakes the developer who opened it REPEATS, so future reviews of their work can
+    check their known patterns first.
+
+    WHAT COUNTS
+
+    Record something ONLY when the notes show a finding that was RAISED in one round and then FIXED in
+    a later one. The fix is the developer's own confirmation that the finding was real. Findings that
+    were disputed, declined, explained away, or simply never addressed are NOT evidence of a mistake —
+    ignore them completely, however serious they sound.
+
+    A pattern is a HABIT worth warning about next time, written as the CLASS of error rather than the
+    incident: "drops the CancellationToken when calling async APIs", not "missed the token on line 42
+    of Foo.cs". One-off slips — a typo, a stale rebase, a build break — are not habits.
+
+    You are given this developer's EXISTING record. If a finding in this PR is another instance of a
+    pattern already recorded, UPDATE that pattern: add this PR to its evidence and sharpen the
+    description. Do not append a near-duplicate beside it.
+
+    WHEN THERE IS NOTHING
+
+    Most PRs add nothing to this record — no finding was both raised and fixed, or the fixes were
+    one-offs. Reply with exactly:
+
+    NO_FEEDBACK
+
+    and nothing else. That is a correct and expected answer — prefer it over prose.
+
+    OUTPUT
+
+    The FIRST line of your reply must be exactly `NO_FEEDBACK` or `## PATTERNS`. Anything else — a
+    greeting, an action summary, a review verdict, a question — means nothing gets written.
+
+    After `## PATTERNS`, emit the developer's COMPLETE updated record: every pattern you are keeping
+    from the existing record, revised or unchanged, plus any new one. What you emit REPLACES the
+    record, so a pattern you leave out is deleted. Use this shape for each one:
+
+    ### <short name for the class of error>
+    - **Seen in:** <comma-separated PR refs, oldest first>
+    - **What happens:** <one or two sentences, in the general case>
+    - **How to avoid it:** <the concrete check they can apply before pushing>
+
+    Write about the work, never the person. Describe the error class and the fix; do not comment on
+    competence, effort, care, or intent, and do not count or grade. This record is committed to the
+    repository under the developer's name and is written to be read by them.
+
+    Do NOT write YAML frontmatter — the daemon deterministically injects the developer, sourcePrs and
+    updated fields. Do NOT name or choose the output file; the daemon owns the path. Do not attempt to
+    post comments, push commits, or otherwise act on the repository — the daemon owns all writes.

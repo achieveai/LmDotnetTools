@@ -78,6 +78,10 @@ internal static class OrphanBranchReconciler
                 continue;
             }
 
+            // Author is left null: this unit is reconstructed from a BRANCH NAME, which encodes only the
+            // repo and PR number. These are branches with no surviving review_run row, so there is no
+            // recorded author to recover — and inventing one would file a public per-developer record
+            // under the wrong name. No author means no feedback record, which is the right outcome here.
             result.Add(new ReviewedPr(
                 target.Repo, target.Provider, prNumber.ToString(CultureInfo.InvariantCulture), branch));
         }
