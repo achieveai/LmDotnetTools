@@ -83,6 +83,28 @@ Long text response (200 words):
 Multi-turn: tool call then long text summary (300 words):
 <|instruction_start|>{"instruction_chain":[{"id":"long-turn1","id_message":"Gathering data","messages":[{"tool_call":[{"name":"get_weather","args":{"location":"Tokyo"}}]}]},{"id":"long-turn2","id_message":"Long summary","messages":[{"text_message":{"length":300}}]}]}<|instruction_end|>
 
+### Markdown Rendering Showcase
+
+`text_message: {"length": N}` emits lorem ipsum, so it never exercises the markdown renderer.
+`{"text": "..."}` pins literal assistant text instead (see `InstructionChainParser.cs`), which
+makes it possible to drive every GFM construct through the mock deterministically.
+
+This prompt renders headings h1-h3, bold/italic, inline code, a blockquote, an ordered list with
+nested bullets, an aligned GFM table, two fenced code blocks, a task list, a horizontal rule and a
+link — i.e. everything `assets/markdown.css` is responsible for styling. Use it to eyeball the
+chat's markdown after any change to `markdown.ts` or the markdown stylesheet.
+
+<|instruction_start|>{"instruction_chain":[{"id":"md-showcase","id_message":"Markdown showcase","messages":[{"text":"# Streaming Architecture Review\n\nThe pipeline is **healthy** overall, with _two_ follow-ups worth tracking. Latency is measured at the `MessageTransformationMiddleware` boundary.\n\n## Findings\n\n### 1. Merge keys collide across turns\n\nTurn 2+ reuses the run-scoped `generationId`, so `(generationId, messageOrderIdx)` is not unique.\n\n> Any fix that changes message identity must ship a multi-turn end-to-end test.\n> Single-turn green is not evidence.\n\n### 2. Tool pills duplicate on resume\n\nSteps to reproduce:\n\n1. Start a tool-heavy run\n2. Switch to another conversation mid-run\n3. Switch back before the run completes\n   - the pill count freezes\n   - a full page reload \"fixes\" it\n\n## Latency by stage\n\n| Stage | p50 (ms) | p99 (ms) | Budget |\n| --- | ---: | ---: | :---: |\n| Provider stream | 42 | 180 | ok |\n| Transform | 3 | 11 | ok |\n| WebSocket fan-out | 8 | 260 | over |\n\n## Suggested patch\n\n```csharp\nif (msg.RunId is null && currentRunId is not null)\n{\n    msg = msg with { RunId = currentRunId };\n}\n```\n\nAnd on the client:\n\n```ts\nconst key = [kind, runId, generationId, orderIdx].join('-');\n```\n\n## Checklist\n\n- [x] Reproduce with 12 tool calls\n- [ ] Add `useChatResume` coverage\n- [ ] Backfill persisted conversations\n\n---\n\nSee the [pipeline notes](https://example.com/pipeline) for the full trace. Terms: HTTP/2, SSE."}]}]}<|instruction_end|>
+
+Regenerate the line above (rather than hand-editing the escaped JSON) with:
+
+```bash
+node playwright-scripts/gen-md-showcase-prompt.mjs
+```
+
+`playwright-scripts/markdown-render-audit.mjs` sends this same prompt and asserts on the computed
+styles of every rendered construct.
+
 ### Weather Emoji Conditions
 
 The mock SampleTools.GetWeather returns random conditions from:
