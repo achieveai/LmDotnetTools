@@ -13,6 +13,7 @@ import ConversationSidebar from './ConversationSidebar.vue';
 import MessageList from './MessageList.vue';
 import PendingMessageQueue from './PendingMessageQueue.vue';
 import ChatInput from './ChatInput.vue';
+import PendingQuestionDock from './PendingQuestionDock.vue';
 import SubAgentListPanel from './SubAgentListPanel.vue';
 import ConversationTabs from './ConversationTabs.vue';
 import SubAgentTranscript from './SubAgentTranscript.vue';
@@ -767,6 +768,10 @@ onBeforeUnmount(() => {
           </div>
 
           <PendingMessageQueue :pending-messages="pendingMessages" />
+
+          <!-- Docked directly above the input: a question the run is blocked on is something the
+               user must ACT on, so it belongs where they act, not inside the transcript's pill. -->
+          <PendingQuestionDock :display-items="displayItems" />
 
           <ChatInput
             :disabled="isSending && !chatLoading"

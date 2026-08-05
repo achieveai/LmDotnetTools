@@ -86,7 +86,14 @@ const richMap: Partial<Record<string, Component>> = {
   weather: WeatherRich,
   question: QuestionRich,
 };
-const richComponent = computed<Component | null>(() => richMap[renderer.value.family] ?? null);
+const richComponent = computed<Component | null>(() => {
+  // A question still awaiting an answer is rendered by PendingQuestionDock, above the chat input
+  // (answering is a client capability, and inside this pill the form was routinely hidden). The
+  // pill keeps the RESOLVED read-only Q&A as history -- so exactly one live `question-form` exists
+  // at a time, which also keeps Playwright's strict-mode selectors unambiguous.
+  if (renderer.value.family === 'question' && view.value.isDeferred) return null;
+  return richMap[renderer.value.family] ?? null;
+});
 
 /** Single source of truth for the visible glyph AND the screen-reader label per state. */
 const STATUS: Record<ToolCallState, { icon: string; label: string }> = {
@@ -169,6 +176,14 @@ async function copyResult() {
           <dd>{{ fmtVal(v) }}</dd>
         </template>
       </dl>
+
+      <p
+        v-if="view.state === 'awaiting-input'"
+        class="tool-pill__dock-pointer"
+        data-testid="question-dock-pointer"
+      >
+        This question is waiting for you — answer it just above the message box.
+      </p>
 
       <component
         :is="richComponent"
@@ -351,6 +366,12 @@ async function copyResult() {
   color: #d32f2f;
   font-size: 13px;
   font-style: italic;
+}
+
+.tool-pill__dock-pointer {
+  margin: 0 0 8px;
+  color: #8a5a00;
+  font-size: 12px;
 }
 
 .tool-call-result {

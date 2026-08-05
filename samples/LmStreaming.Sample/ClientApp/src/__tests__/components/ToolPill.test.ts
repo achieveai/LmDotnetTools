@@ -192,7 +192,11 @@ describe('ToolPill — question (#246 AskUserQuestion, awaiting-input + Question
     expect(w.get('[data-testid="tool-call-pill"]').classes()).toContain('st-awaiting-input');
   });
 
-  it('mounts QuestionRich (.question root) and NOT the generic body while awaiting input', async () => {
+  // The form used to mount HERE. It moved to PendingQuestionDock (above the chat input) because
+  // answering is a client capability, and in the pill it was routinely invisible: the body is
+  // collapsed by default, then sits in a 150px scroll box that auto-scrolls away from it.
+  // Keeping it in both places would also put TWO live `question-form`s on screen.
+  it('does NOT mount the interactive form while awaiting input — it points at the dock instead', async () => {
     const tc: ToolCall = { tool_call_id: 'q2', function_name: 'AskUserQuestion', function_args: args };
     const deferredResult: ToolCallResultMessage = {
       $type: MessageType.ToolCallResult,
@@ -204,8 +208,9 @@ describe('ToolPill — question (#246 AskUserQuestion, awaiting-input + Question
     };
     const w = mountPill(tc, deferredResult);
     await w.get('.tool-pill__header').trigger('click');
-    expect(w.find('[data-testid="question-rich"]').exists()).toBe(true);
-    expect(w.find('[data-testid="question-form"]').exists()).toBe(true);
+    expect(w.find('[data-testid="question-form"]').exists()).toBe(false);
+    expect(w.find('[data-testid="question-rich"]').exists()).toBe(false);
+    expect(w.find('[data-testid="question-dock-pointer"]').exists()).toBe(true);
   });
 
   it('flips to the resolved (non-deferred) state once the follow-up result overwrites the placeholder', async () => {
