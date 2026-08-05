@@ -22,8 +22,12 @@ body {
 }
 
 /* Scrollbar styling */
+/* `height` is not optional here: once ::-webkit-scrollbar is styled at all, an unset height
+   collapses the HORIZONTAL scrollbar, so overflowing code blocks and wide tables scroll with
+   no affordance and read as silently truncated. */
 ::-webkit-scrollbar {
   width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -52,9 +56,13 @@ body {
 }
 
 /* Code styling */
+/* `ui-monospace`/`SF Mono`/`Menlo` first so macOS and modern browsers get the system code
+   face; Courier New is kept only as a last resort -- it was previously third in line, which
+   meant most Linux users read code in a 1980s typewriter face. */
 pre,
 code {
-  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
+    'Liberation Mono', 'Courier New', monospace;
 }
 
 /* Button base reset */

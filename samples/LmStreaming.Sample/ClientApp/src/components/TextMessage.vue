@@ -24,32 +24,7 @@ const parsedText = computed(() => parseMarkdown(props.message.text));
   position: relative;
 }
 
-.markdown-content {
-  overflow-wrap: break-word;
-}
-
-/* Deep selector for markdown content styles */
-.markdown-content :deep(p) {
-  margin: 0 0 1em 0;
-}
-
-.markdown-content :deep(p:last-child) {
-  margin-bottom: 0;
-}
-
-.markdown-content :deep(pre) {
-  background: #f4f4f4;
-  padding: 10px;
-  border-radius: 4px;
-  overflow-x: auto;
-}
-
-.markdown-content :deep(code) {
-  font-family: monospace;
-  background: rgba(0, 0, 0, 0.05);
-  padding: 2px 4px;
-  border-radius: 3px;
-}
+/* Markdown element styling lives in assets/markdown.css (shared with PendingMessage). */
 
 .text-message.thinking {
   font-style: italic;

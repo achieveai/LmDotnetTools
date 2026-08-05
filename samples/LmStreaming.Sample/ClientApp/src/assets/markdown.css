@@ -1,0 +1,339 @@
+/*
+ * Rendering rules for markdown produced by `marked` and injected via `v-html`.
+ *
+ * Global on purpose: TextMessage and PendingMessage both render into `.markdown-content`,
+ * and Vue's scoped `:deep()` would force every rule below to be duplicated per component
+ * (which is exactly how the two surfaces drifted apart before).
+ *
+ * The app's universal reset in styles.css strips margin/padding from *every* element, so
+ * each construct has to restore its own spacing explicitly -- without these rules headings,
+ * lists, tables, blockquotes and rules all collapse into an undifferentiated wall of text.
+ *
+ * Spacing is expressed in `em` throughout so the whole document scales with whatever font
+ * size the surrounding bubble sets (16px in the answer bubble, 14px in the pending bubble).
+ */
+
+.markdown-content {
+  --md-border: #dfe2e5;
+  --md-border-soft: #ececf0;
+  --md-surface: #f6f8fa;
+  --md-accent: #007bff;
+  --md-muted: #6a737d;
+  /* Vertical rhythm: one "block gap" between sibling blocks. */
+  --md-gap: 0.9em;
+
+  overflow-wrap: break-word;
+  line-height: 1.65;
+  /* inherit, so the italic/grey "thinking" treatment on the parent still applies */
+  color: inherit;
+}
+
+/* No dead space at the top or bottom of a bubble. */
+.markdown-content > :first-child {
+  margin-top: 0;
+}
+
+.markdown-content > :last-child {
+  margin-bottom: 0;
+}
+
+/* ---------- Paragraphs ---------- */
+
+.markdown-content p {
+  margin: 0 0 var(--md-gap);
+  /* avoids one-word last lines; no-op in engines that don't support it */
+  text-wrap: pretty;
+}
+
+/* ---------- Headings ---------- */
+
+/*
+ * Type scale is roughly 1.125 per step, deliberately shallow: these are section headings
+ * inside a chat bubble, not a landing page. Negative tracking on the two largest sizes is
+ * what keeps a big heading from reading as "shouty" next to 16px body text.
+ */
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4,
+.markdown-content h5,
+.markdown-content h6 {
+  margin: 1.6em 0 0.65em;
+  line-height: 1.3;
+  font-weight: 600;
+  color: inherit;
+  text-wrap: balance;
+}
+
+/* A heading straight after another heading is a subtitle, not a new section. */
+.markdown-content :is(h1, h2, h3, h4, h5, h6) + :is(h1, h2, h3, h4, h5, h6) {
+  margin-top: 0.9em;
+}
+
+.markdown-content h1 {
+  font-size: 1.6em;
+  letter-spacing: -0.015em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--md-border);
+}
+
+.markdown-content h2 {
+  font-size: 1.3em;
+  letter-spacing: -0.01em;
+  padding-bottom: 0.25em;
+  border-bottom: 1px solid var(--md-border-soft);
+}
+
+.markdown-content h3 {
+  font-size: 1.125em;
+}
+
+.markdown-content h4 {
+  font-size: 1em;
+}
+
+/* h5/h6 are rare and shouldn't compete with body text, so they change *case*, not size. */
+.markdown-content h5,
+.markdown-content h6 {
+  font-size: 0.82em;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--md-muted);
+}
+
+/* ---------- Lists ---------- */
+
+.markdown-content ul,
+.markdown-content ol {
+  margin: 0 0 var(--md-gap);
+  padding-left: 1.5em;
+}
+
+.markdown-content ul {
+  list-style: disc;
+}
+
+.markdown-content ul ul {
+  list-style: circle;
+}
+
+.markdown-content ul ul ul {
+  list-style: square;
+}
+
+.markdown-content ol {
+  list-style: decimal;
+}
+
+.markdown-content li {
+  margin: 0.3em 0;
+  padding-left: 0.15em;
+}
+
+.markdown-content li::marker {
+  color: var(--md-muted);
+}
+
+.markdown-content li > ul,
+.markdown-content li > ol {
+  margin: 0.3em 0 0;
+}
+
+.markdown-content li > p {
+  margin-bottom: 0.4em;
+}
+
+/* GFM task lists: drop the bullet so the checkbox is the only marker. */
+.markdown-content li:has(> input[type='checkbox']) {
+  list-style: none;
+  margin-left: -1.4em;
+}
+
+.markdown-content input[type='checkbox'] {
+  margin-right: 0.5em;
+  vertical-align: middle;
+  accent-color: var(--md-accent);
+}
+
+/* ---------- Blockquotes ---------- */
+
+.markdown-content blockquote {
+  margin: 0 0 var(--md-gap);
+  padding: 0.7em 1em;
+  border-left: 3px solid var(--md-accent);
+  border-radius: 0 6px 6px 0;
+  background: #f7f9fc;
+  color: var(--md-muted);
+}
+
+.markdown-content blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+/* ---------- Tables ---------- */
+
+/*
+ * `display: block` + `width: max-content` lets a wide table scroll inside the bubble instead
+ * of forcing the whole message column wider; `overflow: auto` also makes the radius clip.
+ *
+ * `border-collapse`/`border-spacing` are *inherited* properties, so setting them here reaches
+ * the anonymous inner table that `display: block` creates. `separate` (not `collapse`) is what
+ * lets the outer border keep its rounded corners -- with `collapse` the cell borders win and
+ * the corners square off. Cells therefore draw dividers only, never a full box.
+ */
+.markdown-content table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow: auto;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--md-border);
+  border-radius: 8px;
+  margin: 0 0 1.15em;
+  font-size: 0.94em;
+  /* digits share one advance width, so numeric columns line up down the column */
+  font-variant-numeric: tabular-nums;
+}
+
+.markdown-content th,
+.markdown-content td {
+  padding: 8px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--md-border-soft);
+}
+
+.markdown-content th + th,
+.markdown-content td + td {
+  border-left: 1px solid var(--md-border-soft);
+}
+
+/* The table's own border supplies the bottom edge. */
+.markdown-content tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.markdown-content th {
+  text-align: left;
+}
+
+/*
+ * GFM column alignment (`| ---: |`) arrives from `marked` as the legacy `align` *attribute*, and a
+ * presentational attribute loses to any CSS rule -- so a blanket `text-align` on th/td silently
+ * flattens every aligned column. These have to opt back in explicitly.
+ */
+.markdown-content th[align='left'],
+.markdown-content td[align='left'] {
+  text-align: left;
+}
+
+.markdown-content th[align='center'],
+.markdown-content td[align='center'] {
+  text-align: center;
+}
+
+.markdown-content th[align='right'],
+.markdown-content td[align='right'] {
+  text-align: right;
+}
+
+.markdown-content thead th {
+  background: #f5f7f9;
+  font-weight: 600;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--md-border);
+}
+
+.markdown-content tbody tr:nth-child(2n) {
+  background: #fafbfc;
+}
+
+/* ---------- Code ---------- */
+
+/*
+ * The chip treatment is for *inline* code only. Without the `:not(pre code)` guard it
+ * leaks into fenced blocks and renders a chip inside a box.
+ */
+.markdown-content code:not(pre code) {
+  background: rgba(27, 31, 35, 0.06);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  font-size: 0.9em;
+  white-space: break-spaces;
+}
+
+.markdown-content pre {
+  margin: 0 0 1.15em;
+  padding: 12px 14px;
+  background: var(--md-surface);
+  border: 1px solid #e4e8ed;
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 0.875em;
+  line-height: 1.55;
+  tab-size: 4;
+}
+
+/*
+ * highlight.js emits `class="hljs language-x"` on the inner <code>, and its theme paints a
+ * background + padding there. That would draw a second box inside our panel, so the panel
+ * keeps the chrome and the theme keeps only the token colours.
+ *
+ * `display: block` is load-bearing, not cosmetic: as an *inline* box the <code> does not
+ * contribute its intrinsic width to the <pre>'s scroll area, so a long line reports
+ * `scrollWidth === clientWidth`, no scrollbar appears, and the line is silently CLIPPED
+ * rather than scrolled. `width: fit-content` + `min-width: 100%` restores the real width
+ * while keeping selection/background spanning the full panel on short lines.
+ */
+.markdown-content pre code,
+.markdown-content pre code.hljs {
+  display: block;
+  width: fit-content;
+  min-width: 100%;
+  background: none;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  font-size: inherit;
+  white-space: pre;
+}
+
+/* ---------- Rules, links, media, inline emphasis ---------- */
+
+.markdown-content hr {
+  height: 1px;
+  border: 0;
+  background: var(--md-border);
+  margin: 1.6em 0;
+}
+
+.markdown-content a {
+  color: var(--md-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: rgba(0, 123, 255, 0.4);
+}
+
+.markdown-content a:hover {
+  text-decoration-color: var(--md-accent);
+}
+
+.markdown-content img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0.5em 0;
+  border-radius: 6px;
+}
+
+.markdown-content strong {
+  font-weight: 600;
+}
+
+.markdown-content em {
+  font-style: italic;
+}
+
+.markdown-content del {
+  opacity: 0.7;
+}

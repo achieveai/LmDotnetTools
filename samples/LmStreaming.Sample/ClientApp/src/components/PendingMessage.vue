@@ -13,7 +13,7 @@ const parsedText = computed(() => parseMarkdown(props.content.text));
 <template>
   <div class="pending-message">
     <div class="pending-content">
-      <div class="markdown-body" v-html="parsedText"></div>
+      <div class="markdown-content" v-html="parsedText"></div>
       <div class="waiting-indicator">
         <span class="dot"></span>
         <span class="dot"></span>
@@ -40,22 +40,10 @@ const parsedText = computed(() => parseMarkdown(props.content.text));
   align-items: center;
   gap: 12px;
   opacity: 0.7;
-}
-
-.markdown-body {
   font-size: 14px;
-  line-height: 1.5;
-  word-break: break-word;
 }
 
-/* Deep selector for markdown content styles */
-.markdown-body :deep(p) {
-  margin: 0 0 0.5em 0;
-}
-
-.markdown-body :deep(p:last-child) {
-  margin-bottom: 0;
-}
+/* Markdown element styling lives in assets/markdown.css (shared with TextMessage). */
 
 .waiting-indicator {
   display: flex;

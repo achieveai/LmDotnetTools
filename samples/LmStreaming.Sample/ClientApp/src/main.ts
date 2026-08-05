@@ -1,6 +1,10 @@
 import { createApp } from 'vue';
 import App from './App.vue';
 import './assets/styles.css';
+// highlight.js token colours first, so markdown.css can override the theme's own
+// block background/padding and keep code blocks inside our panel treatment.
+import 'highlight.js/styles/github.css';
+import './assets/markdown.css';
 import { logger } from './utils';
 
 const log = logger.forComponent('App');
