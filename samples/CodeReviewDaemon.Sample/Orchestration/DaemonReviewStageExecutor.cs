@@ -199,7 +199,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
     /// <summary>Host lifetime, used to stop the daemon when a session lacks code-reviewer skill/agent
     /// support and <see cref="CodeReviewDaemonOptions.RequireSkillSupport"/> is set (fail-fast, not degrade).</summary>
-    private readonly Microsoft.Extensions.Hosting.IHostApplicationLifetime? _appLifetime;
+    private readonly IHostApplicationLifetime? _appLifetime;
 
     /// <summary>
     /// Session-free gateway catalog probe, non-null ONLY on the S2S path (registered in Program.cs). It is the
@@ -253,7 +253,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         HostRetentionWorkspace? hostRetention = null,
         SandboxCredential credential = default,
         ReviewSlotWorkspace? slotWorkspace = null,
-        Microsoft.Extensions.Hosting.IHostApplicationLifetime? appLifetime = null,
+        IHostApplicationLifetime? appLifetime = null,
         string? gatewayBaseUrl = null,
         S2SReviewWorkspacePreparer? preparer = null,
         IGatewaySkillProbe? skillProbe = null,
@@ -372,7 +372,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             // Scoped-writable reviewer (Layer 1): when this run leased a pooled slot and reviewer-writes are
             // enabled, hand the agent scoped Write/Edit/Bash + the (container) notes/scratch roots the writes
             // are bounded to. Absent a pooled lease the reviewer stays hard read-only exactly as before.
-            var writeScope = ResolvePooledWriteScope(run);
+            var (Enabled, WritableAllow, NotesDir, ScratchDir) = ResolvePooledWriteScope(run);
 
             return new ReviewToolContext(
                 GatewayBaseUrl: _gatewayBaseUrl
@@ -381,10 +381,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 SessionId: session.SessionId,
                 ReadOnlyToolAllowList: _options.ReadOnlyToolAllowList,
                 Credential: _credential,
-                EnableReviewerWrites: writeScope.Enabled,
-                WritableToolAllowList: writeScope.WritableAllow,
-                NotesDir: writeScope.NotesDir,
-                ScratchDir: writeScope.ScratchDir);
+                EnableReviewerWrites: Enabled,
+                WritableToolAllowList: WritableAllow,
+                NotesDir: NotesDir,
+                ScratchDir: ScratchDir);
         }
         catch (Exception ex) when (ex is not OperationCanceledException and not SkillSupportUnavailableException)
         {
@@ -579,6 +579,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
         var boundedDiff = _options.Limits.CapArtifactPayload(diff.Stdout);
         var fileManifest = await BuildFileManifestAsync(git, layout.TargetDir, cancellationToken).ConfigureAwait(false);
+        var changedPaths = await BuildChangedPathsAsync(git, layout.TargetDir, run, cancellationToken)
+            .ConfigureAwait(false);
 
         _ = _store.AddArtifact(new ReviewArtifact
         {
@@ -587,7 +589,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             ArtifactKind = ContextArtifactKind,
             Provider = provider,
             Payload = JsonSerializer.Serialize(new ContextArtifactPayload(
-                run.PrId, run.BaseSha, run.HeadSha, boundedDiff, fileManifest, layout.TargetDir, layout.StoreRoot)),
+                run.PrId, run.BaseSha, run.HeadSha, boundedDiff, fileManifest, layout.TargetDir, layout.StoreRoot,
+                changedPaths)),
         });
 
         _logger.LogInformation(
@@ -626,6 +629,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
         var boundedDiff = _options.Limits.CapArtifactPayload(diff.Stdout);
         var fileManifest = await BuildFileManifestAsync(git, prepared.HostDir, cancellationToken).ConfigureAwait(false);
+        var changedPaths = await BuildChangedPathsAsync(git, prepared.HostDir, run, cancellationToken)
+            .ConfigureAwait(false);
 
         _ = _store.AddArtifact(new ReviewArtifact
         {
@@ -634,7 +639,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             ArtifactKind = ContextArtifactKind,
             Provider = provider,
             Payload = JsonSerializer.Serialize(new ContextArtifactPayload(
-                run.PrId, run.BaseSha, run.HeadSha, boundedDiff, fileManifest, S2SCheckoutRoot, null)),
+                run.PrId, run.BaseSha, run.HeadSha, boundedDiff, fileManifest, S2SCheckoutRoot, null,
+                changedPaths)),
         });
 
         _logger.LogInformation(
@@ -733,6 +739,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             var boundedDiff = _options.Limits.CapArtifactPayload(diff.Stdout);
             var fileManifest = await BuildFileManifestAsync(sdkGit, prepared.TargetDir, cancellationToken)
                 .ConfigureAwait(false);
+            var changedPaths = await BuildChangedPathsAsync(sdkGit, prepared.TargetDir, run, cancellationToken)
+                .ConfigureAwait(false);
             var notesDirSandbox = PosixJoin(StoreRoot, notesRelPath);
 
             _ = _store.AddArtifact(new ReviewArtifact
@@ -743,7 +751,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 Provider = provider,
                 Payload = JsonSerializer.Serialize(new ContextArtifactPayload(
                     run.PrId, run.BaseSha, run.HeadSha, boundedDiff, fileManifest,
-                    prepared.TargetDir, StoreRoot)),
+                    prepared.TargetDir, StoreRoot, changedPaths)),
             });
 
             if (!_leasedReviews.TryAdd(
@@ -819,6 +827,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var boundedDiff = _options.Limits.CapArtifactPayload(diff.Stdout);
         var fileManifest = await BuildFileManifestAsync(hostGit, prepared.TargetDir, cancellationToken)
             .ConfigureAwait(false);
+        var changedPaths = await BuildChangedPathsAsync(hostGit, prepared.TargetDir, run, cancellationToken)
+            .ConfigureAwait(false);
         var notesDirSandbox = PosixJoin(StoreRoot, notesRelPath);
         var scratchDirSandbox = $"{SandboxWorkspaceRoot}/{_options.ScratchDirName}";
         _ = _store.AddArtifact(new ReviewArtifact
@@ -829,7 +839,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             Provider = provider,
             Payload = JsonSerializer.Serialize(new ContextArtifactPayload(
                 run.PrId, run.BaseSha, run.HeadSha, boundedDiff, fileManifest,
-                PosixJoin(StoreRoot, submoduleRelPath), StoreRoot)),
+                PosixJoin(StoreRoot, submoduleRelPath), StoreRoot, changedPaths)),
         });
         if (!_leasedReviews.TryAdd(
             run.Id,
@@ -889,8 +899,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private async Task<string?> ResolveStoreSubmodulePathAsync(
         ISandboxFileSystem fileSystem, string storeRoot, RepoIdentity repo, string provider)
     {
-        var gitmodules = await fileSystem
-            .ReadFileAsync(PosixJoin(storeRoot, ".gitmodules"), CancellationToken.None)
+        var gitmodules = await ReadGitmodulesAsync(fileSystem, storeRoot, CancellationToken.None)
             .ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(gitmodules))
         {
@@ -901,6 +910,32 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var entry = GitModulesParser.Parse(gitmodules)
             .FirstOrDefault(e => SubmoduleTargetsRepo(e.Url, targetUrl));
         return entry?.Path;
+    }
+
+    /// <summary>
+    /// The store's <c>.gitmodules</c>, or <c>null</c> when it is absent — or was refused for size, which is
+    /// logged rather than passed on. Both callers read this file to decide whether the reviewed repo is a
+    /// submodule of the store, and both fall back to the per-run checkout when it is not; a refusal takes
+    /// that same fallback, so the warning is the only place the difference between "the store declares no
+    /// submodule" and "we declined to read what it declares" is recorded.
+    /// </summary>
+    private async Task<string?> ReadGitmodulesAsync(
+        ISandboxFileSystem fileSystem, string storeRoot, CancellationToken cancellationToken)
+    {
+        var path = PosixJoin(storeRoot, ".gitmodules");
+        var read = await fileSystem
+            .ReadFileAsync(path, SandboxReadLimits.RepositoryFileBytes, cancellationToken)
+            .ConfigureAwait(false);
+        if (read.TooLarge)
+        {
+            _logger.LogWarning(
+                "'.gitmodules' at '{Path}' exceeds the {Limit}-byte read limit; treating the store as "
+                    + "declaring no submodule for this repository.",
+                path,
+                SandboxReadLimits.RepositoryFileBytes);
+        }
+
+        return read.Content;
     }
 
     /// <summary>The PR's persistent notes branch name (<c>review/{repo}-{pr}</c>) — resolved
@@ -1019,8 +1054,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     {
         await CloneIfMissingAsync(git, storeUrl, StoreRoot, run, cancellationToken).ConfigureAwait(false);
 
-        var gitmodules = await fileSystem
-            .ReadFileAsync(PosixJoin(StoreRoot, ".gitmodules"), cancellationToken)
+        var gitmodules = await ReadGitmodulesAsync(fileSystem, StoreRoot, cancellationToken)
             .ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(gitmodules))
         {
@@ -1167,7 +1201,51 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return string.Empty;
         }
 
-        return _options.Limits.CapArtifactPayload(lsFiles.Stdout.Trim());
+        // A record listing, and trimmed of line terminators ONLY, for both of the reasons spelled out on the
+        // changed-path listing below: the agent is told to Read these paths verbatim, so a record the cap
+        // halved names a file that does not exist, and a blanket Trim() would rewrite the first and last
+        // records of the manifest into paths git never reported.
+        return _options.Limits.CapRecordListing(lsFiles.Stdout.Trim('\n', '\r'));
+    }
+
+    /// <summary>
+    /// The <c>base...head</c> changed-path listing (<c>git diff --name-only</c>), bounded like every other
+    /// artifact payload. Kept SEPARATE from the diff because the diff is capped: on a large PR the patch
+    /// text loses its later <c>diff --git</c> headers entirely, so anything that ranks or routes by changed
+    /// file would go blind to exactly the files changed last. This listing is one line per file, so it
+    /// survives the same cap for a PR one or two orders of magnitude larger.
+    /// <para>
+    /// <c>--no-renames</c> keeps a rename as its delete+add pair, so both the old and the new path are
+    /// listed — the same both-sides semantics the diff headers carry, and either may be what a Knowledge
+    /// Base lesson was filed against. Best-effort: an unavailable listing degrades to ranking off the diff
+    /// headers rather than failing the run.
+    /// </para>
+    /// </summary>
+    private async Task<string> BuildChangedPathsAsync(
+        GitRunner git, string targetDir, ReviewRun run, CancellationToken cancellationToken)
+    {
+        var nameOnly = await git
+            .RunAsync(
+                ["-C", targetDir, "diff", "--name-only", "--no-renames", $"{run.BaseSha}...{run.HeadSha}"],
+                targetDir,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (!nameOnly.Succeeded)
+        {
+            _logger.LogWarning(
+                "Run {RunId}: changed-path listing unavailable (git diff --name-only exit {ExitCode}): {Stderr}; "
+                    + "prior-knowledge ranking falls back to the bounded diff headers.",
+                run.Id, nameOnly.ExitCode, nameOnly.Stderr);
+            return string.Empty;
+        }
+
+        // Trimmed of line terminators ONLY. git allows a filename to begin or end with a space and does not
+        // quote for one, so a blanket Trim() here would rewrite the first and last records into paths git
+        // never reported — and the ranking downstream would then fail to match the very files they name.
+        //
+        // Capped as a RECORD LISTING rather than as a generic payload: this is the one artifact here that is
+        // strictly one path per line, so it is the one where cutting between records is worth what it costs.
+        return _options.Limits.CapRecordListing(nameOnly.Stdout.Trim('\n', '\r'));
     }
 
     private static int ManifestFileCount(string manifest) =>
@@ -1267,17 +1345,18 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // repo, which leaves the existing per-run/diff-only path unchanged.
         if (UsePooledReview && !_leasedReviews.ContainsKey(run.Id))
         {
-            await TryPooledFetchContextAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
+            _ = await TryPooledFetchContextAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
         }
 
         // S2S path: now that resume-safety has restored the lease, adopt that slot as the LmStreaming
         // workspace. Preparing before the re-lease would cache a bare per-PR clone whose mounted layout does
         // not contain the pooled store, notes or Knowledge Base paths used by the persisted context.
-        await EnsurePreparedAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
+        _ = await EnsurePreparedAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
 
         var context = ReadContext(run.Id);
         var reviewInput = BuildReviewInput(run, repo, context.Diff, context.FileManifest);
-        reviewInput = await PrependPriorKnowledgeAsync(reviewInput, run.Id, context.StoreRoot, cancellationToken)
+        reviewInput = await PrependPriorKnowledgeAsync(
+                reviewInput, run.Id, context.StoreRoot, repo, context.Diff, context.ChangedPaths, cancellationToken)
             .ConfigureAwait(false);
         reviewInput = await PrependRepoGuidanceAsync(reviewInput, run.Id, cancellationToken)
             .ConfigureAwait(false);
@@ -1427,16 +1506,48 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         (name.StartsWith("PR_Context_", StringComparison.Ordinal) || name.StartsWith("PR_Findings_", StringComparison.Ordinal))
         && name.EndsWith(".md", StringComparison.Ordinal);
 
+    /// <summary>Cap on Knowledge Base entries listed in the prior-knowledge digest. The KB grows without
+    /// bound while the review's context window does not, so the ranking decides which entries are worth a
+    /// slot rather than letting the newest extraction crowd out the input.</summary>
+    private const int MaxKnowledgeEntries = 24;
+
+    /// <summary>Character cap on the rendered digest, a second bound for when entry titles run long.</summary>
+    private const int MaxKnowledgeDigestChars = 8 * 1024;
+
+    /// <summary>Character cap on the entry paths quoted in the two prior-knowledge log lines. Those paths are
+    /// model-authored, so without a bound one absurd <c>"file"</c> value writes its whole length into the
+    /// daemon's JSONL on every review that ranks it.</summary>
+    private const int MaxKnowledgeLogChars = 2 * 1024;
+
     /// <summary>
-    /// Best-effort prepends the store's Knowledge Base table of contents to the review input so the review
-    /// agent starts with the durable knowledge distilled from past PRs (design §3). Only a cross-repo
-    /// store-mode run carries a Knowledge Base — it lives at the store root (<c>&lt;StoreRoot&gt;/KnowledgeBase/</c>),
-    /// so the single-repo path (null <paramref name="storeRoot"/>) is unchanged. A missing <c>_toc.md</c> —
-    /// the common case before any knowledge has been extracted — silently leaves the input untouched (it must
-    /// never fail the review, design §6); the review prompt still directs the agent to consult the KB itself.
+    /// Best-effort prepends prior Knowledge Base knowledge to the review input so the review agent starts
+    /// with the durable lessons distilled from past PRs (design §3).
+    /// <para>
+    /// Preferred source is <c>KnowledgeBase/_index.jsonl</c>: its per-entry metadata lets
+    /// <see cref="KnowledgeDigest"/> rank entries against the files <paramref name="diff"/> touches and hand
+    /// the agent an <b>exact absolute path</b> per entry. That matters because the agent cannot find these
+    /// files itself — a root-level Grep in the tool-assisted checkout can return empty even when the file
+    /// exists — and because a sub-agent only ever sees what the parent copies into its brief. When the index
+    /// is absent or unreadable we fall back to <c>_toc.md</c> (titles and links only), which is strictly
+    /// weaker but better than nothing.
+    /// </para>
+    /// <para>
+    /// KNOWN LIMITATION (accepted): the Knowledge Base lives at the store root
+    /// (<c>&lt;StoreRoot&gt;/KnowledgeBase/</c>), so prior knowledge reaches <b>cross-repo store-mode runs
+    /// only</b>. A single-repo run (null <paramref name="storeRoot"/>) reviews with no prior knowledge at
+    /// all, by design and not by accident.
+    /// </para>
+    /// Every failure degrades to "no prior knowledge": a missing KB — the common case before any extraction
+    /// has run — leaves the input untouched, because this must never fail the review (design §6).
     /// </summary>
     private async Task<string> PrependPriorKnowledgeAsync(
-        string reviewInput, long runId, string? storeRoot, CancellationToken cancellationToken)
+        string reviewInput,
+        long runId,
+        string? storeRoot,
+        RepoIdentity repo,
+        string? diff,
+        string? changedPaths,
+        CancellationToken cancellationToken)
     {
         // A pooled review reads KnowledgeBase/_toc.md HOST-side from its leased slot's store checkout — the same
         // host filesystem + store root CommitPooledNotesAsync writes notes back through. The class-field
@@ -1444,46 +1555,382 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // 404s ("Session not found"); every pooled retrieval through it failed silently, so reviews never saw
         // prior knowledge even though extraction populates the KB on the store's main. Non-pooled/legacy runs
         // (no lease) keep the original _fileSystem/storeRoot path unchanged.
+        //
+        // The root we READ through and the root we RENDER into the prompt are NOT the same in pooled S2S mode:
+        // there the lease's prepared store root is a HOST path (the slot's store/ directory on the daemon's
+        // disk), while the agent sees that very directory mounted at StoreRoot. Handing the agent the host
+        // path yields entries it can never open, so render against the root the context artifact advertises —
+        // the one the agent's tools resolve — and keep reading through the host root.
         ISandboxFileSystem fileSystem;
-        string? root;
+        string? readRoot;
+        string? renderRoot;
         if (_slotWorkspace is not null && _leasedReviews.TryGetValue(runId, out var lease))
         {
             fileSystem = lease.Session?.FileSystem ?? _slotWorkspace.HostFileSystem;
-            root = lease.Prepared.StoreRoot;
+            readRoot = lease.Prepared.StoreRoot;
+            renderRoot = string.IsNullOrWhiteSpace(storeRoot) ? StoreRoot : storeRoot;
         }
         else
         {
             fileSystem = _fileSystem;
-            root = storeRoot;
+            readRoot = storeRoot;
+            renderRoot = storeRoot;
         }
 
-        if (string.IsNullOrWhiteSpace(root))
+        if (string.IsNullOrWhiteSpace(readRoot) || string.IsNullOrWhiteSpace(renderRoot))
         {
             return reviewInput;
         }
 
-        var tocPath = PosixJoin(root, "KnowledgeBase/_toc.md");
-        string? toc;
+        var knowledgeBaseDir = PosixJoin(readRoot, "KnowledgeBase");
+        var agentKnowledgeBaseDir = PosixJoin(renderRoot, "KnowledgeBase");
+        var index = await TryReadKnowledgeFileAsync(
+            fileSystem, PosixJoin(knowledgeBaseDir, "_index.jsonl"), cancellationToken).ConfigureAwait(false);
+        if (index.TooLarge)
+        {
+            _logger.LogWarning(
+                "Prior knowledge: _index.jsonl at {KnowledgeBaseDir} exceeds the {Limit}-byte read limit and "
+                    + "was not read; ranked retrieval is unavailable for this review, falling back to _toc.md.",
+                knowledgeBaseDir,
+                SandboxReadLimits.KnowledgeListingBytes);
+        }
+
+        var digest = BuildKnowledgeDigest(index.Content, agentKnowledgeBaseDir, repo, diff, changedPaths);
+        if (digest.Length > 0)
+        {
+            return $"{digest}\n{reviewInput}";
+        }
+
+        // No usable index (never extracted, or a torn file): fall back to the table of contents. Titles and
+        // links only — the agent gets no tags, no scope and no ranking — but it beats reviewing blind. It is
+        // rendered under the SAME heading as the ranked digest on purpose: the prompt teaches that heading
+        // as the one place prior knowledge appears, and teaches that its absence means there is no Knowledge
+        // Base to look for, so a separately-labelled fallback block would be read as noise and skipped.
+        var toc = await TryReadKnowledgeFileAsync(
+            fileSystem, PosixJoin(knowledgeBaseDir, "_toc.md"), cancellationToken).ConfigureAwait(false);
+        var tocBlock = KnowledgeDigest.RenderTableOfContents(
+            toc.Content, agentKnowledgeBaseDir, MaxKnowledgeDigestChars);
+        if (tocBlock.Text.Length == 0)
+        {
+            // Refusal reaches the AGENT, absence only reaches the log. The two arrive here as the same empty
+            // block and mean opposite things, and the difference is not the operator's to act on: silence under
+            // the heading the prompt teaches is a positive claim that this repository has no Knowledge Base.
+            // Only when a refusal actually cost the reviewer its prior knowledge — a listing that was read and
+            // rendered leaves it nothing to be told about the other one.
+            List<string> refusedListings = [];
+            if (index.TooLarge)
+            {
+                refusedListings.Add(PosixJoin(agentKnowledgeBaseDir, "_index.jsonl"));
+            }
+
+            if (toc.TooLarge)
+            {
+                refusedListings.Add(PosixJoin(agentKnowledgeBaseDir, "_toc.md"));
+            }
+
+            if (refusedListings.Count > 0)
+            {
+                _logger.LogWarning(
+                    "Prior knowledge: every Knowledge Base listing at {KnowledgeBaseDir} exceeded the "
+                        + "{Limit}-byte read limit ({Refused}); telling the reviewer the store is unread rather "
+                        + "than letting an empty block claim it is empty.",
+                    knowledgeBaseDir,
+                    SandboxReadLimits.KnowledgeListingBytes,
+                    string.Join(", ", refusedListings));
+                var notice = KnowledgeDigest.RenderRefusedListings(
+                    refusedListings, agentKnowledgeBaseDir, SandboxReadLimits.KnowledgeListingBytes);
+                return $"{notice}\n{reviewInput}";
+            }
+
+            _logger.LogInformation(
+                "No usable Knowledge Base at {KnowledgeBaseDir}; reviewing without prior knowledge.",
+                knowledgeBaseDir);
+            return reviewInput;
+        }
+
+        // Counts of what the reviewer RECEIVED, not the size of the file that was read: the fallback is
+        // budgeted like the ranked block, so those parted ways.
+        _logger.LogInformation(
+            "Knowledge Base index unavailable; falling back to _toc.md for prior knowledge: listed {Listed} "
+                + "entries ({Length} chars), {Dropped} beyond the budget, truncated: {Truncated}.",
+            tocBlock.Listed,
+            tocBlock.Text.Length,
+            tocBlock.Dropped,
+            tocBlock.Truncated);
+        LogRefusedKnowledgePaths(tocBlock.Refused, knowledgeBaseDir);
+        if (tocBlock.Duplicates > 0)
+        {
+            _logger.LogWarning(
+                "Prior knowledge: {DuplicateCount} _toc.md {Plural} pointed at a file already listed above "
+                    + "and {WereWas} left out. The table of contents is regenerated wholesale, so repeated "
+                    + "entries indicate a merged or torn file rather than a large Knowledge Base.",
+                tocBlock.Duplicates,
+                tocBlock.Duplicates == 1 ? "entry" : "entries",
+                tocBlock.Duplicates == 1 ? "was" : "were");
+        }
+
+        return $"{tocBlock.Text}\n{reviewInput}";
+    }
+
+    /// <summary>
+    /// Warns about <c>_index.jsonl</c> records that named a file another record already named. Split in two
+    /// on purpose: repetition is a merge artefact and costs only retrieval slots, while records that DISAGREE
+    /// mean a torn index, where whichever copy lost is knowledge the reviewer will not see and nothing else
+    /// would say so.
+    /// </summary>
+    private void LogCollapsedKnowledgeDuplicates(KnowledgeDeduplication deduplicated)
+    {
+        if (deduplicated.Collapsed.Count == 0)
+        {
+            return;
+        }
+
+        _logger.LogWarning(
+            "Prior knowledge: collapsed {CollapsedCount} duplicate _index.jsonl {Plural} before ranking. "
+                + "Left in, identical paths score identically and take consecutive retrieval slots, so the "
+                + "cap fills with copies and distinct entries are dropped: {CollapsedEntries}",
+            deduplicated.Collapsed.Count,
+            deduplicated.Collapsed.Count == 1 ? "record" : "records",
+            KnowledgeDigest.DescribePaths(
+                deduplicated.Collapsed.Select(entry => entry.File), MaxKnowledgeLogChars));
+
+        if (deduplicated.Conflicting.Count > 0)
+        {
+            _logger.LogWarning(
+                "Prior knowledge: {ConflictCount} of those {Plural} metadata that DISAGREED with the copy "
+                    + "kept, which is a torn index rather than a repeated one — the newest record won and "
+                    + "the rest of what was written for these paths is gone: {ConflictingEntries}",
+                deduplicated.Conflicting.Count,
+                deduplicated.Conflicting.Count == 1 ? "path carried" : "paths carried",
+                KnowledgeDigest.DescribePaths(
+                    deduplicated.Conflicting.Select(entry => entry.File), MaxKnowledgeLogChars));
+        }
+    }
+
+    /// <summary>
+    /// Warns about Knowledge Base paths that do not resolve inside the Knowledge Base, for the ranked path
+    /// and the <c>_toc.md</c> fallback alike. Shared so the two report identically: a refusal that reads
+    /// differently depending on which route found it is a refusal an operator has to learn twice, and the
+    /// fallback is the route a torn Knowledge Base actually takes.
+    /// </summary>
+    private void LogRefusedKnowledgePaths(IReadOnlyList<string> refused, string knowledgeBaseDir)
+    {
+        if (refused.Count == 0)
+        {
+            return;
+        }
+
+        _logger.LogWarning(
+            "Prior knowledge: refused {RefusedCount} Knowledge Base {Plural} whose path does not resolve "
+                + "inside {KnowledgeBaseDir}: {RefusedEntries}",
+            refused.Count,
+            refused.Count == 1 ? "entry" : "entries",
+            knowledgeBaseDir,
+            KnowledgeDigest.DescribePaths(refused, MaxKnowledgeLogChars));
+    }
+
+    /// <summary>
+    /// Renders the ranked prior-knowledge block from a raw <c>_index.jsonl</c>, or an empty string when the
+    /// index yields no entries. Logs exactly WHICH entries were surfaced: without that line a silent
+    /// retrieval failure and a healthy review are indistinguishable in the daemon's logs, which is how this
+    /// step went unnoticed as a no-op before.
+    /// </summary>
+    private string BuildKnowledgeDigest(
+        string? index, string knowledgeBaseDir, RepoIdentity repo, string? diff, string? changedPaths)
+    {
+        var entries = KnowledgeIndex.ParseIndex(index, KnowledgeIndex.MaxIndexRecords, out var indexTruncated);
+
+        // The digest's entry and character caps bound what the reviewer is SHOWN; they never bounded the
+        // reading. Now that they do, say so — and say it BEFORE the empty-entries return below, because the
+        // empty case is the one that most needs it. An oversized index whose examined records all fail to
+        // parse yields zero entries AND truncation, and the caller reads an empty digest as "no usable index
+        // (never extracted, or a torn file)" and quietly downgrades the review to the _toc.md fallback:
+        // titles and links, no tags, no scope, no ranking. Warning only on the non-empty path would leave
+        // the worse outcome the silent one.
+        if (indexTruncated && entries.Count == 0)
+        {
+            // Says what was READ, not what the reviewer will get: whether the _toc.md fallback below has
+            // anything in it is not known here, and a warning that promises a fallback which then turns out
+            // to be empty is the same over-claim as a delivery line for an entry that never shipped.
+            _logger.LogWarning(
+                "Prior knowledge: _index.jsonl exceeds {MaxIndexRecords} records and none of the records "
+                    + "read parsed, so there is no ranked digest for this review — the _toc.md fallback at "
+                    + "best, without tags, scope or ranking. That is a broken extraction, not an absent "
+                    + "Knowledge Base.",
+                KnowledgeIndex.MaxIndexRecords);
+        }
+        else if (indexTruncated)
+        {
+            // An index long enough to hit the ceiling is a broken file, and the ranking below chose from a
+            // prefix of it rather than from the whole store.
+            _logger.LogWarning(
+                "Prior knowledge: _index.jsonl exceeds {MaxIndexRecords} records; ranking against the first "
+                    + "{ParsedCount} entries only. The index is regenerated wholesale, so a file this long "
+                    + "indicates a broken extraction rather than a large Knowledge Base.",
+                KnowledgeIndex.MaxIndexRecords,
+                entries.Count);
+        }
+
+        if (entries.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        // Rank off the lossless changed-path listing; the diff headers are only a fallback for artifacts
+        // written before that listing was persisted, and they under-report on exactly the large PRs where
+        // the ranking matters most, because the diff they live in was capped.
+        var ranked = KnowledgeDigest.ParseChangedPaths(changedPaths, out var listingTruncated);
+        if (ranked.Count == 0)
+        {
+            ranked = KnowledgeDigest.ExtractChangedPaths(diff);
+        }
+        else if (listingTruncated)
+        {
+            // A capped listing is non-empty, so the "empty means fall back" route above never fires and the
+            // files past the cut rank against nothing while the count logged below looks healthy. The diff
+            // headers are UNIONED in rather than substituted: they are the weaker source (they live in a
+            // payload that was capped harder), so replacing a partial listing with them would lose more than
+            // it recovered. Whatever either source can still name gets ranked.
+            var recovered = ranked.Concat(KnowledgeDigest.ExtractChangedPaths(diff)).Distinct(StringComparer.Ordinal);
+            var union = recovered.ToList();
+            _logger.LogWarning(
+                "Prior knowledge: the changed-path listing was truncated; ranking against {ListedCount} listed "
+                    + "paths plus the diff headers ({UnionCount} distinct).",
+                ranked.Count,
+                union.Count);
+            ranked = union;
+        }
+
+        // Containment is decided BEFORE the cap, so the cap counts entries the agent can actually use.
+        // Taken the other way round, escaping entries that happen to rank well consume retrieval slots and
+        // the sound knowledge behind them is never reached - enough of them and the review runs with no
+        // prior knowledge at all, which is the outcome this whole feature exists to prevent.
+        var partition = KnowledgeDigest.PartitionByContainment(entries, knowledgeBaseDir);
+
+        // Metadata is cleaned BEFORE ranking for the same reason containment is decided before the cap, and
+        // the failure is the subtler of the two: the ranking scores exactly the fields the cleaning deletes.
+        // An entry whose only match for a changed path is a tag like "[runner](../../../etc/passwd)" outranks
+        // an entry that genuinely matched, takes its slot, and then loses the tag on the way out - so the
+        // delivered set does not even contain the relevance that selected it. Cleaning here keeps every
+        // entry, exactly as it did inside Render; it only moves the scoring onto fields that will still exist
+        // when the reviewer reads them.
+        var sanitized = KnowledgeDigest.SanitizeMetadata(partition.Usable, knowledgeBaseDir);
+
+        // Duplicates go BEFORE the cap for the same reason containment does, and they are the cheapest way to
+        // lose the whole feature: identical paths score identically, so the copies sort adjacent and take
+        // consecutive slots. A doubled index fills every slot with half the store while the log below reports
+        // a full digest.
+        var deduplicated = KnowledgeDigest.Deduplicate(sanitized.Entries, knowledgeBaseDir);
+        var selected = KnowledgeDigest.SelectRelevant(
+            deduplicated.Entries, ranked, repo.RepoName, MaxKnowledgeEntries);
+
+        // Counted off the DEDUPLICATED set: the footer tells the agent how many more entries are waiting in
+        // _toc.md, and a count that still includes the collapsed copies promises a route back to entries it
+        // has already been given.
+        var digest = KnowledgeDigest.Render(
+            selected, knowledgeBaseDir, MaxKnowledgeDigestChars, deduplicated.Entries.Count - selected.Count);
+
+        LogCollapsedKnowledgeDuplicates(deduplicated);
+
+        // Report the RENDERED entries, never the selected ones: the character budget can cut the tail off
+        // the block, and a log line naming entries the reviewer never received would make a partial
+        // retrieval indistinguishable from a complete one — the same blindness this line exists to end.
+        //
+        // The two counts deliberately count DIFFERENT things, so each names what it counts. The first is
+        // delivered entries (post-containment, post-dedup, post-budget); the second is the raw record count
+        // parsed out of _index.jsonl. Reading "20 of 40 entries" off a doubled index invites the conclusion
+        // that half the store was withheld, when 40 was never 40 entries. Swapping it for the deduplicated
+        // count would read cleanly and delete the only number that says the index was doubled — the collapse
+        // warning explains it, and this line is what makes the collapse visible in the first place.
+        _logger.LogInformation(
+            "Prior knowledge: surfaced {SurfacedCount} Knowledge Base entries ({DigestLength} chars) from "
+                + "{ParsedRecordCount} _index.jsonl records, ranked against {ChangedPathCount} changed paths "
+                + "for scope '{RepoScope}': {SurfacedEntries}",
+            digest.Rendered.Count,
+            digest.Text.Length,
+            entries.Count,
+            ranked.Count,
+            repo.RepoName,
+            KnowledgeDigest.DescribePaths(
+                digest.Rendered.Select(entry => entry.File), MaxKnowledgeLogChars));
+
+        // Refusals are logged as loudly as the surfaces. An index entry whose path does not resolve inside
+        // KnowledgeBase/ was written by the knowledge agent, so it is either a defect in extraction or an
+        // attempt to point the reviewer at something that is not knowledge; either way, an entry that just
+        // disappears from the digest is indistinguishable from one the Knowledge Base never had. Both
+        // sources are reported: the pre-cap partition, and anything Render refuses on its own recheck.
+        var refused = partition.Refused.Concat(digest.Rejected).Select(entry => entry.File).Distinct().ToList();
+        LogRefusedKnowledgePaths(refused, knowledgeBaseDir);
+
+        // A cleaned entry is NOT a refused one - it is in the block, path intact, and the reviewer can open
+        // it - so it gets its own line rather than being folded into the refusals. It still has to have a
+        // line: the knowledge agent wrote a link pointing outside the Knowledge Base into a title, tag or
+        // scope, which is the same extraction defect the refusals report, and an entry that arrives looking
+        // perfectly healthy is exactly the one nobody would otherwise go and check.
+        //
+        // The two questions are reported SEPARATELY, because only one of them is a delivery claim. What the
+        // extraction agent wrote is true of every candidate, whether or not it was ranked in or fitted the
+        // budget - that is the defect report, and narrowing it to what shipped would hide the defect on the
+        // entries nobody received. What the REVIEWER got is the rendered subset, and this line used to state
+        // it as "kept and still surfaced" over a list built before the budget ran: an entry cut by the
+        // character budget was named as delivered. Both sources of cleaning are unioned in, the same way the
+        // refusal line above unions the partition with Render's own recheck.
+        var neutralized = sanitized
+            .Neutralized.Concat(digest.Neutralized)
+            .DistinctBy(entry => entry.File, StringComparer.Ordinal)
+            .ToList();
+        if (neutralized.Count > 0)
+        {
+            var renderedFiles = digest.Rendered.Select(entry => entry.File).ToHashSet(StringComparer.Ordinal);
+            var surfaced = neutralized.Where(entry => renderedFiles.Contains(entry.File)).ToList();
+            _logger.LogWarning(
+                "Prior knowledge: the knowledge agent wrote a link resolving outside {KnowledgeBaseDir} into "
+                    + "the title, tags or scope of {NeutralizedCount} Knowledge Base {Plural}; the metadata "
+                    + "was cleared before ranking. This reports what extraction wrote, not what was "
+                    + "delivered: {NeutralizedEntries}. Of {Pronoun}, {SurfacedCount} reached the reviewer: "
+                    + "{SurfacedEntries}",
+                knowledgeBaseDir,
+                neutralized.Count,
+                neutralized.Count == 1 ? "entry" : "entries",
+                KnowledgeDigest.DescribePaths(
+                    neutralized.Select(entry => entry.File), MaxKnowledgeLogChars),
+                neutralized.Count == 1 ? "it" : "those",
+                surfaced.Count,
+                surfaced.Count == 0
+                    ? "(none)"
+                    : KnowledgeDigest.DescribePaths(
+                        surfaced.Select(entry => entry.File), MaxKnowledgeLogChars));
+        }
+
+        return digest.Text;
+    }
+
+    /// <summary>
+    /// Reads one Knowledge Base file, returning <see cref="SandboxFileRead.Missing"/> for both "absent" and
+    /// "unreadable". The read can THROW as well as report absence — a gateway hiccup, a stale session — and
+    /// design §6 says prior knowledge must never fail the review, so every fault degrades to "no prior
+    /// knowledge" here.
+    /// <para>
+    /// A refusal for size is NOT one of those faults and is passed back to the caller unchanged. Folding it in
+    /// with "absent" is what makes an over-size store indistinguishable from an empty one — and this method is
+    /// precisely where that distinction would have been lost, since everything else about it is a funnel into
+    /// a single null.
+    /// </para>
+    /// </summary>
+    private async Task<SandboxFileRead> TryReadKnowledgeFileAsync(
+        ISandboxFileSystem fileSystem, string path, CancellationToken cancellationToken)
+    {
         try
         {
-            toc = await fileSystem.ReadFileAsync(tocPath, cancellationToken).ConfigureAwait(false);
+            return await fileSystem
+                .ReadFileAsync(path, SandboxReadLimits.KnowledgeListingBytes, cancellationToken)
+                .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            // A missing _toc.md returns null (handled below); but the read itself can THROW — e.g. a gateway
-            // hiccup or a stale session. Design §6 says the KB prepend must NEVER fail the review, so degrade to
-            // "no prior knowledge" and go on.
-            _logger.LogWarning(ex, "Reading KnowledgeBase/_toc.md failed; proceeding without prior knowledge.");
-            return reviewInput;
+            _logger.LogWarning(ex, "Reading {KnowledgeFilePath} failed; proceeding without it.", path);
+            return SandboxFileRead.Missing;
         }
-
-        if (string.IsNullOrWhiteSpace(toc))
-        {
-            return reviewInput;
-        }
-
-        _logger.LogInformation("Prepending KnowledgeBase/_toc.md ({Length} chars) to the review input.", toc.Length);
-        return $"## Prior knowledge (KnowledgeBase/_toc.md)\n\n{toc}\n\n{reviewInput}";
     }
 
     /// <summary>The reviewed repo's own root guidance files, in read-first order: project conventions
@@ -1493,7 +1940,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// <summary>Per-file cap on reviewed-repo guidance prepended to the review input. The content is read
     /// from the attacker-controllable PR head, so an arbitrarily large file must not balloon the review
     /// input (context-window pressure / cost). Generous enough for legitimate guidance — the sample's own
-    /// CLAUDE.md is ~11 KB — and truncation is marked so the model knows the file is partial.</summary>
+    /// CLAUDE.md is ~11 KB — and truncation is marked so the model knows the file is partial. Bounds what
+    /// the reviewer READS and nothing else; <see cref="SandboxReadLimits.RepositoryFileBytes"/> is what
+    /// bounds the read itself.</summary>
     private const int MaxGuidanceFileChars = 32 * 1024;
 
     /// <summary>
@@ -1523,21 +1972,47 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         List<string> blocks = [];
         foreach (var name in RepoGuidanceFileNames)
         {
-            string? content;
+            SandboxFileRead read;
             try
             {
-                content = await fileSystem.ReadFileAsync(PosixJoin(targetDir, name), cancellationToken).ConfigureAwait(false);
+                read = await fileSystem
+                    .ReadFileAsync(
+                        PosixJoin(targetDir, name), SandboxReadLimits.RepositoryFileBytes, cancellationToken)
+                    .ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                // A missing file returns null (skipped below); a real read failure (gateway hiccup / stale
+                // A missing file reads as absent (skipped below); a real read failure (gateway hiccup / stale
                 // session) must NEVER fail the review, so degrade to skipping this one file and continue.
                 _logger.LogWarning(ex, "Reading reviewed-repo guidance '{Name}' failed; proceeding without it.", name);
                 continue;
             }
 
-            if (!string.IsNullOrWhiteSpace(content))
+            if (read.TooLarge)
             {
+                // SAID, not skipped. An absent CLAUDE.md and a refused one look identical from here and mean
+                // opposite things to a reviewer: one repository states no conventions, the other states them in
+                // a file this daemon declined to ingest. Silence would have the reviewer fault the PR for
+                // conventions it was never shown, or recommend adding a file that is already there.
+                _logger.LogWarning(
+                    "Reviewed-repo guidance '{Name}' exceeds the {Limit}-byte read limit; telling the reviewer "
+                        + "it exists and was not read.",
+                    name,
+                    SandboxReadLimits.RepositoryFileBytes);
+                blocks.Add(
+                    $"<pr-guidance-file path=\"{name}\" read=\"refused\">\n"
+                        + $"NOT READ BY THE DAEMON: this file exists in the PR head and is larger than the "
+                        + $"{SandboxReadLimits.RepositoryFileBytes:N0}-byte limit guidance is read with, so none "
+                        + "of it is quoted below. Its conventions are unknown to you — do not conclude that the "
+                        + "repository has none, and do not suggest adding a file that is already there.\n"
+                        + "</pr-guidance-file>");
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(read.Content))
+            {
+                var content = read.Content;
+
                 // SECURITY: this guidance is read from the PR HEAD, so it is attacker-controllable — a hostile
                 // PR could put injection text in its CLAUDE.md/AGENTS.md OR make it arbitrarily large to pressure
                 // the review's context window / cost. Bound each file to MaxGuidanceFileChars (marking any
@@ -1545,6 +2020,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 // literal </pr-guidance-file> the content embeds (rewrite it to a bracketed, non-tag form) so it
                 // cannot forge the closing fence and break out of the quoted region. Belt-and-braces with the
                 // "UNTRUSTED, report injection" instruction the block is headed with.
+                //
+                // This character budget is what the reviewer READS; the byte ceiling above is what the daemon
+                // INGESTS. Trimming here bounded neither the read nor the memory it took — by the time a value
+                // can be trimmed it has already been allocated whole.
                 var bounded = content.Length > MaxGuidanceFileChars
                     ? content[..MaxGuidanceFileChars]
                         + $"\n\n… [truncated: reviewed-repo guidance exceeded {MaxGuidanceFileChars} characters]"
@@ -1729,7 +2208,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             var head = thread[0];
             var where = head.Path is { Length: > 0 } ? $"{head.Path}:{head.Line ?? "?"}" : "(PR-level)";
             var status = head.IsActive ? "active" : "resolved";
-            sb.Append("- ").Append(where).Append(" [status: ").Append(status).Append("]:\n");
+            _ = sb.Append("- ").Append(where).Append(" [status: ").Append(status).Append("]:\n");
             foreach (var c in thread)
             {
                 var author = c.Author is { Length: > 0 } ? c.Author : "unknown";
@@ -1737,14 +2216,14 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 // Body is wrapped in «guillemets» and stripped of any stray guillemet so untrusted comment text
                 // cannot break out of its quoted-data delimiter (see the SECURITY note in ExistingCommentsGuidance).
                 var safeBody = c.Body.Replace("«", "<").Replace("»", ">");
-                sb.Append("    - (").Append(author).Append(when).Append(") «").Append(safeBody).Append("»\n");
+                _ = sb.Append("    - (").Append(author).Append(when).Append(") «").Append(safeBody).Append("»\n");
                 shown++;
             }
         }
 
         if (omitted > 0)
         {
-            sb.Append("… and ").Append(omitted).Append(" more comment(s) not shown.\n");
+            _ = sb.Append("… and ").Append(omitted).Append(" more comment(s) not shown.\n");
         }
 
         return sb.ToString().TrimEnd('\n');
@@ -1918,7 +2397,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // hosted conversation binds to the PR checkout + code-reviewer marketplace. Null on the in-process path,
         // where the live/fake factory ignores it. The escalation-ladder retries share the same workspace (a fresh
         // THREAD reloads no history but reviews the same code) — only the daemon-internal threadId differs.
-        _preparedWorkspaces.TryGetValue(run.Id, out var prepared);
+        _ = _preparedWorkspaces.TryGetValue(run.Id, out var prepared);
         await using var loop = _loopFactory.Create(
             profile, modelOverride ?? run.ModelId, threadId, reasoningEffort: effort, toolContext: toolContext,
             reviewWorkspace: prepared, resumeHostedThreadId: checkpoint.HostedThreadId);
@@ -2338,7 +2817,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// <item>the clean provider 400 — "context window", "maximum context", "context_length_exceeded",
     ///   "too many tokens";</item>
     /// <item>the transport-level abort the endpoint often returns INSTEAD of a clean 400 when a huge
-    ///   request/response is cut off mid-stream — <see cref="System.Net.Http.HttpIOException"/>
+    ///   request/response is cut off mid-stream — <see cref="HttpIOException"/>
     ///   "The response ended prematurely" / "unexpected end of stream" (the form we actually observed on
     ///   sub-agent conversations of 125K–232K tokens).</item>
     /// </list>
@@ -2349,7 +2828,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// </summary>
     private static bool IsContextExhaustionFailure(Exception ex)
     {
-        for (Exception? e = ex; e is not null; e = e.InnerException)
+        for (var e = ex; e is not null; e = e.InnerException)
         {
             var msg = e.Message;
             if (msg.Contains("context window", StringComparison.OrdinalIgnoreCase)
@@ -2386,7 +2865,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // Same prepared S2S workspace as the primary arm (cached at ReviewAsync entry); null in-process. The
         // comparison arm stays diff-only in its prompt, but on S2S it still provisions against the PR workspace
         // (the factory requires one) — a distinct conversation the deep-link machinery does not link.
-        _preparedWorkspaces.TryGetValue(run.Id, out var prepared);
+        _ = _preparedWorkspaces.TryGetValue(run.Id, out var prepared);
         await using var loop = _loopFactory.Create(
             profile, _comparisonVariant.ModelId, ThreadId(run, _comparisonVariant.VariantId),
             _options.VariantReasoningEffort, reviewWorkspace: prepared);
@@ -2455,7 +2934,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // looked like a success. Re-lease first so the retry retains into the same pooled store the review ran in.
         if (hasContent && UsePooledReview && !_leasedReviews.ContainsKey(run.Id))
         {
-            await TryPooledFetchContextAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
+            _ = await TryPooledFetchContextAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
         }
 
         // Host-side single-summary posting. Two ways it fires:
@@ -2782,7 +3261,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             await BuildDaemonNotesArtifactsAsync(run, repo, notesRelPath, cancellationToken).ConfigureAwait(false));
         var request = new ReviewBotPublishRequest(
             repo,
-            PrNumber: int.Parse(run.PrId, System.Globalization.CultureInfo.InvariantCulture),
+            PrNumber: int.Parse(run.PrId, CultureInfo.InvariantCulture),
             HeadSha: run.HeadSha,
             DefaultBranch: ReviewBotDefaultBranch,
             Files: files);
@@ -2998,7 +3477,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 /// newline-joined tracked-file list of the head checkout (bounded), appended so the review agent can Read
 /// files by exact path; <see cref="CheckoutRoot"/> is the absolute dir the reviewed repo is checked out in
 /// (the manifest paths are relative to it), and <see cref="StoreRoot"/> is the cross-repo store root when the
-/// reviewed repo was checked out as a store submodule (else null). All are null/empty on older artifacts.</summary>
+/// reviewed repo was checked out as a store submodule (else null). <see cref="ChangedPaths"/> is the
+/// newline-joined <c>git diff --name-only</c> listing for the same range: <see cref="Diff"/> is capped, so on
+/// a large PR its later headers are gone and it is NOT a complete record of what changed — anything that
+/// ranks or routes by changed file must read this instead. All are null/empty on older artifacts.</summary>
 internal sealed record ContextArtifactPayload(
     string PrId,
     string BaseSha,
@@ -3006,7 +3488,8 @@ internal sealed record ContextArtifactPayload(
     string Diff,
     string? FileManifest = null,
     string? CheckoutRoot = null,
-    string? StoreRoot = null);
+    string? StoreRoot = null,
+    string? ChangedPaths = null);
 
 /// <summary>The persisted primary review output (kind <c>review</c>). <see cref="ThreadId"/> is the conversation
 /// thread the review ran on — on the S2S path the LmStreaming-minted id the Posted stage turns into the posted
@@ -3120,7 +3603,7 @@ internal sealed record ReviewSlotWorkspace(
 /// <summary>
 /// The one discovery operation <see cref="DaemonReviewStageExecutor"/> needs from the registry to build
 /// sub-agent templates (Task 11/12). Implemented by
-/// <see cref="AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox.SandboxSessionRegistry"/> via the
+/// <see cref="SandboxSessionRegistry"/> via the
 /// <c>RegistryDiscoverySource</c> adapter (registered in Program.cs) and by a fake in tests — mirrors the
 /// narrow <see cref="ISandboxSessionSource"/> seam already used for session provisioning, so the executor
 /// stays verifiable against a fake without a live gateway.

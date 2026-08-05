@@ -163,8 +163,45 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
-        text.Should().Contain("## Prior knowledge (KnowledgeBase/_toc.md)", "the ToC is prepended as a labelled block");
+
+        // The heading MUST be the canonical one the review prompt teaches, because the prompt also teaches
+        // that the absence of that block means there is no Knowledge Base at all. A fallback rendered under
+        // its own heading is therefore invisible: the agent is told, in the same breath, not to go looking.
+        text.Should().Contain("## Prior knowledge (Knowledge Base)", "the ToC is prepended as a labelled block");
         text.Should().Contain("KB-ENTRY-XYZ", "the seeded ToC entry is surfaced to the pooled reviewer");
+        text.Should().Contain(
+            "/workspace/store/KnowledgeBase/_toc.md",
+            "the fallback must still hand over an exact absolute path, not a bare file name");
+    }
+
+    [Fact]
+    public async Task Reviewed_renders_container_rooted_knowledge_paths_when_the_leased_store_is_a_host_path()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+
+        // The two roots diverge on the pooled S2S path and MUST NOT be conflated. The daemon reads the KB
+        // host-side out of the leased slot (lease.Prepared.StoreRoot = the slot's HOST store dir), but the
+        // reviewer is a hosted agent for which that slot is mounted at /workspace — so every path rendered
+        // INTO its input has to be container-rooted, exactly like the container roots the context artifact
+        // advertises. Rendering the host path hands the agent a Windows/host path it cannot open, which
+        // silently defeats the whole feature on the supported path.
+        fixture.HostFileSystem.Seed(
+            "/pool/review-slot-0/store/KnowledgeBase/_index.jsonl",
+            """{"file":"system/null-guard.md","title":"Null-guard boundaries","tags":["null"],"scope":"system","sourcePrs":[],"updated":"2026-07-05"}"""
+                + "\n");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        text.Should().Contain(
+            "/workspace/store/KnowledgeBase/system/null-guard.md",
+            "the entry was READ from the host slot but must be RENDERED at the root the agent sees");
+        text.Should().NotContain(
+            "/pool/review-slot-0",
+            "a host path is unopenable inside the review container, so it must never reach the agent's input");
     }
 
     [Fact]
@@ -210,6 +247,93 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         text.Should().NotContain("Repository guidance", "an absent CLAUDE.md/AGENTS.md must not add an empty block");
+    }
+
+    [Fact]
+    public async Task Reviewed_tells_the_reviewer_the_knowledge_base_was_unread_when_every_listing_is_refused()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // BOTH listings over the ceiling: nothing about the store reaches the reviewer. The failure this
+        // pins is not the missing knowledge — that part is unavoidable once a file is refused — it is what
+        // the SILENCE would say. The review prompt teaches that the absence of the "## Prior knowledge"
+        // heading means this repository has no Knowledge Base, so degrading a refusal to "no prior
+        // knowledge" does not withhold a fact, it asserts a false one to the only party that acts on it.
+        var oversize = new string('x', (int)SandboxReadLimits.KnowledgeListingBytes + 1);
+        fixture.HostFileSystem.Seed("/pool/slot-0/store/KnowledgeBase/_index.jsonl", oversize);
+        fixture.HostFileSystem.Seed("/pool/slot-0/store/KnowledgeBase/_toc.md", oversize);
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        text.Should().Contain(
+            "## Prior knowledge (Knowledge Base)",
+            "the refusal has to arrive under the one heading the prompt teaches, or it is invisible");
+        text.Should().Contain(
+            "/workspace/store/KnowledgeBase/_index.jsonl",
+            "the reviewer is told exactly which listing was refused, at the root it can resolve");
+        text.Should().Contain(
+            "/workspace/store/KnowledgeBase/_toc.md",
+            "both routes were refused, so both are named");
+        text.Should().NotContain(
+            "xxxxxxxxxx",
+            "a refused file is never rendered in part — the point of refusing is that no prefix is safe");
+    }
+
+    [Fact]
+    public async Task Reviewed_does_not_announce_a_refusal_when_the_fallback_listing_was_read()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // Only the INDEX is refused; _toc.md is fine and carries the entries. The reviewer has its prior
+        // knowledge, so it must not also be told the store is unread — an alarm raised on every run where
+        // ranking degraded to the fallback is an alarm nobody reads on the run that matters.
+        fixture.HostFileSystem.Seed(
+            "/pool/slot-0/store/KnowledgeBase/_index.jsonl",
+            new string('x', (int)SandboxReadLimits.KnowledgeListingBytes + 1));
+        fixture.HostFileSystem.Seed(
+            "/pool/slot-0/store/KnowledgeBase/_toc.md",
+            "# Knowledge Base\n\n## system\n- [KB-ENTRY-XYZ](system/kb-entry-xyz.md)\n");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        text.Should().Contain("KB-ENTRY-XYZ", "the readable fallback listing still reaches the reviewer");
+        text.Should().NotContain(
+            "could be loaded for this review",
+            "nothing was lost to the reviewer, so nothing about a refusal belongs in its input");
+    }
+
+    [Fact]
+    public async Task Reviewed_tells_the_reviewer_repo_guidance_exists_when_it_is_too_large_to_read()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // An absent CLAUDE.md and a refused one both render nothing, and mean opposite things: one repository
+        // states no conventions, the other states them in a file the daemon declined to ingest. Skipping it
+        // silently has the reviewer fault a PR for conventions it was never shown.
+        fixture.HostFileSystem.Seed(
+            "/pool/slot-0/store/repos/LmDotnetTools/CLAUDE.md",
+            "REPO-GUIDANCE-MARKER" + new string('x', (int)SandboxReadLimits.RepositoryFileBytes));
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        text.Should().Contain("Repository guidance", "the block is rendered so the refusal can be stated in it");
+        text.Should().Contain("NOT READ BY THE DAEMON", "the reviewer is told the file exists and was not read");
+        text.Should().Contain("CLAUDE.md", "and told which file it was");
+        text.Should().NotContain(
+            "REPO-GUIDANCE-MARKER",
+            "the file was refused, so none of its attacker-controllable content reaches the input");
     }
 
     [Fact]

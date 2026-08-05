@@ -57,6 +57,28 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task ContextReady_persists_changed_paths_with_filename_whitespace_intact()
+    {
+        // git allows a filename to begin or end with a space, and `diff --name-only` does not quote for
+        // plain spaces — quoting triggers on non-ASCII, control, quote and backslash bytes only. Trimming
+        // the listing therefore silently renames the first and last records into paths git never reported,
+        // and the ranking they feed can no longer match them.
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        fixture.Runner.OnArgvContainsFirst(
+            "diff --name-only",
+            new SandboxCommandResult(0, "\n lead.cs\ntrail.cs \n", string.Empty));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var artifact = fixture.Store.GetArtifacts(run.Id).Should().ContainSingle().Subject;
+        var changedPaths = JsonDocument.Parse(artifact.Payload).RootElement
+            .GetProperty("ChangedPaths").GetString();
+
+        KnowledgeDigest.ParseChangedPaths(changedPaths).Should().Equal(" lead.cs", "trail.cs ");
+    }
+
+    [Fact]
     public async Task ContextReady_fetches_the_target_repo_and_diffs_the_target_checkout_not_reviewbot()
     {
         using var fixture = Fixture.GitHub(LoggerFactory);
@@ -371,6 +393,341 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task Reviewed_prepends_a_ranked_knowledge_digest_with_absolute_paths_when_the_store_has_an_index()
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+            });
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
+        // _index.jsonl carries tags/scope per entry, so it — not the title-only _toc.md — is what lets the
+        // reviewer (and the sub-agents it dispatches) match a lesson to the files this PR changes.
+        fixture.FileSystem.Seed(
+            "/workspace/store/KnowledgeBase/_index.jsonl",
+            """{"file":"system/null-guard.md","title":"Null-guard boundaries","tags":["null","boundaries"],"scope":"system","sourcePrs":[],"updated":"2026-07-05"}"""
+                + "\n"
+                + """{"file":"system/pagination.md","title":"Filter before paging","tags":["pagination"],"scope":"system","sourcePrs":[],"updated":"2026-07-04"}"""
+                + "\n");
+        fixture.FileSystem.Seed("/workspace/store/KnowledgeBase/_toc.md", "# Knowledge Base\n\nTOC-ONLY-MARKER\n");
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        text.Should().Contain("## Prior knowledge (Knowledge Base)");
+        text.Should().Contain(
+            "/workspace/store/KnowledgeBase/system/null-guard.md",
+            "the agent cannot Grep the KB open, so it must be handed the exact absolute path");
+        text.Should().Contain("tags: null, boundaries", "metadata is what lets a lesson be matched to a dimension");
+        text.Should().Contain("sub-agent", "the parent is told to copy matching paths into each sub-agent's brief");
+        text.Should().NotContain(
+            "TOC-ONLY-MARKER",
+            "with an index present the weaker title-only ToC block must not be used");
+    }
+
+    [Fact]
+    public async Task Reviewed_ranks_knowledge_against_files_the_bounded_diff_truncated_away()
+    {
+        // The persisted diff is CAPPED, so on a large PR every `diff --git` header past the cap is gone.
+        // Ranking off that text makes the files changed late in a PR invisible to retrieval — exactly the
+        // files a big PR is most likely to need a lesson about. The changed-path list has to come from a
+        // lossless source (`git diff --name-only`), which stays tiny even when the patch does not.
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+                Limits = new CodeReviewDaemon.Sample.Configuration.SandboxLimits { MaxArtifactPayloadChars = 320 },
+            },
+            diffResult: new SandboxCommandResult(
+                0,
+                "diff --git a/src/Alpha/Widget.cs b/src/Alpha/Widget.cs\n"
+                    + string.Join('\n', Enumerable.Repeat("+ a line of widget body text", 20))
+                    + "\ndiff --git a/src/Zeta/KrakenTentacle.cs b/src/Zeta/KrakenTentacle.cs\n+ late\n",
+                string.Empty));
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/Alpha/Widget.cs\n", string.Empty));
+        // Registered FIRST: the fixture's broad "diff" rule would otherwise swallow this narrower one.
+        fixture.Runner.OnArgvContainsFirst(
+            "diff --name-only",
+            new SandboxCommandResult(0, "src/Alpha/Widget.cs\nsrc/Zeta/KrakenTentacle.cs\n", string.Empty));
+
+        // The kraken entry matches two tokens of a path that only the lossless list still carries, so it
+        // must outscore the widget entry. Its file sorts LAST ordinally and both entries share an Updated
+        // date, so neither tie-break can produce this order — only the score can.
+        fixture.FileSystem.Seed(
+            "/workspace/store/KnowledgeBase/_index.jsonl",
+            """{"file":"system/a-widget.md","title":"Widget lifecycle","tags":["widget"],"scope":"system","sourcePrs":[],"updated":"2026-07-05"}"""
+                + "\n"
+                + """{"file":"system/z-kraken.md","title":"Kraken tentacle retries","tags":["kraken","tentacle"],"scope":"system","sourcePrs":[],"updated":"2026-07-05"}"""
+                + "\n");
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        text.Should().NotContain(
+            "KrakenTentacle.cs\nb/src",
+            "the fixture's cap must really have truncated the diff, or this test proves nothing");
+        text.IndexOf("system/z-kraken.md", StringComparison.Ordinal).Should().BeGreaterThan(-1);
+        text.IndexOf("system/z-kraken.md", StringComparison.Ordinal).Should().BeLessThan(
+            text.IndexOf("system/a-widget.md", StringComparison.Ordinal),
+            "the entry matching the truncated-away path must still be ranked on it");
+    }
+
+    [Fact]
+    public async Task Reviewed_refuses_a_knowledge_entry_whose_path_escapes_the_knowledge_base()
+    {
+        // _index.jsonl is written into the store by the knowledge agent — an LLM with file-write tools — and
+        // is read back here unvalidated. A '..' in a "file" value would hand the reviewer an absolute path
+        // outside KnowledgeBase/, i.e. something that is not knowledge presented as though it were, which
+        // the reviewer has no way to detect. The refusal has to be LOGGED, not silent: an entry that simply
+        // vanishes from the digest is indistinguishable from a Knowledge Base that never had it.
+        using var logs = new CapturingLoggerFactory();
+        using var fixture = Fixture.GitHub(
+            logs,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+            });
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
+        fixture.FileSystem.Seed(
+            "/workspace/store/KnowledgeBase/_index.jsonl",
+            """{"file":"../../../workspace/target/src/LmCore/Foo.cs","title":"Poisoned","tags":["null"],"scope":"system","sourcePrs":[],"updated":"2026-07-05"}"""
+                + "\n"
+                + """{"file":"system/null-guard.md","title":"Null-guard boundaries","tags":["null"],"scope":"system","sourcePrs":[],"updated":"2026-07-04"}"""
+                + "\n");
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        text.Should().Contain(
+            "/workspace/store/KnowledgeBase/system/null-guard.md",
+            "the well-formed entry alongside it must still reach the reviewer");
+        text.Should().NotContain("Poisoned");
+        text.Should().NotContain(
+            "/workspace/target/src/LmCore/Foo.cs",
+            "the escaping entry must never be rendered as a path the agent is told to Read");
+
+        logs.Capturing.CountAtLevel(LogLevel.Warning, "../../../workspace/target/src/LmCore/Foo.cs")
+            .Should().Be(1, "a refused entry has to be visible in the log the way the surfaced ones are");
+    }
+
+    [Fact]
+    public async Task Reviewed_counts_records_as_records_and_entries_as_entries_over_a_doubled_index()
+    {
+        // "surfaced 2 of 4 Knowledge Base entries" is defensible arithmetic and misleading English: 4 is the
+        // raw record count parsed out of _index.jsonl, not four entries, so an operator reading the line
+        // concludes half the store was withheld from the reviewer. Both numbers stay — swapping 4 for the
+        // deduplicated count would read cleanly and delete the only number that says the index was doubled —
+        // and each names what it counts, with the collapse warning alongside to explain the gap between them.
+        using var logs = new CapturingLoggerFactory();
+        using var fixture = Fixture.GitHub(
+            logs,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+            });
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
+
+        // Two distinct entries, each recorded twice — the merged-index shape, four records for two lessons.
+        const string NullGuard =
+            """{"file":"system/null-guard.md","title":"Null-guard boundaries","tags":["null"],"scope":"system","sourcePrs":[],"updated":"2026-07-05"}""";
+        const string RetryPolicy =
+            """{"file":"system/retry-policy.md","title":"Retry policy","tags":["retry"],"scope":"system","sourcePrs":[],"updated":"2026-07-04"}""";
+        fixture.FileSystem.Seed(
+            "/workspace/store/KnowledgeBase/_index.jsonl",
+            NullGuard + "\n" + RetryPolicy + "\n" + NullGuard + "\n" + RetryPolicy + "\n");
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        text.Should().Contain(
+            "/workspace/store/KnowledgeBase/system/null-guard.md",
+            "collapsing the repeats must not cost a distinct entry");
+        text.Should().Contain("/workspace/store/KnowledgeBase/system/retry-policy.md");
+
+        logs.Capturing.CountAtLevel(LogLevel.Information, "surfaced 2 Knowledge Base entries")
+            .Should().Be(1, "two entries reached the reviewer, and that is what the entry count must count");
+        logs.Capturing.CountAtLevel(LogLevel.Information, "from 4 _index.jsonl records")
+            .Should().Be(1, "the raw record count is the only signal that the index was doubled — it stays");
+        logs.Capturing.CountAtLevel(LogLevel.Warning, "collapsed 2 duplicate _index.jsonl records")
+            .Should().Be(1, "the gap between 2 and 4 is only honest if something explains it");
+    }
+
+    [Fact]
+    public async Task Reviewed_keeps_a_knowledge_entry_whose_title_links_outside_the_knowledge_base()
+    {
+        // End to end on the primary route: an extraction agent writes a title pointing at the repo's own
+        // docs, which live outside KnowledgeBase/ because repo docs do. The link must not reach the
+        // reviewer, and the entry must - refusing it would delete a sound lesson over a decoration, which
+        // is the knowledge-blindness this whole feature exists to remove. The scrub is logged for the same
+        // reason the refusal above is: the entry arrives looking healthy, so nothing else would ever say
+        // that the knowledge agent had written an escaping link into it.
+        using var logs = new CapturingLoggerFactory();
+        using var fixture = Fixture.GitHub(
+            logs,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+            });
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
+        fixture.FileSystem.Seed(
+            "/workspace/store/KnowledgeBase/_index.jsonl",
+            """{"file":"system/ado-onboarding.md","title":"Follow the [ADO guide](../../docs/ado.md) first","tags":["ado"],"scope":"system","sourcePrs":[],"updated":"2026-07-05"}"""
+                + "\n");
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        text.Should().NotContain("../../docs/ado.md", "the escaping link must not reach the reviewer");
+        text.Should().Contain(
+            "/workspace/store/KnowledgeBase/system/ado-onboarding.md",
+            "the entry itself is sound and must still be handed over");
+
+        logs.Capturing.CountAtLevel(LogLevel.Warning, "system/ado-onboarding.md")
+            .Should().Be(1, "a cleared field has to be as visible as a refusal, and countable");
+    }
+
+    [Fact]
+    public async Task Reviewed_warns_when_an_oversized_index_parses_to_nothing_at_all()
+    {
+        // The record ceiling made an oversized _index.jsonl stop being read; this is about what the operator
+        // is TOLD when it does. If every examined record is junk, the parse yields zero entries AND reports
+        // truncation, and an empty digest is exactly what a store with no Knowledge Base yet produces. The
+        // caller cannot tell those apart on its own — it falls through to the _toc.md fallback under a
+        // comment reading "never extracted, or a torn file" — so the review is quietly downgraded to titles
+        // and links, with no tags, no scope and no ranking, and reads as clean. The flag that separates the
+        // two cases exists one frame down; dropping it there is the failure this whole feature exists to end.
+        using var logs = new CapturingLoggerFactory();
+        using var fixture = Fixture.GitHub(
+            logs,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+            });
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
+        fixture.FileSystem.Seed(
+            "/workspace/store/KnowledgeBase/_index.jsonl",
+            string.Join('\n', Enumerable.Repeat("not json at all", KnowledgeIndex.MaxIndexRecords + 1)));
+        // A usable fallback, so the run takes the downgrade rather than the no-knowledge-at-all path: the
+        // point is that a review which LOOKS well-supplied still says the index was torn.
+        fixture.FileSystem.Seed(
+            "/workspace/store/KnowledgeBase/_toc.md",
+            "# Knowledge Base\n\n## system\n- [Null-guard boundaries](system/null-guard.md)\n");
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        logs.Capturing.CountAtLevel(LogLevel.Warning, "_index.jsonl exceeds")
+            .Should().Be(1, "an index too big AND too broken to read must not look like an absent one");
+    }
+
+    [Fact]
+    public async Task Reviewed_warns_about_an_oversized_index_even_with_no_toc_to_fall_back_on()
+    {
+        // Same defect one step further along: with no _toc.md either, the caller's own line reads "No usable
+        // Knowledge Base ...; reviewing without prior knowledge" — which is exactly what a store that has
+        // never been extracted logs. This is the case where the operator has the LEAST to go on, so the
+        // warning has to be attached to the reading rather than to whichever route the digest ends up taking.
+        using var logs = new CapturingLoggerFactory();
+        using var fixture = Fixture.GitHub(
+            logs,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+            });
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
+        fixture.FileSystem.Seed(
+            "/workspace/store/KnowledgeBase/_index.jsonl",
+            string.Join('\n', Enumerable.Repeat("not json at all", KnowledgeIndex.MaxIndexRecords + 1)));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        logs.Capturing.CountAtLevel(LogLevel.Warning, "_index.jsonl exceeds")
+            .Should().Be(1, "the torn index is a fact about the read, not about which fallback followed it");
+    }
+
+    [Fact]
+    public async Task Reviewed_does_not_claim_truncation_for_a_small_torn_index()
+    {
+        // The partner pin: the fix above must not degrade into "warn about truncation whenever the digest
+        // comes out empty". A short unparseable index is the ordinary torn-file case the fallback already
+        // handles, and telling the operator it exceeded a 5,000-record ceiling would send them hunting a
+        // runaway extraction that is not there.
+        using var logs = new CapturingLoggerFactory();
+        using var fixture = Fixture.GitHub(
+            logs,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+            });
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
+        fixture.FileSystem.Seed(
+            "/workspace/store/KnowledgeBase/_index.jsonl",
+            string.Join('\n', Enumerable.Repeat("not json at all", 3)));
+        fixture.FileSystem.Seed(
+            "/workspace/store/KnowledgeBase/_toc.md",
+            "# Knowledge Base\n\n## system\n- [Null-guard boundaries](system/null-guard.md)\n");
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        logs.Capturing.CountAtLevel(LogLevel.Warning, "_index.jsonl exceeds")
+            .Should().Be(0, "nothing was left behind, so nothing was truncated");
+    }
+
+    [Fact]
     public async Task Reviewed_prepends_the_knowledge_base_toc_when_the_store_has_one()
     {
         using var fixture = Fixture.GitHub(
@@ -384,8 +741,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             "/workspace/store/.gitmodules",
             "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
         fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
-        // The store carries prior knowledge distilled from past PRs; the review must start with its table
-        // of contents so the reviewer factors it in (design §3).
+        // The store carries prior knowledge distilled from past PRs; with no _index.jsonl to rank (a KB
+        // written before the index existed) the review must still start with its table of contents (design §3).
         fixture.FileSystem.Seed(
             "/workspace/store/KnowledgeBase/_toc.md",
             "# Knowledge Base\n\n## system\n- [Null-guard boundaries](system/null-guard.md)\n");
@@ -396,8 +753,15 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
-        text.Should().Contain("Prior knowledge (KnowledgeBase/_toc.md)", "the ToC is prepended as a labelled block");
+        // The prompt teaches ONE canonical heading and teaches that its absence means "no Knowledge Base
+        // exists, don't go looking". The fallback must therefore arrive under that same heading — a
+        // separately-labelled block is one the agent has been told to ignore — and must still carry an exact
+        // absolute path, since a bare "_toc.md" is not something the agent can open.
+        text.Should().Contain("## Prior knowledge (Knowledge Base)", "the ToC is prepended as a labelled block");
         text.Should().Contain("Null-guard boundaries", "the seeded ToC entries are surfaced to the reviewer");
+        text.Should().Contain(
+            "/workspace/store/KnowledgeBase/_toc.md",
+            "the fallback must hand over the ToC's exact absolute path");
     }
 
     [Fact]
@@ -435,7 +799,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         await act.Should().NotThrowAsync("a KB/notes read failure must degrade, not kill the review (design §6)");
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
-        text.Should().NotContain("Prior knowledge (KnowledgeBase/_toc.md)", "the failed KB read is skipped, not prepended");
+        text.Should().NotContain("Prior knowledge", "the failed KB read is skipped, not prepended");
     }
 
     [Fact]

@@ -1,3 +1,4 @@
+using System.Text;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
 
 namespace CodeReviewDaemon.Sample.Tests.Infrastructure;
@@ -43,8 +44,16 @@ internal sealed class FakeSandboxFileSystem : ISandboxFileSystem
         return this;
     }
 
-    public Task<string?> ReadFileAsync(string path, CancellationToken cancellationToken)
+    /// <summary>
+    /// Reads a seeded file, ENFORCING <paramref name="maxBytes"/> against its UTF-8 length exactly as both
+    /// production implementations do. A fake that accepted the ceiling and ignored it would let every test
+    /// pass over code paths that refuse in production — the ceiling is the behaviour under test here, not a
+    /// parameter to be carried.
+    /// </summary>
+    public Task<SandboxFileRead> ReadFileAsync(string path, long maxBytes, CancellationToken cancellationToken)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxBytes);
+
         if (ReadFault?.Invoke(path) is { } fault)
         {
             throw fault;
@@ -52,7 +61,15 @@ internal sealed class FakeSandboxFileSystem : ISandboxFileSystem
 
         lock (_gate)
         {
-            return Task.FromResult(Files.TryGetValue(path, out var content) ? content : null);
+            if (!Files.TryGetValue(path, out var content))
+            {
+                return Task.FromResult(SandboxFileRead.Missing);
+            }
+
+            return Task.FromResult(
+                Encoding.UTF8.GetByteCount(content) > maxBytes
+                    ? SandboxFileRead.Refused
+                    : SandboxFileRead.Of(content));
         }
     }
 

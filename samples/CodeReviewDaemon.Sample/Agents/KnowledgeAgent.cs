@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
@@ -6,7 +7,7 @@ namespace CodeReviewDaemon.Sample.Agents;
 
 /// <summary>
 /// Distills review knowledge into the durable Knowledge Base. The at-close
-/// <see cref="KnowledgeAgent.TryExtractAsync"/> (design §1/§2) drives one collect-only agent run over a
+/// <see cref="TryExtractAsync"/> (design §1/§2) drives one collect-only agent run over a
 /// merged PR's accumulated notes, gates on durable, generalizable knowledge, writes a <b>layered</b>
 /// <c>KnowledgeBase/&lt;scope&gt;/&lt;slug&gt;.md</c> entry with daemon-injected frontmatter (create-or-update),
 /// then regenerates both the queryable <c>_index.jsonl</c> and <c>_toc.md</c> from the entries actually
@@ -191,14 +192,33 @@ internal sealed class KnowledgeAgent
         }
 
         var targetPath = JoinPath(knowledgeBaseDir, targetRelPath);
-        var existing = await _fileSystem.ReadFileAsync(targetPath, cancellationToken).ConfigureAwait(false);
+        var existingRead = await _fileSystem
+            .ReadFileAsync(targetPath, SandboxReadLimits.KnowledgeEntryBytes, cancellationToken)
+            .ConfigureAwait(false);
+        if (existingRead.TooLarge)
+        {
+            // The write below is an OVERWRITE, and this read is the only thing that carries the current
+            // entry's title, tags and source PRs into it. An unreadable entry read as an absent one would
+            // therefore not skip a merge — it would replace a file we could not see with one distilled
+            // without it, and the entry it destroyed is the durable half of this feature. Refuse the run.
+            _logger.LogError(
+                "Knowledge run {RunId} targets '{Entry}', which exceeds the {Limit}-byte read limit; refusing "
+                    + "to overwrite an entry that could not be read. Nothing written.",
+                collected.RunId,
+                targetRelPath,
+                SandboxReadLimits.KnowledgeEntryBytes
+            );
+            return KnowledgeExtractionResult.Failed(collected.RunId);
+        }
+
+        var existing = existingRead.Content;
         var existingMeta = existing is null ? null : KnowledgeIndex.ParseFrontmatter(targetRelPath, existing);
 
         var scope = ScopeSegment(targetRelPath) ?? parsed.Scope;
         var title = !string.IsNullOrWhiteSpace(parsed.Title)
             ? parsed.Title
             : existingMeta?.Title ?? SlugFromRelPath(targetRelPath);
-        IReadOnlyList<string> tags = parsed.Tags.Count > 0 ? parsed.Tags : existingMeta?.Tags ?? [];
+        var tags = parsed.Tags.Count > 0 ? parsed.Tags : existingMeta?.Tags ?? [];
         var sourcePrs = MergeSourcePrs(existingMeta?.SourcePrs, sourcePrRef);
 
         var entryMarkdown = BuildEntry(title, tags, scope, sourcePrs, todayUtc, parsed.Body);
@@ -218,7 +238,8 @@ internal sealed class KnowledgeAgent
     /// <summary>
     /// Assembles the extraction agent's input: the PR notes followed by the existing <c>_index.jsonl</c>
     /// and <c>_toc.md</c> (best-effort; missing files render as <c>(empty)</c>) so the agent can update a
-    /// related entry instead of duplicating one.
+    /// related entry instead of duplicating one. Each listing is bounded by
+    /// <see cref="AppendExistingListing"/>, which announces a shortened or refused listing to the agent.
     /// </summary>
     private async Task<string> BuildExtractionInputAsync(
         string knowledgeBaseDir,
@@ -227,20 +248,148 @@ internal sealed class KnowledgeAgent
     )
     {
         var index = await _fileSystem
-            .ReadFileAsync(JoinPath(knowledgeBaseDir, IndexFileName), cancellationToken)
+            .ReadFileAsync(
+                JoinPath(knowledgeBaseDir, IndexFileName),
+                SandboxReadLimits.KnowledgeListingBytes,
+                cancellationToken
+            )
             .ConfigureAwait(false);
         var toc = await _fileSystem
-            .ReadFileAsync(JoinPath(knowledgeBaseDir, TocFileName), cancellationToken)
+            .ReadFileAsync(
+                JoinPath(knowledgeBaseDir, TocFileName),
+                SandboxReadLimits.KnowledgeListingBytes,
+                cancellationToken
+            )
             .ConfigureAwait(false);
 
         var builder = new StringBuilder();
         _ = builder.Append(notesInput ?? string.Empty);
-        _ = builder.Append("\n\n## Existing Knowledge Base index (_index.jsonl)\n");
-        _ = builder.Append(string.IsNullOrWhiteSpace(index) ? "(empty)" : index);
-        _ = builder.Append("\n\n## Existing Knowledge Base table of contents (_toc.md)\n");
-        _ = builder.Append(string.IsNullOrWhiteSpace(toc) ? "(empty)" : toc);
+        AppendExistingListing(builder, "index (" + IndexFileName + ")", IndexFileName, index);
+        AppendExistingListing(builder, "table of contents (" + TocFileName + ")", TocFileName, toc);
         _ = builder.Append(OutputContract);
         return builder.ToString();
+    }
+
+    /// <summary>
+    /// Characters of one existing-store listing carried into the extraction prompt. The store grows with
+    /// every merged PR, so an unbounded listing eventually crowds out the notes it is meant to help
+    /// distill — and the notes are the payload.
+    /// <para>
+    /// <see cref="KnowledgeIndex.MaxIndexRecords"/> deliberately does <b>not</b> transfer here: that ceiling
+    /// bounds the cost of <i>parsing</i> the index, and at a few hundred characters a record it still admits
+    /// a listing far larger than any prompt should carry. Nothing is parsed on this path, so the budget that
+    /// matters is the one the model is charged for.
+    /// </para>
+    /// </summary>
+    private const int MaxExistingListingChars = 16 * 1024;
+
+    /// <summary>
+    /// Appends one existing-store listing under its heading, shortened at a line boundary to
+    /// <see cref="MaxExistingListingChars"/>.
+    /// <para>
+    /// A shortened listing is announced <b>in the prompt</b>, not merely in our logs, and that is the point
+    /// of the cap rather than a nicety. The agent reads these listings specifically to update a related
+    /// entry instead of writing a second one, so a listing that quietly loses its tail does not just shrink
+    /// a prompt — it manufactures duplicate Knowledge Base entries, because the agent goes on believing it
+    /// has seen the whole store. A silent cap is therefore worse than no cap at all. Told that it is looking
+    /// at part of the store, the agent can stop reading "not in this list" as "does not exist"; the log line
+    /// below can tell us, but it cannot tell the only party in a position to avoid the duplicate.
+    /// </para>
+    /// <para>
+    /// A listing REFUSED for size gets the same treatment for the same reason, and a stronger warning: it
+    /// renders none of the store, so <c>(empty)</c> — the missing-file rendering — would tell the agent the
+    /// Knowledge Base is empty at the exact moment it is largest, and every entry it then wrote would
+    /// duplicate one that already exists.
+    /// </para>
+    /// </summary>
+    private void AppendExistingListing(
+        StringBuilder builder, string heading, string fileName, SandboxFileRead read)
+    {
+        _ = builder.Append("\n\n## Existing Knowledge Base ").Append(heading).Append('\n');
+
+        if (read.TooLarge)
+        {
+            _ = builder.Append(
+                "**This listing could NOT be read — it exceeds this daemon's size limit, so NONE of the "
+                    + "existing Knowledge Base is shown to you here.** The store is not empty; it is unread. "
+                    + "Assume an entry on your topic may already exist, prefer an `## UPDATES` to a file you "
+                    + "can name from the notes above, and do not treat this section's silence as evidence "
+                    + "that a topic is uncovered."
+            );
+
+            _logger.LogWarning(
+                "Knowledge extraction: the existing {FileName} exceeds the {Limit}-byte read limit and was not "
+                    + "read; the extraction prompt says so rather than rendering it as an empty store. Trim the "
+                    + "listing at the source — until then every extraction runs blind to the whole Knowledge "
+                    + "Base and will duplicate entries.",
+                fileName,
+                SandboxReadLimits.KnowledgeListingBytes
+            );
+            return;
+        }
+
+        var content = read.Content;
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            _ = builder.Append("(empty)");
+            return;
+        }
+
+        if (content.Length <= MaxExistingListingChars)
+        {
+            _ = builder.Append(content);
+            return;
+        }
+
+        // Cut at a line boundary: half an index record reads like a whole one, and an agent that believes
+        // 'system/foo' exists because it saw a torn 'system/foo-bar' has been misled rather than shortened.
+        // With no boundary inside the budget there is no whole line to show, so show none and say so.
+        var cut = content.LastIndexOf('\n', MaxExistingListingChars - 1);
+        var kept = cut > 0 ? content[..cut] : string.Empty;
+        var dropped = CountLines(content) - CountLines(kept);
+
+        _ = builder.Append(kept);
+        _ = builder.Append(
+            "\n\n**This listing is PARTIAL — it did not fit, and "
+        );
+        _ = builder.Append(dropped.ToString(CultureInfo.InvariantCulture));
+        _ = builder.Append(
+            " further lines are not shown.** Entries you cannot see here may already exist, so absence "
+                + "from the part above is NOT evidence that a topic is uncovered: do not treat \"not in "
+                + "this list\" as \"does not exist\"."
+        );
+
+        _logger.LogWarning(
+            "Knowledge extraction: the existing {FileName} is {TotalChars} characters, so the extraction "
+                + "prompt carries the first {KeptChars} and tells the agent that {DroppedLines} lines are "
+                + "missing. The agent will not read absence as proof of absence, but a store listing this "
+                + "long makes duplicate entries likelier and the listing should be trimmed at the source.",
+            fileName,
+            content.Length,
+            kept.Length,
+            dropped
+        );
+    }
+
+    /// <summary>Lines in <paramref name="text"/>, where a trailing newline ends the last line rather than
+    /// starting an empty one.</summary>
+    private static int CountLines(ReadOnlySpan<char> text)
+    {
+        if (text.IsEmpty)
+        {
+            return 0;
+        }
+
+        var lines = 1;
+        foreach (var character in text)
+        {
+            if (character == '\n')
+            {
+                lines++;
+            }
+        }
+
+        return text[^1] == '\n' ? lines - 1 : lines;
     }
 
     /// <summary>
@@ -299,10 +448,18 @@ internal sealed class KnowledgeAgent
             }
             else if (StaysUnderKnowledgeBase(knowledgeBaseDir, updatesRel))
             {
-                var updatesContent = await _fileSystem
-                    .ReadFileAsync(JoinPath(knowledgeBaseDir, updatesRel), cancellationToken)
+                // A PRESENCE check: an over-size entry is present, and this decides only whether the named
+                // file is the one to write. Reading "absent" off it would route the entry to a fresh
+                // scope+slug path and leave the real entry unmerged beside its own duplicate. (The caller
+                // reads the target for merge and refuses the run if THAT read is refused.)
+                var updatesRead = await _fileSystem
+                    .ReadFileAsync(
+                        JoinPath(knowledgeBaseDir, updatesRel),
+                        SandboxReadLimits.KnowledgeEntryBytes,
+                        cancellationToken
+                    )
                     .ConfigureAwait(false);
-                if (updatesContent is not null)
+                if (updatesRead.Exists)
                 {
                     return updatesRel;
                 }
@@ -613,9 +770,39 @@ internal sealed class KnowledgeAgent
         CancellationToken cancellationToken
     )
     {
-        var content = await _fileSystem
-            .ReadFileAsync(JoinPath(knowledgeBaseDir, relFile), cancellationToken)
+        var read = await _fileSystem
+            .ReadFileAsync(
+                JoinPath(knowledgeBaseDir, relFile),
+                SandboxReadLimits.KnowledgeEntryBytes,
+                cancellationToken
+            )
             .ConfigureAwait(false);
+        if (read.TooLarge)
+        {
+            // LISTED, not skipped. This regen REPLACES both listings, and the reviewer reads _toc.md as the
+            // set of entries that exist — so dropping an unreadable entry here does not merely fail to index
+            // it, it deletes the only route anything has to a file still sitting in the store. Listed under a
+            // path-derived title with no metadata: honest about what is unknown, and the link still resolves.
+            _logger.LogWarning(
+                "Knowledge Base entry '{Entry}' exceeds the {Limit}-byte read limit; listing it without "
+                    + "frontmatter rather than dropping it from the regenerated index and table of contents.",
+                relFile,
+                SandboxReadLimits.KnowledgeEntryBytes
+            );
+            metas.Add(
+                new KnowledgeEntryMeta(
+                    relFile,
+                    $"{SlugFromRelPath(relFile)} — too large to index; frontmatter unread",
+                    [],
+                    ScopeSegment(relFile) ?? string.Empty,
+                    [],
+                    string.Empty
+                )
+            );
+            return;
+        }
+
+        var content = read.Content;
         var meta = content is null ? null : KnowledgeIndex.ParseFrontmatter(relFile, content);
         if (meta is null)
         {

@@ -76,10 +76,13 @@ internal sealed class ReviewBotInitializer
         var present = new List<string>();
         foreach (var relativePath in RequiredFiles)
         {
-            var content = await _fileSystem
-                .ReadFileAsync(JoinPath(repoRoot, relativePath), cancellationToken)
+            // A PRESENCE check, so an over-size file counts as present. Reading "absent" off a file that is
+            // merely too big would report the repo as half-seeded and rewrite a file that is already there.
+            var read = await _fileSystem
+                .ReadFileAsync(
+                    JoinPath(repoRoot, relativePath), SandboxReadLimits.RepositoryFileBytes, cancellationToken)
                 .ConfigureAwait(false);
-            if (content is not null)
+            if (read.Exists)
             {
                 present.Add(relativePath);
             }
@@ -110,7 +113,7 @@ internal sealed class ReviewBotInitializer
 
     private async Task SeedAsync(string repoRoot, string defaultBranch, CancellationToken cancellationToken)
     {
-        await _git.RunAsync(["checkout", "-B", defaultBranch], repoRoot, cancellationToken)
+        _ = await _git.RunAsync(["checkout", "-B", defaultBranch], repoRoot, cancellationToken)
             .ConfigureAwait(false);
 
         foreach (var (relativePath, content) in SeedFiles())
@@ -120,10 +123,10 @@ internal sealed class ReviewBotInitializer
                 .ConfigureAwait(false);
         }
 
-        await _git.RunAsync(["add", "-A"], repoRoot, cancellationToken).ConfigureAwait(false);
-        await _git.RunAsync(["commit", "-m", "Seed ReviewBot repository"], repoRoot, cancellationToken)
+        _ = await _git.RunAsync(["add", "-A"], repoRoot, cancellationToken).ConfigureAwait(false);
+        _ = await _git.RunAsync(["commit", "-m", "Seed ReviewBot repository"], repoRoot, cancellationToken)
             .ConfigureAwait(false);
-        await _git.RunAsync(["push", "-u", "origin", defaultBranch], repoRoot, cancellationToken)
+        _ = await _git.RunAsync(["push", "-u", "origin", defaultBranch], repoRoot, cancellationToken)
             .ConfigureAwait(false);
     }
 

@@ -379,15 +379,30 @@ public sealed class DaemonAgentFactoryTests
     [Fact]
     public void ReviewProfile_Prompt_InstructsConsultingTheKnowledgeBase()
     {
-        // Task 3 (design §3) — the reviewer consults the Knowledge Base carried in the checkout: Read the
-        // _toc.md first, Grep/Read the entries relevant to the changed files, and call out when the PR
-        // contradicts a recorded invariant.
+        // Design §3 — the reviewer consults prior knowledge. The daemon now INJECTS a ranked
+        // "## Prior knowledge (Knowledge Base)" block carrying each entry's exact absolute path, so the
+        // prompt must point at that block and at Read-by-path. It deliberately no longer names _toc.md or
+        // sanctions a search: KB entries are absent from the diff manifest and a root-level Grep can come
+        // back empty even when the file exists, which let retrieval no-op silently under the old wording.
         var prompt = DaemonAgentFactory.CreateReviewProfile().SystemPrompt;
 
-        prompt.Should().Contain("KnowledgeBase"); // consult the KB in the checkout
-        prompt.Should().Contain("_toc.md"); // start from the table of contents
+        prompt.Should().Contain("## Prior knowledge (Knowledge Base)"); // the injected block, by its heading
+        prompt.Should().Contain("EXACT ABSOLUTE PATH"); // entries are opened by path…
+        prompt.Should().MatchRegex("(?i)do NOT Grep or Glob for\\s+them"); // …never hunted for
         prompt.Should().MatchRegex("(?i)contradict"); // flag contradictions with known invariants
         prompt.Should().MatchRegex("(?i)invariant");
+    }
+
+    [Fact]
+    public void ReviewProfile_Prompt_RequiresHandingKnowledgeBasePathsToEverySubAgent()
+    {
+        // The sub-agents are what actually produce findings, and they start with none of the parent's
+        // context and no way to search the Knowledge Base. Whatever the parent omits from a brief is
+        // invisible to that reviewer — so passing the relevant paths down is mandatory, not advisory.
+        var prompt = DaemonAgentFactory.CreateReviewProfile().SystemPrompt;
+
+        prompt.Should().MatchRegex("(?i)in EVERY sub-agent brief you MUST also include the exact absolute");
+        prompt.Should().MatchRegex("(?i)cannot search the\\s+Knowledge Base for itself");
     }
 
     [Fact]
