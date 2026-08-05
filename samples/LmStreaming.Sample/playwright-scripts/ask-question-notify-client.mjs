@@ -11,22 +11,30 @@
 //
 // Scenarios (prompts built programmatically below; see PromptExamples.md → "Manual UI test
 // prompts" for the shared conventions):
-//   1. AskUserQuestion: answer a single-select question -> resolved view shows the choice -> the
-//      parked run resumes with the model's scripted follow-up text.
+//   1. AskUserQuestion: the live form is docked ABOVE THE CHAT INPUT (not inside the tool pill,
+//      where it used to be hidden behind a click + a 150px scroll box) -> answer a single-select
+//      question -> the pill shows the resolved view as history -> the parked run resumes with the
+//      model's scripted follow-up text.
 //   2. AskUserQuestion: Skip -> resolved view shows "Skipped" -> the run resumes.
-//   3. AskUserQuestion: reload WHILE pending (via ?threadId=) -> the form is still the interactive,
-//      awaiting-answer view (not resolved) -> answering post-reload still resolves + resumes.
+//   3. AskUserQuestion: reload WHILE pending (via ?threadId=) -> the form is still docked and
+//      interactive (not resolved) -> answering post-reload still resolves + resumes.
 //   4. NotifyClient: renders its own notification pill WHILE the run is still streaming (not only
 //      after completion), and does not enqueue an extra user turn or fork an extra assistant run.
 //   5. NotifyClient: the notification survives a reload (rehydrates from persisted history).
 //
-// Prereq: app running with the built SPA (non-Development serves wwwroot/dist). Adjust BASE to
-// match your instance (see PromptExamples.md's port note — this repo's dev instance answers on
-// :5000 by default; other scripts in this folder use other ports for other launch profiles).
+// Prereq: the app must serve the CURRENT client code. In Development it does NOT serve
+// wwwroot/dist — it proxies /dist to a Vite dev server (VITE_DEV_PORT, default 5173), so a stale or
+// foreign Vite instance will silently serve someone else's bundle and this script will time out on
+// selectors that exist in your tree. Launch with your own port to be sure:
+//   VITE_DEV_PORT=5199 ASPNETCORE_URLS=http://localhost:5077 dotnet run --no-launch-profile
+// then point BASE at that port (the runner has no `process`, so this is a plain constant).
 async (page) => {
-  const BASE = 'http://localhost:5000';
+  const BASE = 'http://localhost:5077';
   const PROVIDER = 'test-anthropic';
-  const SHOT_DIR = 'B:/sources/LmDotnetTools/.worktrees/WT3/.logs/manual';
+  // Absolute on purpose (Playwright resolves relative screenshot paths against the SERVER's cwd,
+  // which is not this repo). Points at the main checkout so it lands in one place no matter which
+  // worktree you launch the app from.
+  const SHOT_DIR = 'B:/sources/LmDotnetTools/.logs/manual';
 
   // Build each instruction chain programmatically (JSON.stringify) rather than hand-escaping, per
   // this folder's convention (see subagent-tabs.mjs) — also lets the exact same object literal
@@ -93,12 +101,50 @@ async (page) => {
     await tid('chat-input-textarea').fill(text);
     await tid('send-button').click();
   };
+  /**
+   * "+ New Chat" then pick the provider. The retry is not defensive padding: on first load the app
+   * restores the most recent conversation ASYNCHRONOUSLY, and a restored thread re-locks the
+   * provider selector *after* a New Chat click has already unlocked it. Clicking once and trusting
+   * Playwright's auto-wait loses that race and stalls on a permanently disabled button.
+   */
   const newChat = async () => {
-    await page.getByRole('button', { name: '+ New Chat' }).click();
+    const deadline = Date.now() + 30000;
+    for (;;) {
+      await page.getByRole('button', { name: '+ New Chat' }).click();
+      try {
+        await page.waitForFunction(
+          () => {
+            const b = document.querySelector('[data-testid="provider-selector-button"]');
+            return !!b && !b.disabled;
+          },
+          { timeout: 3000 }
+        );
+        break;
+      } catch (e) {
+        if (Date.now() > deadline) throw e;
+      }
+    }
     await tid('provider-selector-button').click();
     await tid(`provider-option-${PROVIDER}`).click();
   };
   const pillByName = (name) => page.locator(`[data-testid="tool-call-pill"][data-tool-name="${name}"]`);
+  /**
+   * The placement check, and the reason it is spelled out rather than left to a bare
+   * `question-form` locator: that testid is page-wide, so it matches whether the form sits in the
+   * dock or back inside the pill. Scoping BOTH sides is what makes a regression that re-buries the
+   * form inside the pill actually fail here.
+   */
+  const formPlacement = async () => ({
+    inDock: await tid('question-dock').locator('[data-testid="question-form"]').count(),
+    inPill: await pillByName('AskUserQuestion').locator('[data-testid="question-form"]').count(),
+    dockedAboveInput: await page.evaluate(() => {
+      const dock = document.querySelector('[data-testid="question-dock"]');
+      const input = document.querySelector('[data-testid="chat-input-textarea"]');
+      if (!dock || !input) return false;
+      // Geometry, not DOM order: "right above the text box" is the thing the user asked for.
+      return dock.getBoundingClientRect().bottom <= input.getBoundingClientRect().top + 1;
+    }),
+  });
   const waitTextContains = async (locator, needle, timeout = 20000) => {
     const deadline = Date.now() + timeout;
     let text = '';
@@ -118,14 +164,23 @@ async (page) => {
     await page.goto(BASE);
     await tid('chat-input-textarea').waitFor({ timeout: 20000 });
 
-    // 1. Answer a single-select question -> resolved view + resumed run.
+    // 1. The live form docks above the input; answering there resolves the pill + resumes the run.
     await newChat();
     await send(wrap(askChain('Great, blue it is.')));
     await waitIdle();
 
+    // No click needed — that is the point. The dock appears on its own.
+    await tid('question-dock').waitFor({ timeout: 20000 });
+    await tid('question-form').waitFor({ timeout: 10000 });
+    const placed = await formPlacement();
+    record('live form is docked above the input, not inside the pill',
+      placed.inDock === 1 && placed.inPill === 0 && placed.dockedAboveInput, placed);
+    await shot('01a-ask-docked');
+
     await pillByName('AskUserQuestion').waitFor({ timeout: 20000 });
     await pillByName('AskUserQuestion').click(); // rich content only renders once expanded
-    await tid('question-form').waitFor({ timeout: 10000 });
+    const pointer = await tid('question-dock-pointer').count();
+    record('expanded pill points at the dock instead of hosting a second live form', pointer === 1, { pointer });
 
     await tid('question-option-blue').click();
     await tid('question-submit').click();
@@ -133,6 +188,9 @@ async (page) => {
     await tid('question-resolved').waitFor({ timeout: 20000 });
     const resolvedText1 = await tid('question-resolved').innerText();
     record('answer -> resolved view shows Blue', resolvedText1.includes('Blue'), resolvedText1);
+    record('answering clears the dock', (await tid('question-dock').count()) === 0, {
+      docks: await tid('question-dock').count(),
+    });
 
     const followUp1 = await waitTextContains(tid('assistant-text'), 'Great, blue it is');
     record('answer -> parked run resumes with scripted follow-up', followUp1.includes('Great, blue it is'), followUp1);
@@ -145,6 +203,8 @@ async (page) => {
     await waitIdle();
 
     await pillByName('AskUserQuestion').waitFor({ timeout: 20000 });
+    // Expand the pill BEFORE answering: the pill renders its rich content only while expanded, and
+    // the resolved Q&A we assert on below is that rich content. The form itself is in the dock.
     await pillByName('AskUserQuestion').click();
     await tid('question-form').waitFor({ timeout: 10000 });
     await tid('question-skip').click();
@@ -158,7 +218,7 @@ async (page) => {
     await waitIdle();
     await shot('02-ask-skipped');
 
-    // 3. Reload while pending -> still the interactive form (not resolved) -> answer post-reload.
+    // 3. Reload while pending -> the dock comes BACK on its own -> answer post-reload.
     await newChat();
     await send(wrap(askChain('Thanks, blue noted.')));
     await waitIdle();
@@ -166,7 +226,6 @@ async (page) => {
     const threadId = await currentThreadId();
     const pillBeforeReload = pillByName('AskUserQuestion');
     await pillBeforeReload.waitFor({ timeout: 20000 });
-    await pillBeforeReload.click();
     await tid('question-form').waitFor({ timeout: 10000 });
 
     await page.goto(`${BASE}/?threadId=${threadId}`);
@@ -174,6 +233,13 @@ async (page) => {
 
     const pillAfterReload = pillByName('AskUserQuestion');
     await pillAfterReload.waitFor({ timeout: 20000 });
+    // The dock is rebuilt from REHYDRATED history, so it must reappear with no click at all —
+    // the reload path is the one that would silently lose it.
+    await tid('question-dock').waitFor({ timeout: 20000 });
+    const placedAfterReload = await formPlacement();
+    record('dock survives reload, still above the input',
+      placedAfterReload.inDock === 1 && placedAfterReload.inPill === 0 && placedAfterReload.dockedAboveInput,
+      placedAfterReload);
     await pillAfterReload.click();
     await tid('question-form').waitFor({ timeout: 10000 });
     const resolvedCountAfterReload = await tid('question-resolved').count();
