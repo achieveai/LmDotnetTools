@@ -251,6 +251,12 @@ remain raw pass-through and do not gain local fallback tools. `DELETE` and an up
 clear the corresponding local routing snapshot. `/mcp` and `/mcp/readonly` keep independent snapshots.
 Point MCP Streamable-HTTP clients at `http://127.0.0.1:8787/mcp` or `/mcp/readonly` as before.
 
+Live verification on 2026-07-30 established that sending `X-MCP-Tools: web_search` to
+`/mcp/readonly` exposes exactly Copilot's hosted general `web_search` tool. Its input schema requires
+a single `query` string and its output includes inline citations and sources. The verified hosted
+catalog did not expose a `web_fetch` tool; `LmStreaming.Sample` therefore uses Jina for `WebFetch`
+and as the `WebSearch` fallback when hosted MCP search is unavailable.
+
 **Header policy**: every inbound header is forwarded verbatim **except** `Authorization` (the
 proxy attaches its own Copilot bearer token instead, via the same `CopilotHeadersHandler` used for
 `/v1/messages`) and a handful of hop-by-hop/framing headers .NET's `HttpClient` must own
@@ -349,10 +355,11 @@ Copilot's backend rejects three things its clients routinely send. All are strip
   tools are forwarded byte-for-byte.
 
   Dropping those two is a decision rather than an oversight, and so is the fact that the allowlist
-  does not widen on its own — it is meant to be curated by hand. The planned direction for web
-  search (agreed, not scheduled) is to stop treating it as a server tool at all: the proxy would
-  expose it as a client tool it implements itself and service the call against Copilot's MCP server,
-  which turns it into an ordinary `function` and removes the exemption instead of widening the list.
+  does not widen on its own — it is meant to be curated by hand. `LmStreaming.Sample` now exposes
+  hosted search as an ordinary client function by importing Copilot's `/mcp/readonly` `web_search`
+  tool with `X-MCP-Tools: web_search`; it does not widen this hosted-tool allowlist or translate
+  `/responses` server-tool definitions. The proxy sample itself remains a transparent MCP endpoint
+  rather than an MCP client or tool executor.
 
 The translated route avoids the first two by construction: it builds a new Responses body from an
 explicit allowlist rather than patching the inbound one, so `betas`, `cache_control`, `metadata` and

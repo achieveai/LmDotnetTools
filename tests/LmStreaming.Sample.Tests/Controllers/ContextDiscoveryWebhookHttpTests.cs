@@ -4,6 +4,8 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using LmStreaming.Sample.Configuration;
+using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Services.Discovery;
 using LmStreaming.Sample.Tests.TestDoubles;
 using Microsoft.AspNetCore.Builder;
@@ -213,6 +215,9 @@ public sealed class ContextDiscoveryWebhookHttpTests
                     services.AddSingleton(new ContextDiscoveryOptions { RouteToOpeningSubAgent = true });
                     services.AddSingleton(diagnostics);
                     services.AddSingleton<ContextDiscoveryInjector>();
+                    services.AddSingleton(
+                        new AgentOutputTokenPolicy(new AgentOutputTokenOptions())
+                    );
                     services.AddSingleton<WorkspaceSubAgentLoader>();
                 });
                 webBuilder.Configure(appBuilder =>
@@ -329,6 +334,9 @@ public sealed class ContextDiscoveryWebhookHttpTests
                         services.AddSingleton<ContextDiscoveryFormatter>();
                         services.AddSingleton(new ContextDiscoveryOptions());
                         services.AddSingleton<ContextDiscoveryInjector>();
+                        services.AddSingleton(
+                            new AgentOutputTokenPolicy(new AgentOutputTokenOptions())
+                        );
                         services.AddSingleton<ContextDiscoveryDiagnostics>();
                         services.AddSingleton<WorkspaceSubAgentLoader>();
                     });

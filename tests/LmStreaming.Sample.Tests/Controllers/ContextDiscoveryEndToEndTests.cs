@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net;
+using LmStreaming.Sample.Configuration;
+using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Services.Discovery;
 using LmStreaming.Sample.Tests.TestDoubles;
 using Microsoft.AspNetCore.Http;
@@ -247,6 +249,7 @@ public sealed class ContextDiscoveryEndToEndTests
                 Loader,
                 Injector,
                 Diagnostics,
+                new AgentOutputTokenPolicy(new AgentOutputTokenOptions()),
                 NullLogger<ContextDiscoveryController>.Instance);
 
             var httpContext = new DefaultHttpContext();

@@ -1,8 +1,10 @@
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmWorkflow;
 using AchieveAi.LmDotnetTools.LmWorkflow.Tools;
+using LmStreaming.Sample.Configuration;
 using LmStreaming.Sample.Services;
 
 namespace LmStreaming.Sample.Tests;
@@ -27,6 +29,25 @@ public sealed class WorkspaceWorkflowWiringTests
             Templates = BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(FakeAgent),
             NonInheritedToolNames = [.. WorkflowAndLaunchToolNames],
         };
+
+    [Fact]
+    public void WorkflowControllerDefaults_UseDelegatedBudget_AndPreserveExplicitValues()
+    {
+        var policy = new AgentOutputTokenPolicy(
+            new AgentOutputTokenOptions { Primary = 24_576, Delegated = 16_384 }
+        );
+
+        global::Program.ApplyDelegatedOutputTokens(
+                new GenerateReplyOptions { ModelId = "controller" },
+                policy
+            )
+            .MaxToken.Should().Be(16_384);
+        global::Program.ApplyDelegatedOutputTokens(
+                new GenerateReplyOptions { ModelId = "controller", MaxToken = 12_000 },
+                policy
+            )
+            .MaxToken.Should().Be(12_000);
+    }
 
     [Fact]
     public void ControllerTemplates_AreInheritAll_AndAcceptedByWorkflowManager_WithStructuralExclusion()

@@ -135,6 +135,13 @@ try
         options.WebSocketPath = "/ws";
         options.WriteIndentedJson = builder.Environment.IsDevelopment();
     });
+    _ = builder.Services
+        .AddOptions<AgentOutputTokenOptions>()
+        .Bind(builder.Configuration.GetSection(AgentOutputTokenOptions.SectionName))
+        .Validate(options => options.Validate().Succeeded, "Invalid AgentOutputTokens configuration.")
+        .ValidateOnStart();
+    _ = builder.Services.AddSingleton(sp =>
+        new AgentOutputTokenPolicy(sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AgentOutputTokenOptions>>().Value));
 
     // Service-to-service lifecycle observation and remote tool approval (ADR 0003 + ADR 0005). Both
     // are off unless the matching `Lifecycle:*:Enabled` flag is set, and this file carries no default
@@ -1097,39 +1104,95 @@ try
 
                 if (string.Equals(normalizedProviderId, "copilot", StringComparison.Ordinal))
                 {
-                    // Sandbox MCP header dict: X-Session-ID plus the app's sandbox auth headers.
-                    // The caller's credential (S2S) wins over the process default so an S2S
-                    // caller's /mcp tool calls carry its own identity; the interactive UI (null)
-                    // falls back to the default (issue #153 M1/M2). Connect-time-frozen for the
-                    // pooled agent by design — not re-evaluated per turn.
-                    Dictionary<string, string>? sandboxMcpHeaders = null;
-                    if (isWorkspaceMode)
+                    // Keep hosted/Jina web tools conversation-local; the shared registry is a process
+                    // singleton and must never retain an MCP client owned by one pooled agent.
+                    var copilotRegistry = new FunctionRegistry();
+                    var (copilotSharedContracts, copilotSharedHandlers) = functionRegistry.Build();
+                    foreach (var contract in copilotSharedContracts)
                     {
-                        sandboxMcpHeaders = new Dictionary<string, string>
+                        if (copilotSharedHandlers.TryGetValue(contract.Name, out var handler))
                         {
-                            ["X-Session-ID"] = sandboxSession!.SessionId,
-                        };
-                        AddSandboxAuthHeaders(
-                            sandboxMcpHeaders,
-                            callerCredential ?? sandboxCredential
-                        );
+                            _ = copilotRegistry.AddFunction(contract, handler, "SampleTools");
+                        }
                     }
 
-                    return new MultiTurnAgentPool.AgentCreationResult(
-                        CreateCopilotAgentLoop(
-                            threadId,
-                            effectiveMode,
-                            functionRegistry,
-                            requestResponseDumpFileName,
-                            conversationStore,
-                            loggerFactory,
-                            extraMcpServers: isWorkspaceMode
-                                ? BuildHttpMcpServer("sandbox", $"{sandboxLifetime.GatewayBaseUrl}/mcp", sandboxMcpHeaders!)
-                                : null,
-                            workingDirectoryOverride: isWorkspaceMode ? sandboxSession!.HostPath : null,
-                            lifecycleServices: lifecycleServices
-                        )
+                    var cliHostedSearch = CopilotWebSearchRegistration.TryRegister(
+                        copilotRegistry,
+                        WebToolRegistrationPolicy.ResolveEnabledTools(
+                            mode.EnabledTools,
+                            mode.EnabledBuiltInTools
+                        ),
+                        s_copilotTokenProvider.Value,
+                        s_copilotSession.Value,
+                        new CopilotOptions(),
+                        loggerFactory
                     );
+                    try
+                    {
+                        _ = WebToolRegistrationPolicy.Apply(
+                            copilotRegistry,
+                            normalizedProviderId,
+                            WebToolRegistrationPolicy.ResolveEnabledTools(
+                                mode.EnabledTools,
+                                mode.EnabledBuiltInTools
+                            ),
+                            jinaWebProvider,
+                            webToolsOptions,
+                            loggerFactory,
+                            isCopilotBackedModel: true,
+                            suppressWebSearch: cliHostedSearch.Registered
+                        );
+
+                        // Sandbox MCP header dict: X-Session-ID plus the app's sandbox auth headers.
+                        // The caller's credential (S2S) wins over the process default so an S2S
+                        // caller's /mcp tool calls carry its own identity; the interactive UI (null)
+                        // falls back to the default (issue #153 M1/M2). Connect-time-frozen for the
+                        // pooled agent by design — not re-evaluated per turn.
+                        Dictionary<string, string>? sandboxMcpHeaders = null;
+                        if (isWorkspaceMode)
+                        {
+                            sandboxMcpHeaders = new Dictionary<string, string>
+                            {
+                                ["X-Session-ID"] = sandboxSession!.SessionId,
+                            };
+                            AddSandboxAuthHeaders(
+                                sandboxMcpHeaders,
+                                callerCredential ?? sandboxCredential
+                            );
+                        }
+
+                        return new MultiTurnAgentPool.AgentCreationResult(
+                            CreateCopilotAgentLoop(
+                                threadId,
+                                effectiveMode,
+                                copilotRegistry,
+                                requestResponseDumpFileName,
+                                conversationStore,
+                                loggerFactory,
+                                extraMcpServers: isWorkspaceMode
+                                    ? BuildHttpMcpServer("sandbox", $"{sandboxLifetime.GatewayBaseUrl}/mcp", sandboxMcpHeaders!)
+                                    : null,
+                                workingDirectoryOverride: isWorkspaceMode ? sandboxSession!.HostPath : null,
+                                lifecycleServices: lifecycleServices
+                            ),
+                            cliHostedSearch.Resource is null ? null : [cliHostedSearch.Resource]
+                        );
+                    }
+                    catch
+                    {
+                        if (cliHostedSearch.Resource is not null)
+                        {
+                            try
+                            {
+                                cliHostedSearch.Resource.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                            }
+                            catch
+                            { /* ignore cleanup errors so the construction failure remains primary */
+                            }
+                        }
+
+                        throw;
+                    }
                 }
 
                 var providerAgent = agentFactory(normalizedProviderId);
@@ -1168,7 +1231,7 @@ try
 
                 // Add LlmQuery book search MCP tools — only for medical knowledge mode
                 // Track MCP clients for proper disposal alongside the agent
-                List<IAsyncDisposable>? ownedResources = null;
+                var ownedResources = new List<IAsyncDisposable>();
                 var workspaceWorkflowEnabled = false;
                 if (!string.IsNullOrEmpty(mcpBaseUrl))
                 {
@@ -1181,7 +1244,7 @@ try
                     );
                     if (mcpClients.Count > 0)
                     {
-                        ownedResources = [.. mcpClients.Cast<IAsyncDisposable>()];
+                        ownedResources.AddRange(mcpClients.Cast<IAsyncDisposable>());
                     }
                 }
                 else if (isWorkspaceMode)
@@ -1239,7 +1302,7 @@ try
                     );
                     if (sandboxClients.Count > 0)
                     {
-                        ownedResources = [.. sandboxClients.Cast<IAsyncDisposable>()];
+                        ownedResources.AddRange(sandboxClients.Cast<IAsyncDisposable>());
                     }
                     else
                     {
@@ -1304,7 +1367,7 @@ try
                     );
                     if (workflowAuthorSandboxClients.Count > 0)
                     {
-                        ownedResources = [.. workflowAuthorSandboxClients.Cast<IAsyncDisposable>()];
+                        ownedResources.AddRange(workflowAuthorSandboxClients.Cast<IAsyncDisposable>());
                     }
                     else
                     {
@@ -1343,27 +1406,47 @@ try
                 // DeepSeek); its raw model id drives the model-id and web-tool wiring below.
                 var isAnthropicCompatModel = providerRegistry.TryGetAnthropicCompatModel(normalizedProviderId, out var anthropicCompatModelInfo);
 
-                var webToolStatuses = WebToolRegistrationPolicy.Apply(
-                    filteredRegistry,
-                    normalizedProviderId,
+                var enabledWebTools = WebToolRegistrationPolicy.ResolveEnabledTools(
                     mode.EnabledTools,
-                    jinaWebProvider,
-                    webToolsOptions,
-                    loggerFactory,
-                    isCopilotBackedModel,
-                    isAnthropicCompatModel
+                    mode.EnabledBuiltInTools
                 );
-                if (webToolStatuses.Count > 0)
+                var hostedSearch = isCopilotBackedModel
+                    ? CopilotWebSearchRegistration.TryRegister(
+                        filteredRegistry,
+                        enabledWebTools,
+                        s_copilotTokenProvider.Value,
+                        s_copilotSession.Value,
+                        new CopilotOptions(),
+                        loggerFactory
+                    )
+                    : new CopilotWebSearchRegistrationResult(false, null, string.Empty);
+                if (hostedSearch.Resource is not null)
                 {
-                    var webToolsLogger = loggerFactory.CreateLogger<Program>();
-                    foreach (var status in webToolStatuses)
-                    {
-                        webToolsLogger.LogInformation("WebTools: {Status}", status);
-                    }
+                    ownedResources.Add(hostedSearch.Resource);
                 }
 
                 try
                 {
+                    var webToolStatuses = WebToolRegistrationPolicy.Apply(
+                        filteredRegistry,
+                        normalizedProviderId,
+                        enabledWebTools,
+                        jinaWebProvider,
+                        webToolsOptions,
+                        loggerFactory,
+                        isCopilotBackedModel,
+                        isAnthropicCompatModel,
+                        suppressWebSearch: hostedSearch.Registered
+                    );
+                    if (webToolStatuses.Count > 0)
+                    {
+                        var webToolsLogger = loggerFactory.CreateLogger<Program>();
+                        foreach (var status in webToolStatuses)
+                        {
+                            webToolsLogger.LogInformation("WebTools: {Status}", status);
+                        }
+                    }
+
                     // Discovered Copilot models use their raw model id verbatim; discovered
                     // Anthropic-compatible models likewise use their configured model name verbatim;
                     // fixed providers keep the curated per-provider id map.
@@ -1442,11 +1525,12 @@ try
                         // reasoning (e.g. a classic Thinking budget) to an inherited-model sub-agent.
                         parentReasoningExtraProperties: extraProperties)
                         .Create;
+                    var outputTokenPolicy = sp.GetRequiredService<AgentOutputTokenPolicy>();
                     var subAgentOptions = BuildSubAgentOptionsAsync(
                             isTestMode,
                             sp.GetRequiredService<ITestAgentBuilder>(),
                             loggerFactory,
-subAgentFactory,
+                            subAgentFactory,
                             characteristicsAgentFactory,
                             sandboxSession,
                             sp.GetRequiredService<WorkspaceSubAgentLoader>(),
@@ -1455,6 +1539,11 @@ subAgentFactory,
                             loggerFactory.CreateLogger("LmStreaming.Sample.SubAgentCatalog"))
                         .GetAwaiter()
                         .GetResult();
+
+                    if (subAgentOptions is not null)
+                    {
+                        subAgentOptions = outputTokenPolicy.ApplyDelegated(subAgentOptions);
+                    }
 
                     // Route a spawn's modelIntelligence tier (the Agent tool's argument, or a workflow task's
                     // tier) to a concrete model via the host's tier ladder, climbing to the nearest higher
@@ -1642,7 +1731,10 @@ subAgentFactory,
 
                             // Persist nested delegate transcripts (subagent-{agentId}) to the shared store so a
                             // nested workflow tab survives a page reload (live streaming works regardless).
-                            return ApplyDefaultSubAgentStore(opts, conversationStore);
+                            return ApplyDefaultSubAgentStore(
+                                outputTokenPolicy.ApplyDelegated(opts),
+                                conversationStore
+                            );
                         }
 
                         var controllerSubAgentOptions = BuildControllerOptions(normalizedProviderId);
@@ -1665,19 +1757,21 @@ subAgentFactory,
                             },
                             maxConcurrentWorkflows: maxConcurrentWorkflows,
 
-                            controllerDefaultOptions: new GenerateReplyOptions
-                            {
-                                ModelId = controllerModelId,
-                                // The controller loop inherits the parent's reasoning (Option A: fixed High
-                                // floor), shaped for its OWN model so the orchestrator thinks instead of
-                                // running un-nudged. A per-run preferred-model override reshapes this in
-                                // WorkflowManager.StartAsync via the profile's ControllerReasoningExtraProperties.
-                                ExtraProperties = BuildControllerReasoningExtraProperties(
-                                    providerRegistry,
-                                    controllerModelId,
-                                    normalizedProviderId
-                                ),
-                            },
+                            controllerDefaultOptions: outputTokenPolicy.ApplyDelegated(
+                                new GenerateReplyOptions
+                                {
+                                    ModelId = controllerModelId,
+                                    // The controller loop inherits the parent's reasoning (Option A: fixed High
+                                    // floor), shaped for its OWN model so the orchestrator thinks instead of
+                                    // running un-nudged. A per-run preferred-model override reshapes this in
+                                    // WorkflowManager.StartAsync via the profile's ControllerReasoningExtraProperties.
+                                    ExtraProperties = BuildControllerReasoningExtraProperties(
+                                        providerRegistry,
+                                        controllerModelId,
+                                        normalizedProviderId
+                                    ),
+                                }
+                            ),
                             logger: loggerFactory.CreateLogger<WorkflowManager>(),
                             // Fold a StartWorkflowAgent run's controller + task usage into THIS conversation's
                             // total. Late-bound because the WorkflowManager is created before the root `agent`
@@ -1714,7 +1808,9 @@ subAgentFactory,
                                 // Provider switch must also replace the launching provider's default model.
                                 // For discovered Copilot providers the provider id is the raw model id; for
                                 // family providers this is the same id the host's agent factory accepts.
-                                new GenerateReplyOptions { ModelId = providerId }
+                                outputTokenPolicy.ApplyDelegated(
+                                    new GenerateReplyOptions { ModelId = providerId }
+                                )
                             ),
                             // Scope the controller's persistence thread to THIS conversation so a human-chosen
                             // (non-unique) workflowId can never map two different conversations onto the same
@@ -1738,7 +1834,7 @@ subAgentFactory,
                             // launch inputs above; the handle itself is already built.
                             callerCollaboration: () => rootCollaboration
                         ));
-                        ownedResources = [.. ownedResources ?? [], workflowManager];
+                        ownedResources.Add(workflowManager);
 
                         // Publish this conversation's WorkflowManager so /subagents + the sub-agent WebSocket
                         // can surface its runs as tabs. Safe to leave a stale entry: WorkflowManager.DisposeAsync
@@ -1807,20 +1903,17 @@ subAgentFactory,
                         filteredRegistry,
                         threadId,
                         systemPrompt: effectiveMode.SystemPrompt,
-                        defaultOptions: new GenerateReplyOptions
-                        {
-                            ModelId = modelId,
-                            // Output-token ceiling. The provider default is 4096; with extended thinking
-                            // enabled (2048-token budget, set above) that left only ~2K for the answer, so
-                            // a large structured reply could exhaust the budget while still thinking and
-                            // emit no text at all (stop_reason=max_tokens). 8192 leaves ~6K for the answer
-                            // after the 2K thinking budget.
-                            MaxToken = 8192,
-                            BuiltInTools = filteredBuiltInTools,
-                            RequestResponseDumpFileName = requestResponseDumpFileName,
-                            PromptCaching = PromptCachingMode.Auto,
-                            ExtraProperties = extraProperties,
-                        },
+                        defaultOptions: outputTokenPolicy.ApplyPrimary(
+                            new GenerateReplyOptions
+                            {
+                                ModelId = modelId,
+                                BuiltInTools = filteredBuiltInTools,
+                                RequestResponseDumpFileName = requestResponseDumpFileName,
+                                PromptCaching = PromptCachingMode.Auto,
+                                ExtraProperties = extraProperties,
+                            },
+                            useDelegatedFallback: normalizedProviderId is "openai"
+                        ),
                         // LmStreaming.Sample allows longer agentic runs than the library's 50-turn
                         // default: workspace/tool-heavy conversations routinely need more turns before
                         // the run hits its cap.
@@ -1850,7 +1943,13 @@ subAgentFactory,
                         collaboration: rootCollaboration
                     );
 
-                    return new MultiTurnAgentPool.AgentCreationResult(agent, ownedResources) { StagedBinding = stagedBinding };
+                    return new MultiTurnAgentPool.AgentCreationResult(
+                        agent,
+                        ownedResources.Count == 0 ? null : ownedResources
+                    )
+                    {
+                        StagedBinding = stagedBinding,
+                    };
                 }
                 catch
                 {
@@ -2751,6 +2850,22 @@ public partial class Program
         };
     }
 
+    internal static GenerateReplyOptions ApplyPrimaryOutputTokens(
+        GenerateReplyOptions options,
+        AgentOutputTokenPolicy policy,
+        bool useDelegatedFallback = false
+    ) => policy.ApplyPrimary(options, useDelegatedFallback);
+
+    internal static GenerateReplyOptions ApplyDelegatedOutputTokens(
+        GenerateReplyOptions? options,
+        AgentOutputTokenPolicy policy
+    ) => policy.ApplyDelegated(options);
+
+    internal static SubAgentOptions ApplyDelegatedOutputTokens(
+        SubAgentOptions options,
+        AgentOutputTokenPolicy policy
+    ) => policy.ApplyDelegated(options);
+
     /// <summary>
     /// Attaches one conversation-scoped characteristics factory to every template while preserving
     /// template-specific agents for inherited model routing.
@@ -3325,6 +3440,14 @@ public partial class Program
             : string.IsNullOrWhiteSpace(workingDirectory) ? null
             : workingDirectory;
 
+        IReadOnlyList<string>? enabledTools = mode.EnabledTools;
+        if (mode.EnabledBuiltInTools is not null)
+        {
+            var combinedTools = new HashSet<string>(mode.EnabledTools ?? [], StringComparer.Ordinal);
+            combinedTools.UnionWith(mode.EnabledBuiltInTools);
+            enabledTools = [.. combinedTools];
+        }
+
         var copilotOptions = new CopilotSdkOptions
         {
             CopilotCliPath = copilotCliPath,
@@ -3347,7 +3470,7 @@ public partial class Program
         return new CopilotAgentLoop(
             copilotOptions,
             functionRegistry,
-            mode.EnabledTools,
+            enabledTools,
             threadId,
             systemPrompt: mode.SystemPrompt,
             defaultOptions: new GenerateReplyOptions

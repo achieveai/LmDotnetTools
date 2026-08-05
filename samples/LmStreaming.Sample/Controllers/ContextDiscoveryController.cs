@@ -3,6 +3,7 @@ using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Context;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Services.Discovery;
 using Microsoft.AspNetCore.Mvc;
 
@@ -41,6 +42,7 @@ public sealed class ContextDiscoveryController(
     WorkspaceSubAgentLoader subAgentLoader,
     ContextDiscoveryInjector contextInjector,
     ContextDiscoveryDiagnostics diagnostics,
+    AgentOutputTokenPolicy outputTokenPolicy,
     ILogger<ContextDiscoveryController> logger) : ControllerBase
 {
     /// <summary>
@@ -315,11 +317,13 @@ public sealed class ContextDiscoveryController(
             // (with the first conversation's factory), but each conversation must spawn the
             // discovered sub-agent with its OWN provider — otherwise a sub-agent fanned into
             // conversation B would run on conversation A's provider.
-            var conversationTemplate = template with
-            {
-                AgentFactory = binding.AgentFactory,
-                CharacteristicsAgentFactory = binding.CharacteristicsAgentFactory,
-            };
+            var conversationTemplate = outputTokenPolicy.ApplyDelegated(
+                template with
+                {
+                    AgentFactory = binding.AgentFactory,
+                    CharacteristicsAgentFactory = binding.CharacteristicsAgentFactory,
+                }
+            );
 
             if (binding.Source.TryRegister(registrationKey, conversationTemplate))
             {
