@@ -1,6 +1,13 @@
 name: Build and Test
 
 on:
+  # Manual trigger. The only other events here are webhook-driven, and when GitHub drops
+  # those there is no recovery path: a dropped `pull_request` never creates a check suite,
+  # so there is no run to re-run and nothing for `gh workflow run` to invoke. That happened
+  # to this repo on 2026-08-06 — four consecutive commits on a PR branch, zero check suites
+  # each, nothing queued, and a new push the only way to get a run at all. This is the lever
+  # for that case.
+  workflow_dispatch:
   pull_request:
   push:
     branches:
