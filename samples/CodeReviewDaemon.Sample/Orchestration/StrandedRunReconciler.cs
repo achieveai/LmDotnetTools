@@ -1,3 +1,4 @@
+using System.Net;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 
@@ -172,7 +173,21 @@ internal sealed class StrandedRunReconciler
             return SettleOutcome.Retired;
         }
 
-        var lifecycle = await _getPrLifecycleAsync(row, cancellationToken).ConfigureAwait(false);
+        PrLifecycle lifecycle;
+        try
+        {
+            lifecycle = await _getPrLifecycleAsync(row, cancellationToken).ConfigureAwait(false);
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            // The provider has no such PR — the number was never one (a run seeded against an issue id, say),
+            // or the PR was removed. Without this, the lookup throws on every pass and the run is stranded
+            // exactly as before, one level further out. Narrowed to 404 deliberately: a 401, a 5xx or a
+            // timeout says nothing about the PR's state, and retiring on those would write off live work.
+            Retire(row, "the provider no longer has this PR", PrLifecycleState.Abandoned);
+            return SettleOutcome.Retired;
+        }
+
         var state = ToLifecycleState(lifecycle);
         if (state != PrLifecycleState.Open)
         {

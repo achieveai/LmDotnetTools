@@ -5,6 +5,7 @@ using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Time.Testing;
+using System.Net;
 
 namespace CodeReviewDaemon.Sample.Tests.Orchestration;
 
@@ -138,6 +139,38 @@ public sealed class StrandedRunReconcilerTests
     }
 
     // ── isolation: one bad run never aborts the pass ──────────────────────────────────────────────
+
+    [Fact]
+    public async Task A_run_whose_pr_the_provider_cannot_find_is_retired_rather_than_stranded_again()
+    {
+        var harness = new Harness()
+            .WithRows(Row(id: 141))
+            .WithLifecycleThrowingFor(141, new HttpRequestException("Not Found", null, HttpStatusCode.NotFound));
+
+        await harness.Reconciler().SweepAsync(CancellationToken.None);
+
+        harness.Retired.Should().ContainSingle(
+            "the daemon's own store holds a run seeded against a number that is not a PR; without this the "
+                + "lookup throws on every pass and the run stays stranded, one level further out")
+            .Which.Should().Be((141L, ReviewStage.Discovered, WorkflowStatus.Completed, PrLifecycleState.Abandoned));
+        harness.Log.Should().NotContain(e => e.Contains("failed to settle", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task A_provider_that_is_merely_unreachable_does_not_retire_the_run()
+    {
+        var harness = new Harness()
+            .WithRows(Row(id: 11))
+            .WithLifecycleThrowingFor(
+                11, new HttpRequestException("Bad gateway", null, HttpStatusCode.ServiceUnavailable));
+
+        await harness.Reconciler().SweepAsync(CancellationToken.None);
+
+        harness.Retired.Should().BeEmpty(
+            "a 5xx, a 401 or a timeout says nothing about the PR's state — writing the run off on one would "
+                + "discard live work over a blip");
+        harness.Log.Should().Contain(e => e.Contains("failed to settle run 11", StringComparison.Ordinal));
+    }
 
     [Fact]
     public async Task A_run_whose_provider_lookup_throws_is_logged_and_the_pass_continues()
@@ -301,6 +334,7 @@ public sealed class StrandedRunReconcilerTests
         private StrandedRunRow[] _rows = [];
         private PrLifecycle _lifecycle = PrLifecycle.Open;
         private long? _throwFor;
+        private Exception _failure = new InvalidOperationException("provider unreachable");
         private long? _resolvesTo;
         private int _maxResumes = 10;
 
@@ -324,9 +358,10 @@ public sealed class StrandedRunReconcilerTests
             return this;
         }
 
-        public Harness WithLifecycleThrowingFor(long runId)
+        public Harness WithLifecycleThrowingFor(long runId, Exception? failure = null)
         {
             _throwFor = runId;
+            _failure = failure ?? new InvalidOperationException("provider unreachable");
             return this;
         }
 
@@ -351,9 +386,7 @@ public sealed class StrandedRunReconcilerTests
             getPrLifecycleAsync: (row, _) =>
             {
                 LifecycleLookups++;
-                return row.Run.Id == _throwFor
-                    ? throw new InvalidOperationException("provider unreachable")
-                    : Task.FromResult(_lifecycle);
+                return row.Run.Id == _throwFor ? throw _failure : Task.FromResult(_lifecycle);
             },
             resumeAsync: (run, _) =>
             {
