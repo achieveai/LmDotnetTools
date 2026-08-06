@@ -238,7 +238,17 @@ internal static class SlotHygiene
     /// A probe that could not run reports itself AS residue instead of being read as an empty status — a check
     /// whose clean answer is produced by its own failure is not a check. That cannot wedge the slot the way
     /// failing closed on the foreach itself would: a re-clone leaves the submodules UNINITIALIZED, so
-    /// <c>foreach</c> visits nothing on the next lease and there is nothing left to report.
+    /// <c>foreach</c> visits nothing on the next lease and there is nothing left to report. The single exception
+    /// is a probe that failed because a registered submodule's gitdir is gone
+    /// (<see cref="GitFailureClassifier.IsDeinitializedSubmodule"/>), which the caller already tolerates.
+    /// </para>
+    /// <para>
+    /// Two known residuals, both accepted for the same reason — a re-clone does not observe the content either,
+    /// so condemning the slot spends a full clone to learn nothing. First, the deinitialized-submodule deferral
+    /// above stops the walk at that submodule, so untracked leftovers in submodules ORDERED AFTER it go
+    /// unreported. Second, <c>foreach</c> skips uninitialized submodules outright, so it never visits them at
+    /// all; there, the superproject's own <c>clean -ffdx</c> is what takes the residue, because an uninitialized
+    /// submodule's path holds no repository to stop it descending.
     /// </para>
     /// </summary>
     private static async Task<string?> SubmoduleResidueAsync(GitRunner git, string storePath, CancellationToken ct)
@@ -258,6 +268,18 @@ internal static class SlotHygiene
             .ConfigureAwait(false);
         if (!probe.Succeeded)
         {
+            // …unless it failed for the one reason the caller's classifier has ALREADY decided to tolerate. The
+            // probe is itself a `submodule foreach`, so a registered submodule whose gitdir is gone fails it with
+            // the same stderr that got the sweep tolerated one gate earlier — and reporting that as residue would
+            // condemn the slot on exactly the state hygiene just chose to keep, on every lease, forever. Deferring
+            // costs less than it looks: a re-clone leaves submodules UNINITIALIZED, so the next lease's `foreach`
+            // visits nothing and reports the same nothing. The condemnation would buy no information and spend a
+            // full re-clone of the store to do it.
+            if (GitFailureClassifier.IsDeinitializedSubmodule(probe.Stderr))
+            {
+                return null;
+            }
+
             return $"the submodule status probe itself failed: {probe.Stderr}";
         }
 

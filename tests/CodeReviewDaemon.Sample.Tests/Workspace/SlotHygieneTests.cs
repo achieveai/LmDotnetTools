@@ -360,6 +360,58 @@ public sealed class SlotHygieneTests : IDisposable
     }
 
     [Fact]
+    public async Task EnsureClean_does_not_condemn_a_deinitialized_submodule_through_the_residue_probe()
+    {
+        // The two gates have to agree about the SAME stderr, and this is where they nearly didn't.
+        // GitFailureClassifier deliberately reads `not a git repository: .../.git/modules/...` as a
+        // deinitialized submodule rather than a damaged store, so the sweep tolerates it — but the residue
+        // probe that runs immediately afterwards is another `submodule foreach`, so it fails for the identical
+        // reason, and a probe failure is otherwise reported AS residue. That would have condemned the slot on
+        // exactly the state the classifier had just decided to keep, re-cloning on every lease: the forever-loop
+        // this PR exists to close, rebuilt out of two fixes that were each correct alone.
+        //
+        // Re-cloning cannot help here either, which is what makes tolerating it the only coherent answer: a
+        // fresh clone leaves submodules UNINITIALIZED, so the next lease's `foreach` visits nothing and reports
+        // exactly the same nothing.
+        var store = SeedStore();
+        var runner = new FakeSandboxCommandRunner();
+        const string deinitialized =
+            "fatal: not a git repository: repos/First/../.git/modules/repos/First";
+        runner.OnArgvContains(
+            "submodule foreach --recursive",
+            new SandboxCommandResult(1, string.Empty, deinitialized));
+        runner.OnArgvContains(
+            "submodule --quiet foreach --recursive git status",
+            new SandboxCommandResult(1, string.Empty, deinitialized));
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        verdict.Should().Be(HygieneVerdict.Clean);
+    }
+
+    [Fact]
+    public async Task EnsureClean_still_condemns_when_the_residue_probe_fails_for_an_unrelated_reason()
+    {
+        // The over-tolerance pin for the deferral above. The carve-out is for ONE stderr shape — a registered
+        // submodule whose gitdir is gone — and not for "the probe failed and the classifier didn't call it
+        // corruption". Widening it that far would swallow every unrecognized probe failure, which is the whole
+        // class the residue gate exists to catch, and no existing test would notice: the pin next door happens
+        // to use a stderr that classifies as corruption, so it stays green under that widening.
+        var store = SeedStore();
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            "submodule foreach --recursive",
+            new SandboxCommandResult(1, string.Empty, "fatal: run_command returned non-zero status for repos/First"));
+        runner.OnArgvContains(
+            "submodule --quiet foreach --recursive git status",
+            new SandboxCommandResult(1, string.Empty, "fatal: could not read Username for 'https://github.com'"));
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        verdict.Should().Be(HygieneVerdict.NeedsReclone);
+    }
+
+    [Fact]
     public async Task EnsureClean_tolerates_a_failed_submodule_sweep_that_left_only_tracked_damage()
     {
         // The over-refusal pin for the gate above, and the reason it looks for `??` alone. The mcqdb wedge leaves
