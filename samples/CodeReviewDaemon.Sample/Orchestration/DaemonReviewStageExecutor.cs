@@ -189,13 +189,29 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private readonly S2SReviewWorkspacePreparer? _preparer;
 
     /// <summary>
-    /// Per-run prepared LmStreaming workspace (run id → leaf + workspaceId + host checkout dir), populated by
-    /// <see cref="EnsurePreparedAsync"/> only on the S2S path. Held in memory (like
+    /// Per-run prepared LmStreaming workspace (run id → the preparation plus the lease it was prepared FROM),
+    /// populated by <see cref="EnsurePreparedAsync"/> only on the S2S path. Held in memory (like
     /// <see cref="_leasedReviews"/>) so the several <c>_loopFactory.Create</c> sites of one run share ONE clone
     /// + workspace instead of re-preparing per call; the preparer is itself idempotent (clone-probe skips, and
     /// the workspace lookup reuses), so a resume after a restart re-prepares cheaply against the same leaf.
+    /// <para>
+    /// Read it through <see cref="CurrentPreparedWorkspace"/>, never directly. The executor is a singleton, so
+    /// this dictionary outlives any one attempt while its key — the run id — does not: a run that fails, returns
+    /// its slot and is later retried (or resumed by <c>StrandedRunReconciler</c>) comes back with the SAME key
+    /// and a DIFFERENT slot, which by then belongs to another PR. The entry therefore records which slot
+    /// produced it, and the accessor refuses one that a later lease has outdated.
+    /// </para>
     /// </summary>
-    private readonly ConcurrentDictionary<long, PreparedReviewWorkspace> _preparedWorkspaces = new();
+    private readonly ConcurrentDictionary<long, CachedPreparation> _preparedWorkspaces = new();
+
+    /// <summary>
+    /// One cached preparation together with the host path of the pooled slot it was adopted from, or
+    /// <c>null</c> for the bare per-PR clone that the unleased path prepares. The slot's HOST PATH is the
+    /// identity rather than the <see cref="ReviewSlot"/> object, because re-leasing the same slot to the same
+    /// run is exactly the case where the cached workspace is still correct: the leaf, the workspace id and the
+    /// mount are all that directory, whatever object the pool handed out this time.
+    /// </summary>
+    private sealed record CachedPreparation(PreparedReviewWorkspace Workspace, string? SlotHostPath);
 
     /// <summary>Host lifetime, used to stop the daemon when a session lacks code-reviewer skill/agent
     /// support and <see cref="CodeReviewDaemonOptions.RequireSkillSupport"/> is set (fail-fast, not degrade).</summary>
@@ -477,6 +493,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// </summary>
     public async Task ReleaseReviewLeaseAsync(long runId, CancellationToken cancellationToken)
     {
+        // Drop this run's cached preparation too. It is NOT what makes a later attempt safe — that is
+        // CurrentPreparedWorkspace, which refuses an entry whose lease the run no longer holds, and which keeps
+        // working if a future path releases without coming through here. This is about size: the executor is a
+        // singleton, so an entry left behind by every run the daemon ever processes is never collected.
+        _ = _preparedWorkspaces.TryRemove(runId, out _);
+
         if (_slotWorkspace is not null && _leasedReviews.TryRemove(runId, out var lease))
         {
             // Tear the session down (terminating any lingering sub-agent git child + unmounting) BEFORE the slot
@@ -2492,7 +2514,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // hosted conversation binds to the PR checkout + code-reviewer marketplace. Null on the in-process path,
         // where the live/fake factory ignores it. The escalation-ladder retries share the same workspace (a fresh
         // THREAD reloads no history but reviews the same code) — only the daemon-internal threadId differs.
-        _ = _preparedWorkspaces.TryGetValue(run.Id, out var prepared);
+        var prepared = CurrentPreparedWorkspace(run.Id);
         await using var loop = _loopFactory.Create(
             profile, modelOverride ?? run.ModelId, threadId, reasoningEffort: effort, toolContext: toolContext,
             reviewWorkspace: prepared, resumeHostedThreadId: checkpoint.HostedThreadId);
@@ -2632,7 +2654,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private ReviewLifecycleIdentity BuildLifecycleIdentity(
         ReviewRun run, string localThreadId, string? modelId, bool toolAssisted)
     {
-        _ = _preparedWorkspaces.TryGetValue(run.Id, out var prepared);
+        var prepared = CurrentPreparedWorkspace(run.Id);
         return new ReviewLifecycleIdentity(
             _options.UseS2SReviewAgent ? S2SModality : InProcessModality,
             localThreadId,
@@ -2961,7 +2983,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // Same prepared S2S workspace as the primary arm (cached at ReviewAsync entry); null in-process. The
         // comparison arm stays diff-only in its prompt, but on S2S it still provisions against the PR workspace
         // (the factory requires one) — a distinct conversation the deep-link machinery does not link.
-        _ = _preparedWorkspaces.TryGetValue(run.Id, out var prepared);
+        var prepared = CurrentPreparedWorkspace(run.Id);
         await using var loop = _loopFactory.Create(
             profile, _comparisonVariant.ModelId, ThreadId(run, _comparisonVariant.VariantId),
             _options.VariantReasoningEffort, reviewWorkspace: prepared);
@@ -3582,16 +3604,60 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return null;
         }
 
-        if (_preparedWorkspaces.TryGetValue(run.Id, out var cached))
+        if (CurrentPreparedWorkspace(run.Id) is { } cached)
         {
             return cached;
         }
 
-        var prepared = _leasedReviews.TryGetValue(run.Id, out var lease)
+        var slotHostPath = _leasedReviews.TryGetValue(run.Id, out var lease) ? lease.Slot.HostPath : null;
+        var prepared = lease is not null
             ? await _preparer.AdoptSlotAsync(lease.Slot, run, cancellationToken).ConfigureAwait(false)
             : await _preparer.PrepareAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
-        _preparedWorkspaces[run.Id] = prepared;
+        _preparedWorkspaces[run.Id] = new CachedPreparation(prepared, slotHostPath);
         return prepared;
+    }
+
+    /// <summary>
+    /// The workspace this run has already prepared UNDER ITS CURRENT LEASE, or <c>null</c> when there is none
+    /// or the cached one belongs to a lease this run no longer holds.
+    /// <para>
+    /// The lease is consulted before the cache is trusted, and that order is the whole guard. The cache read
+    /// used to come first and return unconditionally, which is safe only while a run id maps to one slot for
+    /// ever. It does not: <c>PrOrchestrator</c> releases the lease in a terminal <c>finally</c> on every
+    /// outcome including the failure→RetryPending rethrow, so the retry — or a resume by
+    /// <c>StrandedRunReconciler</c> — re-enters with the same run id, leases whatever slot is free, and would
+    /// have been handed the previous slot's workspace. That slot is by then another PR's checkout, and the
+    /// workspace is what the hosted agent's <c>/workspace/store/...</c> paths resolve through, so the review
+    /// would have read one PR while reporting on another.
+    /// </para>
+    /// <para>
+    /// A mismatch answers <c>null</c> rather than throwing, because null is already the answer every caller
+    /// handles — it is what the in-process path returns — and because the recovery is simply to prepare again:
+    /// adopting a slot runs no git, and the clone path's preparer is idempotent. Answering null also makes this
+    /// the only place the rule lives: a future third source of preparations gets the check for free, whereas
+    /// clearing the entry at each release site only works for the release sites someone remembered.
+    /// </para>
+    /// </summary>
+    private PreparedReviewWorkspace? CurrentPreparedWorkspace(long runId)
+    {
+        if (!_preparedWorkspaces.TryGetValue(runId, out var cached))
+        {
+            return null;
+        }
+
+        var slotHostPath = _leasedReviews.TryGetValue(runId, out var lease) ? lease.Slot.HostPath : null;
+        if (string.Equals(cached.SlotHostPath, slotHostPath, StringComparison.Ordinal))
+        {
+            return cached.Workspace;
+        }
+
+        _logger.LogWarning(
+            "Run {RunId}: discarding the workspace prepared from '{PreparedFrom}' — this run now holds "
+                + "'{HoldsNow}', so the cached one is another lease's checkout. Preparing again.",
+            runId,
+            cached.SlotHostPath ?? "(no slot: bare per-PR clone)",
+            slotHostPath ?? "(no slot: bare per-PR clone)");
+        return null;
     }
 
     /// <summary>

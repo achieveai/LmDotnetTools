@@ -364,7 +364,10 @@ internal sealed class ReviewSubAgentCompletionBarrier
     /// Activity is the only honest evidence left. A child that is genuinely working keeps advancing
     /// <see cref="ReviewSubAgentNode.LastActivityUtc"/>; an abandoned one freezes. So an unknown node is
     /// treated as settled only once that timestamp has stood still for the whole window — and it re-blocks
-    /// immediately if it ever moves again, because the stability pair is re-evaluated on every poll.
+    /// if it ever moves again, whether it moves back INTO the window, which this check sees because
+    /// settlement is re-evaluated on every poll, or forward but still outside it, which only
+    /// <see cref="SameIdentity"/> sees because such a node stays quiesced. Both halves are needed; each one
+    /// alone leaves the other's case open.
     /// </para>
     /// <para>
     /// Three deliberate restrictions keep this from eroding the fail-closed guarantee.
@@ -441,15 +444,24 @@ internal sealed class ReviewSubAgentCompletionBarrier
     /// NOT reset stability — e.g. a freshly-stamped <c>TerminalAtUtc</c> would otherwise never compare
     /// equal to itself across the candidate/confirmation pair.
     /// <para>
-    /// <see cref="ReviewSubAgentNode.LastActivityUtc"/> is absent from the list for a stronger reason than
-    /// the others, and it is written down because its absence reads like the hole through which a node that
-    /// woke up between the two observations could slip. It cannot: <see cref="AllSettled"/> re-evaluates the
-    /// CONFIRMATION snapshot against the CURRENT instant before this comparison is reached, so a node whose
-    /// activity moved forward is no longer quiesced, the roster is not all-settled, and the pending candidate
-    /// is discarded without ever getting here. Comparing it here as well would add nothing and would cost
-    /// something: a source that re-stamps last-activity on a node it has already settled — a heartbeat, a
-    /// clock rounding to a coarser tick — would reset stability forever and hang the barrier the same way
-    /// run 277 did. The ordering above is the guarantee; see
+    /// <see cref="ReviewSubAgentNode.LastActivityUtc"/> IS compared, but only on a node that is not terminal,
+    /// and the scope is the whole point. This comparison is reached only once <see cref="AllSettled"/> holds,
+    /// so every non-terminal node in the pair is one <see cref="IsQuiescedUnknown"/> admitted — on the
+    /// strength of that timestamp and nothing else. Settling a node from a field the stability check then
+    /// ignores leaves a seam: re-evaluating settlement against the confirmation snapshot does catch a node
+    /// that woke up INTO the window, but one whose activity moved forward and is STILL older than the window
+    /// stays quiesced, and the pair below would then have called it unchanged and opened the barrier over a
+    /// child that demonstrably did work between the two observations. The two checks have to read the same
+    /// evidence.
+    /// </para>
+    /// <para>
+    /// Terminal nodes are excluded for the same reason the descriptive fields are: a source that re-stamps
+    /// last-activity on a child it has already reported as finished — a heartbeat, a clock rounding to a
+    /// coarser tick — would reset stability forever and hang the barrier the way run 277 did, and a terminal
+    /// node's settlement does not rest on the timestamp, so ignoring it there costs nothing. On a quiesced
+    /// unknown that same movement is not noise; it is the only evidence the barrier has that the child is
+    /// alive, and heeding it costs at most the deadline the caller already chose. See
+    /// <c>WaitAsync_UnknownNodeWhoseActivityAdvancesButStaysOutsideTheWindow_DoesNotOpenTheBarrier</c> and
     /// <c>WaitAsync_UnknownNodeThatWakesUpBetweenTheTwoObservations_DoesNotOpenTheBarrier</c>.
     /// </para>
     /// </summary>
@@ -473,6 +485,7 @@ internal sealed class ReviewSubAgentCompletionBarrier
                 || a.ParentThreadId != b.ParentThreadId
                 || a.Depth != b.Depth
                 || a.Status != b.Status
+                || (!IsTerminal(a) && a.LastActivityUtc != b.LastActivityUtc)
             )
             {
                 return false;

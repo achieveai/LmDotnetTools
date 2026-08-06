@@ -664,17 +664,16 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
     [Fact]
     public async Task WaitAsync_UnknownNodeThatWakesUpBetweenTheTwoObservations_DoesNotOpenTheBarrier()
     {
-        // The one window where the quiescence allowance could be turned against the barrier. An unknown node
-        // that was quiet at the CANDIDATE observation and demonstrably working again at the CONFIRMATION one
-        // must re-block, even though nothing about its identity changed: its agent id, thread, parent, depth
-        // and status are all still Unknown, so the candidate/confirmation identity comparison — which
-        // deliberately ignores descriptive fields, last-activity among them — sees a matching pair.
-        //
-        // What stops it is that settlement is re-evaluated against the confirmation snapshot and the CURRENT
-        // instant before identity is ever consulted: a node whose activity moved forward is no longer
-        // quiesced, the roster is not all-settled, and the pending candidate is discarded without the
-        // comparison being reached. Ordering is the whole guarantee, which is exactly why it is pinned here
+        // One of the two windows where the quiescence allowance could be turned against the barrier. An
+        // unknown node that was quiet at the CANDIDATE observation and demonstrably working again at the
+        // CONFIRMATION one must re-block. This is the half that ORDERING decides: the node wakes up INTO the
+        // window, so settlement is re-evaluated against the confirmation snapshot and the current instant,
+        // finds it no longer quiesced, and discards the pending candidate before the identity comparison is
+        // reached at all. That ordering is the whole guarantee for this shape, which is why it is pinned here
         // rather than left to be re-derived from the two checks sitting near each other.
+        //
+        // A node that wakes to an instant still OUTSIDE the window never reaches this path — it stays
+        // quiesced — and is pinned by the test below.
         var start = DateTimeOffset.UtcNow;
         var clock = new ObservableFakeClock(start);
         var run = TestRun();
@@ -699,6 +698,67 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
 
         clock.Advance(TimeSpan.FromMinutes(30));
         await FluentActions.Awaiting(() => task).Should().ThrowAsync<ReviewBarrierDeadlineException>();
+    }
+
+    [Fact]
+    public async Task WaitAsync_UnknownNodeWhoseActivityAdvancesButStaysOutsideTheWindow_DoesNotOpenTheBarrier()
+    {
+        // The other half, and the one ordering does NOT cover. This node's activity moves forward on every
+        // poll — it is working — but every instant it reports is older than the quiescence window, so it
+        // stays settled and the roster stays all-settled. Re-evaluating settlement against the confirmation
+        // snapshot therefore lets it straight through, and the candidate/confirmation comparison is the only
+        // thing left that can see the movement. A source reporting activity in arrears is enough to produce
+        // this shape: batched or lagging events hold a live child's last-activity permanently behind the
+        // window while still advancing it.
+        var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
+        var run = TestRun();
+        var source = new LiveCompletionSource(() =>
+            new ReviewSubAgentTreeSnapshot(
+                [
+                    // Always twice the window in arrears: quiesced at every observation, identical at none.
+                    Node("agent-lagging", "root", 1, ReviewSubAgentStatus.Unknown,
+                        lastActivityUtc: clock.GetUtcNow() - (Quiescence * 2)),
+                ]
+            ));
+        var barrier = CreateBarrier(
+            source, clock, Quiescence, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+        var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
+
+        var task = barrier.WaitAsync(run, "root", deadline, NoopValidator, CancellationToken.None);
+
+        await PumpAndStayClosedAsync(task, clock, TimeSpan.FromMinutes(1), steps: 10);
+
+        clock.Advance(TimeSpan.FromMinutes(30));
+        await FluentActions.Awaiting(() => task).Should().ThrowAsync<ReviewBarrierDeadlineException>();
+    }
+
+    [Fact]
+    public async Task WaitAsync_TerminalNodeStillBeingHeartbeated_OpensBecauseActivityIsNotComparedThere()
+    {
+        // The bound on the test above. Comparing last-activity is scoped to non-terminal nodes, and this is
+        // what the scope is for: a source that goes on re-stamping activity on a child it has ALREADY
+        // reported as finished — a heartbeat, a clock rounding to a coarser tick — would otherwise reset
+        // stability on every poll and hang the barrier for the full deadline, which is precisely the run-277
+        // failure the quiescence allowance exists to remove. A terminal node's settlement does not rest on
+        // the timestamp, so movement there is noise and is ignored.
+        var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
+        var run = TestRun();
+        var source = new LiveCompletionSource(() =>
+            new ReviewSubAgentTreeSnapshot(
+                [
+                    // Finished, and still being stamped: a different instant at every observation.
+                    Node("agent-done", "root", 1, ReviewSubAgentStatus.Completed,
+                        lastActivityUtc: clock.GetUtcNow()),
+                ]
+            ));
+        var barrier = CreateBarrier(
+            source, clock, Quiescence, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+        var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
+
+        var task = barrier.WaitAsync(run, "root", deadline, NoopValidator, CancellationToken.None);
+        var result = await PumpUntilSettledAsync(task, clock, TimeSpan.FromSeconds(5));
+
+        result.Nodes.Should().HaveCount(1, "the barrier opens on a terminal roster however often it is re-stamped");
     }
 
     [Fact]

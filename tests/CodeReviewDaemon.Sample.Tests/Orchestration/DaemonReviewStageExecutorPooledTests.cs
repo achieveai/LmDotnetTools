@@ -779,6 +779,36 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task S2S_retry_in_the_same_process_binds_the_slot_it_holds_now_not_the_one_it_prepared_from()
+    {
+        using var fixture = Fixture.CreateS2S(slots: 2);
+        var run = fixture.SeedRun();
+
+        // Attempt 1 leases slot 0 and prepares that slot as the workspace. The orchestrator then releases the
+        // lease in its terminal finally, which it runs on EVERY outcome — including the failure→RetryPending
+        // rethrow this models.
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        await fixture.Executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
+
+        // Attempt 2 re-enters with the SAME run id on the SAME executor — which is registered as a singleton, so
+        // unlike the restart case above, its per-run caches are all still there. This is the shape of both a
+        // retry and a StrandedRunReconciler resume.
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture.Pool.Leased.Select(s => s.Index).Should().Equal(
+            [0, 1], "the retry gets whatever slot is free, which is not the one it returned");
+
+        // The workspace is what the hosted agent's /workspace/store/... paths resolve through, and slot 0 is by
+        // now some other PR's checkout. Reusing the first attempt's workspace would have the review read one
+        // PR while reporting on another — a wrong review, not a failed one.
+        fixture.Factory.WorkspaceIds.Should().Equal(
+            ["ws-review-slot-0", "ws-review-slot-1"],
+            "each attempt binds the workspace of the slot it actually holds");
+    }
+
+    [Fact]
     public async Task Reviewed_re_leases_a_slot_when_resuming_after_a_restart_dropped_the_in_memory_lease()
     {
         using var fixture = Fixture.Create();

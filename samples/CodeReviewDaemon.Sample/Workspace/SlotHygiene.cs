@@ -525,7 +525,19 @@ internal static class SlotHygiene
                 {
                     pending.Push(entry);
                 }
-                else if (entry.EndsWith(".lock", StringComparison.Ordinal))
+                // Case-insensitively, because this branch matches a name the filesystem HANDED BACK rather
+                // than probing one it built. AbortInProgress two calls down has no such problem: it composes
+                // ".git/MERGE_HEAD" and asks the filesystem, which resolves whatever casing is on disk. Here
+                // an Ordinal compare walks straight past an "index.LOCK" that git is nonetheless honouring,
+                // and the cost is one wasted lease — the reset fails on the lock, the cleanliness gate
+                // condemns the store, and the re-clone wipes it, lock included. Self-healing, but a re-clone
+                // is the most expensive thing this daemon does.
+                //
+                // On a case-sensitive host the two names are genuinely different files and INDEX.LOCK blocks
+                // nothing, so this deletes something it need not have. That is a name ending in ".lock"
+                // directly under .git — git's own namespace, which this sweep is already clearing — so the
+                // overreach costs nothing, and it buys the case the host branch actually runs on.
+                else if (entry.EndsWith(".lock", StringComparison.OrdinalIgnoreCase))
                 {
                     TryDelete(entry);
                 }

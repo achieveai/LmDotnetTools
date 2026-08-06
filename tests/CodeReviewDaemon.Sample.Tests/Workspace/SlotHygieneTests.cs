@@ -93,6 +93,31 @@ public sealed class SlotHygieneTests : IDisposable
     }
 
     [Fact]
+    public async Task EnsureClean_on_a_host_backed_store_clears_a_lock_whose_name_is_not_lowercase()
+    {
+        // Git writes `index.lock`, but the name reaching this sweep is whatever the HOST hands back, and on
+        // the case-insensitive filesystem the host branch exists for, `index.LOCK` is the very file git is
+        // honouring — a tool, an editor or a restored backup is enough to put that casing on disk. A
+        // case-sensitive suffix match walks straight past it and the whole lease is wasted: the reset fails
+        // on the lock, the cleanliness gate condemns the store, and the re-clone wipes it. It self-heals, and
+        // it does so through the most expensive recovery this daemon has.
+        var store = SeedStore();
+        var gitDir = Path.Combine(store, ".git");
+        var shoutingLock = Path.Combine(gitDir, "index.LOCK");
+        File.WriteAllText(shoutingLock, string.Empty);
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains("find ", new SandboxCommandResult(1, string.Empty, "'find' is not recognized"));
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(
+            new GitRunner(runner), store, CancellationToken.None, NullLogger.Instance, new HostFileSystem());
+
+        File.Exists(shoutingLock)
+            .Should()
+            .BeFalse("the suffix is matched against a name the filesystem chose, not one git spelled");
+        verdict.Should().Be(HygieneVerdict.Clean);
+    }
+
+    [Fact]
     public async Task EnsureClean_issues_reset_clean_and_submodule_recursion()
     {
         var store = SeedStore();
