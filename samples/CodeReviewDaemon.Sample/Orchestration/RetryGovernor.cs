@@ -92,7 +92,8 @@ internal sealed class RetryGovernor
     /// <summary>
     /// Records a failed attempt: increments the count and either schedules the next attempt after an
     /// exponential backoff, or — once <c>maxAttempts</c> is reached — parks the run and emits a greppable
-    /// <c>PARKED</c> alert. A parked run is not retried again until a new commit (new run id) or a restart.
+    /// <c>PARKED</c> alert. A parked run is not retried again until a new commit (new run id), a restart, or an
+    /// explicit <see cref="Reset"/>.
     /// </summary>
     public RetryDecision RecordFailure(long runId, string lastError)
     {
@@ -129,7 +130,22 @@ internal sealed class RetryGovernor
     }
 
     /// <summary>Clears a run's retry state after a successful attempt.</summary>
-    public void RecordSuccess(long runId) => _states.TryRemove(runId, out _);
+    public void RecordSuccess(long runId) => Reset(runId);
+
+    /// <summary>
+    /// Drops a run's backoff/park state so the very next attempt is admitted.
+    /// <para>
+    /// Park is otherwise cleared only by a new commit or a restart, and that made the one route back for a
+    /// parked run — <see cref="StrandedRunReconciler"/> — a no-op: it handed the run to the orchestrator, the
+    /// governor refused it before any stage ran, and the row came back unchanged to be re-picked on the next
+    /// pass forever. This is the out-of-band retry channel that closes it, and it grants exactly what a restart
+    /// already grants, so it introduces no leniency the policy did not already have — it just doesn't require
+    /// bouncing the daemon to get it. Use it only where an operator or a reconciler has DECIDED to spend
+    /// another attempt; the poll path must keep going through <see cref="ShouldAttempt"/>, which is what makes
+    /// park a real bound.
+    /// </para>
+    /// </summary>
+    public void Reset(long runId) => _states.TryRemove(runId, out _);
 
     /// <summary>
     /// Keeps the tracked set bounded by evicting the oldest entries once it exceeds <see cref="MaxTrackedRuns"/>.

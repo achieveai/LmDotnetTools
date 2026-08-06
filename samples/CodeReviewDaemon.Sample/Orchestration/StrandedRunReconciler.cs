@@ -34,7 +34,9 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 ///   <item><description>
 ///     <b>PR still open</b> — resumed through the orchestrator, which runs only the stages the run has left.
 ///     A stranded open PR is by definition one the poll is not reaching, so its head has not moved and the
-///     resumed review is against live code.
+///     resumed review is against live code. The resume goes through <see cref="PrOrchestrator.ReconcileAsync"/>
+///     rather than the poll entry, because a run the <see cref="RetryGovernor"/> has parked is exactly the kind
+///     of unreachable run this pass exists for and the poll entry would refuse it before any stage ran.
 ///   </description></item>
 /// </list>
 /// <para>
@@ -46,13 +48,22 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// Each run is settled in its own try/catch, matching <see cref="PrLifecycleSweeper"/>: one unreachable
 /// provider or one failing resume never aborts the pass, and the next pass retries it.
 /// </para>
+/// <para>
+/// <b>Single owner.</b> A takeover here is claimed by stamping the row's <c>updated_at</c>, not by a
+/// compare-and-swap lease, and that is a deliberate limit rather than an oversight. The sweep runs inside
+/// <see cref="PrPollingService"/>'s single sequential maintenance seam, so two passes cannot overlap within a
+/// process, and the daemon is configured single-instance against one SQLite store — the concurrency a lease
+/// would defend against does not exist today. Adding a second instance, or moving this sweep off that seam,
+/// is therefore the change that must bring fencing with it: the stamp narrows the window between listing and
+/// resuming but does not close it, so two reconcilers would each see a stranded row and each resume it.
+/// </para>
 /// </summary>
 internal sealed class StrandedRunReconciler
 {
     private readonly Func<DateTimeOffset, int, IReadOnlyList<StrandedRunRow>> _listStrandedRuns;
     private readonly Func<StrandedRunRow, CancellationToken, Task<PrLifecycle>> _getPrLifecycleAsync;
     private readonly Func<ReviewRun, CancellationToken, Task<ReviewRun>> _resumeAsync;
-    private readonly Action<long, ReviewStage, WorkflowStatus, PrLifecycleState> _retire;
+    private readonly Action<long, ReviewStage, WorkflowStatus, PrLifecycleState> _updateRunState;
     private readonly TimeProvider _timeProvider;
     private readonly TimeSpan _grace;
     private readonly int _scanLimit;
@@ -63,7 +74,7 @@ internal sealed class StrandedRunReconciler
         Func<DateTimeOffset, int, IReadOnlyList<StrandedRunRow>> listStrandedRuns,
         Func<StrandedRunRow, CancellationToken, Task<PrLifecycle>> getPrLifecycleAsync,
         Func<ReviewRun, CancellationToken, Task<ReviewRun>> resumeAsync,
-        Action<long, ReviewStage, WorkflowStatus, PrLifecycleState> retire,
+        Action<long, ReviewStage, WorkflowStatus, PrLifecycleState> updateRunState,
         TimeProvider timeProvider,
         TimeSpan grace,
         int scanLimit,
@@ -73,7 +84,7 @@ internal sealed class StrandedRunReconciler
         _listStrandedRuns = listStrandedRuns ?? throw new ArgumentNullException(nameof(listStrandedRuns));
         _getPrLifecycleAsync = getPrLifecycleAsync ?? throw new ArgumentNullException(nameof(getPrLifecycleAsync));
         _resumeAsync = resumeAsync ?? throw new ArgumentNullException(nameof(resumeAsync));
-        _retire = retire ?? throw new ArgumentNullException(nameof(retire));
+        _updateRunState = updateRunState ?? throw new ArgumentNullException(nameof(updateRunState));
         _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(grace.Ticks);
         _grace = grace;
@@ -214,6 +225,15 @@ internal sealed class StrandedRunReconciler
             return SettleOutcome.Deferred;
         }
 
+        // Claim the row before handing it over, by re-writing the state it already has purely for the
+        // `updated_at` the write carries. A resume is not guaranteed to write anything itself — the orchestrator
+        // returns early for a run whose stages are all done, and a resume that throws leaves the row exactly as
+        // it found it — and a row whose `updated_at` never advances is listed again by the very next pass, logged
+        // as "resuming" again, and charged against the cap again, forever, crowding out the runs the pass exists
+        // to drain. Stamping first also makes the takeover visible the moment it is taken rather than whenever
+        // the review happens to finish, which can be many minutes later.
+        _updateRunState(run.Id, run.Stage, run.WorkflowStatus, state);
+
         _logger.LogInformation(
             "Stranded-run reconciler resuming run {RunId} ({Provider} PR {PrId}) from stage {Stage}.",
             run.Id,
@@ -243,7 +263,7 @@ internal sealed class StrandedRunReconciler
     /// </summary>
     private void Retire(StrandedRunRow row, string reason, PrLifecycleState state)
     {
-        _retire(row.Run.Id, row.Run.Stage, WorkflowStatus.Completed, state);
+        _updateRunState(row.Run.Id, row.Run.Stage, WorkflowStatus.Completed, state);
         _logger.LogInformation(
             "Stranded-run reconciler retired run {RunId} ({Provider} PR {PrId}) at stage {Stage}: {Reason}.",
             row.Run.Id,

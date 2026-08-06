@@ -37,11 +37,38 @@ internal sealed class PrOrchestrator
     /// Ensures the run exists, then executes the stages still outstanding for it. Returns the run in
     /// its final state for this invocation.
     /// </summary>
-    public async Task<ReviewRun> RunAsync(ReviewRun seed, CancellationToken cancellationToken)
+    public Task<ReviewRun> RunAsync(ReviewRun seed, CancellationToken cancellationToken) =>
+        RunAsync(seed, admitParked: false, cancellationToken);
+
+    /// <summary>
+    /// The same drive as <see cref="RunAsync(ReviewRun, CancellationToken)"/>, except that a run the
+    /// <see cref="RetryGovernor"/> is backing off or has parked is admitted anyway.
+    /// <para>
+    /// This is the entry <see cref="StrandedRunReconciler"/> uses, and it exists because the ordinary entry
+    /// cannot serve it: the reconciler's whole job is to give a run that nothing else will reach another
+    /// attempt, and a parked run is precisely such a run. Through <see cref="RunAsync(ReviewRun,
+    /// CancellationToken)"/> the governor refused it before any stage ran, so the resume did nothing, the row
+    /// was never written, and the next pass found it stranded exactly as before — a permanent loop that also
+    /// spent one of the pass's resume slots each time. Deciding to spend another attempt is the caller's, and
+    /// the split keeps that decision explicit instead of quietly weakening park for the poll path too.
+    /// </para>
+    /// </summary>
+    public Task<ReviewRun> ReconcileAsync(ReviewRun seed, CancellationToken cancellationToken) =>
+        RunAsync(seed, admitParked: true, cancellationToken);
+
+    private async Task<ReviewRun> RunAsync(ReviewRun seed, bool admitParked, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(seed);
 
         var run = _store.CreateOrGetReviewRun(seed);
+
+        // Against the RESOLVED id, not the seed's: creation is idempotent on the §6 identity tuple, so the row
+        // that actually gets worked — and therefore the id the governor is holding a park against — can be an
+        // existing one rather than the seed.
+        if (admitParked)
+        {
+            _retryGovernor?.Reset(run.Id);
+        }
 
         try
         {
@@ -75,7 +102,9 @@ internal sealed class PrOrchestrator
 
             // Retry governance: a run that failed a recent poll is backing off, and one that exhausted its
             // attempts is parked — either way, skip this poll's attempt (leaving it RetryPending) instead of
-            // the old ~30s hot-loop. Restart clears the in-memory state, so a restart retries everything.
+            // the old ~30s hot-loop. Restart clears the in-memory state, so a restart retries everything, and
+            // ReconcileAsync above has already cleared this run's state when a caller decided to spend an
+            // attempt on it — so by here the answer is only ever about the poll path.
             if (_retryGovernor is not null && !_retryGovernor.ShouldAttempt(run.Id))
             {
                 return run;

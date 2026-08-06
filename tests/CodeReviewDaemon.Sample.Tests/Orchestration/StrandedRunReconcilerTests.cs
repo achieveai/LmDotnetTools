@@ -204,6 +204,44 @@ public sealed class StrandedRunReconcilerTests
     }
 
     [Fact]
+    public async Task An_open_run_is_claimed_before_the_resume_rather_than_after_it()
+    {
+        // `updated_at` is the ONLY thing that takes a row out of the stranded listing short of a terminal
+        // status, and the resume is not guaranteed to write it: the orchestrator returns early for a run with no
+        // stages left, and a resume that throws leaves the row exactly as it found it. Without a write of its
+        // own the reconciler re-lists the same row on the very next pass, re-logs "resuming", and re-charges it
+        // against the cap — forever, crowding out the backlog the pass exists to drain. Ordering matters as much
+        // as the write: a stamp taken afterwards would leave the takeover invisible for the whole review.
+        var harness = new Harness().WithRows(Row(id: 11, stage: ReviewStage.Judged));
+
+        await harness.Reconciler().SweepAsync(CancellationToken.None);
+
+        harness.Order.Should().Equal(
+            ["write:11", "resume:11"], "the claim is what makes the takeover survive a resume that does nothing");
+        harness.StateWrites.Should().ContainSingle().Which.Should().Be(
+            (11L, ReviewStage.Judged, WorkflowStatus.RetryPending, PrLifecycleState.Open),
+            "the claim re-writes the state the row already had — it advances the timestamp, it does not decide "
+                + "anything about the run");
+        harness.Retired.Should().BeEmpty("an open PR's run is claimed, not written off");
+    }
+
+    [Fact]
+    public async Task A_run_whose_resume_throws_is_still_left_claimed()
+    {
+        var harness = new Harness()
+            .WithRows(Row(id: 11, stage: ReviewStage.Judged))
+            .WithResumeThrowingFor(runId: 11);
+
+        await harness.Reconciler().SweepAsync(CancellationToken.None);
+
+        harness.StateWrites.Should().ContainSingle(
+            "a failing resume is the case that most needs the claim: it writes nothing itself, so this row would "
+                + "otherwise be re-picked and re-failed on every pass with nothing in the store to show for it")
+            .Which.Item3.Should().Be(
+                WorkflowStatus.RetryPending, "the run is still open work and must stay eligible for a later pass");
+    }
+
+    [Fact]
     public async Task An_empty_backlog_is_silent()
     {
         var harness = new Harness();
@@ -456,9 +494,25 @@ public sealed class StrandedRunReconcilerTests
 
         public List<ReviewRun> Resumed { get; } = [];
 
-        public List<(long, ReviewStage, WorkflowStatus, PrLifecycleState)> Retired { get; } = [];
+        /// <summary>Every <c>review_run</c> state write the reconciler made, in order.</summary>
+        public List<(long, ReviewStage, WorkflowStatus, PrLifecycleState)> StateWrites { get; } = [];
+
+        /// <summary>
+        /// The subset of <see cref="StateWrites"/> that retired a run. Retirement is the only write that marks a
+        /// run <see cref="WorkflowStatus.Completed"/> — the claim stamp taken before a resume deliberately
+        /// re-writes the status the row already had — so the status distinguishes the two without the harness
+        /// having to guess which call was which.
+        /// </summary>
+        public IEnumerable<(long, ReviewStage, WorkflowStatus, PrLifecycleState)> Retired =>
+            StateWrites.Where(w => w.Item3 == WorkflowStatus.Completed);
 
         public List<string> Log { get; } = [];
+
+        /// <summary>
+        /// Every state write and every resume, interleaved in the order they happened. The claim stamp is only
+        /// worth anything if it lands BEFORE the resume, and two separate lists cannot show that.
+        /// </summary>
+        public List<string> Order { get; } = [];
 
         public int LifecycleLookups { get; private set; }
 
@@ -512,6 +566,7 @@ public sealed class StrandedRunReconcilerTests
             },
             resumeAsync: (run, _) =>
             {
+                Order.Add($"resume:{run.Id}");
                 if (run.Id == _resumeThrowsFor)
                 {
                     throw new TimeoutException("the review's remaining stages timed out");
@@ -520,7 +575,11 @@ public sealed class StrandedRunReconcilerTests
                 Resumed.Add(run);
                 return Task.FromResult(_resolvesTo is { } id ? run with { Id = id } : run);
             },
-            retire: (id, stage, status, state) => Retired.Add((id, stage, status, state)),
+            updateRunState: (id, stage, status, state) =>
+            {
+                Order.Add($"write:{id}");
+                StateWrites.Add((id, stage, status, state));
+            },
             timeProvider: new FakeTimeProvider(Now),
             grace: Grace,
             scanLimit: 50,
