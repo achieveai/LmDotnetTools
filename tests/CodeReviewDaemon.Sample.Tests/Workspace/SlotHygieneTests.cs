@@ -360,14 +360,16 @@ public sealed class SlotHygieneTests : IDisposable
         runner.Commands.Count(c =>
             c.Argv.Count >= 2 && c.Argv[^2] == "reset" && c.Argv[^1] == "--hard");
 
-    [Fact]
+    [WindowsOnlyFact("only Git for Windows refuses to create a path at or beyond MAX_PATH")]
     public async Task EnsureClean_settles_a_store_holding_a_path_beyond_MAX_PATH()
     {
         // REAL-GIT regression for the mcqdb wedge at its source. Git for Windows refuses to create a path at or
         // beyond MAX_PATH unless core.longpaths is set: `reset --hard` fails "Filename too long", the file stays
         // missing, the tree stays dirty, and hygiene condemns the store on every lease — while the re-clone it
         // asks for cannot check that path out either. GitRunner now sets core.longpaths on every invocation, so
-        // the reset succeeds and the store settles. An argv assertion cannot catch this; only real git can.
+        // the reset succeeds and the store settles. An argv assertion cannot catch this; only real git can — and
+        // only on Windows: elsewhere the long path checks out whether or not core.longpaths is ever set, so the
+        // body would pass without touching the defect and go on passing after the fix was reverted.
         var runner = NewHostGitRunner();
         var store = await SetupStoreWithLongPathAsync(runner);
 
