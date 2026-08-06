@@ -351,9 +351,34 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
     /// condemned store into an unrecoverable slot. A non-recursive delete removes the link alone and leaves
     /// whatever it points at untouched.
     /// </para>
+    /// <para>
+    /// <paramref name="root"/> itself is refused rather than wiped, because it is the one entry the per-child
+    /// check can never see: everything below is reached THROUGH it, so a redirected root aimed the entire walk
+    /// outside the workspace at once. The refusal fails closed both ways, matching <see cref="SlotHygiene"/> —
+    /// the link is not followed and it is not removed either, since unlinking is itself a write chosen by
+    /// whoever planted it, and re-creating the directory afterwards (which <see cref="ClearHostScratch"/> does)
+    /// only hands the next one a fresh target. Both callers survive it: the throw fails the run's stage like
+    /// any other prepare failure, which the <c>RetryGovernor</c> bounds and eventually parks, and
+    /// <c>DaemonReviewStageExecutor</c>'s recovery ladder cannot re-enter the wipe, because the throw comes
+    /// from inside the catch that would have retried it. Nothing loops and no slot is wedged.
+    /// </para>
+    /// <para>
+    /// Two residuals are accepted rather than chased. Ancestors ABOVE <paramref name="root"/> are not checked:
+    /// they are the operator's own configured workspace path, and refusing there would refuse every deployment
+    /// that deliberately puts the pool behind a junction. And an entry can be swapped between the check and the
+    /// delete — an unprivileged local race against the daemon's own workspace root, with no cheap
+    /// file-identity primitive available here to close it.
+    /// </para>
     /// </summary>
     private static void DeleteHostDirectory(string root)
     {
+        if (HostPathGuard.IsRedirected(root))
+        {
+            throw new InvalidOperationException(
+                $"Refusing to wipe host directory '{root}': it is a symlink or junction, so the wipe would "
+                    + "reach outside the workspace. Not following it, and not removing it either.");
+        }
+
         if (!Directory.Exists(root))
         {
             return;

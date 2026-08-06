@@ -20,10 +20,15 @@ internal static class HostPathGuard
     /// <para>
     /// The response is to refuse, never to repair. Removing the link is a write chosen by whoever planted it,
     /// and re-creating the directory afterwards only hands the next one a fresh target; the slot is condemned to
-    /// a re-clone instead, which wipes the whole store without following the link. A hard link needs no separate
-    /// check here — both walks only ever delete a file or clear its read-only bit, and unlinking one name leaves
-    /// the other name and the content untouched. That reasoning does NOT carry to a walk that writes THROUGH a
-    /// path, which is why it is written down rather than assumed.
+    /// a re-clone instead, which wipes the whole store without following the link.
+    /// </para>
+    /// <para>
+    /// This check does not see a HARD link, and that is an accepted residual rather than a proof of safety. On
+    /// NTFS a hard link is a second NAME for one file record: deleting one name does leave the other whole, but
+    /// clearing the read-only bit through one clears it on the record, so a hard link planted under a store
+    /// strips protection from the file outside it. Detecting one costs a link-count query per entry on every
+    /// walk, to stop someone who already has write access inside the pooled store from un-protecting a file
+    /// they can already read — so it is written down rather than paid for.
     /// </para>
     /// </summary>
     public static bool IsRedirected(string path)

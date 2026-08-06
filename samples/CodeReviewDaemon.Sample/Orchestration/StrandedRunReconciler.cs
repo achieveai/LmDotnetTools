@@ -46,7 +46,24 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// </para>
 /// <para>
 /// Each run is settled in its own try/catch, matching <see cref="PrLifecycleSweeper"/>: one unreachable
-/// provider or one failing resume never aborts the pass, and the next pass retries it.
+/// provider or one failing resume never aborts the pass, and the rest of the pass carries on. A run that
+/// failed does NOT come back on the very next pass — it comes back once its <c>updated_at</c> is older than
+/// the grace period again, which is the only backoff this path has.
+/// </para>
+/// <para>
+/// <b>Where that backoff comes from.</b> Nearly always from the orchestrator, not from here: a stage that
+/// throws is written <see cref="WorkflowStatus.RetryPending"/> and rethrown
+/// (<see cref="PrOrchestrator"/>'s stage catch), and that write refreshes <c>updated_at</c> before the
+/// exception ever reaches this class. The claim stamp below covers only the narrower case where the resume
+/// throws BEFORE any such write. Either way the effect is the same and it is load-bearing: resumes here go
+/// through <see cref="PrOrchestrator.ReconcileAsync"/>, which resets the <see cref="RetryGovernor"/> for the
+/// run on purpose, so the governor's backoff and park do not apply and <c>updated_at</c> + grace is the sole
+/// remaining bound. Make a failed resume literally eligible on the next pass and a permanently-broken run
+/// gets a full attempt — lease, clone, LLM — every cycle, through the one entry that has no governor: the
+/// hot-loop the governor exists to kill. The accepted cost is the other direction: a genuinely recoverable
+/// run whose resume failed waits a full grace period for its next attempt. A shorter dedicated retry window
+/// would have to start by addressing the orchestrator's own <c>RetryPending</c> write, which produces this
+/// delay on nearly every occurrence.
 /// </para>
 /// <para>
 /// <b>Single owner.</b> A takeover here is claimed by stamping the row's <c>updated_at</c>, not by a
@@ -137,7 +154,7 @@ internal sealed class StrandedRunReconciler
                 _logger.LogWarning(
                     ex,
                     "Stranded-run reconciler failed to settle run {RunId} ({Provider} PR {PrId}); "
-                        + "will retry on the next pass.",
+                        + "it becomes eligible again once it is untouched for the grace period.",
                     row.Run.Id,
                     row.Repo.Provider,
                     row.Run.PrId);
@@ -239,12 +256,15 @@ internal sealed class StrandedRunReconciler
         }
 
         // Claim the row before handing it over, by re-writing the state it already has purely for the
-        // `updated_at` the write carries. A resume is not guaranteed to write anything itself — the orchestrator
-        // returns early for a run whose stages are all done, and a resume that throws leaves the row exactly as
-        // it found it — and a row whose `updated_at` never advances is listed again by the very next pass, logged
-        // as "resuming" again, and charged against the cap again, forever, crowding out the runs the pass exists
-        // to drain. Stamping first also makes the takeover visible the moment it is taken rather than whenever
-        // the review happens to finish, which can be many minutes later.
+        // `updated_at` the write carries. Two things need it. A resume that finds nothing to do writes nothing —
+        // the orchestrator returns early for a run whose stages are all done — and a resume that throws before
+        // reaching a stage leaves the row exactly as it found it; either way a row whose `updated_at` never
+        // advances is listed again by the very next pass, logged as "resuming" again, and charged against the
+        // cap again, forever, crowding out the runs the pass exists to drain. This is the narrow case only: a
+        // stage that throws is written RetryPending by the orchestrator itself, which stamps `updated_at` and
+        // holds the run for a grace period without any help from here. Stamping first also makes the takeover
+        // visible the moment it is taken rather than whenever the review happens to finish, which can be many
+        // minutes later.
         _updateRunState(run.Id, run.Stage, run.WorkflowStatus, state);
 
         _logger.LogInformation(

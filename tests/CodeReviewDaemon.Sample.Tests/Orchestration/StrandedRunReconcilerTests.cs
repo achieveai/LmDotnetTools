@@ -233,7 +233,8 @@ public sealed class StrandedRunReconcilerTests
                 + "lifecycle lookup does — one failing review must not re-strand the rest of the backlog");
         harness.Log.Should().Contain(e => e.Contains("failed to settle run 11", StringComparison.Ordinal));
         harness.Retired.Should().BeEmpty(
-            "the run is still open work: leaving it non-terminal is what keeps it eligible for the next pass");
+            "the run is still open work: leaving it non-terminal is what lets it come back once it has been "
+                + "untouched for the grace period again");
     }
 
     [Fact]
@@ -241,10 +242,11 @@ public sealed class StrandedRunReconcilerTests
     {
         // `updated_at` is the ONLY thing that takes a row out of the stranded listing short of a terminal
         // status, and the resume is not guaranteed to write it: the orchestrator returns early for a run with no
-        // stages left, and a resume that throws leaves the row exactly as it found it. Without a write of its
-        // own the reconciler re-lists the same row on the very next pass, re-logs "resuming", and re-charges it
-        // against the cap — forever, crowding out the backlog the pass exists to drain. Ordering matters as much
-        // as the write: a stamp taken afterwards would leave the takeover invisible for the whole review.
+        // stages left, and a resume that throws before reaching a stage leaves the row exactly as it found it.
+        // Without a write of its own the reconciler re-lists the same row on the very next pass, re-logs
+        // "resuming", and re-charges it against the cap — forever, crowding out the backlog the pass exists to
+        // drain. Ordering matters as much as the write: a stamp taken afterwards would leave the takeover
+        // invisible for the whole review.
         var harness = new Harness().WithRows(Row(id: 11, stage: ReviewStage.Judged));
 
         await harness.Reconciler().SweepAsync(CancellationToken.None);
@@ -271,7 +273,8 @@ public sealed class StrandedRunReconcilerTests
             "a failing resume is the case that most needs the claim: it writes nothing itself, so this row would "
                 + "otherwise be re-picked and re-failed on every pass with nothing in the store to show for it")
             .Which.Item3.Should().Be(
-                WorkflowStatus.RetryPending, "the run is still open work and must stay eligible for a later pass");
+                WorkflowStatus.RetryPending,
+                "the run is still open work — the claim holds it for a grace period, it does not retire it");
     }
 
     [Fact]
@@ -332,6 +335,56 @@ public sealed class StrandedRunReconcilerTests
         stranded.Single(s => s.Run.Id == newer.Id).Superseded.Should().BeFalse();
         stranded.Single(s => s.Run.Id == only.Id).Superseded.Should().BeFalse(
             "supersession is per PR — another PR's runs say nothing about this one");
+    }
+
+    [Fact]
+    public async Task A_failed_resume_holds_the_run_out_of_the_backlog_for_one_grace_period_and_no_longer()
+    {
+        // Against the REAL store, because the fake harness's listing hands back whatever rows it was given and
+        // never evaluates the `updated_at` predicate the whole backoff rests on — a claim asserted there is a
+        // claim about the harness. What this pins is the contract in both directions: the claim write is what
+        // keeps a permanently-failing run off the very next pass (resumes here run through
+        // PrOrchestrator.ReconcileAsync, which resets the RetryGovernor by design, so grace is the only bound
+        // left and a next-pass retry would be an unbounded loop of full reviews); and the grace period is a
+        // DELAY, not a retirement, so the same run comes back on its own once it ages out again.
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+        var run = store.CreateOrGetReviewRun(SampleRun(repoId, "101"));
+        // The store stamps updated_at from the wall clock, so the fake clock has to start beside it for
+        // "claimed just now" and "aged out since" to mean anything to the query.
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        Backdate(db, run.Id, clock.GetUtcNow() - TimeSpan.FromDays(9));
+        var attempts = new List<long>();
+        var reconciler = new StrandedRunReconciler(
+            listStrandedRuns: store.ListStrandedRuns,
+            getPrLifecycleAsync: (_, _) => Task.FromResult(PrLifecycle.Open),
+            resumeAsync: (resuming, _) =>
+            {
+                attempts.Add(resuming.Id);
+                throw new TimeoutException("the review's remaining stages timed out");
+            },
+            updateRunState: store.UpdateReviewRunState,
+            timeProvider: clock,
+            grace: Grace,
+            scanLimit: 50,
+            maxResumesPerPass: 5,
+            logger: new CapturingLogger<StrandedRunReconciler>([]));
+
+        await reconciler.SweepAsync(CancellationToken.None);
+        await reconciler.SweepAsync(CancellationToken.None);
+
+        attempts.Should().Equal(
+            [run.Id],
+            "the claim advanced updated_at, so the next pass's listing no longer sees the row — without it a "
+                + "run that fails forever is resumed on every cycle, at the cost of a lease, a clone and an LLM "
+                + "call each time");
+        clock.Advance(Grace + TimeSpan.FromMinutes(1));
+        await reconciler.SweepAsync(CancellationToken.None);
+
+        attempts.Should().Equal(
+            [run.Id, run.Id],
+            "the claim delays the retry by one grace period; it must never remove the route back altogether");
     }
 
     [Theory]
