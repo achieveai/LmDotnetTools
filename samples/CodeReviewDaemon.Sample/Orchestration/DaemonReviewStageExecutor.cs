@@ -3085,9 +3085,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // point of that path. DestroyAsync is a documented no-op with no session, so this guard states the
         // invariant at the call site rather than leaving it to be inferred two files away. Note what the
         // exclusion costs: quiescence below is a property this teardown ESTABLISHES, not one the lease implies,
-        // so on S2S it is simply absent — the slot is still mounted into a live container when StripAsync runs,
-        // and the only thing left holding the window shut is the sub-agent completion barrier, which can open
-        // over a node whose completion was inferred from inactivity rather than observed.
+        // so on S2S it is simply absent and the slot is still mounted into a live container. That is why the
+        // strip below is skipped on the same condition — see the comment there.
         if (_options.EnableToolAssistedReview && _provisioner is not null && !_options.UseS2SReviewAgent)
         {
             await _provisioner.DestroyAsync(run, cancellationToken).ConfigureAwait(false);
@@ -3115,22 +3114,42 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
             if (_leasedReviews.TryRemove(run.Id, out _))
             {
-                try
+                // Commit-then-strip (design §4.3): the notes are committed + pushed above; now return the
+                // slot's store to a pristine state so the next lease starts clean with nothing left around.
+                // Best-effort — clean-on-entry is the durability guarantee, so a strip failure here must never
+                // block the slot's return (which would leak pool capacity). Committed notes survive the strip
+                // (reset --hard keeps HEAD; clean removes only untracked byproduct).
+                //
+                // Skipped entirely on S2S, and not for tidiness: the session teardown above is what makes the
+                // store quiescent, it is excluded on that path by design, and the slot stays mounted into a
+                // review-host container that outlives the run. StripAsync opens by deleting every *.lock under
+                // .git on the premise that a leased slot has no concurrent git process — true when the teardown
+                // ran, false here. Deleting a live index.lock does not clean up after a writer, it admits a
+                // SECOND one, so the hygiene function would itself be the race it exists to prevent (the
+                // concurrency window from review #180, and the Posted-stage index.lock named at the teardown
+                // above). Skipping leaves the store dirty until its next lease, which is exactly what the catch
+                // below already tolerates, and it stops wiping the checkout under a deep-link visitor.
+                //
+                // This does NOT make the path safe, and the next reader should not assume it does:
+                // CommitPooledNotesAsync runs git on this same store a few lines up with the container just as
+                // live. That race is still open. It is not optional work the way the strip is, so closing it is
+                // a design change, not this one.
+                if (!_options.UseS2SReviewAgent)
                 {
-                    // Commit-then-strip (design §4.3): the notes are committed + pushed above; now return the
-                    // slot's store to a pristine state so the next lease starts clean with nothing left around.
-                    // Best-effort — clean-on-entry is the durability guarantee, so a strip failure here must never
-                    // block the slot's return (which would leak pool capacity). Committed notes survive the strip
-                    // (reset --hard keeps HEAD; clean removes only untracked byproduct).
-                    await SlotHygiene.StripAsync(
-                            new GitRunner(_slotWorkspace.HostRunner), HostStoreRoot(lease), CancellationToken.None)
-                        .ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(
-                        ex, "Run {RunId}: best-effort slot strip failed; the next lease's clean-on-entry covers it.",
-                        run.Id);
+                    try
+                    {
+                        await SlotHygiene.StripAsync(
+                                new GitRunner(_slotWorkspace.HostRunner), HostStoreRoot(lease),
+                                CancellationToken.None)
+                            .ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(
+                            ex,
+                            "Run {RunId}: best-effort slot strip failed; the next lease's clean-on-entry covers it.",
+                            run.Id);
+                    }
                 }
 
                 await _slotWorkspace.Pool.ReturnAsync(lease.Slot, CancellationToken.None).ConfigureAwait(false);

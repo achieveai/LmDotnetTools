@@ -471,14 +471,13 @@ internal static class SlotHygiene
     /// This writes to a store its own run may still be holding, so the quiescence it needs is the CALLER'S to
     /// provide. The lease does not provide it — that is exclusivity between runs, and the run in question is
     /// the one closing. The in-process path provides it by destroying the sandbox session just before the
-    /// call, which terminates the review's child processes and unmounts. The S2S path deliberately does not:
-    /// the container belongs to the review host and is kept alive so the posted comment's deep link stays
-    /// usable, so nothing there kills a straggler and the slot is still mounted into a live container when
-    /// this runs. All that stands between this and a concurrent git process on that path is the sub-agent
-    /// completion barrier, which may open over a node whose completion was inferred from inactivity rather
-    /// than observed. So on S2S a <c>*.lock</c> removed here is not necessarily stale, and the removal can
-    /// race a writer instead of clearing debris — the known mechanism behind a lock reappearing at the Posted
-    /// stage. Nothing below repairs that; the next lease's <see cref="EnsureCleanAsync"/> is what does.
+    /// call, which terminates the review's child processes and unmounts. The S2S path cannot: the container
+    /// belongs to the review host and is kept alive so the posted comment's deep link stays usable, so the
+    /// slot is still mounted into a live container at close. A caller that cannot make that promise must not
+    /// call this at all, and the S2S one does not — the sweep below would delete a live <c>*.lock</c>, which
+    /// admits a second writer rather than clearing debris. Skipping is safe in the same way a failure here is:
+    /// the store stays dirty until the next lease's <see cref="EnsureCleanAsync"/>, which is the durability
+    /// guarantee and is why this end is only best-effort tidiness.
     /// </para>
     /// </summary>
     public static async Task StripAsync(GitRunner git, string storePath, CancellationToken ct)

@@ -1075,6 +1075,29 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task Posted_skips_the_strip_on_S2S_because_the_slot_is_still_mounted_into_a_live_container()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+
+        await RunAllStagesAsync(fixture, run);
+
+        // The strip is only safe once the session teardown has made the store quiescent, and that teardown is
+        // excluded on S2S by design: the container belongs to the review host and must outlive the run so the
+        // posted comment's deep link keeps working. StripAsync opens by deleting every *.lock under .git, so
+        // running it here would delete a live index.lock and admit a SECOND writer — the hygiene function
+        // becoming the very race it exists to prevent. Skipping leaves the store dirty until its next lease,
+        // which is what clean-on-entry is for and what the call site's catch already tolerates.
+        var commands = fixture.HostRunner.Commands.Select(Join).ToList();
+        commands.Should().NotContain(a => a.Contains("reset --hard"),
+            "the store is not reset while a live container still has it mounted");
+        commands.Should().NotContain(a => a.Contains("clean -ffdx"),
+            "cleaning would wipe the checkout under a deep-link visitor mid-session");
+        fixture.Pool.ReturnCount.Should().Be(1,
+            "skipping the strip must never cost the slot its return, which would leak pool capacity");
+    }
+
+    [Fact]
     public async Task S2S_review_has_no_daemon_tool_context_yet_still_scopes_the_prompt_to_the_pooled_notes_dir()
     {
         using var fixture = Fixture.CreateS2S();
@@ -1303,11 +1326,15 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 $"nothing touching PR {prId} may reach into the other review's slot");
         }
 
-        // Each slot was stripped on its own terminal stage, so neither review left byproduct in the other.
+        // Neither slot is stripped: this is the S2S path, where the session teardown that would make a store
+        // quiescent is excluded by design and the slot stays mounted into a live review-host container. The
+        // isolation this test is about does not rest on the strip anyway — it rests on the two reviews holding
+        // two different slots, which the assertions above establish directly. Byproduct left behind is cleared
+        // by the next lease's clean-on-entry, the durability guarantee the strip was only ever a tidy-up for.
         foreach (var slot in new[] { "/pool/review-slot-0/store", "/pool/review-slot-1/store" })
         {
-            commands.Should().Contain(a => a.Contains($"-C {slot} reset --hard"));
-            commands.Should().Contain(a => a.Contains($"-C {slot} clean -ffdx"));
+            commands.Should().NotContain(a => a.Contains($"-C {slot} reset --hard"));
+            commands.Should().NotContain(a => a.Contains($"-C {slot} clean -ffdx"));
         }
 
         fixture.Pool.ReturnCount.Should().Be(2, "both slots are returned once their reviews reach Posted");
