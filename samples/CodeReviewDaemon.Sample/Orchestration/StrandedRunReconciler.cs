@@ -186,6 +186,19 @@ internal sealed class StrandedRunReconciler
             return SettleOutcome.Retired;
         }
 
+        // Every stage is already done and only the terminal status write was lost — a crash between the last
+        // stage's write and its status, say. There is no work here to resume: `RemainingStages` of a complete
+        // stage is empty, so handing this row to the orchestrator makes it return without executing anything.
+        // Answered locally, before the provider lookup, because it is a pure function of the row: asking the
+        // provider about a run with nothing left to do spends a call to reach the same retirement. Without this
+        // the row was "resumed" on every pass — charged against the cap, logged as if work happened — and the
+        // pass that exists to drain stranded runs was itself the thing that never drained.
+        if (StageMachine.IsComplete(run.Stage))
+        {
+            Retire(row, "every stage already done; only its terminal status write was lost", run.PrLifecycleState);
+            return SettleOutcome.Retired;
+        }
+
         PrLifecycle lifecycle;
         try
         {

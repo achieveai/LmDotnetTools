@@ -93,6 +93,39 @@ public sealed class StrandedRunReconcilerTests
     }
 
     [Fact]
+    public async Task A_run_whose_stages_are_all_done_is_retired_rather_than_resumed()
+    {
+        // A crash between the last stage's write and its terminal status leaves a row at the final stage with a
+        // non-terminal status — stranded by the letter of the sweep, but with nothing left to do:
+        // StageMachine.RemainingStages of a complete stage is empty, so the orchestrator would execute no stage
+        // and return. Resuming it therefore burned a resume slot every pass to accomplish nothing, and the pass
+        // whose job is to drain stranded runs could never drain this one. It is a pure function of the row, so
+        // it is answered before the provider is asked at all.
+        var harness = new Harness().WithRows(Row(id: 11, stage: StageMachine.Terminal));
+
+        await harness.Reconciler().SweepAsync(CancellationToken.None);
+
+        harness.Resumed.Should().BeEmpty("there is no remaining stage to run");
+        harness.LifecycleLookups.Should().Be(0, "a row with no work left needs no provider call to settle");
+        harness.Retired.Should().ContainSingle().Which.Item3.Should().Be(WorkflowStatus.Completed);
+    }
+
+    [Fact]
+    public async Task A_run_still_short_of_the_final_stage_is_resumed_rather_than_retired()
+    {
+        // The over-refusal pin for the retirement above: it must key on the run being COMPLETE, not merely on
+        // being far along. Retiring at the second-to-last stage would silently write off reviews that still owe
+        // their final stage — the exact permanent-abandonment this whole sweep exists to prevent.
+        var lastIncomplete = StageMachine.Order[^2];
+        var harness = new Harness().WithRows(Row(id: 11, stage: lastIncomplete));
+
+        await harness.Reconciler().SweepAsync(CancellationToken.None);
+
+        harness.Resumed.Should().ContainSingle().Which.Id.Should().Be(11);
+        harness.Retired.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task A_run_the_orchestrator_resolved_to_a_different_row_is_retired_so_it_cannot_be_re_picked()
     {
         var harness = new Harness()
