@@ -152,10 +152,11 @@ internal static class SlotHygiene
             return HygieneVerdict.NeedsReclone;
         }
 
-        // A `git submodule foreach` failure re-clones ONLY when it classifies as corruption (e.g. a lock that
-        // survived two sweeps, a broken object) — that is the one kind a fresh clone actually repairs. Every other
-        // failure is left alone on purpose, because a re-clone reproduces the same committed tree and therefore
-        // loops forever without ever healing. Two such failures are known and neither is fixable by cloning:
+        // A `git submodule foreach` failure re-clones when it classifies as corruption (e.g. a lock that survived
+        // two sweeps, a broken object) — that is the one kind a fresh clone actually repairs — or when it left
+        // untracked residue behind (the gate below). The failure ITSELF is otherwise left alone on purpose,
+        // because a re-clone reproduces the same committed tree and therefore loops forever without ever healing.
+        // Two such failures are known and neither is fixable by cloning:
         // a committed embedded gitlink with no .gitmodules URL (the PR-11182 wedge), and a path at or beyond
         // Windows' MAX_PATH inside a nested submodule — `reset --hard` cannot re-create the file ("Filename too
         // long") and a clone cannot check it out either, so the slot was re-cloned on every lease forever.
@@ -172,10 +173,28 @@ internal static class SlotHygiene
                 return HygieneVerdict.NeedsReclone;
             }
 
+            // Tolerating the FAILURE is not the same as tolerating what it left behind. `submodule foreach` stops
+            // at the first submodule whose command fails, so every submodule after that one was never cleaned —
+            // and nothing else in this pass reaches them: the superproject's `clean -ffdx` does not descend into a
+            // registered submodule's working tree, and `submodule update --checkout --force` only restores TRACKED
+            // content. One review's UNTRACKED leftovers therefore survived the lease and crossed into the next
+            // review. Sweep the whole list again with a command that cannot abort the walk, and condemn the slot
+            // only for what is still there afterwards.
+            var residue = await SubmoduleResidueAsync(git, storePath, ct).ConfigureAwait(false);
+            if (residue is { } left)
+            {
+                logger?.LogWarning(
+                    "Slot hygiene at {StorePath}: re-cloning — `git submodule foreach` cleanup failed ({Stderr}) "
+                        + "and untracked content is still in a submodule after a second sweep, so it would cross "
+                        + "into the next review: {Residue}",
+                    storePath, pass.Foreach.Stderr, left);
+                return HygieneVerdict.NeedsReclone;
+            }
+
             logger?.LogWarning(
-                "Slot hygiene at {StorePath}: `git submodule foreach` cleanup failed (continuing — a re-clone "
-                    + "cannot fix committed content, and the review overwrites the reviewed submodule with an "
-                    + "explicit checkout of the PR head): {Stderr}",
+                "Slot hygiene at {StorePath}: `git submodule foreach` cleanup failed but left no untracked residue "
+                    + "(continuing — a re-clone cannot fix committed content, and the review overwrites the "
+                    + "reviewed submodule with an explicit checkout of the PR head): {Stderr}",
                 storePath, pass.Foreach.Stderr);
         }
 
@@ -203,6 +222,49 @@ internal static class SlotHygiene
     private static Task<SandboxCommandResult> SuperprojectStatusAsync(
         GitRunner git, string storePath, CancellationToken ct) =>
         git.RunAsync(["-C", storePath, "status", "--porcelain", "--ignore-submodules=all"], storePath, ct);
+
+    /// <summary>
+    /// Re-runs the submodule clean so it CANNOT abort the walk, then reports what untracked content is still
+    /// present anywhere in the submodule tree, or <c>null</c> when there is none.
+    /// <para>
+    /// Only UNTRACKED residue counts, and that narrowness is the point: the restore step already put every
+    /// submodule back on its recorded gitlink, and the tracked state that outlives it is exactly the unrepairable
+    /// kind the caller tolerates on purpose — the mcqdb MAX_PATH wedge leaves a tracked file DELETED, which a
+    /// fresh clone cannot check out either, so condemning on it re-creates the forever-re-clone loop. Untracked
+    /// residue is the opposite on both counts: it is a previous lease's leftovers rather than the repo's own
+    /// content, and a fresh clone is guaranteed to arrive without it.
+    /// </para>
+    /// <para>
+    /// A probe that could not run reports itself AS residue instead of being read as an empty status — a check
+    /// whose clean answer is produced by its own failure is not a check. That cannot wedge the slot the way
+    /// failing closed on the foreach itself would: a re-clone leaves the submodules UNINITIALIZED, so
+    /// <c>foreach</c> visits nothing on the next lease and there is nothing left to report.
+    /// </para>
+    /// </summary>
+    private static async Task<string?> SubmoduleResidueAsync(GitRunner git, string storePath, CancellationToken ct)
+    {
+        // `|| true` per submodule, because without it this second sweep aborts at the same submodule the first one
+        // did and never reaches the ones holding the residue — which is the whole defect being closed. `--quiet`
+        // suppresses the per-submodule "Entering '<path>'" banner so the probe's stdout is status output alone.
+        _ = await git.RunAsync(
+                ["-C", storePath, "submodule", "--quiet", "foreach", "--recursive", "git clean -ffdx || true"],
+                storePath, ct)
+            .ConfigureAwait(false);
+
+        var probe = await git.RunAsync(
+                ["-C", storePath, "submodule", "--quiet", "foreach", "--recursive",
+                    "git status --porcelain || echo '?? (submodule status unavailable)'"],
+                storePath, ct)
+            .ConfigureAwait(false);
+        if (!probe.Succeeded)
+        {
+            return $"the submodule status probe itself failed: {probe.Stderr}";
+        }
+
+        return probe.Stdout
+            ?.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault(line => line.StartsWith("??", StringComparison.Ordinal));
+    }
 
     /// <summary>
     /// Is a second force-reset pass worth its cost? Only when the failure is one a repeated sweep-and-reset can

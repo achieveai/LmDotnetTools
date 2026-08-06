@@ -268,7 +268,10 @@ public sealed class SlotHygieneTests : IDisposable
         // submodule stays dirty — and a fresh clone cannot check that path out either. Gating the verdict on
         // submodule state therefore condemned the slot on EVERY lease, forever, for a defect re-cloning is
         // structurally incapable of fixing. The superproject is what a clone repairs, so it alone decides:
-        // hygiene must read status with --ignore-submodules=all and never fall back to a full status.
+        // hygiene must read status with --ignore-submodules=all and never fall back to a full status. The one
+        // submodule state that IS allowed to decide is untracked residue, read per-submodule through `submodule
+        // foreach` and excluded from the assertion below: it is a previous lease's leftovers rather than the
+        // repo's own content, so it is the one thing here a fresh clone is guaranteed to arrive without.
         var store = SeedStore();
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
@@ -283,7 +286,7 @@ public sealed class SlotHygieneTests : IDisposable
 
         verdict.Should().Be(HygieneVerdict.Clean);
         runner.Commands.Select(c => string.Join(' ', c.Argv))
-            .Where(a => a.Contains("status --porcelain"))
+            .Where(a => a.Contains("status --porcelain") && !a.Contains("foreach"))
             .Should()
             .OnlyContain(
                 a => a.Contains("--ignore-submodules=all"),
@@ -307,6 +310,75 @@ public sealed class SlotHygieneTests : IDisposable
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
         verdict.Should().Be(HygieneVerdict.NeedsReclone);
+    }
+
+    [Fact]
+    public async Task EnsureClean_reclones_when_a_failed_submodule_sweep_left_untracked_residue()
+    {
+        // Tolerating the failure was silently tolerating what it left behind. `submodule foreach` stops at the
+        // FIRST submodule whose command fails, so every submodule after it kept whatever the previous lease put
+        // there — and nothing else in the pass reaches them: the superproject's `clean -ffdx` does not descend
+        // into a registered submodule's working tree, and `submodule update --checkout --force` only restores
+        // TRACKED content. One review's untracked files crossed into the next review's checkout.
+        var store = SeedStore();
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            "submodule foreach --recursive",
+            new SandboxCommandResult(1, string.Empty, "fatal: run_command returned non-zero status for repos/First"));
+        runner.OnArgvContains(
+            "submodule --quiet foreach --recursive git status",
+            new SandboxCommandResult(0, "?? notes-from-the-last-review.md\n", string.Empty));
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        verdict.Should().Be(HygieneVerdict.NeedsReclone);
+        runner.Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .Contain(
+                a => a.Contains("submodule --quiet foreach --recursive git clean -ffdx || true"),
+                "the re-sweep must reach the submodules AFTER the one that aborted the first walk");
+    }
+
+    [Fact]
+    public async Task EnsureClean_does_not_read_a_failed_residue_probe_as_a_clean_submodule()
+    {
+        // A check whose clean answer can be produced by its own failure is not a check: reading an empty stdout
+        // from a status command that never ran would turn the residue gate into a rubber stamp for exactly the
+        // broken submodule states it exists to catch.
+        var store = SeedStore();
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            "submodule foreach --recursive",
+            new SandboxCommandResult(1, string.Empty, "fatal: run_command returned non-zero status for repos/First"));
+        runner.OnArgvContains(
+            "submodule --quiet foreach --recursive git status",
+            new SandboxCommandResult(1, string.Empty, "fatal: not a git repository: 'repos/First/.git'"));
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        verdict.Should().Be(HygieneVerdict.NeedsReclone);
+    }
+
+    [Fact]
+    public async Task EnsureClean_tolerates_a_failed_submodule_sweep_that_left_only_tracked_damage()
+    {
+        // The over-refusal pin for the gate above, and the reason it looks for `??` alone. The mcqdb wedge leaves
+        // a TRACKED file deleted — a state a fresh clone cannot check out either — so condemning the slot on any
+        // dirtiness at all would rebuild the forever-re-clone loop this PR exists to remove.
+        var store = SeedStore();
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            "submodule foreach --recursive",
+            new SandboxCommandResult(
+                1, string.Empty, "fatal: cannot create directory at 'VotingApp/VotingWeb/wwwroot/lib'"
+                    + ": Filename too long"));
+        runner.OnArgvContains(
+            "submodule --quiet foreach --recursive git status",
+            new SandboxCommandResult(0, " D VotingApp/VotingWeb/wwwroot/lib/jquery.js\n", string.Empty));
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        verdict.Should().Be(HygieneVerdict.Clean);
     }
 
     [Fact]
