@@ -428,6 +428,18 @@ internal sealed class ReviewSubAgentCompletionBarrier
     /// <see cref="ReviewSubAgentNode.TerminalAtUtc"/>, <see cref="ReviewSubAgentNode.FailureCode"/>) must
     /// NOT reset stability — e.g. a freshly-stamped <c>TerminalAtUtc</c> would otherwise never compare
     /// equal to itself across the candidate/confirmation pair.
+    /// <para>
+    /// <see cref="ReviewSubAgentNode.LastActivityUtc"/> is absent from the list for a stronger reason than
+    /// the others, and it is written down because its absence reads like the hole through which a node that
+    /// woke up between the two observations could slip. It cannot: <see cref="AllSettled"/> re-evaluates the
+    /// CONFIRMATION snapshot against the CURRENT instant before this comparison is reached, so a node whose
+    /// activity moved forward is no longer quiesced, the roster is not all-settled, and the pending candidate
+    /// is discarded without ever getting here. Comparing it here as well would add nothing and would cost
+    /// something: a source that re-stamps last-activity on a node it has already settled — a heartbeat, a
+    /// clock rounding to a coarser tick — would reset stability forever and hang the barrier the same way
+    /// run 277 did. The ordering above is the guarantee; see
+    /// <c>WaitAsync_UnknownNodeThatWakesUpBetweenTheTwoObservations_DoesNotOpenTheBarrier</c>.
+    /// </para>
     /// </summary>
     private static bool SameIdentity(
         IReadOnlyList<ReviewSubAgentNode> candidate,

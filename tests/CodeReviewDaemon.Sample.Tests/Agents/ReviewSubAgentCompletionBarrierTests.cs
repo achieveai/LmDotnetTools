@@ -608,6 +608,46 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task WaitAsync_UnknownNodeThatWakesUpBetweenTheTwoObservations_DoesNotOpenTheBarrier()
+    {
+        // The one window where the quiescence allowance could be turned against the barrier. An unknown node
+        // that was quiet at the CANDIDATE observation and demonstrably working again at the CONFIRMATION one
+        // must re-block, even though nothing about its identity changed: its agent id, thread, parent, depth
+        // and status are all still Unknown, so the candidate/confirmation identity comparison — which
+        // deliberately ignores descriptive fields, last-activity among them — sees a matching pair.
+        //
+        // What stops it is that settlement is re-evaluated against the confirmation snapshot and the CURRENT
+        // instant before identity is ever consulted: a node whose activity moved forward is no longer
+        // quiesced, the roster is not all-settled, and the pending candidate is discarded without the
+        // comparison being reached. Ordering is the whole guarantee, which is exactly why it is pinned here
+        // rather than left to be re-derived from the two checks sitting near each other.
+        var start = DateTimeOffset.UtcNow;
+        var clock = new ObservableFakeClock(start);
+        var run = TestRun();
+        var polls = 0;
+        var source = new LiveCompletionSource(() =>
+        {
+            // Quiet for the first poll only — the candidate — then busy on every poll after it.
+            var lastActivity = polls++ == 0 ? start - TimeSpan.FromMinutes(20) : clock.GetUtcNow();
+            return new ReviewSubAgentTreeSnapshot(
+                [
+                    Node("agent-ghost", "root", 1, ReviewSubAgentStatus.Unknown, lastActivityUtc: lastActivity),
+                ]
+            );
+        });
+        var barrier = CreateBarrier(
+            source, clock, Quiescence, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+        var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
+
+        var task = barrier.WaitAsync(run, "root", deadline, NoopValidator, CancellationToken.None);
+
+        await PumpAndStayClosedAsync(task, clock, TimeSpan.FromMinutes(1), steps: 10);
+
+        clock.Advance(TimeSpan.FromMinutes(30));
+        await FluentActions.Awaiting(() => task).Should().ThrowAsync<ReviewBarrierDeadlineException>();
+    }
+
+    [Fact]
     public async Task WaitAsync_QuiescenceDisabled_RestoresStrictTerminalOnlySettlement()
     {
         // The allowance is configuration, and switching it off must restore the original contract exactly —
