@@ -355,6 +355,75 @@ internal sealed class ReviewStore : IDisposable
         return Task.FromResult<IReadOnlyList<ReviewedPrRow>>(results);
     }
 
+    /// <summary>
+    /// Returns the non-terminal runs that nothing else will ever advance — <c>workflow_status</c> is not
+    /// <see cref="WorkflowStatus.Completed"/> and <c>updated_at</c> is older than
+    /// <paramref name="staleBefore"/> — oldest first, capped at <paramref name="limit"/>.
+    /// <para>
+    /// A run only ever advances when a poll enumerates its PR, and the poll lists the OPEN pull requests
+    /// inside the operator's recency window. So a run whose PR has since closed, or whose PR has been quiet
+    /// for longer than that window, has no route back into the daemon at all: no retry ever arrives, and the
+    /// self-healing built into the retry path (a re-leased slot clearing its own stale locks, say) never gets
+    /// to run. Nothing else in the daemon reads <c>review_run</c> again. This query is that route.
+    /// </para>
+    /// <para>
+    /// <paramref name="staleBefore"/> is what keeps the query off runs the poll is still working: a healthy
+    /// run stamps <c>updated_at</c> at every stage boundary, so any grace period comfortably larger than a
+    /// stage deadline excludes everything currently in flight. Comparing the stored text against
+    /// <see cref="Utc"/> is sound because every timestamp is written round-trip (<c>"O"</c>) and therefore
+    /// orders lexicographically the same way it orders chronologically.
+    /// </para>
+    /// <para>
+    /// <see cref="StrandedRunRow.Superseded"/> reports whether a later run exists for the same (repo, PR).
+    /// That distinction is the caller's safety rail: resuming a superseded run would review — and on a
+    /// posting daemon, publish — a diff that a newer run has already replaced.
+    /// </para>
+    /// </summary>
+    /// <remarks>
+    /// One capped query, no offset paging: the rows are ordered by <c>id</c> but selected on
+    /// <c>workflow_status</c>, which the caller mutates as it works. A second page taken by offset over a
+    /// predicate that has shifted under it would skip rows.
+    /// </remarks>
+    public IReadOnlyList<StrandedRunRow> ListStrandedRuns(DateTimeOffset staleBefore, int limit)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+
+        var results = new List<StrandedRunRow>();
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT rr.*, r.provider, r.org_or_owner, r.project, r.repo_name, r.repo_stable_id,
+                   EXISTS (SELECT 1 FROM review_run n
+                            WHERE n.repo_id = rr.repo_id AND n.pr_id = rr.pr_id AND n.id > rr.id) AS superseded
+            FROM review_run rr
+            JOIN repo r ON r.id = rr.repo_id
+            WHERE rr.workflow_status <> $completed AND rr.updated_at < $staleBefore
+            ORDER BY rr.id
+            LIMIT $limit;
+            """;
+        _ = command.Parameters.AddWithValue("$completed", WorkflowStatus.Completed.ToString());
+        _ = command.Parameters.AddWithValue("$staleBefore", Utc(staleBefore));
+        _ = command.Parameters.AddWithValue("$limit", limit);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var repo = new RepoIdentity
+            {
+                Provider = reader.GetString(reader.GetOrdinal("provider")),
+                OrgOrOwner = reader.GetString(reader.GetOrdinal("org_or_owner")),
+                Project = GetNullableString(reader, "project"),
+                RepoName = reader.GetString(reader.GetOrdinal("repo_name")),
+                RepoStableId = GetNullableString(reader, "repo_stable_id"),
+            };
+            results.Add(new StrandedRunRow(
+                MapReviewRun(reader),
+                repo,
+                reader.GetInt64(reader.GetOrdinal("superseded")) != 0));
+        }
+
+        return results;
+    }
+
     // ── poll_cursor (§12) ────────────────────────────────────────────────────────────────────────
 
     /// <summary>Upserts a cursor keyed by (provider, scope).</summary>
@@ -748,6 +817,15 @@ internal sealed class ReviewStore : IDisposable
 /// the at-close feedback extraction writes nothing rather than guessing.
 /// </summary>
 internal sealed record ReviewedPrRow(RepoIdentity Repo, string Provider, string PrId, string? Author = null);
+
+/// <summary>
+/// One non-terminal run that the poll can no longer reach, as enumerated by
+/// <see cref="ReviewStore.ListStrandedRuns"/>. <paramref name="Repo"/> is joined in because
+/// <see cref="ReviewRun"/> carries only the local <c>repo_id</c> and the caller must ask the PR provider what
+/// became of the PR. <paramref name="Superseded"/> is true when a later run exists for the same (repo, PR) —
+/// this run's head has been reviewed again since, so it must be retired rather than resumed.
+/// </summary>
+internal sealed record StrandedRunRow(ReviewRun Run, RepoIdentity Repo, bool Superseded);
 
 /// <summary>
 /// The re-review context for a PR, as computed by <see cref="ReviewStore.GetPriorReviewSummary"/>:

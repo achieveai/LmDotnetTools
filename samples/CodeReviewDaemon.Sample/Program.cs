@@ -886,6 +886,33 @@ builder.Services.AddSingleton(sp => new RetryGovernor(
     () => DateTimeOffset.UtcNow,
     sp.GetRequiredService<ILogger<RetryGovernor>>()));
 builder.Services.AddSingleton<PrOrchestrator>();
+// The route back for a run the poll can no longer reach. The poll only ever enumerates OPEN PRs inside its
+// recency window, so a run left non-terminal when its PR merges, closes, or goes quiet is never retried by
+// anything again. Registered unless the operator disables it by zeroing the grace period.
+if (daemonOptions.StrandedRunGraceHours > 0)
+{
+    builder.Services.AddSingleton(sp =>
+    {
+        var store = sp.GetRequiredService<ReviewStore>();
+        var providers = sp.GetServices<IPrProvider>().ToList();
+        var orchestrator = sp.GetRequiredService<PrOrchestrator>();
+        return new StrandedRunReconciler(
+            listStrandedRuns: store.ListStrandedRuns,
+            getPrLifecycleAsync: (row, ct) => PrLifecycleSweepSeam.ResolveLifecycleAsync(
+                providers,
+                row.Repo,
+                PrLifecycleSweepSeam.MapProviderNamespace(row.Repo.Provider),
+                row.Run.PrId,
+                ct),
+            resumeAsync: orchestrator.RunAsync,
+            retire: store.UpdateReviewRunState,
+            timeProvider: TimeProvider.System,
+            grace: TimeSpan.FromHours(daemonOptions.StrandedRunGraceHours),
+            scanLimit: daemonOptions.StrandedRunScanLimit,
+            maxResumesPerPass: daemonOptions.StrandedRunMaxResumesPerSweep,
+            logger: sp.GetRequiredService<ILogger<StrandedRunReconciler>>());
+    });
+}
 // The PR-watching loop. Registering a BackgroundService adds NO route, so the host's mapped routes stay
 // exactly the one webhook below. With the allow-list empty (default) it has no targets and is inert.
 builder.Services.AddHostedService(sp => new PrPollingService(
@@ -894,31 +921,34 @@ builder.Services.AddHostedService(sp => new PrPollingService(
     sp.GetRequiredService<ReviewStore>(),
     sp.GetRequiredService<PrOrchestrator>(),
     sp.GetRequiredService<ILogger<PrPollingService>>(),
-    // Maintenance runs on the poller cadence: the PR-lifecycle sweep (registered by the pooled path) and the
-    // deep-link retention sweep (registered by the S2S path when a window is configured). Either or both may
-    // be absent, in which case the poller keeps polling with no sweep (design §4.5).
+    // Maintenance runs on the poller cadence: the PR-lifecycle sweep (registered by the pooled path), the
+    // deep-link retention sweep (registered by the S2S path when a window is configured), and the stranded-run
+    // reconciler. Any of them may be absent, in which case the poller keeps polling with whatever remains
+    // (design §4.5). The reconciler runs last so it observes the state this cycle's polls left behind.
     sweepAsync: ComposeMaintenanceSweep(
         sp.GetService<PrLifecycleSweeper>() is { } lifecycleSweeper ? lifecycleSweeper.SweepAsync : null,
-        sp.GetService<DeepLinkRetentionSweeper>() is { } retentionSweeper ? retentionSweeper.SweepAsync : null)));
+        sp.GetService<DeepLinkRetentionSweeper>() is { } retentionSweeper ? retentionSweeper.SweepAsync : null,
+        sp.GetService<StrandedRunReconciler>() is { } strandedReconciler ? strandedReconciler.SweepAsync : null)));
 
 // Chains the optional maintenance sweeps into the poller's single seam, in the order they were introduced:
-// the lifecycle sweep first, so its today's-semantics timing is unchanged by the retention sweep landing
-// behind it. The poller already wraps the whole seam in its own try/catch, so a throwing sweep skips the
-// rest of THIS cycle and both are retried on the next one — harmless against a 24-hour ceiling checked every
+// the lifecycle sweep first, so its today's-semantics timing is unchanged by the sweeps landing behind it.
+// The poller already wraps the whole seam in its own try/catch, so a throwing sweep skips the rest of THIS
+// cycle and all of them are retried on the next one — harmless against a 24-hour ceiling checked every
 // 30 seconds.
-static Func<CancellationToken, Task>? ComposeMaintenanceSweep(
-    Func<CancellationToken, Task>? first,
-    Func<CancellationToken, Task>? second)
+static Func<CancellationToken, Task>? ComposeMaintenanceSweep(params Func<CancellationToken, Task>?[] sweeps)
 {
-    if (first is null || second is null)
+    var present = sweeps.Where(s => s is not null).Select(s => s!).ToArray();
+    if (present.Length <= 1)
     {
-        return first ?? second;
+        return present.FirstOrDefault();
     }
 
     return async ct =>
     {
-        await first(ct).ConfigureAwait(false);
-        await second(ct).ConfigureAwait(false);
+        foreach (var sweep in present)
+        {
+            await sweep(ct).ConfigureAwait(false);
+        }
     };
 }
 

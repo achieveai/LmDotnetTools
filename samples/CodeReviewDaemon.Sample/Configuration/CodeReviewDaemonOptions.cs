@@ -483,6 +483,33 @@ internal sealed class CodeReviewDaemonOptions
     /// </remarks>
     public int ReviewSubAgentUnknownQuiescenceSeconds { get; init; } = 300;
 
+    /// <summary>
+    /// How many hours a non-terminal run must have sat untouched before the stranded-run reconciler treats it
+    /// as unreachable and takes it over. Default 6. Set to 0 to disable the reconciler entirely.
+    /// </summary>
+    /// <remarks>
+    /// A run only advances when a poll enumerates its PR, and the poll lists OPEN pull requests within its
+    /// target's recency window — so a run whose PR closed, or whose PR went quiet for longer than that, is
+    /// never retried again by anything. The grace period is what separates those from work still
+    /// in flight: a healthy run stamps <c>updated_at</c> at every stage boundary, so any value comfortably
+    /// above <see cref="ReviewStageDeadlineMinutes"/> cannot catch a live run mid-stage.
+    /// </remarks>
+    public double StrandedRunGraceHours { get; init; } = 6;
+
+    /// <summary>
+    /// The most stranded runs one reconciler pass will read from the store. Default 50. A cap on reading, not
+    /// on working: rows beyond it are simply picked up by the following pass.
+    /// </summary>
+    public int StrandedRunScanLimit { get; init; } = 50;
+
+    /// <summary>
+    /// The most stranded runs one reconciler pass will actually resume through the orchestrator (the rest of
+    /// the pass is bookkeeping and costs nothing). Default 2, deliberately small: a backlog that has built up
+    /// over weeks must not turn into a burst of concurrent reviews — and, on a posting daemon, a burst of
+    /// comments — the first time this runs. Deferred runs are logged, never dropped silently.
+    /// </summary>
+    public int StrandedRunMaxResumesPerSweep { get; init; } = 2;
+
     /// <summary>The resolved cross-repo store URL: <see cref="CrossRepoStoreUrl"/> when set, else
     /// <see cref="ReviewBotRepoUrl"/> (the review store and the ReviewBot retention repo are one repo).</summary>
     public string? ResolvedStoreUrl =>
