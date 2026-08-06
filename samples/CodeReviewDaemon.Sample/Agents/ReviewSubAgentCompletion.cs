@@ -296,6 +296,18 @@ internal sealed class ReviewSubAgentCompletionBarrier
             var canonical = Canonicalize(snapshot.Nodes);
             lastObserved = canonical;
 
+            // The snapshot is a round trip to the review host, and it can take longer than whatever budget
+            // was left when it started. Judging what came back against the clock reading taken before it
+            // would accept a tree confirmed AFTER the deadline had passed, with the overrun bounded only by
+            // how long the source took to answer. The deadline this barrier is given is absolute, so the
+            // reading has to be refreshed here; looping back rather than throwing in place lets the check
+            // above do the logging, and it now has the roster this call just fetched.
+            now = _timeProvider.GetUtcNow();
+            if (now >= deadlineUtc)
+            {
+                continue;
+            }
+
             if (AllSettled(canonical, now))
             {
                 if (candidate is not null && SameIdentity(candidate, canonical))

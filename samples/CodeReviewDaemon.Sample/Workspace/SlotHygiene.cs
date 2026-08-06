@@ -77,18 +77,18 @@ internal static class SlotHygiene
         // clearable than it is a broken store.
         var pass = await ForceResetAsync(git, storePath, ct, fileSystem).ConfigureAwait(false);
 
-        // A store that redirects its own cleanup is condemned rather than repaired: removing the link would be a
-        // write chosen by whoever planted it, and re-creating the directory afterwards hands the next one a fresh
-        // target. The re-clone is the safe answer precisely because it does not walk the tree — it wipes the whole
-        // store, unlinking the redirected entry instead of following it. A second pass cannot change this, so the
-        // gate goes ahead of the retry ladder. See <see cref="HostPathGuard.IsRedirected"/>.
-        if (pass.RedirectedPath is { } redirected)
+        // A store whose own cleanup cannot be walked is condemned rather than repaired: unlinking a redirected
+        // entry would be a write chosen by whoever planted it, re-creating the directory afterwards hands the next
+        // one a fresh target, and an entry that cannot be read is not something to make a decision about at all.
+        // The re-clone is the safe answer precisely because it does not walk the tree — it wipes the whole store,
+        // unlinking the offending entry instead of following it. A second pass cannot change this, so the gate
+        // goes ahead of the retry ladder. See <see cref="HostPathGuard.Check"/>.
+        if (pass.Blocked is { } blocked)
         {
             logger?.LogWarning(
-                "Slot hygiene at {StorePath}: re-cloning — {RedirectedPath} is a symlink or junction, so the "
-                    + "stale-state sweep would have deleted files outside the store. Refusing to sweep past it, "
-                    + "and refusing to remove it.",
-                storePath, redirected);
+                "Slot hygiene at {StorePath}: re-cloning — the stale-state sweep stopped at {BlockedPath} "
+                    + "because {Reason}. Refusing to sweep past it, and refusing to remove it.",
+                storePath, blocked.Path, blocked.Reason);
             return HygieneVerdict.NeedsReclone;
         }
 
@@ -307,14 +307,24 @@ internal static class SlotHygiene
             && GitFailureClassifier.Classify(pass.Foreach.Stderr) == GitFailureKind.Corrupt);
 
     /// <summary>The git steps of one force-reset pass, kept together so the verdict can classify each one.
-    /// <paramref name="RedirectedPath"/> is the entry that stopped the stale-state sweep before it ran (see
-    /// <see cref="HostPathGuard.IsRedirected"/>), or <c>null</c> when the sweep completed.</summary>
+    /// <paramref name="Blocked"/> is the entry that stopped the stale-state sweep before it ran (see
+    /// <see cref="HostPathGuard.Check"/>), or <c>null</c> when the sweep completed.</summary>
     private readonly record struct ResetPass(
         SandboxCommandResult Reset,
         SandboxCommandResult Clean,
         SandboxCommandResult Restore,
         SandboxCommandResult Foreach,
-        string? RedirectedPath);
+        HostPathRefusal? Blocked);
+
+    /// <summary>
+    /// Stands in for a git step that was never run because the sweep ahead of it refused. It reports FAILURE
+    /// rather than success so that a reader which never looks at <see cref="ResetPass.Blocked"/> still condemns
+    /// the slot: the alternative — an exit-0 placeholder — reports a store nobody swept as a store that came back
+    /// clean, which is the one answer that must not be reachable here. The stderr names itself so the re-clone it
+    /// produces is not logged as a git failure that never happened.
+    /// </summary>
+    private static readonly SandboxCommandResult NotRun = new(
+        1, "", "not run: the stale-state sweep refused to cross an entry, so nothing in this store was touched");
 
     /// <summary>
     /// One force-reset pass: clear stale locks and abandoned operation markers, then reset and clean the
@@ -324,7 +334,16 @@ internal static class SlotHygiene
     private static async Task<ResetPass> ForceResetAsync(
         GitRunner git, string storePath, CancellationToken ct, ISandboxFileSystem? fileSystem)
     {
-        var redirected = await SweepStaleStateAsync(git, storePath, ct, fileSystem).ConfigureAwait(false);
+        var refusal = await SweepStaleStateAsync(git, storePath, ct, fileSystem).ConfigureAwait(false);
+
+        // A refusal is already the verdict: the caller condemns the slot to a re-clone on it, and no outcome the
+        // git steps below could produce would change that. Running them anyway spent four git invocations on a
+        // store whose contents are about to be deleted wholesale, and spent them on a store the daemon has just
+        // said it cannot establish the shape of — every one of them writes. Stop at the refusal instead.
+        if (refusal is { } blocked)
+        {
+            return new ResetPass(NotRun, NotRun, NotRun, NotRun, blocked);
+        }
 
         // Reset + clean the superproject, then restore ALL submodule checkouts (top-level AND nested,
         // recursively) to the superproject's RECORDED gitlink. Restoring to the gitlink keeps a warm slot
@@ -359,7 +378,7 @@ internal static class SlotHygiene
                 storePath, ct)
             .ConfigureAwait(false);
 
-        return new ResetPass(reset, clean, restore, foreachResult, redirected);
+        return new ResetPass(reset, clean, restore, foreachResult, Blocked: null);
     }
 
     /// <summary>
@@ -370,12 +389,12 @@ internal static class SlotHygiene
     /// Windows daemon host has none) — and this step ignores its result, so there the sweep would fail silently and
     /// leave the wedged store for the reset to trip over. Use the host helpers for that case only.
     /// <para>
-    /// Returns the redirected entry that stopped the host sweep, or <c>null</c> when it ran to completion. The
+    /// Returns the entry that stopped the host sweep, or <c>null</c> when it ran to completion. The
     /// container branch needs no such check: <c>find</c> does not descend through a symlinked directory unless
     /// asked to, and <c>-type f</c>/<c>-type d</c> match the link itself rather than what it points at.
     /// </para>
     /// </summary>
-    private static async Task<string?> SweepStaleStateAsync(
+    private static async Task<HostPathRefusal?> SweepStaleStateAsync(
         GitRunner git, string storePath, CancellationToken ct, ISandboxFileSystem? fileSystem)
     {
         if (fileSystem is HostFileSystem)
@@ -438,15 +457,24 @@ internal static class SlotHygiene
     /// <summary>
     /// Success-path strip: the caller commits + pushes the notes FIRST, then this returns the slot pristine
     /// (best-effort — if it is skipped by a crash, the next lease's <see cref="EnsureCleanAsync"/> covers it).
+    /// Does nothing at all to a store whose stale-state sweep refuses to cross an entry: that store is headed for
+    /// a re-clone on its next lease, and pristine is not a state anything here can leave it in.
     /// </summary>
     public static async Task StripAsync(GitRunner git, string storePath, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(git);
         ArgumentException.ThrowIfNullOrWhiteSpace(storePath);
 
-        // The strip is best-effort tidiness with no verdict to report, so a redirected store simply stops the
-        // sweep here; the next lease's EnsureCleanAsync is the gate that condemns it.
-        _ = RemoveStaleLocks(Path.Combine(storePath, ".git"));
+        // The strip is best-effort tidiness with no verdict to report, so a store the sweep refuses to cross ends
+        // the strip here rather than condemning anything; the next lease's EnsureCleanAsync is the gate that
+        // condemns it, and it will, on the same refusal. Everything below writes to the store, and leaving it
+        // pristine is the only thing they are for — which is work with no value on a store already booked for a
+        // re-clone.
+        if (RemoveStaleLocks(Path.Combine(storePath, ".git")) is not null)
+        {
+            return;
+        }
+
         await git.RunAsync(["-C", storePath, "reset", "--hard"], storePath, ct).ConfigureAwait(false);
         await git.RunAsync(["-C", storePath, "clean", "-ffdx"], storePath, ct).ConfigureAwait(false);
         // Restore ALL submodule checkouts (top-level + nested) to the recorded gitlink (see EnsureCleanAsync
@@ -467,14 +495,14 @@ internal static class SlotHygiene
     /// <summary>
     /// Deletes every stale <c>*.lock</c> under <paramref name="gitDir"/>, walking the tree by hand so the sweep
     /// never crosses a symlink or a junction — <c>SearchOption.AllDirectories</c> follows one silently. Returns
-    /// the redirected entry that stopped the walk, or <c>null</c> when it finished. See
-    /// <see cref="HostPathGuard.IsRedirected"/> for why this refuses instead of clearing the link.
+    /// the entry that stopped the walk, or <c>null</c> when it finished. See
+    /// <see cref="HostPathGuard.Check"/> for why this refuses instead of clearing the link.
     /// </summary>
-    private static string? RemoveStaleLocks(string gitDir)
+    private static HostPathRefusal? RemoveStaleLocks(string gitDir)
     {
-        if (HostPathGuard.IsRedirected(gitDir))
+        if (HostPathGuard.Check(gitDir) is { } rootRefusal)
         {
-            return gitDir;
+            return rootRefusal;
         }
 
         if (!Directory.Exists(gitDir))
@@ -488,9 +516,9 @@ internal static class SlotHygiene
         {
             foreach (var entry in ChildrenOf(pending.Pop()))
             {
-                if (HostPathGuard.IsRedirected(entry))
+                if (HostPathGuard.Check(entry) is { } refusal)
                 {
-                    return entry;
+                    return refusal;
                 }
 
                 if (Directory.Exists(entry))
@@ -528,17 +556,17 @@ internal static class SlotHygiene
     }
 
     /// <summary>
-    /// Clears the markers a crashed merge/cherry-pick/revert/rebase leaves behind. Returns the redirected entry
-    /// that stopped it, or <c>null</c> when it finished.
+    /// Clears the markers a crashed merge/cherry-pick/revert/rebase leaves behind. Returns the entry that
+    /// stopped it, or <c>null</c> when it finished.
     /// </summary>
-    private static string? AbortInProgress(string gitDir)
+    private static HostPathRefusal? AbortInProgress(string gitDir)
     {
         foreach (var marker in new[] { "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD" })
         {
             var path = Path.Combine(gitDir, marker);
-            if (HostPathGuard.IsRedirected(path))
+            if (HostPathGuard.Check(path) is { } markerRefusal)
             {
-                return path;
+                return markerRefusal;
             }
 
             TryDelete(path);
@@ -547,9 +575,9 @@ internal static class SlotHygiene
         foreach (var dir in new[] { "rebase-merge", "rebase-apply" })
         {
             var path = Path.Combine(gitDir, dir);
-            if (HostPathGuard.IsRedirected(path))
+            if (HostPathGuard.Check(path) is { } dirRefusal)
             {
-                return path;
+                return dirRefusal;
             }
 
             if (Directory.Exists(path))
@@ -570,7 +598,7 @@ internal static class SlotHygiene
         return null;
     }
 
-    /// <summary>Deletes one file. Callers check <see cref="HostPathGuard.IsRedirected"/> first.</summary>
+    /// <summary>Deletes one file. Callers check <see cref="HostPathGuard.Check"/> first.</summary>
     private static void TryDelete(string path)
     {
         try

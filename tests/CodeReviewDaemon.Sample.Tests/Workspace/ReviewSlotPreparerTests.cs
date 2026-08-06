@@ -199,7 +199,8 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         _ = await act.Should().ThrowAsync<InvalidOperationException>();
         File.GetAttributes(victim).HasFlag(FileAttributes.ReadOnly).Should().BeTrue(
             "clearing read-only THROUGH the root is the same write outside the store the child check refuses");
-        HostPathGuard.IsRedirected(storeRoot).Should().BeTrue(
+        HostPathGuard.Check(storeRoot).Should().Be(
+            new HostPathRefusal(storeRoot, HostPathVerdict.Redirected),
             "refusing means refusing both ways: the link is not followed and it is not removed either");
         runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
             command => command.Contains(" clone ", StringComparison.Ordinal),
@@ -235,7 +236,8 @@ public sealed class ReviewSlotPreparerTests : IDisposable
 
         _ = await act.Should().ThrowAsync<InvalidOperationException>();
         File.GetAttributes(victim).HasFlag(FileAttributes.ReadOnly).Should().BeTrue();
-        HostPathGuard.IsRedirected(slot.ScratchPath).Should().BeTrue(
+        HostPathGuard.Check(slot.ScratchPath).Should().Be(
+            new HostPathRefusal(slot.ScratchPath, HostPathVerdict.Redirected),
             "the scratch link survives the refusal untouched — removing and re-creating it IS the repair");
         File.SetAttributes(victim, FileAttributes.Normal); // so Dispose's best-effort wipe can reach it
     }
@@ -268,8 +270,37 @@ public sealed class ReviewSlotPreparerTests : IDisposable
             command => command.Contains(" clone ", StringComparison.Ordinal),
             "a root that reads as absent is still a root that redirects, and cloning onto it writes outside");
         (await File.ReadAllTextAsync(victim)).Should().Be("notes", "nothing may reach through the link");
-        HostPathGuard.IsRedirected(storeRoot).Should().BeTrue(
+        HostPathGuard.Check(storeRoot).Should().Be(
+            new HostPathRefusal(storeRoot, HostPathVerdict.Redirected),
             "refusing means refusing both ways: the link is not followed and it is not removed either");
+    }
+
+    [RequiresUnreadableEntryFact("a readable entry cannot show the difference between absent and un-inspectable")]
+    public async Task RecloneStoreAsync_HostPreparer_RefusesAStoreRootItCannotInspect()
+    {
+        // The guard answered a plain "is this a link?", and every way of failing to find out was folded into
+        // "no". An entry the daemon is denied the attributes of reads exactly like one that is not there —
+        // FileSystemInfo.Exists reports false for both — so the wipe returned as though the store were already
+        // gone and the re-clone went ahead onto a name nobody had established anything about. The walk's whole
+        // job is to establish containment, and "I could not look" is not an establishment: it is refused on the
+        // same terms as a link, and for the same reason a link is refused rather than repaired.
+        var slotPath = Path.Combine(_hostRoot, "slot-0");
+        _ = Directory.CreateDirectory(slotPath);
+        using var denied = UnreadableEntry.Create(slotPath);
+        var runner = new FakeSandboxCommandRunner();
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), new HostFileSystem(), "github", NullLoggerFactory.Instance);
+
+        var act = async () => await preparer.RecloneStoreAsync(denied.Path, StoreUrl, CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<InvalidOperationException>();
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
+            command => command.Contains(" clone ", StringComparison.Ordinal),
+            "cloning onto a path the daemon could not inspect is the write the whole check exists to prevent");
+        HostPathGuard.Check(denied.Path).Should().Be(
+            new HostPathRefusal(denied.Path, HostPathVerdict.Unreadable),
+            "the refusal has to name what actually stopped it — reporting a link that was never there sends "
+                + "the next reader looking for one");
     }
 
     [Fact]

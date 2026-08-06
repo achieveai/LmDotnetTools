@@ -171,6 +171,32 @@ public sealed class StrandedRunReconcilerTests
             [13L], "bookkeeping costs nothing, so it must not crowd out the one run that needed real work");
     }
 
+    [Fact]
+    public async Task A_resume_that_throws_still_spends_the_slot_it_used()
+    {
+        // A slot is not a unit of success — it is a unit of work: a lease, a clone, and a review's remaining
+        // stages, which is precisely the cost the cap exists to bound. Charging it only when the resume comes
+        // back cleanly makes a failing run free, so a backlog of runs that all fail is not bounded at all and
+        // every one of them gets a full attempt on every pass. That is the shape the cap was written against,
+        // and it is the one the reconciler hits, because a run reaches this listing by having gone wrong once
+        // already. Nothing else brakes this path either: PrOrchestrator.ReconcileAsync resets the retry
+        // governor for the run it is handed, so the cap is the only limit on how much a single pass can spend.
+        var harness = new Harness()
+            .WithRows(Row(11), Row(12))
+            .WithMaxResumes(1)
+            .WithResumeThrowingFor(runId: 11);
+
+        await harness.Reconciler().SweepAsync(CancellationToken.None);
+
+        harness.Order.Should().Equal(
+            ["write:11", "resume:11"],
+            "run 11 spent the pass's one slot the moment it was claimed, so run 12 must not be touched at all");
+        harness.Log.Should().Contain(
+            e => e.Contains("deferred", StringComparison.OrdinalIgnoreCase)
+                && e.Contains("12", StringComparison.Ordinal),
+            "run 12 is deferred rather than dropped — the next pass is where it gets its turn");
+    }
+
     // ── isolation: one bad run never aborts the pass ──────────────────────────────────────────────
 
     [Fact]

@@ -528,6 +528,50 @@ public sealed class SlotHygieneTests : IDisposable
     }
 
     [Fact]
+    public async Task EnsureClean_runs_no_git_at_all_on_a_store_that_redirects_the_sweep()
+    {
+        // The refusal IS the verdict: the slot is condemned the moment the sweep stops, and no outcome the
+        // force-reset ladder could produce afterwards would change that. Running it anyway spent four git
+        // invocations — every one of them a write — on a store whose entire contents are about to be deleted
+        // wholesale by the re-clone, and spent them on the one store the daemon has just said it cannot establish
+        // the shape of. The structural probe is the only command that may appear, because it runs BEFORE the
+        // sweep and is what decides there is a repository here to sweep at all.
+        var store = SeedStore();
+        var outside = Path.Combine(_root, "outside");
+        Directory.CreateDirectory(outside);
+        DirectoryLink.Create(Path.Combine(store, ".git", "modules"), outside);
+        var runner = new FakeSandboxCommandRunner();
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(
+            new GitRunner(runner), store, CancellationToken.None, NullLogger.Instance, new HostFileSystem());
+
+        verdict.Should().Be(HygieneVerdict.NeedsReclone);
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().HaveCount(
+            1, "nothing after the sweep can change the verdict, so nothing after the sweep should run");
+        commands[0].Should().EndWith(
+            "rev-parse --git-dir", "the structural probe precedes the sweep — it is the one command that must run");
+    }
+
+    [Fact]
+    public async Task Strip_runs_no_git_at_all_on_a_store_that_redirects_the_sweep()
+    {
+        // Every command the strip issues exists to leave the slot pristine for the next lease. A store the sweep
+        // refuses to cross does not GET a next lease in that sense — the next EnsureCleanAsync meets the same
+        // refusal and re-clones it — so the whole sequence is writes into a directory about to be deleted. The
+        // strip has no verdict to report and condemns nothing; it simply has nothing left worth doing.
+        var store = SeedStore();
+        var outside = Path.Combine(_root, "outside");
+        Directory.CreateDirectory(outside);
+        DirectoryLink.Create(Path.Combine(store, ".git", "modules"), outside);
+        var runner = new FakeSandboxCommandRunner();
+
+        await SlotHygiene.StripAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        runner.Commands.Should().BeEmpty("the strip's only purpose is a pristine store, and this one cannot be one");
+    }
+
+    [Fact]
     public async Task StripAsync_issues_reset_and_clean()
     {
         var store = SeedStore();

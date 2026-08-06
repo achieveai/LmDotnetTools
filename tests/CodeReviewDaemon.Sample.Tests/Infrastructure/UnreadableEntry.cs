@@ -1,0 +1,142 @@
+using System.Runtime.Versioning;
+using System.Security.AccessControl;
+using System.Security.Principal;
+
+namespace CodeReviewDaemon.Sample.Tests.Infrastructure;
+
+/// <summary>
+/// Builds the one input that separates "there is nothing at this name" from "I could not look": an entry the
+/// daemon can see listed but whose attributes it is denied. Both read as absent to
+/// <see cref="FileSystemInfo.Exists"/>, which is exactly why a containment check written around
+/// <c>Exists</c> answers "nothing to worry about" for a path it never managed to inspect.
+/// <para>
+/// Denial is applied to the entry's PARENT, because on Windows reading an entry's attributes is a permission
+/// on the directory holding it, not on the entry. <see cref="Dispose"/> lifts the denial again — a temp tree
+/// nobody can enumerate is a temp tree nobody can delete either.
+/// </para>
+/// </summary>
+internal sealed class UnreadableEntry : IDisposable
+{
+    private readonly DirectoryInfo _parent;
+
+    private UnreadableEntry(DirectoryInfo parent, string path)
+    {
+        _parent = parent;
+        Path = path;
+    }
+
+    /// <summary>The entry whose attributes cannot be read.</summary>
+    public string Path { get; }
+
+    /// <summary>
+    /// Whether this machine actually produces an unreadable entry. A deny ACE is refused by nothing in normal
+    /// operation, but a process holding SeBackupPrivilege reads straight past one — and a test that silently
+    /// got a perfectly readable file would assert the guard's happy path while claiming to cover its blind one.
+    /// </summary>
+    public static bool Supported { get; } = Probe();
+
+    /// <summary>
+    /// Creates the entry under a fresh subdirectory of <paramref name="root"/>, then asserts it really is
+    /// unreadable — a setup that quietly produced a readable file would leave the test body proving nothing.
+    /// </summary>
+    public static UnreadableEntry Create(string root)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException("Guard the test with RequiresUnreadableEntryFact.");
+        }
+
+        var parent = Directory.CreateDirectory(
+            System.IO.Path.Combine(root, "denied-" + Guid.NewGuid().ToString("N")[..8]));
+        var path = System.IO.Path.Combine(parent.FullName, "unreadable");
+        File.WriteAllText(path, "protected");
+        Deny(parent);
+
+        new FileInfo(path).Exists.Should().BeFalse(
+            "the whole point of this input is that it reads as absent — if it does not, the test is not "
+                + "exercising the case the guard gets wrong");
+        var read = () => new FileInfo(path).Attributes;
+        _ = read.Should().Throw<UnauthorizedAccessException>(
+            "the attributes are the only place the difference between absent and unreadable survives");
+
+        return new UnreadableEntry(parent, path);
+    }
+
+    public void Dispose()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        try
+        {
+            Allow(_parent);
+            _parent.Delete(recursive: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Best-effort: a temp directory left behind fails nothing, and throwing here would replace a real
+            // assertion failure with a cleanup one.
+        }
+    }
+
+    private static bool Probe()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return false;
+        }
+
+        var root = Directory.CreateDirectory(
+            System.IO.Path.Combine(System.IO.Path.GetTempPath(), "crd-probe-" + Guid.NewGuid().ToString("N")));
+        try
+        {
+            var path = System.IO.Path.Combine(root.FullName, "probe");
+            File.WriteAllText(path, "probe");
+            Deny(root);
+            _ = new FileInfo(path).Attributes;
+            return false; // Readable through the denial, so this machine cannot build the input.
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return true;
+        }
+        finally
+        {
+            try
+            {
+                Allow(root);
+                root.Delete(recursive: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Best-effort, as in Dispose.
+            }
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void Deny(DirectoryInfo directory)
+    {
+        var security = directory.GetAccessControl();
+        security.AddAccessRule(Rule(InheritanceFlags.ObjectInherit | InheritanceFlags.ContainerInherit));
+        directory.SetAccessControl(security);
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void Allow(DirectoryInfo directory)
+    {
+        var security = directory.GetAccessControl();
+        security.RemoveAccessRuleAll(Rule(InheritanceFlags.None));
+        directory.SetAccessControl(security);
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static FileSystemAccessRule Rule(InheritanceFlags inheritance) => new(
+        WindowsIdentity.GetCurrent().User!,
+        FileSystemRights.FullControl,
+        inheritance,
+        PropagationFlags.None,
+        AccessControlType.Deny);
+}

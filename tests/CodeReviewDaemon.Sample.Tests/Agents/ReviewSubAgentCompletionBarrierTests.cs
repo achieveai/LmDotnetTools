@@ -409,6 +409,60 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task WaitAsync_SnapshotCallOutlastsTheDeadline_ThrowsInsteadOfOpeningOnIt()
+    {
+        // The deadline is checked at the TOP of the loop, but the snapshot call that decides the iteration
+        // happens after it — and that call is a network round trip to the review host, which can take longer
+        // than whatever budget was left. The clock reading taken before it was then reused to judge what came
+        // back, so a tree confirmed after the deadline had passed was still accepted and returned, and the
+        // overrun was bounded only by how long the source took to answer. The barrier's own contract is a
+        // single ABSOLUTE deadline, so the only correct answer once it has passed is the timeout.
+        var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
+        var run = TestRun();
+        var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
+        var settled = new ReviewSubAgentTreeSnapshot([Node("a", "root", 1, ReviewSubAgentStatus.Completed)]);
+
+        // The roster is all-terminal and IDENTICAL across both observations, so every other condition for
+        // opening the barrier is met on the second call. The deadline is the only thing standing in the way,
+        // which is what makes this a test of the deadline and not of the settling rule.
+        var source = new SlowCompletionSource(
+            settled,
+            onCall: call =>
+            {
+                if (call == 2)
+                {
+                    clock.Advance(TimeSpan.FromMinutes(31));
+                }
+            });
+        var barrier = CreateBarrier(
+            source, clock, TimeSpan.Zero, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+
+        var task = barrier.WaitAsync(run, "root", deadline, NoopValidator, CancellationToken.None);
+
+        var act = () => PumpUntilSettledAsync(task, clock, TimeSpan.FromSeconds(5));
+        _ = await act.Should().ThrowAsync<ReviewBarrierDeadlineException>();
+        source.CallCount.Should().Be(2, "the overrun is detected on the call that caused it, not a poll later");
+    }
+
+    /// <summary>
+    /// A completion source that runs <paramref name="onCall"/> before answering, so a test can make the call
+    /// itself consume time — the one thing a source returning an already-built snapshot cannot otherwise do.
+    /// </summary>
+    private sealed class SlowCompletionSource(ReviewSubAgentTreeSnapshot snapshot, Action<int> onCall)
+        : IReviewSubAgentCompletionSource
+    {
+        public int CallCount { get; private set; }
+
+        public Task<ReviewSubAgentTreeSnapshot> GetSnapshotAsync(
+            ReviewRun run, string parentThreadId, CancellationToken ct)
+        {
+            CallCount++;
+            onCall(CallCount);
+            return Task.FromResult(snapshot);
+        }
+    }
+
+    [Fact]
     public async Task WaitAsync_LifecycleValidatorFailure_AbortsBeforeBarrierOpens()
     {
         // Brief bullet 7: lifecycle/head validation runs right before a confirmed terminal candidate is

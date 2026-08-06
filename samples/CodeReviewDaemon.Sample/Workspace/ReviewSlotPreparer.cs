@@ -382,11 +382,9 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
     /// </summary>
     private static void DeleteHostDirectory(string root)
     {
-        if (HostPathGuard.IsRedirected(root))
+        if (HostPathGuard.Check(root) is { } rootRefusal)
         {
-            throw new InvalidOperationException(
-                $"Refusing to wipe host directory '{root}': it is a symlink or junction, so the wipe would "
-                    + "reach outside the workspace. Not following it, and not removing it either.");
+            throw Refuse(root, rootRefusal);
         }
 
         if (!Directory.Exists(root))
@@ -400,10 +398,18 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         {
             foreach (var entry in Directory.GetFileSystemEntries(pending.Pop()))
             {
-                if (HostPathGuard.IsRedirected(entry))
+                if (HostPathGuard.Check(entry) is { } refusal)
                 {
-                    Unlink(entry);
-                    continue;
+                    // A redirected entry is unlinked — that removes the NAME inside the store and leaves the
+                    // target alone, which is the whole point. An unreadable one cannot be unlinked on the same
+                    // reasoning, because the reasoning depends on knowing what it is; the wipe stops instead.
+                    if (refusal.Verdict == HostPathVerdict.Redirected)
+                    {
+                        Unlink(entry);
+                        continue;
+                    }
+
+                    throw Refuse(root, refusal);
                 }
 
                 if (Directory.Exists(entry))
@@ -422,6 +428,13 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
 
         Directory.Delete(root, recursive: true);
     }
+
+    /// <summary>The one refusal message the wipe raises, whether the entry that stopped it is the root it was
+    /// handed or one it found on the way down.</summary>
+    private static InvalidOperationException Refuse(string root, HostPathRefusal refusal) =>
+        new(
+            $"Refusing to wipe host directory '{root}': '{refusal.Path}' — {refusal.Reason}. Not following it, "
+                + "and not removing it either.");
 
     /// <summary>Removes a symlink or junction itself, never its target.</summary>
     private static void Unlink(string entry)

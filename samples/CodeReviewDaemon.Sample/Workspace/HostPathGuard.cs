@@ -1,13 +1,53 @@
 namespace CodeReviewDaemon.Sample.Workspace;
 
+/// <summary>What a host walk learned when it asked whether one entry is safe to touch.</summary>
+internal enum HostPathVerdict
+{
+    /// <summary>
+    /// The entry's NAME and its CONTENT are the same place — or there is nothing at that name at all. The only
+    /// verdict that lets a walk write to the entry or descend into it.
+    /// </summary>
+    Contained,
+
+    /// <summary>A symlink or a Windows junction: the name is inside the store, the content is not.</summary>
+    Redirected,
+
+    /// <summary>
+    /// The entry could not be read well enough to tell. Refused for the same reason <see cref="Redirected"/>
+    /// is: the walk's whole job is to establish containment, and "I could not look" is not an establishment.
+    /// </summary>
+    Unreadable,
+}
+
+/// <summary>An entry a host walk refused to cross, and the verdict that stopped it.</summary>
+internal readonly record struct HostPathRefusal(string Path, HostPathVerdict Verdict)
+{
+    /// <summary>
+    /// The clause each caller drops into its own message. It is derived from the verdict rather than written at
+    /// the throw site because the two verdicts are refused identically and would otherwise both be reported as
+    /// "it is a symlink or junction" — a reason that is false for half of them, and a false reason in a refusal
+    /// message sends the next reader looking for a link that was never there.
+    /// </summary>
+    public string Reason =>
+        Verdict == HostPathVerdict.Redirected
+            ? "it is a symlink or junction, so a walk through it would reach outside the store"
+            : "its attributes cannot be read, so whether a walk through it stays inside the store is unknowable";
+}
+
 /// <summary>
 /// The containment check the daemon's host-side tree walks run before they touch an entry.
 /// </summary>
 internal static class HostPathGuard
 {
     /// <summary>
-    /// True when <paramref name="path"/> is a symlink or a Windows junction — an entry whose NAME is inside the
-    /// pooled store but whose CONTENT is somewhere else entirely.
+    /// The attributes of a path with nothing at it. <see cref="FileSystemInfo.Attributes"/> reports this rather
+    /// than throwing when the entry is genuinely absent, and it must be recognised before the reparse-point test
+    /// because every bit is set in it — including <see cref="FileAttributes.ReparsePoint"/>.
+    /// </summary>
+    private const FileAttributes Absent = (FileAttributes)(-1);
+
+    /// <summary>
+    /// The refusal that stops a walk at <paramref name="path"/>, or <c>null</c> when the entry may be touched.
     /// <para>
     /// Two host walks recurse over a leased slot's store and then write: <see cref="SlotHygiene"/>'s stale-state
     /// sweep deletes every <c>*.lock</c> it reaches, and the re-clone wipe clears the read-only attribute on
@@ -23,6 +63,16 @@ internal static class HostPathGuard
     /// a re-clone instead, which wipes the whole store without following the link.
     /// </para>
     /// <para>
+    /// An entry whose attributes cannot be read is refused too, and reaching that case takes some care. The
+    /// obvious spelling — <c>entry.Exists &amp;&amp; entry.Attributes.HasFlag(ReparsePoint)</c> — never reaches
+    /// it: <see cref="FileSystemInfo.Exists"/> swallows the error and reports FALSE for an entry it could not
+    /// read, exactly as it does for one that is not there, so the <c>&amp;&amp;</c> short-circuits and the guard
+    /// answers "nothing to worry about" for a path it never managed to look at. The two cases are only
+    /// distinguishable at <see cref="FileSystemInfo.Attributes"/>, which throws for the first and returns
+    /// <see cref="Absent"/> for the second — which is why the attributes are read first and the existence
+    /// question answered from them, rather than the other way round.
+    /// </para>
+    /// <para>
     /// This check does not see a HARD link, and that is an accepted residual rather than a proof of safety. On
     /// NTFS a hard link is a second NAME for one file record: deleting one name does leave the other whole, but
     /// clearing the read-only bit through one clears it on the record, so a hard link planted under a store
@@ -36,20 +86,28 @@ internal static class HostPathGuard
     /// rather than paid for.
     /// </para>
     /// </summary>
-    public static bool IsRedirected(string path)
+    public static HostPathRefusal? Check(string path)
     {
+        FileAttributes attributes;
         try
         {
             FileSystemInfo entry = Directory.Exists(path) ? new DirectoryInfo(path) : new FileInfo(path);
-            return entry.Exists && entry.Attributes.HasFlag(FileAttributes.ReparsePoint);
+            attributes = entry.Attributes;
         }
         catch (IOException)
         {
-            return false; // Unreadable is not redirected; the caller's own delete will fail the same way.
+            return new HostPathRefusal(path, HostPathVerdict.Unreadable);
         }
         catch (UnauthorizedAccessException)
         {
-            return false;
+            return new HostPathRefusal(path, HostPathVerdict.Unreadable);
         }
+
+        if (attributes == Absent || !attributes.HasFlag(FileAttributes.ReparsePoint))
+        {
+            return null;
+        }
+
+        return new HostPathRefusal(path, HostPathVerdict.Redirected);
     }
 }

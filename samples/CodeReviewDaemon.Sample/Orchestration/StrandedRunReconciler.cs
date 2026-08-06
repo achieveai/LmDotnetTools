@@ -132,19 +132,15 @@ internal sealed class StrandedRunReconciler
             staleBefore,
             _maxResumesPerPass);
 
-        var resumed = 0;
+        var budget = new ResumeBudget(_maxResumesPerPass);
         var deferred = 0;
         foreach (var row in stranded)
         {
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                var outcome = await SettleAsync(row, resumed, cancellationToken).ConfigureAwait(false);
-                if (outcome == SettleOutcome.Resumed)
-                {
-                    resumed++;
-                }
-                else if (outcome == SettleOutcome.Deferred)
+                var outcome = await SettleAsync(row, budget, cancellationToken).ConfigureAwait(false);
+                if (outcome == SettleOutcome.Deferred)
                 {
                     deferred++;
                 }
@@ -169,9 +165,27 @@ internal sealed class StrandedRunReconciler
                 "Stranded-run reconciler deferred {Deferred} open run(s) to a later pass after resuming "
                     + "{Resumed} (cap {MaxResumes}).",
                 deferred,
-                resumed,
+                budget.Spent,
                 _maxResumesPerPass);
         }
+    }
+
+    /// <summary>
+    /// What is left of one pass's resume allowance. A slot is spent when a run is CLAIMED, not when its resume
+    /// returns: the slot pays for a lease, a clone, and the review's remaining stages, all of which a resume
+    /// that throws has already spent. Counting only the ones that came back turned the cap into a bound on
+    /// successes, which leaves a backlog of runs that all fail unbounded — and that is the backlog this
+    /// reconciler sees, since a run reaches its listing by having gone wrong once already.
+    /// <see cref="SettleAsync"/> is async and so cannot hand a count back through a <c>ref</c> parameter, which
+    /// is the only reason this is an object rather than a local.
+    /// </summary>
+    private sealed class ResumeBudget(int max)
+    {
+        public int Spent { get; private set; }
+
+        public bool IsSpent => Spent >= max;
+
+        public void Charge() => Spent++;
     }
 
     /// <summary>What one run's pass through <see cref="SettleAsync"/> did with it.</summary>
@@ -180,7 +194,8 @@ internal sealed class StrandedRunReconciler
         /// <summary>Marked terminal — superseded, or its PR is no longer open. Costs nothing.</summary>
         Retired,
 
-        /// <summary>Handed back to the orchestrator. Consumes one of the pass's resume slots.</summary>
+        /// <summary>Handed back to the orchestrator. Spent one of the pass's resume slots — whether or not the
+        /// resume itself succeeded, since the slot pays for the attempt.</summary>
         Resumed,
 
         /// <summary>Left for a later pass because the resume cap was already spent. The only outcome that
@@ -190,7 +205,7 @@ internal sealed class StrandedRunReconciler
 
     /// <summary>Settles one run — see <see cref="SettleOutcome"/> for what the return value means.</summary>
     private async Task<SettleOutcome> SettleAsync(
-        StrandedRunRow row, int resumedSoFar, CancellationToken cancellationToken)
+        StrandedRunRow row, ResumeBudget budget, CancellationToken cancellationToken)
     {
         var run = row.Run;
 
@@ -242,7 +257,7 @@ internal sealed class StrandedRunReconciler
             return SettleOutcome.Retired;
         }
 
-        if (resumedSoFar >= _maxResumesPerPass)
+        if (budget.IsSpent)
         {
             _logger.LogInformation(
                 "Stranded-run reconciler deferred run {RunId} ({Provider} PR {PrId}, stage {Stage}): "
@@ -266,6 +281,7 @@ internal sealed class StrandedRunReconciler
         // visible the moment it is taken rather than whenever the review happens to finish, which can be many
         // minutes later.
         _updateRunState(run.Id, run.Stage, run.WorkflowStatus, state);
+        budget.Charge();
 
         _logger.LogInformation(
             "Stranded-run reconciler resuming run {RunId} ({Provider} PR {PrId}) from stage {Stage}.",
