@@ -374,9 +374,17 @@ internal sealed class ReviewStore : IDisposable
     /// orders lexicographically the same way it orders chronologically.
     /// </para>
     /// <para>
-    /// <see cref="StrandedRunRow.Superseded"/> reports whether a later run exists for the same (repo, PR).
-    /// That distinction is the caller's safety rail: resuming a superseded run would review — and on a
-    /// posting daemon, publish — a diff that a newer run has already replaced.
+    /// <see cref="StrandedRunRow.Superseded"/> reports whether a later run has already re-reviewed what this
+    /// one owes: same PR, same <c>review_kind</c> and <c>variant_id</c>, at a DIFFERENT <c>head_sha</c>. That
+    /// distinction is the caller's safety rail — resuming a superseded run would review, and on a posting
+    /// daemon publish, a diff that a newer head has already replaced. Each half of the predicate is load
+    /// bearing in the other direction too, because the caller's response to the flag is to retire the run
+    /// permanently, and this listing is the run's only remaining route back. Merely "a later run for the same
+    /// PR" also matches a sibling review that never produced this run's output at all — a second variant, or
+    /// another kind — and matches a duplicate row at the same head, where nothing went stale. Either one would
+    /// silently drop a review that was still owed. <c>mode</c> is deliberately absent: it is an authorization
+    /// decision made at post time, not part of what the review IS (see <see cref="CreateOrGetReviewRun"/>), so
+    /// a newer head reviewed after posting was toggled still supersedes.
     /// </para>
     /// </summary>
     /// <remarks>
@@ -394,7 +402,9 @@ internal sealed class ReviewStore : IDisposable
         command.CommandText = """
             SELECT rr.*, r.provider, r.org_or_owner, r.project, r.repo_name, r.repo_stable_id,
                    EXISTS (SELECT 1 FROM review_run n
-                            WHERE n.repo_id = rr.repo_id AND n.pr_id = rr.pr_id AND n.id > rr.id) AS superseded
+                            WHERE n.repo_id = rr.repo_id AND n.pr_id = rr.pr_id AND n.id > rr.id
+                              AND n.review_kind = rr.review_kind AND n.variant_id = rr.variant_id
+                              AND n.head_sha <> rr.head_sha) AS superseded
             FROM review_run rr
             JOIN repo r ON r.id = rr.repo_id
             WHERE rr.workflow_status <> $completed AND rr.updated_at < $staleBefore

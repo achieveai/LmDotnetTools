@@ -21,9 +21,11 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// </para>
 /// <list type="bullet">
 ///   <item><description>
-///     <b>Superseded</b> (a later run exists for the same repo and PR) — retired without contacting anything.
-///     The newer run reviewed a newer head; resuming this one would re-review a diff that no longer stands,
-///     and on a posting daemon publish it.
+///     <b>Superseded</b> (a later run has already re-reviewed this one's work at a newer head) — retired
+///     without contacting anything. The newer run reviewed a newer head; resuming this one would re-review a
+///     diff that no longer stands, and on a posting daemon publish it. The store decides this narrowly, on
+///     the review's identity rather than on the PR alone, because retirement is permanent and this pass is
+///     the run's only route back.
 ///   </description></item>
 ///   <item><description>
 ///     <b>PR no longer open</b> — retired, which is exactly what <see cref="PrOrchestrator"/> does for a run

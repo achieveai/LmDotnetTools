@@ -246,6 +246,77 @@ public sealed class StrandedRunReconcilerTests
             "supersession is per PR — another PR's runs say nothing about this one");
     }
 
+    [Theory]
+    [InlineData("security", "full")] // another variant reviews with its own prompt and its own output
+    [InlineData("primary", "incremental")] // another kind reviews a different span of the PR
+    public void The_store_does_not_let_a_different_reviews_later_run_supersede(string variantId, string kind)
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+
+        var stranded = store.CreateOrGetReviewRun(SampleRun(repoId, "101") with { HeadSha = "head-1" });
+        var unrelated = store.CreateOrGetReviewRun(
+            SampleRun(repoId, "101") with { HeadSha = "head-2", VariantId = variantId, ReviewKind = kind });
+        foreach (var id in new[] { stranded.Id, unrelated.Id })
+        {
+            Backdate(db, id, Now - TimeSpan.FromDays(9));
+        }
+
+        store.ListStrandedRuns(Now - Grace, limit: 50).Single(s => s.Run.Id == stranded.Id)
+            .Superseded.Should().BeFalse(
+                "run {0} never produced the review this run owes; retiring on it would drop that review "
+                    + "silently and forever, because this listing is the run's only remaining route back",
+                unrelated.Id);
+    }
+
+    [Fact]
+    public void The_store_does_not_let_a_duplicate_row_at_the_same_head_supersede()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+
+        // The identity lookup is watermark-agnostic, so a duplicate at the same head is not reachable through
+        // CreateOrGetReviewRun — it is the shape left behind by an earlier build that keyed identity on the
+        // watermark, which FindReviewRunByIdentity still tolerates. The stranded listing meets those rows too.
+        var stranded = store.CreateOrGetReviewRun(SampleRun(repoId, "101") with { HeadSha = "head-1" });
+        var duplicateId = CloneRunAtSameHead(db, stranded.Id, watermark: "wm-2");
+        foreach (var id in new[] { stranded.Id, duplicateId })
+        {
+            Backdate(db, id, Now - TimeSpan.FromDays(9));
+        }
+
+        store.ListStrandedRuns(Now - Grace, limit: 50).Single(s => s.Run.Id == stranded.Id)
+            .Superseded.Should().BeFalse(
+                "retirement is justified by a newer head making this diff stale, and run {0} sits at the same "
+                    + "head — a higher row id on its own is not evidence that anything went stale",
+                duplicateId);
+    }
+
+    [Fact]
+    public void The_store_still_supersedes_across_a_mode_change()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+
+        var stranded = store.CreateOrGetReviewRun(SampleRun(repoId, "101") with { HeadSha = "head-1" });
+        var newer = store.CreateOrGetReviewRun(
+            SampleRun(repoId, "101") with { HeadSha = "head-2", Mode = "post" });
+        foreach (var id in new[] { stranded.Id, newer.Id })
+        {
+            Backdate(db, id, Now - TimeSpan.FromDays(9));
+        }
+
+        store.ListStrandedRuns(Now - Grace, limit: 50).Single(s => s.Run.Id == stranded.Id)
+            .Superseded.Should().BeTrue(
+                "mode is an authorization decision made at post time, not part of what the review is (see "
+                    + "CreateOrGetReviewRun) — toggling posting between the two runs does not make run {0}'s "
+                    + "newer head any less of a replacement for this one's diff",
+                newer.Id);
+    }
+
     [Fact]
     public void The_store_caps_one_read_and_leaves_the_rest_for_the_next_pass()
     {
@@ -281,6 +352,33 @@ public sealed class StrandedRunReconcilerTests
         _ = command.Parameters.AddWithValue("$at", updatedAt.ToUniversalTime().ToString("O"));
         _ = command.Parameters.AddWithValue("$id", runId);
         _ = command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Copies a run onto a second row at the same head, differing only by <c>trigger_watermark</c> — the
+    /// duplicate an earlier build's identity key could produce, and the table's UNIQUE constraint still
+    /// permits. Written directly because the store's own lookup is watermark-agnostic and would hand back
+    /// the original. Returns the new row's id.
+    /// </summary>
+    private static long CloneRunAtSameHead(TempSqliteDatabase db, long runId, string watermark)
+    {
+        using var connection = new SqliteConnection(db.ConnectionString);
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO review_run (
+                repo_id, pr_id, head_sha, base_sha, trigger_watermark, review_kind, variant_id, mode,
+                stage, workflow_status, pr_lifecycle_state, is_fork_pr, is_target_repo_public,
+                created_at, updated_at)
+            SELECT repo_id, pr_id, head_sha, base_sha, $watermark, review_kind, variant_id, mode,
+                   stage, workflow_status, pr_lifecycle_state, is_fork_pr, is_target_repo_public,
+                   created_at, updated_at
+            FROM review_run WHERE id = $id
+            RETURNING id;
+            """;
+        _ = command.Parameters.AddWithValue("$watermark", watermark);
+        _ = command.Parameters.AddWithValue("$id", runId);
+        return Convert.ToInt64(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private static RepoIdentity SampleRepo() => new()
