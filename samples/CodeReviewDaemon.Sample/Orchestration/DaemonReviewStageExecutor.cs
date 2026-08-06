@@ -2862,7 +2862,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var barrier = new ReviewSubAgentCompletionBarrier(
             source,
             TimeSpan.FromSeconds(_options.ReviewSubAgentBarrierQuietSeconds),
-            _loggerFactory.CreateLogger<ReviewSubAgentCompletionBarrier>());
+            _loggerFactory.CreateLogger<ReviewSubAgentCompletionBarrier>(),
+            unknownQuiescence: TimeSpan.FromSeconds(_options.ReviewSubAgentUnknownQuiescenceSeconds));
         var settled = await barrier
             .WaitAsync(
                 run, parentThreadId, deadlineUtc,

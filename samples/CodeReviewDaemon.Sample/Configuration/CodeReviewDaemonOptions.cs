@@ -468,6 +468,21 @@ internal sealed class CodeReviewDaemonOptions
     /// </summary>
     public int ReviewSubAgentBarrierQuietSeconds { get; init; } = 2;
 
+    /// <summary>
+    /// How long, in seconds, a sub-agent node whose status could not be resolved at all ("unknown") must
+    /// have shown no activity before <c>ReviewSubAgentCompletionBarrier</c> stops waiting on it. Default 300.
+    /// Set to 0 to disable the allowance and require a terminal status from every node.
+    /// </summary>
+    /// <remarks>
+    /// An unresolved node reports no terminal transition and no running flag, so a terminal-only barrier
+    /// waits on it until the whole <see cref="ReviewStageDeadlineMinutes"/> budget is gone and then discards
+    /// a review that had actually finished — and the retry reproduces the same node, so it never converges.
+    /// The default is deliberately much longer than any gap between a working agent's tool calls, so the
+    /// only thing it can admit is a node that has genuinely stopped. Raise it if a legitimately slow child
+    /// is ever admitted early; lower it only with the same evidence in hand.
+    /// </remarks>
+    public int ReviewSubAgentUnknownQuiescenceSeconds { get; init; } = 300;
+
     /// <summary>The resolved cross-repo store URL: <see cref="CrossRepoStoreUrl"/> when set, else
     /// <see cref="ReviewBotRepoUrl"/> (the review store and the ReviewBot retention repo are one repo).</summary>
     public string? ResolvedStoreUrl =>
