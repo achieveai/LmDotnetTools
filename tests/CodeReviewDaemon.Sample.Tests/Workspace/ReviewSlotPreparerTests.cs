@@ -240,6 +240,38 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         File.SetAttributes(victim, FileAttributes.Normal); // so Dispose's best-effort wipe can reach it
     }
 
+    [RequiresFileSymlinkFact("a junction always reads as a directory, so it cannot stand in for this case")]
+    public async Task RecloneStoreAsync_HostPreparer_RefusesAStoreRootThatIsAFileSymlink()
+    {
+        // Pins the ORDER of the wipe's two opening checks, not just their presence. Every redirected DIRECTORY
+        // still reads Directory.Exists as true — a junction and a directory symlink both do, target present or
+        // not — so moving the containment check below the existence check keeps catching all of those and looks
+        // like a free simplification. A file symlink standing where the store should be is the one redirected
+        // root that reads as absent: a guard below the existence check never runs on it, the wipe returns as
+        // though there were nothing there, and the re-clone lands on a name that resolves somewhere else.
+        var slotPath = Path.Combine(_hostRoot, "slot-0");
+        _ = Directory.CreateDirectory(slotPath);
+        var outside = Path.Combine(_hostRoot, "outside");
+        _ = Directory.CreateDirectory(outside);
+        var victim = Path.Combine(outside, "someone-elses.txt");
+        await File.WriteAllTextAsync(victim, "notes");
+        var storeRoot = Path.Combine(slotPath, "store");
+        FileLink.Create(storeRoot, victim);
+        var runner = new FakeSandboxCommandRunner();
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), new HostFileSystem(), "github", NullLoggerFactory.Instance);
+
+        var act = async () => await preparer.RecloneStoreAsync(storeRoot, StoreUrl, CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<InvalidOperationException>();
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
+            command => command.Contains(" clone ", StringComparison.Ordinal),
+            "a root that reads as absent is still a root that redirects, and cloning onto it writes outside");
+        (await File.ReadAllTextAsync(victim)).Should().Be("notes", "nothing may reach through the link");
+        HostPathGuard.IsRedirected(storeRoot).Should().BeTrue(
+            "refusing means refusing both ways: the link is not followed and it is not removed either");
+    }
+
     [Fact]
     public async Task EnsureStoreAsync_HostPreparer_ClonesWithNoWorkingDirectory()
     {

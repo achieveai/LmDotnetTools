@@ -363,6 +363,16 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
     /// from inside the catch that would have retried it. Nothing loops and no slot is wedged.
     /// </para>
     /// <para>
+    /// The containment check sits ABOVE the existence check below it, and the order is load-bearing. Every
+    /// redirected DIRECTORY still reports <see cref="Directory.Exists(string)"/> as true — a junction and a
+    /// directory symlink both do, whether or not their target is still there — so checking containment second
+    /// would keep catching all of those and read as a free simplification. The root it would miss is one that
+    /// is not a directory at all: a FILE symlink standing where the store or the scratch path should be reads
+    /// as ABSENT, so a guard below the existence check never runs on it, and the wipe returns as though there
+    /// were nothing there — leaving <see cref="RecloneStoreAsync"/> to clone onto a name that resolves outside
+    /// the workspace.
+    /// </para>
+    /// <para>
     /// Two residuals are accepted rather than chased. Ancestors ABOVE <paramref name="root"/> are not checked:
     /// they are the operator's own configured workspace path, and refusing there would refuse every deployment
     /// that deliberately puts the pool behind a junction. And an entry can be swapped between the check and the

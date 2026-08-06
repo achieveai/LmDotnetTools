@@ -26,9 +26,14 @@ internal static class HostPathGuard
     /// This check does not see a HARD link, and that is an accepted residual rather than a proof of safety. On
     /// NTFS a hard link is a second NAME for one file record: deleting one name does leave the other whole, but
     /// clearing the read-only bit through one clears it on the record, so a hard link planted under a store
-    /// strips protection from the file outside it. Detecting one costs a link-count query per entry on every
-    /// walk, to stop someone who already has write access inside the pooled store from un-protecting a file
-    /// they can already read — so it is written down rather than paid for.
+    /// strips protection from the file outside it. The planter to picture is not a generic insider — it is the
+    /// review agent, which writes into this store and takes its instructions from the reviewed repo's own
+    /// CLAUDE.md and AGENTS.md as read at the PR head, so what it does is attacker-influenced by construction.
+    /// Containing that is why these walks check anything at all. What the strip costs is a write brake, not a
+    /// read boundary: read-only is an attribute, not an ACL, so clearing it grants nobody access they lacked and
+    /// instead removes the last thing standing between the daemon account and a file it can already open for
+    /// writing. Detecting one costs a link-count query per entry on every walk, so it is written down here
+    /// rather than paid for.
     /// </para>
     /// </summary>
     public static bool IsRedirected(string path)
