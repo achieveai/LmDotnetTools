@@ -1,6 +1,10 @@
+using System.Globalization;
+using System.Net;
+using System.Text;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Persistence.Models;
+using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Time.Testing;
 using Xunit.Abstractions;
@@ -787,6 +791,81 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
 
         clock.Advance(TimeSpan.FromMinutes(30));
         await FluentActions.Awaiting(() => task).Should().ThrowAsync<ReviewBarrierDeadlineException>();
+    }
+
+    /// <summary>
+    /// The instant the wire fixtures below are built around. Fixed rather than <c>UtcNow</c> so the
+    /// timestamp the test asserts is the same one it serialised, tick for tick, through the JSON round trip.
+    /// </summary>
+    private static readonly DateTimeOffset WireStart = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+    private static HttpClient NewS2SHttp(FakeHttpMessageHandler handler) =>
+        new(handler) { BaseAddress = new Uri("http://localhost:5051/") };
+
+    /// <summary>Wraps the real client and adapter around <paramref name="handler"/>, so the barrier polls
+    /// through exactly the code path a live daemon uses.</summary>
+    private static IReviewSubAgentCompletionSource S2SSourceOver(FakeHttpMessageHandler handler) =>
+        new S2SReviewSubAgentCompletionSource(
+            new LmStreamingS2SClient(NewS2SHttp(handler), "s", "id", "key"));
+
+    private static string GhostNodeBody(DateTimeOffset lastActivity) =>
+        "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"agent-ghost\",\"threadId\":\"thread-ghost\","
+            + "\"parentThreadId\":\"root\",\"depth\":1,\"template\":\"reviewer\",\"status\":\"who-knows\","
+            + $"\"lastActivityUtc\":\"{lastActivity.ToString("O", CultureInfo.InvariantCulture)}\"}}]}}";
+
+    [Fact]
+    public async Task WaitAsync_OverTheRealS2SWire_OpensOnAnUnknownNodeWhoseOnlyEvidenceIsTheParsedTimestamp()
+    {
+        // Every other quiescence test here builds its roster with the Node() helper, so the barrier has
+        // never been shown one that came off the wire. That left the single field the whole allowance rests
+        // on — lastActivityUtc, mapped in LmStreamingS2SClient.ParseNode — asserted by nobody in between:
+        // delete that assignment and all of them stay green while the barrier silently sees null, refuses
+        // to settle any unresolved node, and burns the full deadline on every review that has one. This
+        // drives the real handler -> real client -> real adapter -> real barrier.
+        var clock = new ObservableFakeClock(WireStart);
+        var stale = WireStart - TimeSpan.FromHours(12);
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "api/conversations/root/subagents?recursive=true", GhostNodeBody(stale));
+        var barrier = CreateBarrier(
+            S2SSourceOver(handler), clock, Quiescence, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+        var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
+
+        var task = barrier.WaitAsync(TestRun(), "root", deadline, NoopValidator, CancellationToken.None);
+        var result = await PumpUntilSettledAsync(task, clock, TimeSpan.FromSeconds(5));
+
+        var node = result.Nodes.Should().ContainSingle().Subject;
+        node.Status.Should().Be(
+            ReviewSubAgentStatus.Unknown, "an unrecognised wire status must never read as terminal");
+        node.LastActivityUtc.Should().Be(stale, "the parsed instant is the whole of what settled this node");
+    }
+
+    [Fact]
+    public async Task WaitAsync_OverTheRealS2SWire_StaysClosedWhileTheHostKeepsAdvancingTheTimestamp()
+    {
+        // The bound on the test above, and what makes its pass mean something: the barrier does not open
+        // over an unknown node merely because one arrived off the wire. Same body, same status, same code
+        // path — only the instant differs, and the host re-stamps it to "now" on every poll, so the node is
+        // never quiesced and the barrier burns its deadline instead.
+        var clock = new ObservableFakeClock(WireStart);
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                req => req.RequestUri!.ToString().Contains("subagents?recursive=true", StringComparison.Ordinal),
+                _ => new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        GhostNodeBody(clock.GetUtcNow()), Encoding.UTF8, "application/json"),
+                });
+        var barrier = CreateBarrier(
+            S2SSourceOver(handler), clock, Quiescence, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+        var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
+
+        var task = barrier.WaitAsync(TestRun(), "root", deadline, NoopValidator, CancellationToken.None);
+
+        await PumpAndStayClosedAsync(task, clock, TimeSpan.FromMinutes(1), steps: 10);
+
+        clock.Advance(TimeSpan.FromMinutes(30));
+        await FluentActions.Awaiting(() => task).Should().ThrowAsync<ReviewBarrierDeadlineException>();
+        handler.CountRequests("subagents").Should().BeGreaterThan(1, "the barrier really did keep polling");
     }
 
     /// <summary>Test double that rebuilds its snapshot on every call, so a node's reported state can track

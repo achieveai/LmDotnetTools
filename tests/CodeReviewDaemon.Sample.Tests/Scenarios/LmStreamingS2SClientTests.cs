@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
 using CodeReviewDaemon.Sample.Agents;
@@ -375,7 +376,12 @@ public sealed class LmStreamingS2SClientTests
         node.ParentThreadId.Should().Be("thread-root");
         node.Depth.Should().Be(1);
         node.Status.Should().Be(ReviewSubAgentStatus.Completed);
-        node.TerminalAtUtc.Should().NotBeNull();
+        node.TerminalAtUtc.Should().Be(DateTimeOffset.Parse("2026-01-01T00:05:00Z", CultureInfo.InvariantCulture));
+        // The VALUE, not just its presence. This one drives the barrier's unknown-node quiescence escape
+        // hatch, which is the only thing that can open a barrier over a node the host could not resolve --
+        // so a mapping that silently produced null here would hold every such review open for its full
+        // deadline and nothing in the barrier's own tests, which build nodes directly, would notice.
+        node.LastActivityUtc.Should().Be(DateTimeOffset.Parse("2026-01-01T00:00:00Z", CultureInfo.InvariantCulture));
         node.FailureCode.Should().BeNull();
 
         var recorded = handler.Requests.Should().ContainSingle().Subject;
