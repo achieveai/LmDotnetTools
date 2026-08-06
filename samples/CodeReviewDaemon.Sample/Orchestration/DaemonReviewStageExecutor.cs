@@ -3083,7 +3083,11 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // before provisioning there, so the daemon owns no session to destroy — the container belongs to the
         // review host and must OUTLIVE the run, because the posted comment's ?threadId= deep-link is the whole
         // point of that path. DestroyAsync is a documented no-op with no session, so this guard states the
-        // invariant at the call site rather than leaving it to be inferred two files away.
+        // invariant at the call site rather than leaving it to be inferred two files away. Note what the
+        // exclusion costs: quiescence below is a property this teardown ESTABLISHES, not one the lease implies,
+        // so on S2S it is simply absent — the slot is still mounted into a live container when StripAsync runs,
+        // and the only thing left holding the window shut is the sub-agent completion barrier, which can open
+        // over a node whose completion was inferred from inactivity rather than observed.
         if (_options.EnableToolAssistedReview && _provisioner is not null && !_options.UseS2SReviewAgent)
         {
             await _provisioner.DestroyAsync(run, cancellationToken).ConfigureAwait(false);
@@ -3091,8 +3095,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
         // Retention (design §4.4, the commit gate) — only when there is content to retain. A run that leased a
         // pooled slot commits its notes onto the slot's store checkout scoped to ONLY the PR notes dir, then
-        // returns the slot; every other run uses the host ReviewBot retention checkout. The session is torn down
-        // just ABOVE, so an empty review still frees its resources.
+        // returns the slot; every other run uses the host ReviewBot retention checkout. On every path that owns a
+        // session it is torn down just ABOVE, so an empty review still frees its resources; on S2S there is no
+        // daemon-owned session to free, by design.
         //
         // The lease is read with TryGetValue and only REMOVED once retention has actually completed (or had
         // nothing to do). Removing it up front made any retention failure permanent for the run: the retry came

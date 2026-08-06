@@ -17,10 +17,18 @@ internal enum HygieneVerdict
 /// <summary>
 /// Brings a leased pooled slot's store to a pristine state at the START of every prepare (clean-on-entry,
 /// the durability guarantee) and strips it back to pristine on a successful close (best-effort tidiness).
-/// Safe because the pool leases a slot to at most one run at a time, so a leased slot has no concurrent git
-/// process — any <c>*.lock</c> in it is stale by definition and safe to remove. Lock/abort steps are host
-/// filesystem operations (the pooled store lives on the daemon host); reset/clean run through the host
-/// <see cref="GitRunner"/>. See the design doc §3–§4.
+/// <para>
+/// Both ends delete any <c>*.lock</c> they find, but only ONE of them can call it stale by definition. The
+/// pool leases a slot to at most one run at a time, and at <see cref="EnsureCleanAsync"/> the incoming run has
+/// not yet adopted the slot, so nothing anywhere holds it and a lock left in it can only be debris from a run
+/// that died. That is the durability guarantee, and it is the reason clean-on-entry is the gate that
+/// condemns a store rather than the close. Exclusivity says nothing about <see cref="StripAsync"/>: it holds
+/// between RUNS, and the run being closed is the one that can still have a git process in the store. What
+/// makes that safe is the caller quiescing the slot first, which is the caller's to provide and is not
+/// implied by the lease — see <see cref="StripAsync"/>.
+/// </para>
+/// Lock/abort steps are host filesystem operations (the pooled store lives on the daemon host); reset/clean
+/// run through the host <see cref="GitRunner"/>. See the design doc §3–§4.
 /// </summary>
 internal static class SlotHygiene
 {
@@ -459,6 +467,19 @@ internal static class SlotHygiene
     /// (best-effort — if it is skipped by a crash, the next lease's <see cref="EnsureCleanAsync"/> covers it).
     /// Does nothing at all to a store whose stale-state sweep refuses to cross an entry: that store is headed for
     /// a re-clone on its next lease, and pristine is not a state anything here can leave it in.
+    /// <para>
+    /// This writes to a store its own run may still be holding, so the quiescence it needs is the CALLER'S to
+    /// provide. The lease does not provide it — that is exclusivity between runs, and the run in question is
+    /// the one closing. The in-process path provides it by destroying the sandbox session just before the
+    /// call, which terminates the review's child processes and unmounts. The S2S path deliberately does not:
+    /// the container belongs to the review host and is kept alive so the posted comment's deep link stays
+    /// usable, so nothing there kills a straggler and the slot is still mounted into a live container when
+    /// this runs. All that stands between this and a concurrent git process on that path is the sub-agent
+    /// completion barrier, which may open over a node whose completion was inferred from inactivity rather
+    /// than observed. So on S2S a <c>*.lock</c> removed here is not necessarily stale, and the removal can
+    /// race a writer instead of clearing debris — the known mechanism behind a lock reappearing at the Posted
+    /// stage. Nothing below repairs that; the next lease's <see cref="EnsureCleanAsync"/> is what does.
+    /// </para>
     /// </summary>
     public static async Task StripAsync(GitRunner git, string storePath, CancellationToken ct)
     {
