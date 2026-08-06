@@ -261,23 +261,120 @@ public sealed class SlotHygieneTests : IDisposable
     }
 
     [Fact]
-    public async Task EnsureClean_reports_NeedsReclone_when_foreach_fails_and_submodule_content_is_dirty()
+    public async Task EnsureClean_tolerates_dirty_submodule_content_that_no_reclone_can_repair()
     {
-        // When the submodule content cleanup (foreach) FAILS, hygiene must NOT hide submodule state: it falls back
-        // to a FULL status (no --ignore-submodules) so leftover DIRTY submodule content the foreach couldn't clean
-        // is caught (→ reclone) rather than masked and allowed to cross into the next lease.
+        // The mcqdb wedge. A path at or beyond Windows' 260-char MAX_PATH inside a submodule's own submodule
+        // cannot be re-created by `reset --hard` ("Filename too long"), so `submodule foreach` fatals and the
+        // submodule stays dirty — and a fresh clone cannot check that path out either. Gating the verdict on
+        // submodule state therefore condemned the slot on EVERY lease, forever, for a defect re-cloning is
+        // structurally incapable of fixing. The superproject is what a clone repairs, so it alone decides:
+        // hygiene must read status with --ignore-submodules=all and never fall back to a full status.
         var store = SeedStore();
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             "submodule foreach --recursive",
-            new SandboxCommandResult(1, string.Empty, "warning: could not reset submodule (read-only file)"));
+            new SandboxCommandResult(
+                1,
+                string.Empty,
+                "fatal: cannot create directory at 'Samples/2.0/ServiceFabricMesh/VotingApp/VotingWeb/wwwroot/lib'"
+                    + ": Filename too long\nfatal: run_command returned non-zero status for repos/MCQdbDEV"));
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        verdict.Should().Be(HygieneVerdict.Clean);
+        runner.Commands.Select(c => string.Join(' ', c.Argv))
+            .Where(a => a.Contains("status --porcelain"))
+            .Should()
+            .OnlyContain(
+                a => a.Contains("--ignore-submodules=all"),
+                "submodule state must never gate the verdict — a re-clone reproduces it byte for byte");
+    }
+
+    [Fact]
+    public async Task EnsureClean_reports_NeedsReclone_when_submodule_cleanup_fails_with_corruption()
+    {
+        // The one submodule-cleanup failure a fresh clone DOES repair: a lock that outlived both sweeps (or a
+        // broken object). Unlike unrepairable content, this must still condemn the slot.
+        var store = SeedStore();
+        var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
-            "status --porcelain",
-            new SandboxCommandResult(0, " M repos/X/leftover.cs\n", string.Empty));
+            "submodule foreach --recursive",
+            new SandboxCommandResult(
+                1,
+                string.Empty,
+                "fatal: Unable to create '/store/.git/modules/repos/X/index.lock': File exists."));
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
         verdict.Should().Be(HygieneVerdict.NeedsReclone);
+    }
+
+    [Fact]
+    public async Task EnsureClean_force_resets_once_before_condemning_a_dirty_store()
+    {
+        // Re-cloning a persistent store costs minutes, so a store that is still dirty after one pass gets a
+        // second sweep-and-reset before being condemned. Here the second pass settles it, so the slot survives.
+        var store = SeedStore();
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContainsSequence(
+            "status --porcelain",
+            new SandboxCommandResult(0, " M src/Foo.cs\n", string.Empty),
+            new SandboxCommandResult(0, string.Empty, string.Empty));
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        verdict.Should().Be(HygieneVerdict.Clean);
+        CountStoreResets(runner)
+            .Should()
+            .Be(2, "the still-dirty first pass must be followed by exactly one force reset");
+    }
+
+    [Fact]
+    public async Task EnsureClean_does_not_force_reset_a_deterministic_non_corrupt_failure()
+    {
+        // A missing local object / deinit'd submodule fails the same way every time, so a second pass only burns
+        // minutes on every lease and never changes the answer. Retry is reserved for what a re-sweep can clear.
+        var store = SeedStore();
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            "submodule update --recursive",
+            new SandboxCommandResult(
+                1, string.Empty, "fatal: Unable to checkout 'deadbeef' in submodule path 'repos/X'"));
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        verdict.Should().Be(HygieneVerdict.Clean);
+        CountStoreResets(runner)
+            .Should()
+            .Be(1, "a deterministic non-corrupt failure must not trigger a second pass");
+    }
+
+    /// <summary>
+    /// Counts force resets of the STORE itself. Matching the joined argv on "reset --hard" would double-count,
+    /// because the submodule cleanup passes <c>git reset --hard &amp;&amp; git clean -ffdx</c> as a single argv
+    /// element to <c>submodule foreach</c> — so the number of passes would read as twice its real value and the
+    /// assertion would pass for the wrong reason. Match the trailing argv pair instead, which only the store-level
+    /// reset has.
+    /// </summary>
+    private static int CountStoreResets(FakeSandboxCommandRunner runner) =>
+        runner.Commands.Count(c =>
+            c.Argv.Count >= 2 && c.Argv[^2] == "reset" && c.Argv[^1] == "--hard");
+
+    [Fact]
+    public async Task EnsureClean_settles_a_store_holding_a_path_beyond_MAX_PATH()
+    {
+        // REAL-GIT regression for the mcqdb wedge at its source. Git for Windows refuses to create a path at or
+        // beyond MAX_PATH unless core.longpaths is set: `reset --hard` fails "Filename too long", the file stays
+        // missing, the tree stays dirty, and hygiene condemns the store on every lease — while the re-clone it
+        // asks for cannot check that path out either. GitRunner now sets core.longpaths on every invocation, so
+        // the reset succeeds and the store settles. An argv assertion cannot catch this; only real git can.
+        var runner = NewHostGitRunner();
+        var store = await SetupStoreWithLongPathAsync(runner);
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(
+            new GitRunner(runner), store, CancellationToken.None, NullLogger.Instance, new HostFileSystem());
+
+        verdict.Should().Be(HygieneVerdict.Clean, "a long path must be checked out, not treated as contamination");
     }
 
     [Fact]
@@ -408,6 +505,40 @@ public sealed class SlotHygieneTests : IDisposable
 
             File.Delete(path);
         }
+    }
+
+    /// <summary>
+    /// Real-git setup for the MAX_PATH regression: a store whose HEAD commit contains a file at a path past
+    /// Windows' 260-character limit, with that file absent from the working tree (exactly the state the mcqdb
+    /// slot was stuck in). The entry is written straight into the index with <c>update-index --cacheinfo</c>, so
+    /// the setup itself never has to create the long path — only the <c>reset --hard</c> under test does.
+    /// </summary>
+    private async Task<string> SetupStoreWithLongPathAsync(HostGitCommandRunner runner)
+    {
+        var store = Path.Combine(_root, "store");
+        Directory.CreateDirectory(store);
+
+        async Task<SandboxCommandResult> Git(params string[] args)
+        {
+            var r = await runner.RunAsync(new SandboxCommand(["git", .. args], store), default);
+            r.Succeeded.Should().BeTrue($"setup `git {string.Join(' ', args)}` failed: {r.Stderr}");
+            return r;
+        }
+
+        await Git("init", "-q", ".");
+        await File.WriteAllTextAsync(Path.Combine(store, "seed.txt"), "seed\n");
+        await Git("add", "seed.txt");
+        await Git("-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "-m", "seed");
+
+        var segment = new string('p', 40);
+        var longPath = string.Join('/', Enumerable.Repeat(segment, 5)) + "/beyond-max-path.txt";
+        (store.Length + 1 + longPath.Length).Should().BeGreaterThan(
+            260, "the regression only exists past MAX_PATH — a shorter temp root would silently pass");
+
+        var blob = (await Git("rev-parse", "HEAD:seed.txt")).Stdout.Trim();
+        await Git("update-index", "--add", "--cacheinfo", $"100644,{blob},{longPath}");
+        await Git("-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "-m", "long");
+        return store;
     }
 
     private string SeedStore()

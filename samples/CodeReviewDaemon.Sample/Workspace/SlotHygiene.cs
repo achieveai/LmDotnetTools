@@ -64,102 +64,31 @@ internal static class SlotHygiene
             .ConfigureAwait(false);
         if (!structuralProbe.Succeeded)
         {
+            logger?.LogWarning(
+                "Slot hygiene at {StorePath}: re-cloning — the store has no readable git dir ({Stderr}).",
+                storePath, structuralProbe.Stderr);
             return HygieneVerdict.NeedsReclone;
         }
 
-        // 1-2. Clear stale locks and abandoned operation markers THROUGH the injected runner. In production
-        // that runner is SandboxSessionAdapter over typed SandboxClient, so pre-review hygiene never reaches
-        // around the mounted session with host filesystem APIs. Explicit argv keeps every path a distinct token.
-        // On the HOST-backed pool the store is a plain host directory and the runner is a local process runner
-        // with no POSIX `find` (a Windows daemon host has none) — and this step ignores its result, so there the
-        // sweep would fail silently and leave the wedged store for the reset below to trip over. Use the host
-        // helpers for that case only.
-        if (fileSystem is HostFileSystem)
-        {
-            var gitDir = Path.Combine(storePath, ".git");
-            RemoveStaleLocks(gitDir);
-            AbortInProgress(gitDir);
-        }
-        else
-        {
-            await git.CommandRunner.RunAsync(
-                    new SandboxCommand(
-                        [
-                            "find",
-                            $"{storePath}/.git",
-                            "-type",
-                            "f",
-                            "(",
-                            "-name",
-                            "*.lock",
-                            "-o",
-                            "-name",
-                            "MERGE_HEAD",
-                            "-o",
-                            "-name",
-                            "CHERRY_PICK_HEAD",
-                            "-o",
-                            "-name",
-                            "REVERT_HEAD",
-                            ")",
-                            "-delete",
-                        ]),
-                    ct)
-                .ConfigureAwait(false);
-            await git.CommandRunner.RunAsync(
-                    new SandboxCommand(
-                        [
-                            "find",
-                            $"{storePath}/.git",
-                            "-type",
-                            "d",
-                            "(",
-                            "-name",
-                            "rebase-merge",
-                            "-o",
-                            "-name",
-                            "rebase-apply",
-                            ")",
-                            "-prune",
-                            "-exec",
-                            "rm",
-                            "-rf",
-                            "--",
-                            "{}",
-                            "+",
-                        ]),
-                    ct)
-                .ConfigureAwait(false);
-        }
+        // Force-reset ladder. One pass sweeps stale locks/markers and resets the store; if that leaves the
+        // SUPERPROJECT unsettled in a way a second attempt can plausibly change, sweep and reset again before
+        // condemning the slot. Re-cloning a persistent store costs minutes, so it is the last resort, not the
+        // first: a lock that survived one sweep, or a tree still dirty after one reset, is far more often
+        // clearable than it is a broken store.
+        var pass = await ForceResetAsync(git, storePath, ct, fileSystem).ConfigureAwait(false);
+        var status = await SuperprojectStatusAsync(git, storePath, ct).ConfigureAwait(false);
 
-        // 3. Reset + clean the superproject, then restore ALL submodule checkouts (top-level AND nested,
-        //    recursively) to the superproject's RECORDED gitlink. Restoring to the gitlink keeps a warm slot
-        //    reusable: a prior lease left the reviewed submodule — and, since the review path initializes
-        //    submodules recursively, its nested submodules — checked out at PR-head/agent commits, which the
-        //    superproject sees as moved pointers (`git status` reports dirty). The `submodule foreach` (step 5)
-        //    only resets each submodule to its OWN HEAD, not the recorded (nested) gitlink, so it does NOT fix
-        //    this. `--recursive --checkout --force` (NO --init) touches only already-initialized,
-        //    .gitmodules-registered submodules at every depth, so it skips a committed embedded gitlink with no
-        //    .gitmodules URL (the PR-11182 wedge) and never inits a new/denied submodule.
-        //    SECURITY: hygiene runs on the host runner with the daemon's broad provider credentials, BEFORE
-        //    ReviewSlotPreparer builds this run's policy-enforced SubmoduleInitializer, so it must NEVER touch a
-        //    remote — otherwise a prior lease that left a submodule registered-but-deinit'd (worktree +
-        //    `.git/modules/<name>` gitdir removed, URL retained) would make `submodule update` CLONE it through
-        //    those broad credentials, outside this review's allow-list. `--no-fetch` alone is NOT sufficient: it
-        //    only suppresses fetch into an existing submodule repo; a missing gitdir still drives
-        //    `submodule--helper clone` → `git clone` (reproduced on Git 2.53). The hard guard is
-        //    <see cref="DenyNetworkArgs"/> (explicit per-protocol <c>never</c> for every transport), which denies
-        //    all clone/fetch (propagated to the internal clone/fetch via GIT_CONFIG_PARAMETERS): a present object
-        //    is a pure LOCAL checkout, while any clone/fetch fails with no network contact — the step-4 gate then
-        //    classifies that failure (the policy-controlled initializer is the only thing that performs permitted
-        //    network fetches). `--no-fetch` is kept as belt-and-braces.
-        var reset = await git.RunAsync(["-C", storePath, "reset", "--hard"], storePath, ct).ConfigureAwait(false);
-        var clean = await git.RunAsync(["-C", storePath, "clean", "-ffdx"], storePath, ct).ConfigureAwait(false);
-        var restore = await git.RunAsync(
-                ["-C", storePath, .. DenyNetworkArgs,
-                    "submodule", "update", "--recursive", "--no-fetch", "--checkout", "--force"],
-                storePath, ct)
-            .ConfigureAwait(false);
+        if (ShouldForceResetAgain(pass, status))
+        {
+            logger?.LogWarning(
+                "Slot hygiene at {StorePath}: first pass left the store unsettled (reset: {ResetErr}; clean: "
+                    + "{CleanErr}; restore: {RestoreErr}; foreach: {ForeachErr}; status: {Status}); force-resetting "
+                    + "once more before condemning it.",
+                storePath, pass.Reset.Stderr, pass.Clean.Stderr, pass.Restore.Stderr, pass.Foreach.Stderr,
+                status.Stdout);
+            pass = await ForceResetAsync(git, storePath, ct, fileSystem).ConfigureAwait(false);
+            status = await SuperprojectStatusAsync(git, storePath, ct).ConfigureAwait(false);
+        }
 
         // 4. Cleanliness gate for the SUPERPROJECT + corruption. If the superproject reset/clean failed the store
         //    is structurally unusable — re-clone. A submodule RESTORE failure is classified: confirmed corruption
@@ -172,68 +101,231 @@ internal static class SlotHygiene
         //    healthy warm store (reclone) or loop forever on a deterministic missing-object (retry — which hygiene
         //    can't fetch and which never reaches the initializer). Submodule state is therefore left to the review;
         //    the status probe below ignores submodules for the same reason.
-        if (!reset.Succeeded || !clean.Succeeded)
+        if (!pass.Reset.Succeeded || !pass.Clean.Succeeded)
         {
+            logger?.LogWarning(
+                "Slot hygiene at {StorePath}: re-cloning — the superproject would not reset/clean even after a "
+                    + "force reset (reset: {ResetErr}; clean: {CleanErr}).",
+                storePath, pass.Reset.Stderr, pass.Clean.Stderr);
             return HygieneVerdict.NeedsReclone;
         }
 
-        if (!restore.Succeeded)
+        if (!pass.Restore.Succeeded)
         {
-            if (GitFailureClassifier.Classify(restore.Stderr) == GitFailureKind.Corrupt)
+            if (GitFailureClassifier.Classify(pass.Restore.Stderr) == GitFailureKind.Corrupt)
             {
                 logger?.LogWarning(
                     "Slot hygiene at {StorePath}: submodule restore failed with CORRUPTION; re-cloning: {Stderr}",
-                    storePath, restore.Stderr);
+                    storePath, pass.Restore.Stderr);
                 return HygieneVerdict.NeedsReclone;
             }
 
             logger?.LogInformation(
                 "Slot hygiene at {StorePath}: submodule restore did not complete locally ({Stderr}); proceeding — "
                     + "the review re-establishes submodules with permitted fetches.",
-                storePath, restore.Stderr);
+                storePath, pass.Restore.Stderr);
         }
-
-        // 5. Clean every submodule working tree, then structurally probe. Only reached once reset/clean/restore
-        //    succeeded, so these never run on an already-doomed store.
-        var submodules = await git.RunAsync(
-                ["-C", storePath, "submodule", "foreach", "--recursive", "git reset --hard && git clean -ffdx"],
-                storePath, ct)
-            .ConfigureAwait(false);
 
         var probe = await git.RunAsync(["-C", storePath, "rev-parse", "--git-dir"], storePath, ct)
             .ConfigureAwait(false);
         if (!probe.Succeeded)
         {
+            logger?.LogWarning(
+                "Slot hygiene at {StorePath}: re-cloning — the git dir became unreadable while cleaning ({Stderr}).",
+                storePath, probe.Stderr);
             return HygieneVerdict.NeedsReclone;
         }
 
-        // A `git submodule foreach` failure is deliberately NOT re-clone-gated: it fatals on a committed
-        // embedded gitlink with no .gitmodules URL (an agent-left nested repo — the PR-11182 wedge), and a
-        // re-clone reproduces that same committed tree, so gating on it loops forever without ever healing. The
-        // superproject reset/clean above and the status probe below already prove the working tree is clean
-        // (an uninitialized stray gitlink shows as clean), so log the best-effort cleanup failure and continue.
-        if (!submodules.Succeeded)
+        // A `git submodule foreach` failure re-clones ONLY when it classifies as corruption (e.g. a lock that
+        // survived two sweeps, a broken object) — that is the one kind a fresh clone actually repairs. Every other
+        // failure is left alone on purpose, because a re-clone reproduces the same committed tree and therefore
+        // loops forever without ever healing. Two such failures are known and neither is fixable by cloning:
+        // a committed embedded gitlink with no .gitmodules URL (the PR-11182 wedge), and a path at or beyond
+        // Windows' MAX_PATH inside a nested submodule — `reset --hard` cannot re-create the file ("Filename too
+        // long") and a clone cannot check it out either, so the slot was re-cloned on every lease forever.
+        // (GitRunner now passes core.longpaths=true, which fixes that class at the source; this gate is the
+        // durability guarantee for whatever unrepairable content comes next.)
+        if (!pass.Foreach.Succeeded)
         {
+            if (GitFailureClassifier.Classify(pass.Foreach.Stderr) == GitFailureKind.Corrupt)
+            {
+                logger?.LogWarning(
+                    "Slot hygiene at {StorePath}: `git submodule foreach` cleanup failed with CORRUPTION that "
+                        + "survived a force reset; re-cloning: {Stderr}",
+                    storePath, pass.Foreach.Stderr);
+                return HygieneVerdict.NeedsReclone;
+            }
+
             logger?.LogWarning(
                 "Slot hygiene at {StorePath}: `git submodule foreach` cleanup failed (continuing — a re-clone "
-                    + "cannot fix committed content; the status probe still gates cleanliness): {Stderr}",
-                storePath, submodules.Stderr);
+                    + "cannot fix committed content, and the review overwrites the reviewed submodule with an "
+                    + "explicit checkout of the PR head): {Stderr}",
+                storePath, pass.Foreach.Stderr);
         }
 
-        // Status probe. When the submodule content cleanup (step 5 foreach) SUCCEEDED, each submodule's working
-        // tree is clean, so ignore submodule state here (`--ignore-submodules=all`): the moved/stale POINTER is
-        // the review's to re-establish (step 4) and gating on it drives the warm-slot re-clone churn this path
-        // avoids. But if the foreach FAILED, do NOT hide submodule state — fall back to a full status so leftover
-        // dirty submodule content the foreach couldn't clean is CAUGHT (→ reclone) rather than masked. An
-        // uninitialized stray gitlink (the PR-11182 wedge) still shows clean under a full status, so this doesn't
-        // reintroduce the wedge reclone-loop. Only leftover SUPERPROJECT state (always checked) means contamination.
-        string[] statusArgs = submodules.Succeeded
-            ? ["-C", storePath, "status", "--porcelain", "--ignore-submodules=all"]
-            : ["-C", storePath, "status", "--porcelain"];
-        var status = await git.RunAsync(statusArgs, storePath, ct).ConfigureAwait(false);
-        return status.Succeeded && string.IsNullOrWhiteSpace(status.Stdout)
-            ? HygieneVerdict.Clean
-            : HygieneVerdict.NeedsReclone;
+        // Superproject status gate. Submodule state is deliberately ignored (`--ignore-submodules=all`): a moved
+        // or dirty submodule is the REVIEW's to re-establish (see step 4), and gating on it condemns warm slots
+        // whose only sin is holding the previous PR's head — or, worse, condemns them over content no clone can
+        // reproduce cleanly. Leftover SUPERPROJECT state is the contamination that would actually cross into the
+        // next review, and it is the only thing here a fresh clone is guaranteed to fix.
+        if (!status.Succeeded || !string.IsNullOrWhiteSpace(status.Stdout))
+        {
+            logger?.LogWarning(
+                "Slot hygiene at {StorePath}: re-cloning — the superproject is still dirty after a force reset "
+                    + "({Status}{Stderr}).",
+                storePath, status.Stdout, status.Stderr);
+            return HygieneVerdict.NeedsReclone;
+        }
+
+        return HygieneVerdict.Clean;
+    }
+
+    /// <summary>
+    /// Reads the SUPERPROJECT's working-tree status, ignoring submodule state (see the gate in
+    /// <see cref="EnsureCleanAsync"/> for why submodules are excluded).
+    /// </summary>
+    private static Task<SandboxCommandResult> SuperprojectStatusAsync(
+        GitRunner git, string storePath, CancellationToken ct) =>
+        git.RunAsync(["-C", storePath, "status", "--porcelain", "--ignore-submodules=all"], storePath, ct);
+
+    /// <summary>
+    /// Is a second force-reset pass worth its cost? Only when the failure is one a repeated sweep-and-reset can
+    /// plausibly clear: a superproject that would not reset/clean, a superproject still dirty afterwards, or a
+    /// submodule step that failed with CORRUPTION (typically a lock that outlived the first sweep). A
+    /// deterministic non-corrupt failure — a missing local object, a deinit'd submodule, a committed embedded
+    /// gitlink — is excluded on purpose: retrying it only burns a second pass on every lease and never changes
+    /// the outcome.
+    /// </summary>
+    private static bool ShouldForceResetAgain(ResetPass pass, SandboxCommandResult status) =>
+        !pass.Reset.Succeeded
+        || !pass.Clean.Succeeded
+        || !status.Succeeded
+        || !string.IsNullOrWhiteSpace(status.Stdout)
+        || (!pass.Restore.Succeeded
+            && GitFailureClassifier.Classify(pass.Restore.Stderr) == GitFailureKind.Corrupt)
+        || (!pass.Foreach.Succeeded
+            && GitFailureClassifier.Classify(pass.Foreach.Stderr) == GitFailureKind.Corrupt);
+
+    /// <summary>The git steps of one force-reset pass, kept together so the verdict can classify each one.</summary>
+    private readonly record struct ResetPass(
+        SandboxCommandResult Reset,
+        SandboxCommandResult Clean,
+        SandboxCommandResult Restore,
+        SandboxCommandResult Foreach);
+
+    /// <summary>
+    /// One force-reset pass: clear stale locks and abandoned operation markers, then reset and clean the
+    /// superproject, restore every submodule checkout to the recorded gitlink, and clean the submodule working
+    /// trees. Idempotent by construction, so the caller can run it twice.
+    /// </summary>
+    private static async Task<ResetPass> ForceResetAsync(
+        GitRunner git, string storePath, CancellationToken ct, ISandboxFileSystem? fileSystem)
+    {
+        await SweepStaleStateAsync(git, storePath, ct, fileSystem).ConfigureAwait(false);
+
+        // Reset + clean the superproject, then restore ALL submodule checkouts (top-level AND nested,
+        // recursively) to the superproject's RECORDED gitlink. Restoring to the gitlink keeps a warm slot
+        // reusable: a prior lease left the reviewed submodule — and, since the review path initializes
+        // submodules recursively, its nested submodules — checked out at PR-head/agent commits, which the
+        // superproject sees as moved pointers (`git status` reports dirty). The `submodule foreach` below
+        // only resets each submodule to its OWN HEAD, not the recorded (nested) gitlink, so it does NOT fix
+        // this. `--recursive --checkout --force` (NO --init) touches only already-initialized,
+        // .gitmodules-registered submodules at every depth, so it skips a committed embedded gitlink with no
+        // .gitmodules URL (the PR-11182 wedge) and never inits a new/denied submodule.
+        // SECURITY: hygiene runs on the host runner with the daemon's broad provider credentials, BEFORE
+        // ReviewSlotPreparer builds this run's policy-enforced SubmoduleInitializer, so it must NEVER touch a
+        // remote — otherwise a prior lease that left a submodule registered-but-deinit'd (worktree +
+        // `.git/modules/<name>` gitdir removed, URL retained) would make `submodule update` CLONE it through
+        // those broad credentials, outside this review's allow-list. `--no-fetch` alone is NOT sufficient: it
+        // only suppresses fetch into an existing submodule repo; a missing gitdir still drives
+        // `submodule--helper clone` → `git clone` (reproduced on Git 2.53). The hard guard is
+        // <see cref="DenyNetworkArgs"/> (explicit per-protocol <c>never</c> for every transport), which denies
+        // all clone/fetch (propagated to the internal clone/fetch via GIT_CONFIG_PARAMETERS): a present object
+        // is a pure LOCAL checkout, while any clone/fetch fails with no network contact — the caller's gate
+        // then classifies that failure (the policy-controlled initializer is the only thing that performs
+        // permitted network fetches). `--no-fetch` is kept as belt-and-braces.
+        var reset = await git.RunAsync(["-C", storePath, "reset", "--hard"], storePath, ct).ConfigureAwait(false);
+        var clean = await git.RunAsync(["-C", storePath, "clean", "-ffdx"], storePath, ct).ConfigureAwait(false);
+        var restore = await git.RunAsync(
+                ["-C", storePath, .. DenyNetworkArgs,
+                    "submodule", "update", "--recursive", "--no-fetch", "--checkout", "--force"],
+                storePath, ct)
+            .ConfigureAwait(false);
+        var foreachResult = await git.RunAsync(
+                ["-C", storePath, "submodule", "foreach", "--recursive", "git reset --hard && git clean -ffdx"],
+                storePath, ct)
+            .ConfigureAwait(false);
+
+        return new ResetPass(reset, clean, restore, foreachResult);
+    }
+
+    /// <summary>
+    /// Clears stale locks and abandoned operation markers THROUGH the injected runner. In production that runner
+    /// is SandboxSessionAdapter over typed SandboxClient, so pre-review hygiene never reaches around the mounted
+    /// session with host filesystem APIs. Explicit argv keeps every path a distinct token. On the HOST-backed pool
+    /// the store is a plain host directory and the runner is a local process runner with no POSIX <c>find</c> (a
+    /// Windows daemon host has none) — and this step ignores its result, so there the sweep would fail silently and
+    /// leave the wedged store for the reset to trip over. Use the host helpers for that case only.
+    /// </summary>
+    private static async Task SweepStaleStateAsync(
+        GitRunner git, string storePath, CancellationToken ct, ISandboxFileSystem? fileSystem)
+    {
+        if (fileSystem is HostFileSystem)
+        {
+            var gitDir = Path.Combine(storePath, ".git");
+            RemoveStaleLocks(gitDir);
+            AbortInProgress(gitDir);
+            return;
+        }
+
+        await git.CommandRunner.RunAsync(
+                new SandboxCommand(
+                    [
+                        "find",
+                        $"{storePath}/.git",
+                        "-type",
+                        "f",
+                        "(",
+                        "-name",
+                        "*.lock",
+                        "-o",
+                        "-name",
+                        "MERGE_HEAD",
+                        "-o",
+                        "-name",
+                        "CHERRY_PICK_HEAD",
+                        "-o",
+                        "-name",
+                        "REVERT_HEAD",
+                        ")",
+                        "-delete",
+                    ]),
+                ct)
+            .ConfigureAwait(false);
+        await git.CommandRunner.RunAsync(
+                new SandboxCommand(
+                    [
+                        "find",
+                        $"{storePath}/.git",
+                        "-type",
+                        "d",
+                        "(",
+                        "-name",
+                        "rebase-merge",
+                        "-o",
+                        "-name",
+                        "rebase-apply",
+                        ")",
+                        "-prune",
+                        "-exec",
+                        "rm",
+                        "-rf",
+                        "--",
+                        "{}",
+                        "+",
+                    ]),
+                ct)
+            .ConfigureAwait(false);
     }
 
     /// <summary>

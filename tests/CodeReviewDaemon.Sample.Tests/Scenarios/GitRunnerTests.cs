@@ -30,10 +30,28 @@ public sealed class GitRunnerTests
                 "-c",
                 "core.hooksPath=/dev/null",
                 "-c",
+                "core.longpaths=true",
+                "-c",
                 "user.name=AchieveAi Review Bot",
                 "-c",
                 "user.email=review-bot@achieveai.local",
                 "status");
+    }
+
+    [Fact]
+    public async Task RunAsync_enables_long_paths_on_every_command()
+    {
+        // Without core.longpaths, Git for Windows refuses any path at or beyond MAX_PATH: the checkout fails
+        // "Filename too long", `reset --hard` cannot repair it, and a fresh clone cannot check it out either —
+        // so a pooled slot holding such a path is condemned and re-cloned on every lease, forever. It has to be
+        // on EVERY invocation, not just hygiene's, because the clone and the review's own checkouts hit the
+        // same wall. Pinned separately from the hardening flags so a reshuffle of that list cannot drop it.
+        var fake = new FakeSandboxCommandRunner();
+        var runner = new GitRunner(fake);
+
+        await runner.RunAsync(["clone", "https://example.invalid/r.git", "store"], null, CancellationToken.None);
+
+        fake.Commands.Single().Argv.Should().ContainSingle(a => a == "core.longpaths=true");
     }
 
     [Fact]
