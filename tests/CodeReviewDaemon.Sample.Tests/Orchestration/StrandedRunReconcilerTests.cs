@@ -383,6 +383,34 @@ public sealed class StrandedRunReconcilerTests
     }
 
     [Fact]
+    public void The_store_supersedes_when_a_later_run_reviewed_the_same_head_against_a_new_base()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+
+        // A target-branch rebase moves base_sha under an unchanged head. The later run reviewed a genuinely
+        // different diff — the PR as it now stands — while this one still owes findings about changes that have
+        // since landed in the target branch. Keying supersession on the head alone would resume it and, on a
+        // posting daemon, publish them. base_sha is part of the identity tuple for the same reason, so these are
+        // two legitimately distinct runs and the later one is the current one.
+        var stranded = store.CreateOrGetReviewRun(
+            SampleRun(repoId, "101") with { HeadSha = "head-1", BaseSha = "base-1" });
+        var newer = store.CreateOrGetReviewRun(
+            SampleRun(repoId, "101") with { HeadSha = "head-1", BaseSha = "base-2" });
+        newer.Id.Should().NotBe(stranded.Id, "a moved base is a different identity, not the same run");
+        foreach (var id in new[] { stranded.Id, newer.Id })
+        {
+            Backdate(db, id, Now - TimeSpan.FromDays(9));
+        }
+
+        store.ListStrandedRuns(Now - Grace, limit: 50).Single(s => s.Run.Id == stranded.Id)
+            .Superseded.Should().BeTrue(
+                "run {0} reviewed the same head against the current base, so this run's diff is the stale one",
+                newer.Id);
+    }
+
+    [Fact]
     public void The_store_still_supersedes_across_a_mode_change()
     {
         using var db = new TempSqliteDatabase();
