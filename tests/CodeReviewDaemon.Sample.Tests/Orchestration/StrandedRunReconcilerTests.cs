@@ -187,6 +187,23 @@ public sealed class StrandedRunReconcilerTests
     }
 
     [Fact]
+    public async Task A_run_whose_resume_throws_is_logged_and_the_next_run_is_still_settled()
+    {
+        var harness = new Harness()
+            .WithRows(Row(11), Row(12))
+            .WithResumeThrowingFor(runId: 11);
+
+        await harness.Reconciler().SweepAsync(CancellationToken.None);
+
+        harness.Resumed.Select(r => r.Id).Should().Equal(
+            [12L], "a resume runs the review's remaining stages, so it fails for far more reasons than the "
+                + "lifecycle lookup does — one failing review must not re-strand the rest of the backlog");
+        harness.Log.Should().Contain(e => e.Contains("failed to settle run 11", StringComparison.Ordinal));
+        harness.Retired.Should().BeEmpty(
+            "the run is still open work: leaving it non-terminal is what keeps it eligible for the next pass");
+    }
+
+    [Fact]
     public async Task An_empty_backlog_is_silent()
     {
         var harness = new Harness();
@@ -434,6 +451,7 @@ public sealed class StrandedRunReconcilerTests
         private long? _throwFor;
         private Exception _failure = new InvalidOperationException("provider unreachable");
         private long? _resolvesTo;
+        private long? _resumeThrowsFor;
         private int _maxResumes = 10;
 
         public List<ReviewRun> Resumed { get; } = [];
@@ -469,6 +487,12 @@ public sealed class StrandedRunReconcilerTests
             return this;
         }
 
+        public Harness WithResumeThrowingFor(long runId)
+        {
+            _resumeThrowsFor = runId;
+            return this;
+        }
+
         public Harness WithMaxResumes(int max)
         {
             _maxResumes = max;
@@ -488,6 +512,11 @@ public sealed class StrandedRunReconcilerTests
             },
             resumeAsync: (run, _) =>
             {
+                if (run.Id == _resumeThrowsFor)
+                {
+                    throw new TimeoutException("the review's remaining stages timed out");
+                }
+
                 Resumed.Add(run);
                 return Task.FromResult(_resolvesTo is { } id ? run with { Id = id } : run);
             },
