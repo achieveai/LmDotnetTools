@@ -338,6 +338,19 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
     /// <summary>
     /// Recursively deletes a host directory, clearing the read-only attribute first: a git store is full of
     /// read-only pack/object files that <see cref="Directory.Delete(string, bool)"/> otherwise refuses.
+    /// <para>
+    /// The attribute pass walks by hand rather than with <c>SearchOption.AllDirectories</c>, which follows a
+    /// symlinked or junctioned directory without saying so. This is the wipe a redirected store is ROUTED to
+    /// (<see cref="SlotHygiene"/> condemns one rather than repairing it), so enumerating through the link would
+    /// clear the read-only bit on whatever it aims at, on the daemon host, under the daemon's own account.
+    /// </para>
+    /// <para>
+    /// Each link is unlinked as the walk meets it, which is also what keeps the wipe survivable:
+    /// <see cref="Directory.Delete(string, bool)"/>'s own recursion throws
+    /// <see cref="UnauthorizedAccessException"/> on a Windows junction, so leaving one for it would turn a
+    /// condemned store into an unrecoverable slot. A non-recursive delete removes the link alone and leaves
+    /// whatever it points at untouched.
+    /// </para>
     /// </summary>
     private static void DeleteHostDirectory(string root)
     {
@@ -346,16 +359,46 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
             return;
         }
 
-        foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+        var pending = new Stack<string>();
+        pending.Push(root);
+        while (pending.Count > 0)
         {
-            var attributes = File.GetAttributes(file);
-            if ((attributes & FileAttributes.ReadOnly) != 0)
+            foreach (var entry in Directory.GetFileSystemEntries(pending.Pop()))
             {
-                File.SetAttributes(file, attributes & ~FileAttributes.ReadOnly);
+                if (HostPathGuard.IsRedirected(entry))
+                {
+                    Unlink(entry);
+                    continue;
+                }
+
+                if (Directory.Exists(entry))
+                {
+                    pending.Push(entry);
+                    continue;
+                }
+
+                var attributes = File.GetAttributes(entry);
+                if ((attributes & FileAttributes.ReadOnly) != 0)
+                {
+                    File.SetAttributes(entry, attributes & ~FileAttributes.ReadOnly);
+                }
             }
         }
 
         Directory.Delete(root, recursive: true);
+    }
+
+    /// <summary>Removes a symlink or junction itself, never its target.</summary>
+    private static void Unlink(string entry)
+    {
+        if (Directory.Exists(entry))
+        {
+            Directory.Delete(entry);
+        }
+        else
+        {
+            File.Delete(entry);
+        }
     }
 
     private async Task RunCommandOrThrowAsync(

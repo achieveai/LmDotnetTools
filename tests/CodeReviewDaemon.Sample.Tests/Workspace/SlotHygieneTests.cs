@@ -380,6 +380,30 @@ public sealed class SlotHygieneTests : IDisposable
     }
 
     [Fact]
+    public async Task EnsureClean_refuses_a_store_whose_git_dir_redirects_the_sweep()
+    {
+        // The sweep's job is to delete every *.lock under .git, and it found them with a recursive enumeration —
+        // which follows a symlinked or junctioned directory without saying so. A single link planted anywhere
+        // under a pooled store therefore pointed the delete at an arbitrary path on the daemon host, under the
+        // daemon's own account. The store is condemned instead of repaired: unlinking it is a write chosen by
+        // whoever planted it, and the re-clone that follows wipes the whole store WITHOUT walking through it.
+        var store = SeedStore();
+        var outside = Path.Combine(_root, "outside");
+        Directory.CreateDirectory(outside);
+        var victim = Path.Combine(outside, "index.lock");
+        await File.WriteAllTextAsync(victim, "not the daemon's to delete");
+        DirectoryLink.Create(Path.Combine(store, ".git", "modules"), outside);
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(
+            new GitRunner(new FakeSandboxCommandRunner()), store, CancellationToken.None,
+            NullLogger.Instance, new HostFileSystem());
+
+        File.Exists(victim).Should().BeTrue("the sweep must not delete through a link out of the store");
+        verdict.Should().Be(
+            HygieneVerdict.NeedsReclone, "a store that redirects its own cleanup is not a store worth cleaning");
+    }
+
+    [Fact]
     public async Task StripAsync_issues_reset_and_clean()
     {
         var store = SeedStore();

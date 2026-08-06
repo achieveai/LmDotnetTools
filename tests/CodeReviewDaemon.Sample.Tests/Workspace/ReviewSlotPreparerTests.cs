@@ -146,6 +146,35 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     }
 
     [Fact]
+    public async Task RecloneStoreAsync_HostPreparer_DoesNotReachThroughALinkOutOfTheStore()
+    {
+        // This wipe is where a store that redirects its own hygiene sweep gets ROUTED (SlotHygiene condemns one
+        // rather than unlinking it), so it is the second walk the same planted link reaches, and it must survive
+        // as well as contain it. The read-only-clearing pass ahead of the delete enumerated with AllDirectories,
+        // which follows a junction, and wrote to every file it reached; and Directory.Delete's own recursion
+        // throws on a junction, so a condemned store would have become an unrecoverable slot. Whatever the link
+        // points at comes through untouched, and the store still goes.
+        var slot = CreateSlot();
+        var outside = Path.Combine(_hostRoot, "outside");
+        Directory.CreateDirectory(outside);
+        var victim = Path.Combine(outside, "someone-elses.idx");
+        await File.WriteAllTextAsync(victim, "idx");
+        File.SetAttributes(victim, FileAttributes.ReadOnly);
+        DirectoryLink.Create(Path.Combine(slot.StorePath, ".git", "modules"), outside);
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(new FakeSandboxCommandRunner()), new HostFileSystem(), "github",
+            NullLoggerFactory.Instance);
+
+        await preparer.RecloneStoreAsync(slot.StorePath, StoreUrl, CancellationToken.None);
+
+        File.Exists(victim).Should().BeTrue("the wipe unlinks the junction; it never deletes past it");
+        File.GetAttributes(victim).HasFlag(FileAttributes.ReadOnly).Should().BeTrue(
+            "clearing read-only outside the store is a write on the daemon host chosen by whoever planted the link");
+        Directory.Exists(slot.StorePath).Should().BeFalse("the store itself is still wiped");
+        File.SetAttributes(victim, FileAttributes.Normal); // so Dispose's best-effort wipe can reach it
+    }
+
+    [Fact]
     public async Task EnsureStoreAsync_HostPreparer_ClonesWithNoWorkingDirectory()
     {
         // `/workspace` is the CONTAINER mount root; it does not exist on the daemon host, and
