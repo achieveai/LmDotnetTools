@@ -63,6 +63,17 @@ internal static class HostPathGuard
     /// a re-clone instead, which wipes the whole store without following the link.
     /// </para>
     /// <para>
+    /// That rule is about the SWEEP, and the re-clone WIPE is not an exception to it even though the wipe does
+    /// remove a redirected name. The difference is what happens next. The sweep leaves the store in use, so
+    /// unlinking and carrying on repairs one link and hands the planter a fresh directory to aim the next one
+    /// at, on a store the daemon is about to keep working in — which is why it stops and condemns instead. The
+    /// wipe is destroying that store outright, so removing the name is part of the deletion rather than a
+    /// repair: there is no continued use for the removal to make safe, and nothing is re-created for the next
+    /// link to land in. Neither one ever follows the link — the wipe unlinks the name and leaves the target
+    /// untouched, and an entry it cannot read it still refuses, because the reasoning that makes the unlink safe
+    /// depends on knowing what the entry is.
+    /// </para>
+    /// <para>
     /// An entry whose attributes cannot be read is refused too, and reaching that case takes some care. The
     /// obvious spelling — <c>entry.Exists &amp;&amp; entry.Attributes.HasFlag(ReparsePoint)</c> — never reaches
     /// it: <see cref="FileSystemInfo.Exists"/> swallows the error and reports FALSE for an entry it could not

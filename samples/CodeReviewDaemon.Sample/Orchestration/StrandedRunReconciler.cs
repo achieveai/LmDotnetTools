@@ -158,12 +158,14 @@ internal sealed class StrandedRunReconciler
         }
 
         // The cap is a real limit on what this pass delivered, so it is stated rather than left to be inferred
-        // from a shorter-than-expected run of log lines.
+        // from a shorter-than-expected run of log lines. It reports slots SPENT rather than runs resumed, because
+        // that is what the counter holds: saying "after resuming 2" on a pass where both resumes threw would tell
+        // an operator the opposite of what happened, and the deferrals it explains would look unexplained.
         if (deferred > 0)
         {
             _logger.LogInformation(
-                "Stranded-run reconciler deferred {Deferred} open run(s) to a later pass after resuming "
-                    + "{Resumed} (cap {MaxResumes}).",
+                "Stranded-run reconciler deferred {Deferred} open run(s) to a later pass after spending "
+                    + "{Spent} of this pass's {MaxResumes} resume slot(s).",
                 deferred,
                 budget.Spent,
                 _maxResumesPerPass);
