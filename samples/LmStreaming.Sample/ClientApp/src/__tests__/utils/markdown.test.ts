@@ -35,7 +35,10 @@ describe('parseMarkdown', () => {
   it('emits ZERO token spans when highlight is false', () => {
     const html = parseMarkdown(FENCE, { highlight: false });
     expect(tokenSpans(html)).toBe(0);
-    expect(html).toContain('var s = &quot;a &amp; b&quot;;');
+    // `&` MUST stay an entity -- a bare `&` followed by text can start an entity reference and
+    // change what the browser parses. A bare `"` inside a text node cannot, and the sanitizer's
+    // DOM round-trip normalizes `&quot;` back to `"` there, so only `&amp;` is asserted.
+    expect(html).toContain('var s = "a &amp; b";');
   });
 
   it('keeps the code block class list identical across both paths', () => {
@@ -48,8 +51,9 @@ describe('parseMarkdown', () => {
     const md = ['```html', '<script>alert("x")</script>', '```'].join('\n');
     const html = parseMarkdown(md, { highlight: false });
     expect(html).not.toContain('<script>');
-    expect(html).toContain('&lt;script&gt;');
-    expect(html).toContain('&quot;x&quot;');
+    // The angle brackets are what matter -- they are the only characters that can end the
+    // `<code>` element and start a real tag. See the note above about `"`.
+    expect(html).toContain('&lt;script&gt;alert("x")&lt;/script&gt;');
   });
 
   it('escapes HTML in a fence with no language, both paths', () => {
@@ -76,3 +80,102 @@ describe('parseMarkdown', () => {
     expect(parseMarkdown(md, { highlight: false })).toContain('A--&gt;B');
   });
 });
+
+/**
+ * `marked` passes raw HTML in a markdown document straight through by design, and `parseMarkdown`
+ * output is bound with `v-html` -- so before sanitization every one of the payloads below reached
+ * the DOM verbatim from a model response, a tool result or a pasted document. Each "strips" case
+ * fails without the DOMPurify call in `parseMarkdown`; that is the RED half of the proof.
+ *
+ * The "keeps" cases are the other half: an allowlist that is too tight silently breaks rendering
+ * rather than throwing, and two of these constructs (`align`, hljs `class`) are bugs this PR
+ * series already fixed once.
+ *
+ * NOTE these run under jsdom, not happy-dom -- see the comment in `vitest.config.ts`. Under
+ * happy-dom DOMPurify reports success while letting `<script>` through, so every assertion here
+ * would pass on unsanitized output.
+ */
+describe('parseMarkdown sanitization', () => {
+  it('strips a script tag embedded as raw HTML', () => {
+    const html = parseMarkdown('Hello\n\n<script>alert(1)</script>\n\nBye');
+    expect(html).not.toContain('<script');
+    expect(html).not.toContain('alert(1)');
+    expect(html).toContain('Hello');
+    expect(html).toContain('Bye');
+  });
+
+  it('strips event handler attributes', () => {
+    const html = parseMarkdown('<img src="x" onerror="alert(1)">');
+    expect(html).not.toContain('onerror');
+    expect(html).not.toContain('alert(1)');
+  });
+
+  it('strips an iframe', () => {
+    const html = parseMarkdown('<iframe src="https://evil.example"></iframe>');
+    expect(html).not.toContain('<iframe');
+    expect(html).not.toContain('evil.example');
+  });
+
+  it('strips a javascript: URL from a markdown link', () => {
+    const html = parseMarkdown('[click me](javascript:alert(1))');
+    expect(html).not.toContain('javascript:');
+    expect(html).toContain('click me'); // text survives, the navigation does not
+  });
+
+  it('strips tags outside the markdown allowlist that DOMPurify would otherwise keep', () => {
+    // These four are ALLOWED by DOMPurify's defaults (measured, 3.4.13). They are gone only
+    // because the allowlist is explicit -- which is the reason it is explicit.
+    const html = parseMarkdown(
+      [
+        '<style>body{display:none}</style>',
+        '<form action="/steal"><input name="pw" value="x"></form>',
+        '<svg><circle r="1"/></svg>',
+        '<math><mi>x</mi></math>',
+      ].join('\n\n')
+    );
+    for (const forbidden of ['<style', '<form', 'name="pw"', '<svg', '<circle', '<math']) {
+      expect(html).not.toContain(forbidden);
+    }
+  });
+
+  it('strips data-* and target attributes', () => {
+    expect(parseMarkdown('<p data-track="1">hi</p>')).not.toContain('data-track');
+    expect(parseMarkdown('<a href="https://x.example" target="_blank">x</a>')).not.toContain(
+      'target'
+    );
+  });
+
+  it('keeps GFM table column alignment', () => {
+    const md = ['| a | b |', '| ---: | :---: |', '| 1 | 2 |'].join('\n');
+    const html = parseMarkdown(md);
+    expect(html).toContain('align="right"');
+    expect(html).toContain('align="center"');
+  });
+
+  it('keeps highlight.js block and token classes', () => {
+    const html = parseMarkdown(FENCE_FOR_SANITIZE);
+    expect(html).toContain('class="hljs language-csharp"');
+    expect(html).toMatch(/class="hljs-[a-z]+"/);
+  });
+
+  it('keeps task-list checkboxes', () => {
+    const html = parseMarkdown('- [x] done\n- [ ] todo');
+    expect(html).toContain('type="checkbox"');
+    expect(html).toContain('disabled');
+    expect(html).toContain('checked');
+  });
+
+  it('keeps ordinary markdown structure', () => {
+    const html = parseMarkdown(
+      '# H\n\n[link](https://x.example)\n\n![alt](https://x.example/i.png)\n\n> quote\n\n1. one'
+    );
+    expect(html).toContain('<h1>H</h1>');
+    expect(html).toContain('href="https://x.example"');
+    expect(html).toContain('src="https://x.example/i.png"');
+    expect(html).toContain('alt="alt"');
+    expect(html).toContain('<blockquote>');
+    expect(html).toContain('<ol>');
+  });
+});
+
+const FENCE_FOR_SANITIZE = ['```csharp', 'var s = "a";', '```'].join('\n');

@@ -34,7 +34,7 @@ internal static class GitFailureClassifier
         "index.lock",
         "shallow.lock",
         ".lock': file exists",
-        "not a git repository",
+        NotARepositoryMarker,
         "object file",
         "loose object",
         "corrupt",
@@ -42,6 +42,8 @@ internal static class GitFailureClassifier
         "cannot lock ref",
         "bad object",
     ];
+
+    private const string NotARepositoryMarker = "not a git repository";
 
     // Network / DNS / TLS / rate-limit — likely transient; retry without discarding the warm store.
     private static readonly string[] TransientMarkers =
@@ -65,7 +67,12 @@ internal static class GitFailureClassifier
     {
         var text = (stderr ?? string.Empty).ToLowerInvariant();
 
-        if (CorruptMarkers.Any(text.Contains))
+        // The one "not a git repository" that is NOT corruption is subtracted here rather than by weakening
+        // the marker, so every other shape of it still condemns the slot.
+        var corruptMarkers = IsMissingNestedGitDir(text)
+            ? CorruptMarkers.Where(static marker => marker != NotARepositoryMarker)
+            : CorruptMarkers;
+        if (corruptMarkers.Any(text.Contains))
         {
             return GitFailureKind.Corrupt;
         }
@@ -77,4 +84,19 @@ internal static class GitFailureClassifier
 
         return GitFailureKind.Unknown;
     }
+
+    /// <summary>
+    /// Whether the failure is a registered submodule whose gitdir is gone, rather than a damaged repository.
+    /// A prior lease that deinit'd a submodule (worktree + <c>.git/modules/&lt;name&gt;</c> removed, URL retained)
+    /// makes git report <c>fatal: not a git repository: sub/../.git/modules/sub</c> — which the broad marker
+    /// read as corruption, so <see cref="SlotHygiene"/> burned a second force-reset pass and then re-cloned a
+    /// store that was never broken. Re-cloning cannot help either: hygiene deliberately leaves a deinit'd
+    /// submodule alone for the review's own policy-enforced initializer to re-establish with a permitted fetch.
+    /// The nested <c>.git/modules/</c> path in the message is what separates it from a superproject that really
+    /// has lost its git dir; both path separators are matched because git reports the path it was handed.
+    /// </summary>
+    private static bool IsMissingNestedGitDir(string text) =>
+        text.Contains(NotARepositoryMarker + ": ", StringComparison.Ordinal)
+        && (text.Contains(".git/modules/", StringComparison.Ordinal)
+            || text.Contains(@".git\modules\", StringComparison.Ordinal));
 }

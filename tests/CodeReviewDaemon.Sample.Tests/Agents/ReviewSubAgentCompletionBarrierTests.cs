@@ -1,6 +1,10 @@
+using System.Globalization;
+using System.Net;
+using System.Text;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Persistence.Models;
+using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Time.Testing;
 using Xunit.Abstractions;
@@ -27,6 +31,17 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         FakeTimeProvider clock,
         TimeSpan? quietPeriod = null) =>
         new(source, quietPeriod ?? QuietPeriod, LoggerFactory.CreateLogger<ReviewSubAgentCompletionBarrier>(), clock);
+
+    /// <summary>
+    /// Builds a barrier over any completion source with the unknown-node quiescence allowance configured,
+    /// and with a logger the test can read back — the timeout path's only observable output is what it logs.
+    /// </summary>
+    private static ReviewSubAgentCompletionBarrier CreateBarrier(
+        IReviewSubAgentCompletionSource source,
+        FakeTimeProvider clock,
+        TimeSpan unknownQuiescence,
+        CapturingLogger<ReviewSubAgentCompletionBarrier> logger) =>
+        new(source, QuietPeriod, logger, clock, unknownQuiescence);
 
     /// <summary>
     /// A clock that also reports WHEN the code under test has parked on its next wait. The barrier polls
@@ -81,7 +96,8 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         string parentThreadId,
         int depth,
         ReviewSubAgentStatus status,
-        string threadId = "") =>
+        string threadId = "",
+        DateTimeOffset? lastActivityUtc = null) =>
         new()
         {
             AgentId = agentId,
@@ -92,6 +108,7 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
             Template = "reviewer",
             Name = null,
             TerminalAtUtc = null,
+            LastActivityUtc = lastActivityUtc,
             FailureCode = null,
         };
 
@@ -396,6 +413,60 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task WaitAsync_SnapshotCallOutlastsTheDeadline_ThrowsInsteadOfOpeningOnIt()
+    {
+        // The deadline is checked at the TOP of the loop, but the snapshot call that decides the iteration
+        // happens after it — and that call is a network round trip to the review host, which can take longer
+        // than whatever budget was left. The clock reading taken before it was then reused to judge what came
+        // back, so a tree confirmed after the deadline had passed was still accepted and returned, and the
+        // overrun was bounded only by how long the source took to answer. The barrier's own contract is a
+        // single ABSOLUTE deadline, so the only correct answer once it has passed is the timeout.
+        var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
+        var run = TestRun();
+        var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
+        var settled = new ReviewSubAgentTreeSnapshot([Node("a", "root", 1, ReviewSubAgentStatus.Completed)]);
+
+        // The roster is all-terminal and IDENTICAL across both observations, so every other condition for
+        // opening the barrier is met on the second call. The deadline is the only thing standing in the way,
+        // which is what makes this a test of the deadline and not of the settling rule.
+        var source = new SlowCompletionSource(
+            settled,
+            onCall: call =>
+            {
+                if (call == 2)
+                {
+                    clock.Advance(TimeSpan.FromMinutes(31));
+                }
+            });
+        var barrier = CreateBarrier(
+            source, clock, TimeSpan.Zero, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+
+        var task = barrier.WaitAsync(run, "root", deadline, NoopValidator, CancellationToken.None);
+
+        var act = () => PumpUntilSettledAsync(task, clock, TimeSpan.FromSeconds(5));
+        _ = await act.Should().ThrowAsync<ReviewBarrierDeadlineException>();
+        source.CallCount.Should().Be(2, "the overrun is detected on the call that caused it, not a poll later");
+    }
+
+    /// <summary>
+    /// A completion source that runs <paramref name="onCall"/> before answering, so a test can make the call
+    /// itself consume time — the one thing a source returning an already-built snapshot cannot otherwise do.
+    /// </summary>
+    private sealed class SlowCompletionSource(ReviewSubAgentTreeSnapshot snapshot, Action<int> onCall)
+        : IReviewSubAgentCompletionSource
+    {
+        public int CallCount { get; private set; }
+
+        public Task<ReviewSubAgentTreeSnapshot> GetSnapshotAsync(
+            ReviewRun run, string parentThreadId, CancellationToken ct)
+        {
+            CallCount++;
+            onCall(CallCount);
+            return Task.FromResult(snapshot);
+        }
+    }
+
+    [Fact]
     public async Task WaitAsync_LifecycleValidatorFailure_AbortsBeforeBarrierOpens()
     {
         // Brief bullet 7: lifecycle/head validation runs right before a confirmed terminal candidate is
@@ -422,6 +493,390 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         var act = () => PumpUntilSettledAsync(task, clock, TimeSpan.FromSeconds(5));
         await act.Should().ThrowAsync<InvalidOperationException>();
         validatorCalls.Should().Be(1, "the validator gates the open exactly once, at the confirmed candidate");
+    }
+
+    private static readonly TimeSpan Quiescence = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// Advances the clock through <paramref name="steps"/> polls WITHOUT requiring the barrier to settle,
+    /// and asserts it is still closed at the end.
+    /// </summary>
+    /// <remarks>
+    /// A test that starts the barrier and immediately jumps the clock past the deadline proves nothing about
+    /// blocking: the deadline check runs at the top of the loop, so the throw happens whether the roster
+    /// blocked or not, and a rule that wrongly admitted every node would pass just the same. (It did — every
+    /// pin below was green against a deliberately over-broad rule until this helper replaced that idiom.)
+    /// Staying strictly inside the deadline is what makes "still waiting" the only explanation for an
+    /// incomplete task.
+    /// </remarks>
+    private static async Task PumpAndStayClosedAsync<T>(
+        Task<T> task,
+        ObservableFakeClock clock,
+        TimeSpan step,
+        int steps)
+    {
+        var hangGuard = TimeSpan.FromSeconds(30);
+
+        for (var i = 0; i < steps; i++)
+        {
+            var parked = clock.WaitForNextWaitAsync(hangGuard);
+            if (ReferenceEquals(await Task.WhenAny(task, parked), task))
+            {
+                break;
+            }
+
+            if (!await parked)
+            {
+                throw new InvalidOperationException(
+                    $"The barrier neither settled nor registered another wait within {hangGuard}.");
+            }
+
+            clock.Advance(step);
+        }
+
+        task.IsCompleted.Should()
+            .BeFalse(
+                "the barrier must still be closed after {0} of polling, with its deadline not yet reached",
+                step * steps);
+    }
+
+    [Fact]
+    public async Task WaitAsync_UnknownNodeInactiveBeyondQuiescence_OpensInsteadOfBurningTheDeadline()
+    {
+        // The live defect (mcqdb run 277, PR #11256, thirteen consecutive cycles). The host could not
+        // resolve some children's identity, so their status was never stamped and the roster reported them
+        // as "unknown". Unknown is not terminal, so the barrier waited on nodes that had no terminal
+        // transition left to make: it burned all 30 minutes, threw, and the completed review was discarded.
+        // The retry produced the same roster, so no number of retries could ever converge.
+        //
+        // The node here is exactly that shape: unknown, and last active well before the quiescence window.
+        var start = DateTimeOffset.UtcNow;
+        var clock = new ObservableFakeClock(start);
+        var run = TestRun();
+        var roster = new ReviewSubAgentTreeSnapshot(
+            [
+                Node("agent-real", "root", 1, ReviewSubAgentStatus.Completed),
+                Node("agent-ghost", "root", 1, ReviewSubAgentStatus.Unknown,
+                    lastActivityUtc: start - TimeSpan.FromMinutes(20)),
+            ]
+        );
+        var logger = new CapturingLogger<ReviewSubAgentCompletionBarrier>();
+        var barrier = CreateBarrier(new ScriptedCompletionSource(roster), clock, Quiescence, logger);
+        var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
+
+        var task = barrier.WaitAsync(run, "root", deadline, NoopValidator, CancellationToken.None);
+        var result = await PumpUntilSettledAsync(task, clock, TimeSpan.FromSeconds(5));
+
+        result.Nodes.Should().HaveCount(2, "the unresolved node is admitted, not dropped from the roster");
+        logger
+            .CountAtLevel(LogLevel.Warning, "agent-ghost")
+            .Should()
+            .Be(1, "opening over an unresolved node is a weaker guarantee than the headline contract and must never be silent");
+    }
+
+    [Fact]
+    public async Task WaitAsync_UnknownNodeStillAdvancingActivity_KeepsBlockingUntilTheDeadline()
+    {
+        // The pin that keeps the allowance honest: inactivity is the ONLY thing that admits an unknown
+        // node. A child whose identity was never stamped but which is demonstrably still working keeps
+        // advancing its last-activity instant, and must go on blocking however long the barrier waits.
+        // Without this, the fix would trade a hang for the far worse failure of synthesizing a review from
+        // reviewers that had not finished.
+        var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
+        var run = TestRun();
+        var source = new LiveCompletionSource(() =>
+            new ReviewSubAgentTreeSnapshot(
+                [
+                    // Activity tracks the clock: however far time is advanced, this node was busy a moment ago.
+                    Node("agent-busy", "root", 1, ReviewSubAgentStatus.Unknown,
+                        lastActivityUtc: clock.GetUtcNow()),
+                ]
+            ));
+        var barrier = CreateBarrier(
+            source, clock, Quiescence, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+        var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
+
+        var task = barrier.WaitAsync(run, "root", deadline, NoopValidator, CancellationToken.None);
+
+        // Ten minutes of polling — twice the quiescence window, a third of the deadline.
+        await PumpAndStayClosedAsync(task, clock, TimeSpan.FromMinutes(1), steps: 10);
+
+        clock.Advance(TimeSpan.FromMinutes(30));
+        await FluentActions.Awaiting(() => task).Should().ThrowAsync<ReviewBarrierDeadlineException>();
+    }
+
+    [Fact]
+    public async Task WaitAsync_RunningNodeInactiveBeyondQuiescence_KeepsBlockingAndIsNeverQuiesced()
+    {
+        // The allowance is scoped to Unknown and must not leak onto Running. Running is a positive
+        // assertion that the source KNOWS the child is alive; silence does not overturn it — a reviewer
+        // thinking between tool calls looks identical to one that stopped. Only Unknown, which asserts
+        // nothing at all and therefore has no terminal transition to wait for, may be settled by silence.
+        var start = DateTimeOffset.UtcNow;
+        var clock = new ObservableFakeClock(start);
+        var run = TestRun();
+        var roster = new ReviewSubAgentTreeSnapshot(
+            [
+                Node("agent-quiet", "root", 1, ReviewSubAgentStatus.Running,
+                    lastActivityUtc: start - TimeSpan.FromHours(2)),
+            ]
+        );
+        var barrier = CreateBarrier(
+            new ScriptedCompletionSource(roster), clock, Quiescence,
+            new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+        var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
+
+        var task = barrier.WaitAsync(run, "root", deadline, NoopValidator, CancellationToken.None);
+
+        await PumpAndStayClosedAsync(task, clock, TimeSpan.FromMinutes(1), steps: 10);
+
+        clock.Advance(TimeSpan.FromMinutes(30));
+        await FluentActions.Awaiting(() => task).Should().ThrowAsync<ReviewBarrierDeadlineException>();
+    }
+
+    [Fact]
+    public async Task WaitAsync_UnknownNodeWithNoActivityTimestamp_KeepsBlockingAndTimeoutNamesIt()
+    {
+        // Absence of a timestamp is not evidence of inactivity. A source that simply does not report
+        // last-activity would otherwise have every one of its unknown nodes admitted the instant the
+        // allowance was switched on — the field would act as a kill switch for the barrier rather than as
+        // evidence. It must fail closed instead.
+        //
+        // This also pins the other half of the fix: a barrier that times out has to say which node held it
+        // open. Run 277's timeout logged nothing at all, which is why naming the culprit needed a database.
+        var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
+        var run = TestRun();
+        var roster = new ReviewSubAgentTreeSnapshot(
+            [Node("agent-unstamped", "root", 1, ReviewSubAgentStatus.Unknown)]
+        );
+        var logger = new CapturingLogger<ReviewSubAgentCompletionBarrier>();
+        var barrier = CreateBarrier(new ScriptedCompletionSource(roster), clock, Quiescence, logger);
+        var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
+
+        var task = barrier.WaitAsync(run, "root", deadline, NoopValidator, CancellationToken.None);
+
+        await PumpAndStayClosedAsync(task, clock, TimeSpan.FromMinutes(1), steps: 10);
+
+        clock.Advance(TimeSpan.FromMinutes(30));
+        await FluentActions.Awaiting(() => task).Should().ThrowAsync<ReviewBarrierDeadlineException>();
+        logger
+            .CountAtLevel(LogLevel.Error, "agent-unstamped")
+            .Should()
+            .BeGreaterThan(0, "the timeout must name the node that held the barrier open");
+    }
+
+    [Fact]
+    public async Task WaitAsync_UnknownNodeThatWakesUpBetweenTheTwoObservations_DoesNotOpenTheBarrier()
+    {
+        // One of the two windows where the quiescence allowance could be turned against the barrier. An
+        // unknown node that was quiet at the CANDIDATE observation and demonstrably working again at the
+        // CONFIRMATION one must re-block. This is the half that ORDERING decides: the node wakes up INTO the
+        // window, so settlement is re-evaluated against the confirmation snapshot and the current instant,
+        // finds it no longer quiesced, and discards the pending candidate before the identity comparison is
+        // reached at all. That ordering is the whole guarantee for this shape, which is why it is pinned here
+        // rather than left to be re-derived from the two checks sitting near each other.
+        //
+        // A node that wakes to an instant still OUTSIDE the window never reaches this path — it stays
+        // quiesced — and is pinned by the test below.
+        var start = DateTimeOffset.UtcNow;
+        var clock = new ObservableFakeClock(start);
+        var run = TestRun();
+        var polls = 0;
+        var source = new LiveCompletionSource(() =>
+        {
+            // Quiet for the first poll only — the candidate — then busy on every poll after it.
+            var lastActivity = polls++ == 0 ? start - TimeSpan.FromMinutes(20) : clock.GetUtcNow();
+            return new ReviewSubAgentTreeSnapshot(
+                [
+                    Node("agent-ghost", "root", 1, ReviewSubAgentStatus.Unknown, lastActivityUtc: lastActivity),
+                ]
+            );
+        });
+        var barrier = CreateBarrier(
+            source, clock, Quiescence, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+        var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
+
+        var task = barrier.WaitAsync(run, "root", deadline, NoopValidator, CancellationToken.None);
+
+        await PumpAndStayClosedAsync(task, clock, TimeSpan.FromMinutes(1), steps: 10);
+
+        clock.Advance(TimeSpan.FromMinutes(30));
+        await FluentActions.Awaiting(() => task).Should().ThrowAsync<ReviewBarrierDeadlineException>();
+    }
+
+    [Fact]
+    public async Task WaitAsync_UnknownNodeWhoseActivityAdvancesButStaysOutsideTheWindow_DoesNotOpenTheBarrier()
+    {
+        // The other half, and the one ordering does NOT cover. This node's activity moves forward on every
+        // poll — it is working — but every instant it reports is older than the quiescence window, so it
+        // stays settled and the roster stays all-settled. Re-evaluating settlement against the confirmation
+        // snapshot therefore lets it straight through, and the candidate/confirmation comparison is the only
+        // thing left that can see the movement. A source reporting activity in arrears is enough to produce
+        // this shape: batched or lagging events hold a live child's last-activity permanently behind the
+        // window while still advancing it.
+        var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
+        var run = TestRun();
+        var source = new LiveCompletionSource(() =>
+            new ReviewSubAgentTreeSnapshot(
+                [
+                    // Always twice the window in arrears: quiesced at every observation, identical at none.
+                    Node("agent-lagging", "root", 1, ReviewSubAgentStatus.Unknown,
+                        lastActivityUtc: clock.GetUtcNow() - (Quiescence * 2)),
+                ]
+            ));
+        var barrier = CreateBarrier(
+            source, clock, Quiescence, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+        var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
+
+        var task = barrier.WaitAsync(run, "root", deadline, NoopValidator, CancellationToken.None);
+
+        await PumpAndStayClosedAsync(task, clock, TimeSpan.FromMinutes(1), steps: 10);
+
+        clock.Advance(TimeSpan.FromMinutes(30));
+        await FluentActions.Awaiting(() => task).Should().ThrowAsync<ReviewBarrierDeadlineException>();
+    }
+
+    [Fact]
+    public async Task WaitAsync_TerminalNodeStillBeingHeartbeated_OpensBecauseActivityIsNotComparedThere()
+    {
+        // The bound on the test above. Comparing last-activity is scoped to non-terminal nodes, and this is
+        // what the scope is for: a source that goes on re-stamping activity on a child it has ALREADY
+        // reported as finished — a heartbeat, a clock rounding to a coarser tick — would otherwise reset
+        // stability on every poll and hang the barrier for the full deadline, which is precisely the run-277
+        // failure the quiescence allowance exists to remove. A terminal node's settlement does not rest on
+        // the timestamp, so movement there is noise and is ignored.
+        var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
+        var run = TestRun();
+        var source = new LiveCompletionSource(() =>
+            new ReviewSubAgentTreeSnapshot(
+                [
+                    // Finished, and still being stamped: a different instant at every observation.
+                    Node("agent-done", "root", 1, ReviewSubAgentStatus.Completed,
+                        lastActivityUtc: clock.GetUtcNow()),
+                ]
+            ));
+        var barrier = CreateBarrier(
+            source, clock, Quiescence, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+        var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
+
+        var task = barrier.WaitAsync(run, "root", deadline, NoopValidator, CancellationToken.None);
+        var result = await PumpUntilSettledAsync(task, clock, TimeSpan.FromSeconds(5));
+
+        result.Nodes.Should().HaveCount(1, "the barrier opens on a terminal roster however often it is re-stamped");
+    }
+
+    [Fact]
+    public async Task WaitAsync_QuiescenceDisabled_RestoresStrictTerminalOnlySettlement()
+    {
+        // The allowance is configuration, and switching it off must restore the original contract exactly —
+        // an operator who decides the inference is wrong for their host needs the strict behaviour back
+        // without a code change. Same long-inactive unknown node as the run-277 test; only the window differs.
+        var start = DateTimeOffset.UtcNow;
+        var clock = new ObservableFakeClock(start);
+        var run = TestRun();
+        var roster = new ReviewSubAgentTreeSnapshot(
+            [
+                Node("agent-ghost", "root", 1, ReviewSubAgentStatus.Unknown,
+                    lastActivityUtc: start - TimeSpan.FromHours(12)),
+            ]
+        );
+        var barrier = CreateBarrier(
+            new ScriptedCompletionSource(roster), clock, TimeSpan.Zero,
+            new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+        var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
+
+        var task = barrier.WaitAsync(run, "root", deadline, NoopValidator, CancellationToken.None);
+
+        await PumpAndStayClosedAsync(task, clock, TimeSpan.FromMinutes(1), steps: 10);
+
+        clock.Advance(TimeSpan.FromMinutes(30));
+        await FluentActions.Awaiting(() => task).Should().ThrowAsync<ReviewBarrierDeadlineException>();
+    }
+
+    /// <summary>
+    /// The instant the wire fixtures below are built around. Fixed rather than <c>UtcNow</c> so the
+    /// timestamp the test asserts is the same one it serialised, tick for tick, through the JSON round trip.
+    /// </summary>
+    private static readonly DateTimeOffset WireStart = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+    private static HttpClient NewS2SHttp(FakeHttpMessageHandler handler) =>
+        new(handler) { BaseAddress = new Uri("http://localhost:5051/") };
+
+    /// <summary>Wraps the real client and adapter around <paramref name="handler"/>, so the barrier polls
+    /// through exactly the code path a live daemon uses.</summary>
+    private static IReviewSubAgentCompletionSource S2SSourceOver(FakeHttpMessageHandler handler) =>
+        new S2SReviewSubAgentCompletionSource(
+            new LmStreamingS2SClient(NewS2SHttp(handler), "s", "id", "key"));
+
+    private static string GhostNodeBody(DateTimeOffset lastActivity) =>
+        "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"agent-ghost\",\"threadId\":\"thread-ghost\","
+            + "\"parentThreadId\":\"root\",\"depth\":1,\"template\":\"reviewer\",\"status\":\"who-knows\","
+            + $"\"lastActivityUtc\":\"{lastActivity.ToString("O", CultureInfo.InvariantCulture)}\"}}]}}";
+
+    [Fact]
+    public async Task WaitAsync_OverTheRealS2SWire_OpensOnAnUnknownNodeWhoseOnlyEvidenceIsTheParsedTimestamp()
+    {
+        // Every other quiescence test here builds its roster with the Node() helper, so the barrier has
+        // never been shown one that came off the wire. That left the single field the whole allowance rests
+        // on — lastActivityUtc, mapped in LmStreamingS2SClient.ParseNode — asserted by nobody in between:
+        // delete that assignment and all of them stay green while the barrier silently sees null, refuses
+        // to settle any unresolved node, and burns the full deadline on every review that has one. This
+        // drives the real handler -> real client -> real adapter -> real barrier.
+        var clock = new ObservableFakeClock(WireStart);
+        var stale = WireStart - TimeSpan.FromHours(12);
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "api/conversations/root/subagents?recursive=true", GhostNodeBody(stale));
+        var barrier = CreateBarrier(
+            S2SSourceOver(handler), clock, Quiescence, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+        var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
+
+        var task = barrier.WaitAsync(TestRun(), "root", deadline, NoopValidator, CancellationToken.None);
+        var result = await PumpUntilSettledAsync(task, clock, TimeSpan.FromSeconds(5));
+
+        var node = result.Nodes.Should().ContainSingle().Subject;
+        node.Status.Should().Be(
+            ReviewSubAgentStatus.Unknown, "an unrecognised wire status must never read as terminal");
+        node.LastActivityUtc.Should().Be(stale, "the parsed instant is the whole of what settled this node");
+    }
+
+    [Fact]
+    public async Task WaitAsync_OverTheRealS2SWire_StaysClosedWhileTheHostKeepsAdvancingTheTimestamp()
+    {
+        // The bound on the test above, and what makes its pass mean something: the barrier does not open
+        // over an unknown node merely because one arrived off the wire. Same body, same status, same code
+        // path — only the instant differs, and the host re-stamps it to "now" on every poll, so the node is
+        // never quiesced and the barrier burns its deadline instead.
+        var clock = new ObservableFakeClock(WireStart);
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                req => req.RequestUri!.ToString().Contains("subagents?recursive=true", StringComparison.Ordinal),
+                _ => new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        GhostNodeBody(clock.GetUtcNow()), Encoding.UTF8, "application/json"),
+                });
+        var barrier = CreateBarrier(
+            S2SSourceOver(handler), clock, Quiescence, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+        var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
+
+        var task = barrier.WaitAsync(TestRun(), "root", deadline, NoopValidator, CancellationToken.None);
+
+        await PumpAndStayClosedAsync(task, clock, TimeSpan.FromMinutes(1), steps: 10);
+
+        clock.Advance(TimeSpan.FromMinutes(30));
+        await FluentActions.Awaiting(() => task).Should().ThrowAsync<ReviewBarrierDeadlineException>();
+        handler.CountRequests("subagents").Should().BeGreaterThan(1, "the barrier really did keep polling");
+    }
+
+    /// <summary>Test double that rebuilds its snapshot on every call, so a node's reported state can track
+    /// the test clock — the only way to script a child that is still genuinely working.</summary>
+    private sealed class LiveCompletionSource(Func<ReviewSubAgentTreeSnapshot> build)
+        : IReviewSubAgentCompletionSource
+    {
+        public Task<ReviewSubAgentTreeSnapshot> GetSnapshotAsync(
+            ReviewRun run,
+            string parentThreadId,
+            CancellationToken ct) => Task.FromResult(build());
     }
 
     /// <summary>Test double returning a pre-programmed sequence of snapshots, one per call, holding on the

@@ -54,4 +54,18 @@ internal sealed record ReviewRun
     /// not yet wired (gap).
     /// </summary>
     public bool IsTargetRepoPublic { get; init; } = true;
+
+    // ── Per-developer review feedback ────────────────────────────────────────────────────────────
+    /// <summary>
+    /// The identity that OPENED the PR (<see cref="Orchestration.PullRequestDescriptor.Author"/>),
+    /// captured on the run so the at-close feedback extraction can address the developer's record
+    /// without re-polling a PR that is by then already closed.
+    /// <para>
+    /// Null means the author is unknown — an ordinary outcome, not an error, and the value pre-existing
+    /// rows carry. Consumers must write no feedback record at all rather than substituting a placeholder
+    /// identity. It is not part of the run's identity tuple: a PR's author never changes, so it can never
+    /// distinguish two runs.
+    /// </para>
+    /// </summary>
+    public string? PrAuthor { get; init; }
 }

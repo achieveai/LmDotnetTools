@@ -96,7 +96,11 @@ internal sealed class AdoPrProvider : IPrProvider
                         pr.TryGetProperty("sourceRefName", out var srn) && srn.ValueKind is JsonValueKind.String
                             ? srn.GetString()
                             : null,
-                        pr.GetProperty("status").GetString()));
+                        pr.GetProperty("status").GetString(),
+                        // Who OPENED the PR. ADO's uniqueName is normally an email address; it is only
+                        // carried as an opaque identity string here, and the consumer is responsible for
+                        // reducing it to a safe, confined file name.
+                        UniqueNameOf(pr, "createdBy")));
                 }
 
                 // Phase 2: resolve each PR's recency signal. ADO's PR list has no last-activity field, so a PR
@@ -126,6 +130,7 @@ internal sealed class AdoPrProvider : IPrProvider
                         // so the filter keeps it; UpdatedAt = last push, resolved only for PRs before the window.
                         CreatedAt = recencyCreatedAt,
                         UpdatedAt = updatedAt,
+                        Author = raw.Author,
                     });
 
                     if (raw.PrId > highWaterMark)
@@ -181,10 +186,38 @@ internal sealed class AdoPrProvider : IPrProvider
             ? parsed
             : null;
 
+    /// <summary>
+    /// Reads <c>&lt;property&gt;.uniqueName</c> from an ADO PR payload, or null when it is not a usable
+    /// string. Unlike a GitHub login this value is typically an email address and is NOT constrained to
+    /// filename-safe characters, so it is returned verbatim and left for the consumer to slug and confine.
+    /// <para>
+    /// There is deliberately <b>no <c>displayName</c> fallback</b>. The one consumer of this value keys a
+    /// per-developer record file off it, and <c>displayName</c> is not an identity — ADO lets two people
+    /// carry the same one, so two developers would share a record no slugging scheme could tell apart.
+    /// Returning null costs a record the daemon was never able to address correctly; falling back would
+    /// have filed one person's mistakes under another's name in a public repository. A null author is an
+    /// ordinary outcome on this path, not an error.
+    /// </para>
+    /// </summary>
+    private static string? UniqueNameOf(JsonElement pr, string property)
+    {
+        if (!pr.TryGetProperty(property, out var identity) || identity.ValueKind is not JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        return identity.TryGetProperty("uniqueName", out var value)
+            && value.ValueKind is JsonValueKind.String
+            && !string.IsNullOrWhiteSpace(value.GetString())
+            ? value.GetString()
+            : null;
+    }
+
     /// <summary>Raw per-PR metadata materialized from one ADO PR-list page, before the async recency
     /// resolution (a <see cref="JsonElement"/> can't outlive its document).</summary>
     private sealed record RawAdoPr(
-        long PrId, string HeadSha, string BaseSha, DateTimeOffset? CreatedAt, string? SourceRefName, string? Status);
+        long PrId, string HeadSha, string BaseSha, DateTimeOffset? CreatedAt, string? SourceRefName, string? Status,
+        string? Author);
 
     /// <summary>
     /// Resolves each PR's recency signal (<c>UpdatedAt</c>, <c>CreatedAt</c>) for

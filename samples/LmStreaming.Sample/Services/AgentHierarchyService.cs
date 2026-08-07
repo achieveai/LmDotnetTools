@@ -286,9 +286,14 @@ public sealed class AgentHierarchyService(
 
         if (collaboration is null)
         {
-            // The feature is off (or the loop is not live), so the hierarchy this read needs does not
-            // exist. Reported as absence rather than refusal — there is nothing here to be refused.
-            return new AgentTranscriptResult { Outcome = AgentTranscriptOutcome.CollaborationUnavailable };
+            // No live loop means no live collaboration BUNDLE — but not necessarily no hierarchy. Every
+            // other part of this read was built to survive pool eviction (the write-through tab index,
+            // the persisted-only recursive listing, isKnown falling back to the store); this branch was
+            // the one piece that stayed live-only, so a reader that arrives after the conversation went
+            // idle was told the hierarchy was unavailable while it sat fully persisted next to the
+            // transcript being refused. That is not an edge case for an unattended reader: it reads
+            // transcripts once the run is OVER, so it never saw anything else.
+            return await ReadRetainedTranscriptAsync(rows, agentId, viewerAgentId, ct);
         }
 
         var row = AgentHierarchyProjection.Find(rows, agentId);
@@ -306,6 +311,66 @@ public sealed class AgentHierarchyService(
         {
             Outcome = AgentTranscriptOutcome.Allowed,
             Agent = row,
+            Messages = TranscriptProjection.Normalize(messages, excludeReasoning: true),
+        };
+    }
+
+    /// <summary>
+    ///     Answers a transcript read for a conversation that has no live collaboration bundle, from the
+    ///     hierarchy its rows carry on disk.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         <b>Only for the conversation root.</b> On the live path a null viewer <em>is</em> the root
+    ///         (<c>viewerAgentId ?? collaboration.AgentId</c>), and the root is an ancestor of every agent
+    ///         below it — which <see cref="TranscriptVisibilityPolicy"/> allows under
+    ///         <b>both</b> visibility modes. So the answer this returns is the answer the live path would
+    ///         have returned, not a broader one, and it does not depend on the configured mode, which is
+    ///         the one thing here that is NOT persisted. A named reader is a genuinely different question
+    ///         — cross-collaboration, ancestry and the mode all bear on it — so it keeps being told the
+    ///         hierarchy is unavailable rather than being guessed at. That also leaves the in-agent
+    ///         <c>GetAgentTranscript</c> tool untouched: it always names its reader.
+    ///     </para>
+    ///     <para>
+    ///         <b>Only for a conversation that really has a hierarchy.</b> A host that never enabled
+    ///         collaboration persists its rows unenriched, so <see cref="SubAgentSummary.ToNodeRecord"/>
+    ///         returns null for all of them and this route stays exactly as unavailable as it was — no new
+    ///         door opens on an opted-out host. The check is over the whole listing rather than the one
+    ///         requested row on purpose: refusing per-row would answer <c>collaboration_unavailable</c> for
+    ///         an id that exists and <c>unknown_target</c> for one that does not, turning the pair of
+    ///         refusals into an oracle for which agent ids are real.
+    ///     </para>
+    /// </remarks>
+    private async Task<AgentTranscriptResult> ReadRetainedTranscriptAsync(
+        IReadOnlyList<SubAgentSummary> rows,
+        string agentId,
+        string? viewerAgentId,
+        CancellationToken ct)
+    {
+        var hasRetainedHierarchy = viewerAgentId is null && rows.Any(r => r.ToNodeRecord() is not null);
+        if (!hasRetainedHierarchy)
+        {
+            // Reported as absence rather than refusal — there is nothing here to be refused.
+            return new AgentTranscriptResult { Outcome = AgentTranscriptOutcome.CollaborationUnavailable };
+        }
+
+        var row = AgentHierarchyProjection.Find(rows, agentId);
+        if (row?.ToNodeRecord() is null)
+        {
+            return new AgentTranscriptResult
+            {
+                Outcome = AgentTranscriptOutcome.Denied,
+                DenialCode = TranscriptAccessReasons.UnknownTarget,
+            };
+        }
+
+        var messages = await store.LoadMessagesAsync(row.ThreadId, ct);
+        return new AgentTranscriptResult
+        {
+            Outcome = AgentTranscriptOutcome.Allowed,
+            Agent = row,
+            // Identical to the live path, deliberately: an agent's private deliberation is the one part of
+            // a transcript that was addressed to nobody, and going cold is not consent to publish it.
             Messages = TranscriptProjection.Normalize(messages, excludeReasoning: true),
         };
     }

@@ -30,6 +30,9 @@ internal static class DaemonAgentFactory
     /// <summary>Stable id of the at-close knowledge-extraction profile (design §1/§2).</summary>
     public const string KnowledgeExtractionProfileId = "knowledge-extraction";
 
+    /// <summary>Stable id of the at-close per-developer review-feedback profile.</summary>
+    public const string ReviewFeedbackExtractionProfileId = "review-feedback-extraction";
+
     private static readonly IPromptReader Prompts = new PromptReader(
         typeof(DaemonAgentFactory).Assembly, "CodeReviewDaemon.Sample.Prompts.daemon-prompts.yaml");
 
@@ -150,6 +153,22 @@ internal static class DaemonAgentFactory
             Id: KnowledgeExtractionProfileId,
             Name: "Knowledge Extraction Agent",
             SystemPrompt: Prompts.GetPrompt("knowledge-extraction").PromptText(),
+            EnabledTools: null,
+            EnabledBuiltInTools: []);
+
+    /// <summary>
+    /// Builds the at-close per-developer review-feedback profile. Its prompt carries the
+    /// <c>NO_FEEDBACK</c> gate and the <c>## PATTERNS</c> contract, and — unlike
+    /// <see cref="CreateKnowledgeExtractionProfile"/> — emits <b>no path markers at all</b>: the record's
+    /// location is derived by the daemon from the provider-supplied PR author, so no component of the
+    /// output path ever comes from the model. Frontmatter is daemon-injected, so the prompt forbids it.
+    /// Like the reviewer it needs no built-in tools and defers any MCP allow-list to the executor.
+    /// </summary>
+    public static AgentProfile CreateReviewFeedbackExtractionProfile() =>
+        new(
+            Id: ReviewFeedbackExtractionProfileId,
+            Name: "Review Feedback Extraction Agent",
+            SystemPrompt: Prompts.GetPrompt("review-feedback-extraction").PromptText(),
             EnabledTools: null,
             EnabledBuiltInTools: []);
 }

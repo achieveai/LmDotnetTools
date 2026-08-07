@@ -146,6 +146,241 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     }
 
     [Fact]
+    public async Task RecloneStoreAsync_HostPreparer_DoesNotReachThroughALinkOutOfTheStore()
+    {
+        // This wipe is where a store that redirects its own hygiene sweep gets ROUTED (SlotHygiene condemns one
+        // rather than unlinking it), so it is the second walk the same planted link reaches, and it must survive
+        // as well as contain it. The read-only-clearing pass ahead of the delete enumerated with AllDirectories,
+        // which follows a junction, and wrote to every file it reached; and Directory.Delete's own recursion
+        // throws on a junction, so a condemned store would have become an unrecoverable slot. Whatever the link
+        // points at comes through untouched, and the store still goes.
+        var slot = CreateSlot();
+        var outside = Path.Combine(_hostRoot, "outside");
+        Directory.CreateDirectory(outside);
+        var victim = Path.Combine(outside, "someone-elses.idx");
+        await File.WriteAllTextAsync(victim, "idx");
+        File.SetAttributes(victim, FileAttributes.ReadOnly);
+        DirectoryLink.Create(Path.Combine(slot.StorePath, ".git", "modules"), outside);
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(new FakeSandboxCommandRunner()), new HostFileSystem(), "github",
+            NullLoggerFactory.Instance);
+
+        await preparer.RecloneStoreAsync(slot.StorePath, StoreUrl, CancellationToken.None);
+
+        File.Exists(victim).Should().BeTrue("the wipe unlinks the junction; it never deletes past it");
+        File.GetAttributes(victim).HasFlag(FileAttributes.ReadOnly).Should().BeTrue(
+            "clearing read-only outside the store is a write on the daemon host chosen by whoever planted the link");
+        Directory.Exists(slot.StorePath).Should().BeFalse("the store itself is still wiped");
+        File.SetAttributes(victim, FileAttributes.Normal); // so Dispose's best-effort wipe can reach it
+    }
+
+    [Fact]
+    public async Task RecloneStoreAsync_HostPreparer_RefusesAStoreRootThatIsItselfRedirected()
+    {
+        // The walk checked every entry it FOUND and never the root it was HANDED, so a store path that was
+        // itself a junction was enumerated straight through: the attribute pass cleared read-only on the
+        // target's files, and the delete then unlinked the store the daemon was told to re-clone. The root is
+        // the one entry with no ancestor left to catch it, so it is checked here or nowhere.
+        var slotPath = Path.Combine(_hostRoot, "slot-0");
+        _ = Directory.CreateDirectory(slotPath);
+        var outside = Path.Combine(_hostRoot, "outside");
+        _ = Directory.CreateDirectory(outside);
+        var victim = Path.Combine(outside, "someone-elses.idx");
+        await File.WriteAllTextAsync(victim, "idx");
+        File.SetAttributes(victim, FileAttributes.ReadOnly);
+        var storeRoot = Path.Combine(slotPath, "store");
+        DirectoryLink.Create(storeRoot, outside);
+        var runner = new FakeSandboxCommandRunner();
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), new HostFileSystem(), "github", NullLoggerFactory.Instance);
+
+        var act = async () => await preparer.RecloneStoreAsync(storeRoot, StoreUrl, CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<SlotHostPathRefusedException>();
+        File.GetAttributes(victim).HasFlag(FileAttributes.ReadOnly).Should().BeTrue(
+            "clearing read-only THROUGH the root is the same write outside the store the child check refuses");
+        HostPathGuard.Check(storeRoot).Should().Be(
+            new HostPathRefusal(storeRoot, HostPathVerdict.Redirected),
+            "refusing means refusing both ways: the link is not followed and it is not removed either");
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
+            command => command.Contains(" clone ", StringComparison.Ordinal),
+            "a clone after the refusal would land the store wherever the link aims");
+        File.SetAttributes(victim, FileAttributes.Normal); // so Dispose's best-effort wipe can reach it
+    }
+
+    [Fact]
+    public async Task PrepareAsync_HostPreparer_RefusesAScratchRootThatIsItselfRedirected()
+    {
+        // The scratch wipe is the same delete's second caller and the worse of the two, because it re-creates
+        // the directory afterwards: a redirected scratch was unlinked and quietly replaced with a real one,
+        // which is exactly the "repair" that hands whoever planted the link a fresh target to plant again.
+        var slot = CreateSlot();
+        var outside = Path.Combine(_hostRoot, "outside");
+        _ = Directory.CreateDirectory(outside);
+        var victim = Path.Combine(outside, "someone-elses.txt");
+        await File.WriteAllTextAsync(victim, "notes");
+        File.SetAttributes(victim, FileAttributes.ReadOnly);
+        Directory.Delete(slot.ScratchPath);
+        DirectoryLink.Create(slot.ScratchPath, outside);
+        await File.WriteAllTextAsync(
+            Path.Combine(slot.StorePath, ".gitmodules"),
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n"
+                + "\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(new FakeSandboxCommandRunner()), new HostFileSystem(), "github",
+            NullLoggerFactory.Instance);
+
+        var act = async () => await preparer.PrepareAsync(
+            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
+            CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<SlotHostPathRefusedException>();
+        File.GetAttributes(victim).HasFlag(FileAttributes.ReadOnly).Should().BeTrue();
+        HostPathGuard.Check(slot.ScratchPath).Should().Be(
+            new HostPathRefusal(slot.ScratchPath, HostPathVerdict.Redirected),
+            "the scratch link survives the refusal untouched — removing and re-creating it IS the repair");
+        File.SetAttributes(victim, FileAttributes.Normal); // so Dispose's best-effort wipe can reach it
+    }
+
+    [RequiresFileSymlinkFact("a junction always reads as a directory, so it cannot stand in for this case")]
+    public async Task RecloneStoreAsync_HostPreparer_RefusesAStoreRootThatIsAFileSymlink()
+    {
+        // Pins the ORDER of the wipe's two opening checks, not just their presence. Every redirected DIRECTORY
+        // still reads Directory.Exists as true — a junction and a directory symlink both do, target present or
+        // not — so moving the containment check below the existence check keeps catching all of those and looks
+        // like a free simplification. A file symlink standing where the store should be is the one redirected
+        // root that reads as absent: a guard below the existence check never runs on it, the wipe returns as
+        // though there were nothing there, and the re-clone lands on a name that resolves somewhere else.
+        var slotPath = Path.Combine(_hostRoot, "slot-0");
+        _ = Directory.CreateDirectory(slotPath);
+        var outside = Path.Combine(_hostRoot, "outside");
+        _ = Directory.CreateDirectory(outside);
+        var victim = Path.Combine(outside, "someone-elses.txt");
+        await File.WriteAllTextAsync(victim, "notes");
+        var storeRoot = Path.Combine(slotPath, "store");
+        FileLink.Create(storeRoot, victim);
+        var runner = new FakeSandboxCommandRunner();
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), new HostFileSystem(), "github", NullLoggerFactory.Instance);
+
+        var act = async () => await preparer.RecloneStoreAsync(storeRoot, StoreUrl, CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<SlotHostPathRefusedException>();
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
+            command => command.Contains(" clone ", StringComparison.Ordinal),
+            "a root that reads as absent is still a root that redirects, and cloning onto it writes outside");
+        (await File.ReadAllTextAsync(victim)).Should().Be("notes", "nothing may reach through the link");
+        HostPathGuard.Check(storeRoot).Should().Be(
+            new HostPathRefusal(storeRoot, HostPathVerdict.Redirected),
+            "refusing means refusing both ways: the link is not followed and it is not removed either");
+    }
+
+    [RequiresUnreadableEntryFact("a readable entry cannot show the difference between absent and un-inspectable")]
+    public async Task RecloneStoreAsync_HostPreparer_RefusesAStoreRootItCannotInspect()
+    {
+        // The guard answered a plain "is this a link?", and every way of failing to find out was folded into
+        // "no". An entry the daemon is denied the attributes of reads exactly like one that is not there —
+        // FileSystemInfo.Exists reports false for both — so the wipe returned as though the store were already
+        // gone and the re-clone went ahead onto a name nobody had established anything about. The walk's whole
+        // job is to establish containment, and "I could not look" is not an establishment: it is refused on the
+        // same terms as a link, and for the same reason a link is refused rather than repaired.
+        var slotPath = Path.Combine(_hostRoot, "slot-0");
+        _ = Directory.CreateDirectory(slotPath);
+        using var denied = UnreadableEntry.Create(slotPath);
+        var runner = new FakeSandboxCommandRunner();
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), new HostFileSystem(), "github", NullLoggerFactory.Instance);
+
+        var act = async () => await preparer.RecloneStoreAsync(denied.Path, StoreUrl, CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<SlotHostPathRefusedException>();
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
+            command => command.Contains(" clone ", StringComparison.Ordinal),
+            "cloning onto a path the daemon could not inspect is the write the whole check exists to prevent");
+        HostPathGuard.Check(denied.Path).Should().Be(
+            new HostPathRefusal(denied.Path, HostPathVerdict.Unreadable),
+            "the refusal has to name what actually stopped it — reporting a link that was never there sends "
+                + "the next reader looking for one");
+    }
+
+    [RequiresUnreadableEntryFact("a listable directory cannot show the difference between empty and un-listable")]
+    public async Task RecloneStoreAsync_HostPreparer_RefusesADirectoryInsideTheStoreItCannotList()
+    {
+        // The walk decides what to delete from what it enumerates, so a directory whose CONTENTS will not list
+        // is the same failure to establish containment as an entry whose attributes will not read — one call
+        // later. Returning an empty array there says "nothing inside", and the delete below then removes the
+        // directory without ever having looked in it. Only ListDirectory is denied, so TRAVERSAL survives and
+        // git goes on opening paths underneath by name: nothing else in the sequence reports a thing.
+        var slot = CreateSlot();
+        var opaque = Path.Combine(slot.StorePath, ".git", "objects");
+        _ = Directory.CreateDirectory(opaque);
+        using var denied = UnreadableEntry.UnlistableDirectory(opaque);
+        var runner = new FakeSandboxCommandRunner();
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), new HostFileSystem(), "github", NullLoggerFactory.Instance);
+
+        var act = async () => await preparer.RecloneStoreAsync(slot.StorePath, StoreUrl, CancellationToken.None);
+
+        var refusal = await act.Should().ThrowAsync<SlotHostPathRefusedException>();
+        refusal.Which.Message.Should().Contain(opaque, "the message is the operator's only account of what stopped");
+        refusal.Which.InnerException.Should().BeOfType<UnauthorizedAccessException>(
+            "a denial and a failing device produce the same refusal but not the same operator response");
+        Directory.Exists(opaque).Should().BeTrue("refusing means refusing both ways — it is not deleted either");
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
+            command => command.Contains(" clone ", StringComparison.Ordinal),
+            "a clone here would write a fresh store over a directory nobody established anything about");
+    }
+
+    [RequiresUnreadableEntryFact("a removable link cannot show what happens when the unlink is refused")]
+    public async Task RecloneStoreAsync_HostPreparer_RefusesARedirectedEntryItIsNotPermittedToUnlink()
+    {
+        // The walk's answer to a redirected entry is to unlink it, and that unlink can be DENIED. Nothing caught
+        // it, so the raw I/O exception left the wipe untyped — and the pooled caller routes on TYPE: only
+        // SlotHostPathRefusedException sets refused=true and retires, everything else returns the slot to a free
+        // list that is a STACK. The next run takes the same index, meets the same entry, and is denied again. An
+        // entry the daemon is not PERMITTED to remove is not a transient failure the way a busy file is: it fails
+        // identically on every lease, forever, which is the exact loop the retire path exists to break.
+        //
+        // Retire-vs-return is already pinned both ways at DaemonReviewStageExecutorPooledTests, so what is left
+        // untested is the TRANSLATION — that a refused unlink reaches that router as a refusal at all. That is a
+        // missing catch, one call below the one ChildrenOf already has above.
+        var slot = CreateSlot();
+        var outside = Path.Combine(_hostRoot, "outside");
+        _ = Directory.CreateDirectory(outside);
+        var victim = Path.Combine(outside, "someone-elses.txt");
+        await File.WriteAllTextAsync(victim, "notes");
+        var objects = Path.Combine(slot.StorePath, "objects");
+        _ = Directory.CreateDirectory(objects);
+        var planted = Path.Combine(objects, "planted");
+        using var undeletable = UnreadableEntry.UndeletableLink(planted, outside);
+        var runner = new FakeSandboxCommandRunner();
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), new HostFileSystem(), "github", NullLoggerFactory.Instance);
+
+        var act = async () => await preparer.RecloneStoreAsync(slot.StorePath, StoreUrl, CancellationToken.None);
+
+        var refusal = await act.Should().ThrowAsync<SlotHostPathRefusedException>(
+            "an ordinary I/O exception here is returned to the pool and leased again forever");
+        refusal.Which.Message.Should().Contain(planted, "the message is the operator's only account of what stopped");
+        refusal.Which.Message.Should().Contain(
+            "symlink or junction",
+            "the verdict is the operator's next move: reporting this as unreadable sends them hunting a read "
+                + "permission on an entry whose problem is that it redirects and will not come out");
+        (refusal.Which.InnerException is IOException or UnauthorizedAccessException).Should().BeTrue(
+            "a denial and a failing device produce the same refusal but not the same operator response, and the "
+                + "cause carried here was {0}",
+            refusal.Which.InnerException?.GetType().Name ?? "nothing at all");
+        Directory.Exists(planted).Should().BeTrue(
+            "the entry that stopped the walk is left exactly as found — the wipe refused it, it did not lose a "
+                + "race with it");
+        (await File.ReadAllTextAsync(victim)).Should().Be("notes", "nothing may reach through the link");
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
+            command => command.Contains(" clone ", StringComparison.Ordinal),
+            "a clone onto a store still holding the entry the wipe could not remove writes into a tree that was "
+                + "never actually cleared");
+    }
+
+    [Fact]
     public async Task EnsureStoreAsync_HostPreparer_ClonesWithNoWorkingDirectory()
     {
         // `/workspace` is the CONTAINER mount root; it does not exist on the daemon host, and

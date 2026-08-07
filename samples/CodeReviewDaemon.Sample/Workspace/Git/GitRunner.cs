@@ -27,6 +27,20 @@ internal sealed class GitRunner
     ];
 
     /// <summary>
+    /// Compatibility config prepended to every git command. <c>core.longpaths=true</c> lets git create paths at or
+    /// beyond Windows' 260-character <c>MAX_PATH</c>; without it a checkout of such a path fails
+    /// <c>Filename too long</c>, which is UNRECOVERABLE by any amount of cleaning — <c>reset --hard</c> cannot
+    /// re-create the file, so the tree stays dirty forever, AND a fresh <c>clone</c> cannot check it out either
+    /// ("Clone succeeded, but checkout failed"). A pooled slot that hits it is therefore condemned and re-cloned on
+    /// every single lease, forever, with the re-clone structurally incapable of fixing it (observed on the mcqdb
+    /// store: a 260-character path inside a submodule's own submodule). This belongs on EVERY invocation rather
+    /// than the hygiene path alone, because the clone and the review's own checkouts hit the same wall.
+    /// It is a path-encoding switch only — no transport, hook, or trust behaviour changes — and git ignores it
+    /// off Windows, so the sandbox is unaffected.
+    /// </summary>
+    internal static readonly IReadOnlyList<string> CompatibilityArgs = ["-c", "core.longpaths=true"];
+
+    /// <summary>
     /// Committer identity prepended to every git command. The sandbox git has no <c>user.name</c>/
     /// <c>user.email</c> configured, so a daemon <c>git commit</c> (retention publish, ReviewBot seed)
     /// fails "Author identity unknown" (exit 128) without it. Passed as per-command <c>-c</c> overrides
@@ -50,9 +64,10 @@ internal sealed class GitRunner
     }
 
     /// <summary>
-    /// Runs <c>git &lt;hardening&gt; &lt;identity&gt; &lt;gitArgs&gt;</c> in <paramref name="workingDirectory"/>.
-    /// The arguments are an explicit vector (never a pre-joined string) so attacker-influenced tokens
-    /// (branch names, paths, URLs) stay distinct and are safely quoted at the sandbox boundary.
+    /// Runs <c>git &lt;hardening&gt; &lt;compatibility&gt; &lt;identity&gt; &lt;gitArgs&gt;</c> in
+    /// <paramref name="workingDirectory"/>. The arguments are an explicit vector (never a pre-joined string) so
+    /// attacker-influenced tokens (branch names, paths, URLs) stay distinct and are safely quoted at the sandbox
+    /// boundary.
     /// </summary>
     public Task<SandboxCommandResult> RunAsync(
         IReadOnlyList<string> gitArgs,
@@ -66,8 +81,14 @@ internal sealed class GitRunner
             throw new ArgumentException("At least one git argument is required.", nameof(gitArgs));
         }
 
-        var argv = new List<string>(1 + HardeningArgs.Count + IdentityArgs.Count + gitArgs.Count) { "git" };
+        var argv = new List<string>(
+            1 + HardeningArgs.Count + CompatibilityArgs.Count + IdentityArgs.Count + gitArgs.Count
+        )
+        {
+            "git",
+        };
         argv.AddRange(HardeningArgs);
+        argv.AddRange(CompatibilityArgs);
         argv.AddRange(IdentityArgs);
         argv.AddRange(gitArgs);
 

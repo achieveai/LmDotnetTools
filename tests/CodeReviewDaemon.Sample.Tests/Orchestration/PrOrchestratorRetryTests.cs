@@ -46,6 +46,47 @@ public sealed class PrOrchestratorRetryTests : IDisposable
     }
 
     [Fact]
+    public async Task A_parked_run_handed_to_the_reconcile_entry_is_attempted_again()
+    {
+        // The reconciler is the only route back for a run the poll no longer enumerates, and a parked run is
+        // exactly such a run. Through the poll entry the governor refused it before any stage ran, so the
+        // "resume" did no work, wrote nothing, and left the row stranded for the next pass to pick up and
+        // refuse identically — a permanent loop that also burned one of the pass's capped resume slots each
+        // time. The reconcile entry is where the caller's decision to spend another attempt is honoured.
+        var governor = Governor(maxAttempts: 1);
+        var executor = new CountingFailingExecutor();
+        var orchestrator = new PrOrchestrator(_store, executor, NullLogger<PrOrchestrator>.Instance, retryGovernor: governor);
+        var run = SeedRun();
+
+        var poll = async () => await orchestrator.RunAsync(run, CancellationToken.None);
+        await poll.Should().ThrowAsync<InvalidOperationException>();
+        executor.ExecuteCalls.Should().Be(1);
+
+        var reconcile = async () => await orchestrator.ReconcileAsync(run, CancellationToken.None);
+        await reconcile.Should().ThrowAsync<InvalidOperationException>();
+        executor.ExecuteCalls.Should().Be(2, "the reconcile entry clears the park so the stage actually runs");
+    }
+
+    [Fact]
+    public async Task The_reconcile_entry_does_not_leave_the_park_lifted_for_the_poll()
+    {
+        // Reviving a run is a decision the CALLER makes per resume, not a downgrade of the policy: if a
+        // reconciled run fails again it must re-park, or the ~30s hot-loop the governor exists to bound comes
+        // back through the reconciler's door.
+        var governor = Governor(maxAttempts: 1);
+        var executor = new CountingFailingExecutor();
+        var orchestrator = new PrOrchestrator(_store, executor, NullLogger<PrOrchestrator>.Instance, retryGovernor: governor);
+        var run = SeedRun();
+
+        var reconcile = async () => await orchestrator.ReconcileAsync(run, CancellationToken.None);
+        await reconcile.Should().ThrowAsync<InvalidOperationException>();
+        executor.ExecuteCalls.Should().Be(1);
+
+        _ = await orchestrator.RunAsync(run, CancellationToken.None);
+        executor.ExecuteCalls.Should().Be(1, "the failed reconcile re-parked the run against the poll path");
+    }
+
+    [Fact]
     public async Task A_backing_off_run_is_skipped_until_the_backoff_elapses()
     {
         var governor = Governor(maxAttempts: 5);

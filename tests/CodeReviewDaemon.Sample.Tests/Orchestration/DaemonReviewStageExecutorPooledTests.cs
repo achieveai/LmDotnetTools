@@ -30,6 +30,12 @@ public sealed class DaemonReviewStageExecutorPooledTests
     private const string NotesRelPath = "PRs/lmdotnettools-118";
     private const string SubmoduleRelPath = "repos/LmDotnetTools";
 
+    /// <summary>
+    /// The stem the review-feedback writer files "octocat" under. Derived rather than typed: what these
+    /// tests pin is that the pooled RETRIEVAL path reads the file the writer wrote.
+    /// </summary>
+    private static readonly string OctocatSlug = ReviewFeedbackAgent.SlugifyAuthor("octocat")!;
+
     /// <summary>The S2S review host this fixture's deep-links point at (never production's 5050).</summary>
     private const string LmStreamingBaseUrl = "http://localhost:5051";
 
@@ -127,6 +133,33 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task ContextReady_retires_the_slot_instead_of_returning_it_when_preparation_refuses_a_host_path()
+    {
+        using var fixture = Fixture.Create();
+        // The refusal above is about the ATTEMPT, so the slot goes back. This one is about the ADDRESS: an entry
+        // under the slot could not be established as contained, and it will still be uncontained on the next
+        // lease. The lease guard cannot catch it — it checks the three slot paths and the entry is a descendant
+        // of one — so returning the index to a free list that is a STACK hands it to the very next run, which
+        // refuses again, forever. Retiring costs one directory name; the permit is released either way.
+        fixture.Preparer.ThrowThenSucceed.Enqueue(
+            new SlotHostPathRefusedException("Refusing to wipe host directory 'store': '.git/objects' — unreadable."));
+        var run = fixture.SeedRun();
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        await act.Should().ThrowAsync<SlotHostPathRefusedException>();
+        fixture.Preparer.RecloneCount.Should().Be(0,
+            "the re-clone starts by wiping the store, which is the walk that just refused — escalating there is "
+                + "the redirected write, so the recovery ladder must filter by TYPE and not by 'prepare failed'");
+        fixture.Preparer.PrepareCount.Should().Be(1, "and with no re-clone there is nothing to retry against");
+        fixture.Pool.RetireCount.Should().Be(1);
+        fixture.Pool.Retired.Should().ContainSingle().Which.Should().Be(fixture.Pool.Leased.Single());
+        fixture.Pool.ReturnCount.Should().Be(0,
+            "returning is what recycles the address — the test above pins that an ordinary prepare failure DOES "
+                + "return, so this zero is a routing decision and not an unreached path");
+    }
+
+    [Fact]
     public async Task Reviewed_builds_a_scoped_write_tool_context_with_the_notes_and_scratch_roots()
     {
         using var fixture = Fixture.Create();
@@ -205,17 +238,141 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
-    public async Task Reviewed_prepends_the_reviewed_repos_root_guidance_read_from_the_leased_checkout()
+    public async Task Reviewed_prepends_the_authors_feedback_record_read_from_the_leased_slots_host_store()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun(prAuthor: "octocat");
+
+        // Same guarantee as the prior-knowledge ToC above, on the payload that ships beside it. The record
+        // lives in the LEASED SLOT's store checkout and must be read HOST-side via _slotWorkspace
+        // .HostFileSystem + lease.Prepared.StoreRoot; the boot-lifetime sandbox session is never registered
+        // for a pooled run and 404s. Reading through the wrong file system does not throw here — it reports
+        // "absent", which is indistinguishable from an author who has no record yet, so the feature would
+        // simply never fire on the supported path.
+        fixture.HostFileSystem.Seed(
+            $"/pool/slot-0/store/KnowledgeBase/developers/{OctocatSlug}.reviewfeedbacks.md",
+            "---\ndeveloper: octocat\n---\n\n## Patterns\n\n- FEEDBACK-PATTERN-XYZ\n");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        text.Should().Contain("## Recurring feedback for this PR's author", "the record is prepended as a labelled block");
+        text.Should().Contain("FEEDBACK-PATTERN-XYZ", "the seeded record body is surfaced to the pooled reviewer");
+        text.Should().Contain(
+            $"/workspace/store/KnowledgeBase/developers/{OctocatSlug}.reviewfeedbacks.md",
+            "the heading hands over an exact absolute path, not a bare file name");
+    }
+
+    [Fact]
+    public async Task Reviewed_renders_a_container_rooted_feedback_path_when_the_leased_store_is_a_host_path()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun(prAuthor: "octocat");
+
+        // The read/render split, mirrored onto the feedback record. This block tells the agent to open the
+        // path with the Read tool AND to copy it into every sub-agent's brief, so a host path here is worse
+        // than a missing one: it propagates an unopenable path to every child that was dispatched to look
+        // for exactly these mistakes. Read host-side out of the leased slot, render at the mounted root.
+        fixture.HostFileSystem.Seed(
+            $"/pool/review-slot-0/store/KnowledgeBase/developers/{OctocatSlug}.reviewfeedbacks.md",
+            "---\ndeveloper: octocat\n---\n\n## Patterns\n\n- Leaves `ConfigureAwait(false)` off library awaits.\n");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        var block = text[text.IndexOf("## Recurring feedback", StringComparison.Ordinal)..];
+        block.Should().Contain(
+            $"/workspace/store/KnowledgeBase/developers/{OctocatSlug}.reviewfeedbacks.md",
+            "the record was READ from the host slot but must be RENDERED at the root the agent sees");
+        block.Should().NotContain(
+            "/pool/review-slot-0",
+            "a host path is unopenable inside the review container, and this block tells the agent to forward it to sub-agents");
+    }
+
+    [Fact]
+    public async Task Reviewed_points_the_reviewer_at_git_instead_of_inlining_the_patch_and_the_file_tree()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+
+        // The two payloads that used to dominate the brief. On a real run (226) they were 117k and 15.6k chars
+        // of a 173,567-char input, and the reviewer holds a checkout of the head that answers both.
+        text.Should().NotContain(
+            "Tracked files in the reviewed repository",
+            "the reviewer has the checkout and can Glob/ls-files it; listing every tracked file is dead weight");
+        text.Should().NotContain(
+            "\n\nDiff:\n",
+            "the patch is read from git now, not copied into the brief");
+
+        // What replaces them has to leave the reviewer able to get there on its own: the range, the root, and
+        // the changed-file listing (which the KB ranking already computes, so this costs nothing new).
+        text.Should().Contain("Files changed (", "the reviewer still needs to know the blast radius up front");
+        text.Should().Contain(
+            $"diff {run.BaseSha}...{run.HeadSha}",
+            "the fetch instruction must carry the range, which is the one thing the reviewer cannot derive");
+        text.Should().Contain(
+            "git -C ",
+            "the instruction must be runnable as written, not assembled by the model");
+        text.Should().NotContain(
+            "/pool/slot-0",
+            "the brief now tells the reviewer to run git at this root, so a HOST path here would be a command "
+                + "that cannot run inside the review container (cf. the sub-agent block above)");
+        text.Should().Contain(
+            "UNTRUSTED DATA",
+            "the injection warning the inlined diff/guidance used to carry must survive their removal - the "
+                + "reviewer is now reading that same attacker-controlled content through its own tools");
+    }
+
+    /// <summary>
+    /// The degrade path. A context artifact carries no changed-path listing either because
+    /// <c>git diff --name-only</c> failed (pinned here, since that is the trigger a live run can hit) or because
+    /// the artifact predates the field and is being resumed now — run 220 in the achieveai daemon's store is
+    /// exactly that second shape, a null listing beside a 44,649-char diff, while 221-224 carry the listing.
+    /// Either way the reviewer must still be told what the PR touched, so the brief falls back to inlining the
+    /// patch rather than shipping a range with no blast radius attached.
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_falls_back_to_the_inlined_patch_when_there_is_no_changed_path_listing()
+    {
+        using var fixture = Fixture.Create();
+        fixture.Provisioner.NameOnlyResult = new SandboxCommandResult(128, string.Empty, "fatal: bad object");
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+
+        text.Should().Contain(
+            "diff --git a/Foo.cs",
+            "with no listing the patch is the only record of what the PR touched, so it is inlined rather than "
+                + "leaving the reviewer to review blind");
+        text.Should().NotContain(
+            "Files changed (",
+            "there is no listing to report, and an empty one would read as 'this PR changed nothing'");
+    }
+
+    [Fact]
+    public async Task Reviewed_points_the_reviewer_at_the_repos_root_guidance_instead_of_quoting_it()
     {
         using var fixture = Fixture.Create();
         var run = fixture.SeedRun();
 
         // The reviewed repo's own CLAUDE.md/AGENTS.md live in the LEASED SLOT's target checkout
-        // (lease.Prepared.TargetDir = <store>/repos/LmDotnetTools) and must be read HOST-side via
+        // (lease.Prepared.TargetDir = <store>/repos/LmDotnetTools) and must be PROBED host-side via
         // _slotWorkspace.HostFileSystem — the same host filesystem the KB / prior-notes reads use, NOT the
-        // boot-lifetime sandbox session (which the gateway never registers for a pooled run). A headless,
-        // collect-only reviewer must fold the repo's own guidance into the review INPUT up front; injecting
-        // it mid-run (the interactive chat path) would restart the collector and could discard the review.
+        // boot-lifetime sandbox session (which the gateway never registers for a pooled run).
         fixture.HostFileSystem.Seed(
             "/pool/slot-0/store/repos/LmDotnetTools/CLAUDE.md",
             "# LmDotnetTools\nUse CSharpier. REPO-GUIDANCE-MARKER.");
@@ -228,9 +385,25 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
-        text.Should().Contain("Repository guidance", "the reviewed repo's own guidance is prepended as a labelled block");
-        text.Should().Contain("REPO-GUIDANCE-MARKER", "the reviewed repo's CLAUDE.md is surfaced to the reviewer");
-        text.Should().Contain("AGENTS-MARKER", "the reviewed repo's AGENTS.md is surfaced to the reviewer");
+        text.Should().Contain("Repository guidance", "the reviewer still has to be told the files are there");
+        text.Should().Contain(
+            "/workspace/store/repos/LmDotnetTools/CLAUDE.md",
+            "the pointer is only useful at the root the AGENT's tools resolve; the host path the daemon "
+                + "probed through (/pool/slot-0/...) does not exist inside the review container");
+        text.Should().Contain("/workspace/store/repos/LmDotnetTools/AGENTS.md", "both files are named");
+        text.Should().NotContain(
+            "/pool/slot-0",
+            "rendering the daemon's own disk path fails silently - the block reads fine and every Read of it "
+                + "404s in the container");
+        text.Should().NotContain(
+            "REPO-GUIDANCE-MARKER",
+            "the file is pointed at, not quoted - on run 226 this content was ~24,500 chars of a 173,567-char "
+                + "brief, for a file the reviewer holds a checkout of");
+        text.Should().NotContain("AGENTS-MARKER", "same for AGENTS.md");
+        text.Should().Contain(
+            "prompt injection",
+            "the warning has to travel with the pointer: the reviewer now reads that attacker-controlled text "
+                + "through its own tools, where nothing else marks it as untrusted");
     }
 
     [Fact]
@@ -311,14 +484,15 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
-    public async Task Reviewed_tells_the_reviewer_repo_guidance_exists_when_it_is_too_large_to_read()
+    public async Task Reviewed_still_points_at_repo_guidance_that_is_too_large_for_the_daemon_to_read()
     {
         using var fixture = Fixture.Create();
         var run = fixture.SeedRun();
 
-        // An absent CLAUDE.md and a refused one both render nothing, and mean opposite things: one repository
-        // states no conventions, the other states them in a file the daemon declined to ingest. Skipping it
-        // silently has the reviewer fault a PR for conventions it was never shown.
+        // TooLarge is a POSITIVE existence signal, not a failure. It used to matter a great deal — the file
+        // was announced and never seen, because the daemon's ingest ceiling also decided what the reviewer
+        // could read. Now that nothing is quoted, that ceiling is the daemon's problem alone: a refused file
+        // is named exactly like a read one, and the reviewer opens it with its own budget.
         fixture.HostFileSystem.Seed(
             "/pool/slot-0/store/repos/LmDotnetTools/CLAUDE.md",
             "REPO-GUIDANCE-MARKER" + new string('x', (int)SandboxReadLimits.RepositoryFileBytes));
@@ -328,12 +502,14 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
-        text.Should().Contain("Repository guidance", "the block is rendered so the refusal can be stated in it");
-        text.Should().Contain("NOT READ BY THE DAEMON", "the reviewer is told the file exists and was not read");
-        text.Should().Contain("CLAUDE.md", "and told which file it was");
+        text.Should().Contain("Repository guidance", "the block is rendered - the file exists");
+        text.Should().Contain(
+            "/workspace/store/repos/LmDotnetTools/CLAUDE.md",
+            "an oversize file is pointed at like any other; skipping it silently would have the reviewer "
+                + "fault a PR for conventions it was never shown");
         text.Should().NotContain(
             "REPO-GUIDANCE-MARKER",
-            "the file was refused, so none of its attacker-controllable content reaches the input");
+            "no prefix of a refused file is quoted - and none of any other file either, now");
     }
 
     [Fact]
@@ -629,6 +805,136 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.S2SGit.Commands.Should().BeEmpty("slot adoption must not run the fallback clone preparer");
     }
 
+    /// <summary>
+    /// The judge is the LAST stage that prepares an S2S workspace, and it was the only post-<c>ContextReady</c>
+    /// stage without the resume-safety re-lease that <c>ReviewAsync</c> and <c>PostAsync</c> carry. A restart
+    /// between <c>Reviewed</c> and <c>Judged</c> therefore reached <c>EnsurePreparedAsync</c> with no lease, and
+    /// the lease-less branch host-cloned a bare per-PR checkout plus a PERMANENT LmStreaming workspace record —
+    /// the very leak <c>FetchContextAsync</c> fails closed to prevent, reached two stages later, on a review
+    /// that was proceeding perfectly normally.
+    /// </summary>
+    [Fact]
+    public async Task S2S_judge_after_a_restart_re_leases_the_slot_rather_than_minting_an_unmanaged_workspace()
+    {
+        using var fixture = Fixture.CreateS2S(slots: 2, judge: true);
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] = "{\"score\": 8, \"rationale\": \"Solid.\"}";
+        var run = fixture.SeedRun();
+
+        // Process A reviews on slot 0, then disappears with all process-local lease/workspace caches.
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        var resumed = fixture.BuildExecutor();
+
+        await resumed.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+
+        fixture.Pool.LeaseCount.Should().Be(
+            2, "the resumed judge re-leases a slot because the prior lease died with the process");
+        fixture.Factory.WorkspaceIds.Should().Equal(
+            ["ws-review-slot-0", "ws-review-slot-1"],
+            "the judge's hosted conversation is mounted over the slot it holds NOW, not a bare per-PR clone");
+        fixture.S2SGit.Commands.Should().BeEmpty(
+            "no unmanaged per-PR host clone may be created for a resumed judge");
+        fixture.S2SHandler.Requests.Should().NotContain(
+            r => r.Body != null && r.Body.Contains("pr-118", StringComparison.Ordinal),
+            "no permanent per-PR LmStreaming workspace may be minted for a resumed judge");
+
+        // Non-vacuity: the judge really ran over that workspace, so the assertions above are about a stage that
+        // did its work — not about one that returned early and prepared nothing.
+        fixture.Store.GetArtifacts(run.Id).Should().Contain(
+            a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind, "the resumed judge still graded the review");
+    }
+
+    /// <summary>
+    /// The control for the case above, and the reason its lease count means what it claims: with the judge OFF
+    /// (production's default) the same restart must lease nothing and prepare nothing, because the stage
+    /// returns before it asks for a workspace. A re-lease that fired here would be pure cost — a slot
+    /// preparation for a stage that does no work.
+    /// </summary>
+    [Fact]
+    public async Task S2S_judge_disabled_after_a_restart_leases_nothing_and_prepares_no_workspace()
+    {
+        using var fixture = Fixture.CreateS2S(slots: 2);
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        var resumed = fixture.BuildExecutor();
+
+        await resumed.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+
+        fixture.Pool.LeaseCount.Should().Be(1, "the disabled judge returns before it needs a slot");
+        fixture.Factory.WorkspaceIds.Should().ContainSingle().Which.Should().Be(
+            "ws-review-slot-0", "only the review stage prepared a workspace");
+        fixture.S2SGit.Commands.Should().BeEmpty("nothing was prepared at all, so no clone either");
+        fixture.Store.GetArtifacts(run.Id).Should().NotContain(a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind);
+    }
+
+    /// <summary>
+    /// The other half of the fix, and the half that survives a failed re-lease. Restoring the lease is what the
+    /// stages now try; this is what happens when that try DECLINES — here because the store the resumed run
+    /// leases no longer carries the reviewed repo. <c>EnsurePreparedAsync</c> is the single place a preparation
+    /// is made, so refusing there is what stops any caller — this judge, a future stage, the re-lease that
+    /// silently returned false — from answering a lost lease with an unmanaged clone nothing ever reclaims.
+    /// </summary>
+    [Fact]
+    public async Task S2S_fails_closed_when_a_resumed_stage_cannot_re_lease_a_slot()
+    {
+        using var fixture = Fixture.CreateS2S(slots: 2, judge: true);
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        // The slot the resumed run will lease next declares a DIFFERENT submodule, so the pooled re-lease
+        // declines and the judge arrives at EnsurePreparedAsync still holding nothing.
+        fixture.HostFileSystem.Seed(
+            "/pool/review-slot-1/store/.gitmodules",
+            "[submodule \"other\"]\n\tpath = repos/other\n\turl = https://github.com/achieveai/other.git\n");
+        var resumed = fixture.BuildExecutor();
+
+        var act = () => resumed.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+
+        var thrown = (await act.Should().ThrowAsync<InvalidOperationException>()).Which;
+        thrown.Message.Should().MatchRegex("(?i)no pooled review slot is leased");
+        fixture.S2SGit.Commands.Should().BeEmpty(
+            "the refusal comes BEFORE any host git — no unmanaged per-PR clone is created");
+        fixture.S2SHandler.Requests.Should().NotContain(
+            r => r.Body != null && r.Body.Contains("pr-118", StringComparison.Ordinal),
+            "the refusal comes BEFORE any workspace REST call — no permanent per-PR workspace is minted");
+        fixture.Store.GetArtifacts(run.Id).Should().NotContain(
+            a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind, "the stage failed, so it graded nothing");
+    }
+
+    [Fact]
+    public async Task S2S_retry_in_the_same_process_binds_the_slot_it_holds_now_not_the_one_it_prepared_from()
+    {
+        using var fixture = Fixture.CreateS2S(slots: 2);
+        var run = fixture.SeedRun();
+
+        // Attempt 1 leases slot 0 and prepares that slot as the workspace. The orchestrator then releases the
+        // lease in its terminal finally, which it runs on EVERY outcome — including the failure→RetryPending
+        // rethrow this models.
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        await fixture.Executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
+
+        // Attempt 2 re-enters with the SAME run id on the SAME executor — which is registered as a singleton, so
+        // unlike the restart case above, its per-run caches are all still there. This is the shape of both a
+        // retry and a StrandedRunReconciler resume.
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture.Pool.Leased.Select(s => s.Index).Should().Equal(
+            [0, 1], "the retry gets whatever slot is free, which is not the one it returned");
+
+        // The workspace is what the hosted agent's /workspace/store/... paths resolve through, and slot 0 is by
+        // now some other PR's checkout. Reusing the first attempt's workspace would have the review read one
+        // PR while reporting on another — a wrong review, not a failed one.
+        fixture.Factory.WorkspaceIds.Should().Equal(
+            ["ws-review-slot-0", "ws-review-slot-1"],
+            "each attempt binds the workspace of the slot it actually holds");
+    }
+
     [Fact]
     public async Task Reviewed_re_leases_a_slot_when_resuming_after_a_restart_dropped_the_in_memory_lease()
     {
@@ -656,6 +962,63 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.Provisioner.GetOrCreateForSlotCalls.Should().Be(2,
             "the original context and resumed context each mount their own leased slot once");
         fixture.Provisioner.GetOrCreateCalls.Should().Be(0, "the resumed review must never fall back to the broken per-run mount");
+    }
+
+    /// <summary>
+    /// The in-process counterpart of the S2S judge restart: the re-lease is not conditioned on the S2S path, so
+    /// it fires here too. That uniformity is deliberate and it is not a cost — the terminal <c>Posted</c> stage
+    /// re-leases for its own reasons (it commits the notes into the pooled store), so a judge that restores the
+    /// lease first hands Posted the slot it would otherwise have leased itself. The pool sees the same two
+    /// leases either way; what changes is that no stage in between is left holding nothing.
+    /// </summary>
+    [Fact]
+    public async Task Judged_re_leases_a_slot_after_a_restart_and_the_post_stage_reuses_it()
+    {
+        using var fixture = Fixture.Create(slots: 2, judge: true);
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] = "{\"score\": 8, \"rationale\": \"Solid.\"}";
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        var resumed = fixture.BuildExecutor();
+
+        await resumed.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+
+        fixture.Pool.LeaseCount.Should().Be(
+            2, "the resumed judge re-leases a slot because the prior lease died with the process");
+        fixture.Store.GetArtifacts(run.Id).Should().Contain(
+            a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind, "the resumed judge still graded the review");
+
+        await resumed.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        fixture.Pool.LeaseCount.Should().Be(
+            2, "Posted reuses the lease the judge restored instead of leasing a third slot");
+        fixture.HostRunner.Commands.Select(Describe).Should().Contain(
+            a => a.Contains($"add -- {NotesRelPath}") && a.Contains("/pool/slot-1/store"),
+            "the notes are retained into the store of the slot the resumed run actually holds");
+        fixture.Pool.ReturnCount.Should().Be(1, "the re-leased slot is returned once, on the terminal stage");
+    }
+
+    /// <summary>
+    /// The other half of the judge's re-lease condition. Restoring a LOST lease is resume-safety; taking a
+    /// second one while the first is still held is a slow leak of the pool's own concurrency — every ordinary
+    /// review would consume two slots for one PR, and the notes would then be committed into a store the
+    /// review never ran in.
+    /// </summary>
+    [Fact]
+    public async Task Judged_in_the_same_process_reuses_the_lease_it_already_holds()
+    {
+        using var fixture = Fixture.Create(slots: 2, judge: true);
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] = "{\"score\": 8, \"rationale\": \"Solid.\"}";
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+
+        fixture.Pool.LeaseCount.Should().Be(1, "the judge already holds the context stage's lease");
+        fixture.Store.GetArtifacts(run.Id).Should().Contain(
+            a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind, "the judge ran — it just needed no new slot");
     }
 
     [Fact]
@@ -896,6 +1259,29 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task Posted_skips_the_strip_on_S2S_because_the_slot_is_still_mounted_into_a_live_container()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+
+        await RunAllStagesAsync(fixture, run);
+
+        // The strip is only safe once the session teardown has made the store quiescent, and that teardown is
+        // excluded on S2S by design: the container belongs to the review host and must outlive the run so the
+        // posted comment's deep link keeps working. StripAsync opens by deleting every *.lock under .git, so
+        // running it here would delete a live index.lock and admit a SECOND writer — the hygiene function
+        // becoming the very race it exists to prevent. Skipping leaves the store dirty until its next lease,
+        // which is what clean-on-entry is for and what the call site's catch already tolerates.
+        var commands = fixture.HostRunner.Commands.Select(Join).ToList();
+        commands.Should().NotContain(a => a.Contains("reset --hard"),
+            "the store is not reset while a live container still has it mounted");
+        commands.Should().NotContain(a => a.Contains("clean -ffdx"),
+            "cleaning would wipe the checkout under a deep-link visitor mid-session");
+        fixture.Pool.ReturnCount.Should().Be(1,
+            "skipping the strip must never cost the slot its return, which would leak pool capacity");
+    }
+
+    [Fact]
     public async Task S2S_review_has_no_daemon_tool_context_yet_still_scopes_the_prompt_to_the_pooled_notes_dir()
     {
         using var fixture = Fixture.CreateS2S();
@@ -1124,11 +1510,15 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 $"nothing touching PR {prId} may reach into the other review's slot");
         }
 
-        // Each slot was stripped on its own terminal stage, so neither review left byproduct in the other.
+        // Neither slot is stripped: this is the S2S path, where the session teardown that would make a store
+        // quiescent is excluded by design and the slot stays mounted into a live review-host container. The
+        // isolation this test is about does not rest on the strip anyway — it rests on the two reviews holding
+        // two different slots, which the assertions above establish directly. Byproduct left behind is cleared
+        // by the next lease's clean-on-entry, the durability guarantee the strip was only ever a tidy-up for.
         foreach (var slot in new[] { "/pool/review-slot-0/store", "/pool/review-slot-1/store" })
         {
-            commands.Should().Contain(a => a.Contains($"-C {slot} reset --hard"));
-            commands.Should().Contain(a => a.Contains($"-C {slot} clean -ffdx"));
+            commands.Should().NotContain(a => a.Contains($"-C {slot} reset --hard"));
+            commands.Should().NotContain(a => a.Contains($"-C {slot} clean -ffdx"));
         }
 
         fixture.Pool.ReturnCount.Should().Be(2, "both slots are returned once their reviews reach Posted");
@@ -1180,7 +1570,9 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// EnableReviewerWrites + a resolved review store): when false, no <see cref="ReviewSlotWorkspace"/> is
         /// built at all, so <c>UsePooledReview</c> is false even though the S2S preparer (below) is still wired —
         /// exactly the "UseS2SReviewAgent on, pool never onboarded" operator misconfiguration PR #230 closes.</param>
-        private Fixture(bool s2s, int slots, bool wirePool = true)
+        /// <param name="judge">Turns on the judge stage (off by default, as in production), so a test can drive
+        /// <c>Judged</c> as a stage that does real work rather than one that returns immediately.</param>
+        private Fixture(bool s2s, int slots, bool wirePool = true, bool judge = false)
         {
             _db = new TempSqliteDatabase();
             Store = new ReviewStore(_db.ConnectionString);
@@ -1219,6 +1611,11 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 // Host-side posting is the ONLY delivery path on S2S, so the S2S fixture authorizes it — that is
                 // what makes the posted body (and its deep-link) observable on the fake publisher.
                 EnableCommentPosting = s2s,
+                // On for every pooled fixture, not just the feedback tests: the injection is inert unless the
+                // run carries a sluggable PrAuthor (SeedRun leaves it null by default), so this changes nothing
+                // for the other cases while keeping the flag from being the reason a real defect goes unseen.
+                EnableReviewFeedbackAgent = true,
+                EnableJudgeAgent = judge,
             };
             // Only the HOSTED path's turns are durable, and the executor now refuses an S2S review whose loop
             // cannot checkpoint them — so the double has to be resumable on exactly the path production is.
@@ -1323,13 +1720,13 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// <summary>The git the S2S preparer runs through (S2S fixture only). Adoption must leave it EMPTY.</summary>
         public FakeSandboxCommandRunner S2SGit { get; } = new();
 
-        public static Fixture Create() => new(s2s: false, slots: 1);
+        public static Fixture Create(int slots = 1, bool judge = false) => new(s2s: false, slots, judge: judge);
 
         /// <summary>The S2S variant: the review runs in an LmStreaming-hosted conversation mounted over the
         /// leased slot, the daemon builds no tool context, and the Posted stage delivers the review host-side
         /// with the deep-link back to that conversation. <paramref name="slots"/> is how many slot leaves the
         /// fake pool is primed with — &gt;1 lets a test hold two leases at once.</summary>
-        public static Fixture CreateS2S(int slots = 1) => new(s2s: true, slots);
+        public static Fixture CreateS2S(int slots = 1, bool judge = false) => new(s2s: true, slots, judge: judge);
 
         /// <summary>The "explicit non-pooled S2S" variant (PR #230): <c>UseS2SReviewAgent</c> is on — so the
         /// S2S preparer is wired, mirroring Program.cs's unconditional registration — but none of the pool's
@@ -1353,7 +1750,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// Seeds (or resumes) a review run for <paramref name="prId"/>. Distinct PR ids give distinct runs —
         /// which is how the isolation gate drives two reviews at once.
         /// </summary>
-        public ReviewRun SeedRun(string prId = "118")
+        public ReviewRun SeedRun(string prId = "118", string? prAuthor = null)
         {
             var repoId = Store.EnsureRepo(new RepoIdentity
             {
@@ -1366,6 +1763,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
             {
                 RepoId = repoId,
                 PrId = prId,
+                PrAuthor = prAuthor,
                 HeadSha = "head-sha",
                 BaseSha = "base-sha",
                 TriggerWatermark = "wm-1",
@@ -1407,8 +1805,10 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         public int LeaseCount { get; private set; }
         public int ReturnCount { get; private set; }
+        public int RetireCount { get; private set; }
         public int RecloneCount { get; private set; }
         public List<ReviewSlot> Returned { get; } = [];
+        public List<ReviewSlot> Retired { get; } = [];
 
         /// <summary>Every slot handed out, in lease order — lets a test assert two concurrent reviews were
         /// never given the same slot.</summary>
@@ -1440,6 +1840,18 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 ReturnCount++;
                 Returned.Add(slot);
                 Order?.Add("return");
+            }
+
+            return Task.CompletedTask;
+        }
+
+        public Task RetireAsync(ReviewSlot slot, CancellationToken cancellationToken)
+        {
+            lock (_gate)
+            {
+                RetireCount++;
+                Retired.Add(slot);
+                Order?.Add("retire");
             }
 
             return Task.CompletedTask;
@@ -1571,6 +1983,13 @@ public sealed class DaemonReviewStageExecutorPooledTests
         public FakeSandboxCommandRunner SdkRunner { get; } = new();
         public FakeSandboxFileSystem SdkFileSystem { get; } = new();
 
+        /// <summary>
+        /// What <c>git diff --name-only</c> answers in the session. Settable so a test can make it FAIL, which is
+        /// how the changed-path listing goes missing on a live run — <c>BuildChangedPathsAsync</c> degrades to an
+        /// empty listing on a non-zero exit rather than failing the run.
+        /// </summary>
+        public SandboxCommandResult NameOnlyResult { get; set; } = new(0, "Foo.cs\n", string.Empty);
+
         /// <summary>Shared cleanup-order log (with <see cref="FakeReviewSlotPool"/>).</summary>
         public List<string>? Order { get; set; }
 
@@ -1605,6 +2024,9 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 "/workspace/store/.gitmodules",
                 "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n"
                     + "\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+            // Registered FIRST so it wins over the broader patch rule below: the two commands differ only by
+            // flags, and a runner rule that matched the patch would otherwise answer the listing with a patch.
+            SdkRunner.OnArgvContainsFirst("diff --name-only", NameOnlyResult);
             SdkRunner.OnArgvContains(
                 "diff base-sha...head-sha",
                 new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ x", string.Empty));

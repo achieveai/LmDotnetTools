@@ -611,6 +611,68 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         logger.CountAtLevel(LogLevel.Warning, "huge-lesson.md").Should().Be(1);
     }
 
+    // ---- The reserved per-developer namespace --------------------------------------------------------
+
+    private const string DeveloperRecord =
+        "---\ndeveloper: octocat\nsourcePrs: [\"github/o-r/1\"]\nupdated: 2026-08-01\n---\n\n## PATTERNS\n\n### Old\n";
+
+    [Fact]
+    public async Task TryExtractAsync_keeps_per_developer_records_out_of_the_index_and_toc()
+    {
+        // A per-developer record is about ONE person and reaches a reviewer by targeted injection into that
+        // person's own PRs. Its frontmatter parses (ParseFrontmatter accepts any fenced block), so without
+        // an explicit exclusion the regen walk would list it — putting every developer's record into every
+        // reviewer's context, with an empty title, spending the shared retrieval budget on it.
+        var fs = new FakeSandboxFileSystem();
+        fs.Files[KbDir + "/developers/octocat.reviewfeedbacks.md"] = DeveloperRecord;
+        var agent = AgentReturning("## SCOPE: system\n## TITLE: A Lesson\n## TAGS: a\n\nBody.");
+
+        var result = await Knowledge(agent, fs).TryExtractAsync(
+            RepoRoot, "notes", SourcePr, Today, CancellationToken.None);
+
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
+        fs.Files[KbDir + "/_index.jsonl"].Should().NotContain("reviewfeedbacks");
+        fs.Files[KbDir + "/_toc.md"].Should().NotContain("reviewfeedbacks");
+        fs.Files[KbDir + "/developers/octocat.reviewfeedbacks.md"].Should().Be(
+            DeveloperRecord, "the regen never rewrites a record it does not own");
+    }
+
+    [Fact]
+    public async Task TryExtractAsync_refuses_the_reserved_developers_scope()
+    {
+        // The scope comes from the model, which reads attacker-influenceable PR notes. It must never be
+        // able to place a knowledge entry among files that name real people in a public repository — nor to
+        // collide with a record ReviewFeedbackAgent rewrites wholesale, which would destroy the entry.
+        var fs = new FakeSandboxFileSystem();
+        var agent = AgentReturning("## SCOPE: Developers\n## TITLE: octocat\n## TAGS: a\n\nBody.");
+
+        var result = await Knowledge(agent, fs).TryExtractAsync(
+            RepoRoot, "notes", SourcePr, Today, CancellationToken.None);
+
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Failed);
+        fs.Writes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task TryExtractAsync_refuses_an_updates_marker_pointing_into_the_developers_directory()
+    {
+        // The other half of the same guarantee: UPDATES bypasses the scope path entirely, so pinning only
+        // the scope would leave the namespace reachable through the marker that names an existing file.
+        var fs = new FakeSandboxFileSystem();
+        fs.Files[KbDir + "/developers/octocat.reviewfeedbacks.md"] = DeveloperRecord;
+        var agent = AgentReturning(
+            "## SCOPE: system\n## TITLE: A Lesson\n## TAGS: a\n"
+            + "## UPDATES: developers/octocat.reviewfeedbacks.md\n\nBody.");
+
+        var result = await Knowledge(agent, fs).TryExtractAsync(
+            RepoRoot, "notes", SourcePr, Today, CancellationToken.None);
+
+        // Refused, then written as an ordinary create — the entry is not lost, just kept out of the namespace.
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
+        result.EntryFileName.Should().Be("system/a-lesson.md");
+        fs.Files[KbDir + "/developers/octocat.reviewfeedbacks.md"].Should().Be(DeveloperRecord);
+    }
+
     private static FakeMultiTurnAgent AgentReturning(string text) => new(RunId, Assistant(text));
 
 

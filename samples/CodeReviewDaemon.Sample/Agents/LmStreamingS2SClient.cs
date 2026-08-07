@@ -573,6 +573,7 @@ internal sealed class LmStreamingS2SClient
             Status = ParseNodeStatus(RequireString(element, "status", fullBody)),
             Name = OptionalString(element, "name"),
             TerminalAtUtc = OptionalDateTimeOffset(element, "terminalAtUtc"),
+            LastActivityUtc = OptionalDateTimeOffset(element, "lastActivityUtc"),
             FailureCode = OptionalString(element, "failureCode"),
         };
     }

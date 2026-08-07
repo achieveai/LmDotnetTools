@@ -30,10 +30,21 @@ internal static class PrLifecycleSweepSeam
             return null;
         }
 
-        var provider = string.Equals(row.Provider, "azure-devops", StringComparison.Ordinal) ? "ado" : row.Provider;
+        var provider = MapProviderNamespace(row.Provider);
         return new ReviewedPr(
-            row.Repo, provider, row.PrId, ReviewBranchManager.BuildReviewBranchName(row.Repo, prNumber));
+            row.Repo,
+            provider,
+            row.PrId,
+            ReviewBranchManager.BuildReviewBranchName(row.Repo, prNumber),
+            row.Author);
     }
+
+    /// <summary>
+    /// Maps a storage provider name to the branch/poll namespace the <see cref="IPrProvider"/> registry is
+    /// keyed by (<c>azure-devops</c> → <c>ado</c>; everything else passes through unchanged).
+    /// </summary>
+    public static string MapProviderNamespace(string provider) =>
+        string.Equals(provider, "azure-devops", StringComparison.Ordinal) ? "ado" : provider;
 
     /// <summary>
     /// Routes a sweep unit's lifecycle lookup to the <see cref="IPrProvider"/> whose namespace matches the
@@ -42,13 +53,29 @@ internal static class PrLifecycleSweepSeam
     public static Task<PrLifecycle> ResolveLifecycleAsync(
         IReadOnlyList<IPrProvider> providers, ReviewedPr pr, CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(providers);
         ArgumentNullException.ThrowIfNull(pr);
+        return ResolveLifecycleAsync(providers, pr.Repo, pr.Provider, pr.PrId, cancellationToken);
+    }
 
-        var provider = providers.FirstOrDefault(p =>
-            string.Equals(p.Provider, pr.Provider, StringComparison.OrdinalIgnoreCase))
-            ?? throw new InvalidOperationException($"No IPrProvider registered for '{pr.Provider}'.");
-        return provider.GetPrStateAsync(pr.Repo, pr.PrId, cancellationToken);
+    /// <summary>
+    /// The same lookup addressed by identity rather than by sweep unit, for callers (the stranded-run
+    /// reconciler) that hold a repo and PR id but no notes branch. <paramref name="provider"/> must already be
+    /// in the registry's namespace — see <see cref="MapProviderNamespace"/>.
+    /// </summary>
+    public static Task<PrLifecycle> ResolveLifecycleAsync(
+        IReadOnlyList<IPrProvider> providers,
+        RepoIdentity repo,
+        string provider,
+        string prId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(providers);
+        ArgumentNullException.ThrowIfNull(repo);
+
+        var prProvider = providers.FirstOrDefault(p =>
+            string.Equals(p.Provider, provider, StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidOperationException($"No IPrProvider registered for '{provider}'.");
+        return prProvider.GetPrStateAsync(repo, prId, cancellationToken);
     }
 }
 
@@ -59,7 +86,7 @@ internal static class PrLifecycleSweepSeam
 /// (precomputed by the caller — the <c>ReviewStore</c> query supplies the rows and the caller derives the
 /// branch name via the <c>listReviewedPrsAsync</c> seam so this type stays test-constructible).
 /// </summary>
-internal sealed record ReviewedPr(RepoIdentity Repo, string Provider, string PrId, string Branch);
+internal sealed record ReviewedPr(RepoIdentity Repo, string Provider, string PrId, string Branch, string? Author = null);
 
 /// <summary>
 /// Resolves each reviewed PR's persistent notes branch (<c>review/{repo}-{pr}</c>,

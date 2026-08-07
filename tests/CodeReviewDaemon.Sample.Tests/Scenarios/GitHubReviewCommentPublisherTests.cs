@@ -1,4 +1,6 @@
+using System.Globalization;
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Orchestration;
@@ -258,5 +260,259 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
         var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
 
         existing.Should().BeEmpty();
+    }
+
+    // ---- Pagination -------------------------------------------------------------------------------------
+    // Every listing below feeds either dedup or the exactly-once posting backstop, and both are decided by
+    // ABSENCE: an item that was not seen is treated as never posted. Truncating one therefore does not
+    // degrade, it inverts.
+    //
+    // The fake below serves these listings the way GitHub really does — ASCENDING creation order, sort and
+    // direction IGNORED, tail advertised only through the Link header. That is the whole point: a test whose
+    // fake honours sort=direction, or hands page 2 the item page 1 lacks, agrees with whatever the code asks
+    // for and can never catch the code asking for the wrong thing. Here the item that matters sits at the
+    // TAIL, so a forward walk under the page cap provably cannot reach it.
+
+    private const int PageSize = 100;
+
+    /// <summary>Pages past the cap, so pages 1-2 lie outside the newest-<c>MaxListPages</c> window.</summary>
+    private const int PagesBeyondTheCap = 7;
+
+    /// <summary>Ascending creation times — position in a GitHub listing and age agree.</summary>
+    private static string Timestamp(int index) =>
+        new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+            .AddMinutes(index)
+            .ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
+
+    private static object Comment(int id, string body, int age) =>
+        new { id, body, user = new { login = "alice" }, created_at = Timestamp(age) };
+
+    /// <summary>Filler ahead of the item under test, oldest first, exactly as GitHub returns it.</summary>
+    private static List<object> Filler(int count, string bodyPrefix, int startId) =>
+        [.. Enumerable.Range(0, count).Select(i => Comment(startId + i, $"{bodyPrefix}-{i}", i))];
+
+    /// <summary>Filler occupying every page but the last, so the item appended after it lands alone on the tail.</summary>
+    private static List<object> FillerToTheTail(string bodyPrefix, int startId) =>
+        Filler(PageSize * (PagesBeyondTheCap - 1), bodyPrefix, startId);
+
+    /// <summary>
+    /// Routes a listing URL the way GitHub serves <c>/issues/{n}/comments</c> and <c>/pulls/{n}/reviews</c>:
+    /// ascending creation order, paged by <c>page=</c>, tail reachable only via the <c>Link</c> header — and
+    /// <c>sort</c>/<c>direction</c> silently ignored, which is the behaviour these tests exist to pin.
+    /// </summary>
+    private static FakeHttpMessageHandler OnAscendingListing(
+        FakeHttpMessageHandler handler, string pathContains, IReadOnlyList<object> itemsOldestFirst)
+    {
+        var pageCount = Math.Max(1, (itemsOldestFirst.Count + PageSize - 1) / PageSize);
+        return handler.On(
+            req => req.Method == HttpMethod.Get
+                && req.RequestUri is not null
+                && req.RequestUri.ToString().Contains(pathContains, StringComparison.Ordinal),
+            req =>
+            {
+                var page = PageOf(req.RequestUri!);
+                var slice = itemsOldestFirst.Skip((page - 1) * PageSize).Take(PageSize).ToArray();
+                var response = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        JsonSerializer.Serialize(slice), Encoding.UTF8, "application/json"),
+                };
+
+                if (pageCount > 1)
+                {
+                    // per_page precedes page, as GitHub emits it — the shape that punishes reading the last
+                    // page out of a bare "page=" search, which would find per_page's value instead.
+                    var links = new List<string>
+                    {
+                        $"<https://api.github.com{pathContains}?per_page={PageSize}&page={pageCount}>; rel=\"last\"",
+                    };
+                    if (page < pageCount)
+                    {
+                        links.Insert(
+                            0,
+                            $"<https://api.github.com{pathContains}?per_page={PageSize}&page={page + 1}>; rel=\"next\"");
+                    }
+
+                    response.Headers.TryAddWithoutValidation("Link", string.Join(", ", links));
+                }
+
+                return response;
+            });
+    }
+
+    private static int PageOf(Uri uri)
+    {
+        foreach (var pair in uri.Query.TrimStart('?').Split('&'))
+        {
+            if (pair.StartsWith("page=", StringComparison.Ordinal)
+                && int.TryParse(pair.AsSpan("page=".Length), CultureInfo.InvariantCulture, out var page))
+            {
+                return page;
+            }
+        }
+
+        return 1;
+    }
+
+    /// <summary>The <c>page=</c> values requested against one path, in the order they were requested.</summary>
+    private static int[] PagesRequested(FakeHttpMessageHandler handler, string pathContains) =>
+        [.. handler.Requests
+            .Where(r => r.Uri.ToString().Contains(pathContains, StringComparison.Ordinal))
+            .Select(r => PageOf(r.Uri))];
+
+    [Fact]
+    public async Task ListExisting_reads_a_question_at_the_tail_that_a_forward_walk_cannot_reach()
+    {
+        // The bot's own prior summaries AND questions addressed to it live on /issues/{pr}/comments, which
+        // GitHub returns oldest-first and will not reorder. The newest comment is therefore on the LAST page,
+        // and a capped forward walk keeps a window of ancient chatter and never sees the live question.
+        var conversation = FillerToTheTail("older-chatter", 8000);
+        conversation.Add(Comment(9001, "@revobot is this still needed?", conversation.Count));
+
+        var handler = new FakeHttpMessageHandler();
+        OnAscendingListing(handler, "/issues/7/comments", conversation);
+        handler
+            .OnJson(HttpMethod.Get, "/pulls/7/comments", "[]")
+            .OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]");
+
+        var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        existing.Should().ContainSingle(
+            e => e.Body.Contains("still needed"),
+            "the newest comment sits on the last page, which is where the reader must start");
+    }
+
+    [Fact]
+    public async Task ListExisting_reads_a_pending_draft_at_the_tail_of_the_reviews_listing()
+    {
+        // /pulls/{pr}/reviews is not merely about returning more rows: the ids collected there are what
+        // suppress a stale draft's inline comments. A draft left by a failed posting run is the NEWEST review,
+        // so it is exactly what a forward walk drops — and its finding then seeds dedup and suppresses the
+        // valid submitted replacement, the very failure the PENDING filter exists to prevent.
+        List<object> reviews =
+        [
+            .. Enumerable.Range(0, PageSize * (PagesBeyondTheCap - 1))
+                .Select(i => (object)new
+                {
+                    id = 1000 + i,
+                    body = $"older-review-{i}",
+                    user = new { login = "alice" },
+                    state = "COMMENTED",
+                    submitted_at = Timestamp(i),
+                }),
+            new { id = 5001, body = "", user = new { login = "revobot" }, state = "PENDING" },
+        ];
+
+        var handler = new FakeHttpMessageHandler();
+        OnAscendingListing(handler, "/pulls/7/reviews", reviews);
+        handler
+            .OnJson(HttpMethod.Get, "/pulls/7/comments", JsonSerializer.Serialize(new object[]
+            {
+                new { body = "DRAFT-inline-finding", path = "src/Foo.cs", line = 3, pull_request_review_id = 5001, user = new { login = "revobot" }, created_at = "2026-07-20T09:00:00Z" },
+            }))
+            .OnJson(HttpMethod.Get, "/issues/7/comments", "[]");
+
+        var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        existing.Should().NotContain(
+            e => e.Body.Contains("DRAFT-inline-finding"),
+            "the draft is the newest review, so only a tail-first listing can find its id and suppress it");
+    }
+
+    [Fact]
+    public async Task FindPostedComment_finds_a_marker_at_the_tail_of_the_conversation()
+    {
+        // The exactly-once backstop: this scan answers "did a crashed attempt already post this?". The comment
+        // it is hunting is by construction the NEWEST one on the PR, so on this ascending endpoint it is the
+        // last item on the last page. Answer "no" and the daemon posts a duplicate.
+        var conversation = FillerToTheTail("unrelated", 6000);
+        conversation.Add(Comment(777, $"## Review\nLGTM\n\n<!-- idempotency-key:{Key} -->", conversation.Count));
+
+        var handler = new FakeHttpMessageHandler();
+        OnAscendingListing(handler, "/issues/7/comments", conversation);
+
+        var found = await Publisher(handler).FindPostedCommentAsync(Target, Key, CancellationToken.None);
+
+        found.Should().NotBeNull();
+        found!.ProviderResponseId.Should().Be("777");
+    }
+
+    [Fact]
+    public async Task FindPostedComment_walks_back_from_the_last_page_rather_than_asking_for_an_order()
+    {
+        // Pins the mechanism, not the URL text. Asking this endpoint for direction=desc looks like a fix and
+        // changes nothing — GitHub returns the same ascending page. The only way to reach the tail is to read
+        // it out of the Link header and walk backwards, and the request sequence is where that is observable.
+        var handler = new FakeHttpMessageHandler();
+        OnAscendingListing(handler, "/issues/7/comments", Filler(PageSize * PagesBeyondTheCap, "chatter", 100));
+
+        await Publisher(handler).FindPostedCommentAsync(Target, Key, CancellationToken.None);
+
+        PagesRequested(handler, "/issues/7/comments").Should().Equal(
+            [1, 7, 6, 5, 4, 3],
+            "page 1 locates the tail via rel=\"last\"; the walk then runs backwards and stops at the cap");
+    }
+
+    [Fact]
+    public async Task ListExisting_yields_the_conversation_newest_first_across_page_boundaries()
+    {
+        // Reversing each page in isolation would leave the pages themselves in oldest-first order, so the
+        // sequence would only look sorted inside a page. The cap only drops the right items if the whole
+        // sequence is newest-first.
+        var handler = new FakeHttpMessageHandler();
+        OnAscendingListing(handler, "/issues/7/comments", Filler(PageSize + 30, "chatter", 100));
+        handler
+            .OnJson(HttpMethod.Get, "/pulls/7/comments", "[]")
+            .OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]");
+
+        var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        existing.Should().HaveCount(PageSize + 30);
+        existing.Select(e => e.PublishedAt).Should().BeInDescendingOrder(
+            "a listing walked tail-first must be newest-first end to end, not page by page");
+    }
+
+    [Fact]
+    public async Task ListExisting_stops_at_the_page_cap_and_drops_the_oldest_conversation()
+    {
+        // The cap is the counterweight to following pagination at all: a very long thread must not hold the
+        // daemon in a listing loop. What it discards has to be the oldest end — which is the half of this the
+        // request count alone cannot show.
+        var conversation = Filler(PageSize * 50, "chatter", 100);
+
+        var handler = new FakeHttpMessageHandler();
+        OnAscendingListing(handler, "/issues/7/comments", conversation);
+        handler
+            .OnJson(HttpMethod.Get, "/pulls/7/comments", "[]")
+            .OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]");
+
+        var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        handler.CountRequests("/issues/7/comments").Should().Be(
+            6, "one request locates the tail, then MaxListPages bounds the walk");
+        existing.Should().HaveCount(PageSize * 5);
+        existing.Should().Contain(e => e.Body == "chatter-4999", "the newest comment is what dedup needs");
+        existing.Should().NotContain(e => e.Body == "chatter-0", "the cap must drop the oldest end");
+    }
+
+    [Fact]
+    public async Task ListExisting_reads_a_conversation_that_fits_on_a_single_page()
+    {
+        // GitHub sends no Link header at all when the listing fits on one page. Treating a missing rel="last"
+        // as anything but "page 1 is the tail" would either re-fetch nothing or walk off the end.
+        var handler = new FakeHttpMessageHandler();
+        OnAscendingListing(handler, "/issues/7/comments",
+        [
+            Comment(1, "first question", 0),
+            Comment(2, "second question", 1),
+        ]);
+        handler
+            .OnJson(HttpMethod.Get, "/pulls/7/comments", "[]")
+            .OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]");
+
+        var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        existing.Select(e => e.Body).Should().Equal("second question", "first question");
+        handler.CountRequests("/issues/7/comments").Should().Be(1, "a single-page listing needs one request");
     }
 }

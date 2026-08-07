@@ -1,5 +1,6 @@
 import { Marked } from 'marked';
 import { markedHighlight } from 'marked-highlight';
+import DOMPurify from 'dompurify';
 import hljs from 'highlight.js/lib/core';
 
 import bash from 'highlight.js/lib/languages/bash';
@@ -107,8 +108,64 @@ const markedHighlighted = createMarked((code, lang) => {
 
 const markedPlain = createMarked((code) => escapeHtml(code));
 
+/*
+ * Markdown-only sanitization allowlist (#268 follow-up). `parseMarkdown` output is bound with
+ * `v-html`, so any HTML a model, a tool result or a pasted document carries through markdown
+ * reaches the DOM verbatim -- marked deliberately passes raw HTML through, and neither the
+ * highlight escape above nor Vue's interpolation covers that path.
+ *
+ * The list is exactly what marked emits with `{ gfm: true, breaks: true }` + marked-highlight, so
+ * anything outside it is by definition not markdown. DOMPurify's DEFAULTS were measured (3.4.13)
+ * rather than assumed, because two entries here are load-bearing for rendering:
+ *
+ *   - `class` carries `hljs language-x` and every `hljs-*` token span. Drop it and highlighting
+ *     silently turns monochrome.
+ *   - `align` is the LEGACY PRESENTATIONAL ATTRIBUTE marked emits for GFM column alignment
+ *     (`| ---: |` -> `<th align="right">`); `markdown.css` selects on `[align='right']`. Drop it
+ *     and every aligned column silently flattens -- a bug this file's PR already fixed once.
+ *
+ * Both are in DOMPurify's defaults, so the allowlist is a tightening, not a rescue: the defaults
+ * also keep `<style>`, `<form>`, SVG, MathML and `data-*`, none of which markdown produces.
+ */
+const ALLOWED_TAGS = [
+  'p', 'br', 'hr',
+  'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+  'strong', 'em', 'del', 'ins',
+  'blockquote',
+  'ul', 'ol', 'li',
+  'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td',
+  'pre', 'code', 'span',
+  'a', 'img',
+  'input', // GFM task-list checkboxes only -- `type`/`checked`/`disabled`, never `name`/`value`.
+];
+
+const ALLOWED_ATTR = [
+  'href', 'title', 'alt', 'src',
+  'class',   // hljs language + token classes
+  'align',   // GFM column alignment (see above)
+  'start',   // <ol start="3">
+  'type', 'checked', 'disabled', // task-list checkbox
+];
+
 /**
- * Parse markdown text to HTML.
+ * Sanitize marked's HTML for the `v-html` bindings.
+ *
+ * `ALLOW_DATA_ATTR`/`ALLOW_ARIA_ATTR` are off: markdown emits neither, and leaving them on keeps
+ * an attribute channel open for no rendering benefit. Everything not listed above -- `<script>`,
+ * `<iframe>`, `<style>`, `<form>`, SVG/MathML, every `on*` handler, `javascript:` URLs and
+ * `target` -- is dropped.
+ */
+function sanitize(html: string): string {
+  return DOMPurify.sanitize(html, {
+    ALLOWED_TAGS,
+    ALLOWED_ATTR,
+    ALLOW_DATA_ATTR: false,
+    ALLOW_ARIA_ATTR: false,
+  });
+}
+
+/**
+ * Parse markdown text to sanitized HTML, safe for a `v-html` binding.
  *
  * `highlight: false` skips syntax highlighting. Highlighting a fence is O(fence length), and a
  * streaming message re-parses its whole accumulated text on every delta, so highlighting a
@@ -119,5 +176,5 @@ const markedPlain = createMarked((code) => escapeHtml(code));
 export function parseMarkdown(text: string, options?: { highlight?: boolean }): string {
   if (!text) return '';
   const instance = options?.highlight === false ? markedPlain : markedHighlighted;
-  return instance.parse(text) as string;
+  return sanitize(instance.parse(text) as string);
 }

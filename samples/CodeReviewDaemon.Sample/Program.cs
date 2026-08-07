@@ -640,10 +640,11 @@ if (daemonOptions.EnableToolAssistedReview
         // whose new-scheme name carries only the repo slug + PR number — back to a pollable PR.
         var sweepPollTargets = PrPollTargetBuilder.Build(daemonOptions, sweepLogger);
 
-        // At-close knowledge extraction (Layer-2, design §1). Wired only when EnableKnowledgeAgent is set:
-        // on a merged PR, read the PR's accumulated notes off its notes branch, run the gated extraction
-        // over the host store checkout, and let the sweeper's subsequent MergeToDefaultAsync carry the
-        // new/updated Knowledge Base entry into the default branch. Unset → null → the sweep is unchanged.
+        // At-close extraction (Layer-2, design §1). Wired when EnableKnowledgeAgent or
+        // EnableReviewFeedbackAgent is set: on a merged PR, read the PR's accumulated notes off its notes
+        // branch once, run the enabled gated extractions over the host store checkout, and let the sweeper's
+        // subsequent MergeToDefaultAsync carry the new/updated KnowledgeBase/ writes into the default branch.
+        // Both unset → null → the sweep is unchanged.
         var loopFactory = sp.GetRequiredService<IReviewAgentLoopFactory>();
         // Non-null only on the S2S path. The extraction loop there is a HOSTED conversation, and the S2S
         // factory refuses to open one without a workspace — which is why this arm has been a silent no-op on
@@ -653,13 +654,70 @@ if (daemonOptions.EnableToolAssistedReview
         var s2sPreparer = sp.GetService<S2SReviewWorkspacePreparer>();
         var sweeperLeaf = Path.GetFileName(sweeperRepoRoot.TrimEnd('/', '\\'));
         Func<ReviewedPr, CancellationToken, Task<KnowledgeExtractionOutcome>>? extractKnowledgeAsync = null;
-        if (daemonOptions.EnableKnowledgeAgent)
+        if (daemonOptions.EnableKnowledgeAgent || daemonOptions.EnableReviewFeedbackAgent)
         {
             // The committer wraps the gated extraction with the git plumbing that carries its write into the
             // default branch: check the notes branch out, run extraction, and — only when it wrote an entry —
             // commit + push KnowledgeBase/ onto that branch so MergeToDefaultAsync fast-forwards it into main.
             var committer = new KnowledgeExtractionCommitter(
                 hostGit, sweeperRepoRoot, loggerFactory.CreateLogger<KnowledgeExtractionCommitter>());
+            // KnowledgeModelId (empty ⇒ null ⇒ inherit ReviewModelId) lets the extraction passes run on a
+            // dedicated model, e.g. claude-opus-4.8, independent of the gpt-* dispatcher.
+            var knowledgeModelId = string.IsNullOrWhiteSpace(daemonOptions.KnowledgeModelId)
+                ? null
+                : daemonOptions.KnowledgeModelId;
+            var extractionLogger = loggerFactory.CreateLogger("at-close-extraction");
+
+            // Idempotent: reuses the workspace pointing at this leaf across every extraction, and across both
+            // passes of one PR. Non-null only on the S2S path, where the factory refuses to open a hosted
+            // conversation without a workspace.
+            async Task<PreparedReviewWorkspace?> EnsureExtractionWorkspaceAsync(ReviewedPr pr, CancellationToken ct)
+            {
+                if (s2sPreparer is null)
+                {
+                    return null;
+                }
+
+                var workspaceId = await s2sPreparer
+                    .EnsureWorkspaceForLeafAsync(sweeperLeaf, "Knowledge extraction store", ct)
+                    .ConfigureAwait(false);
+                return new PreparedReviewWorkspace(sweeperLeaf, workspaceId, sweeperRepoRoot, pr.PrId);
+            }
+
+            async Task<KnowledgeExtractionResult> ExtractCuratedKnowledgeAsync(
+                ReviewedPr pr, string notesInput, string sourcePrRef, string todayUtc, CancellationToken ct)
+            {
+                var workspace = await EnsureExtractionWorkspaceAsync(pr, ct).ConfigureAwait(false);
+                await using var loop = loopFactory.Create(
+                    DaemonAgentFactory.CreateKnowledgeExtractionProfile(),
+                    modelId: knowledgeModelId,
+                    threadId: $"knowledge-extract-{pr.Provider}-{pr.PrId}",
+                    reviewWorkspace: workspace);
+                var agent = new KnowledgeAgent(
+                    loop, slots.HostFileSystem, loggerFactory.CreateLogger<KnowledgeAgent>());
+                return await agent.TryExtractAsync(sweeperRepoRoot, notesInput, sourcePrRef, todayUtc, ct)
+                    .ConfigureAwait(false);
+            }
+
+            // Per-developer feedback: the same notes, read for what this PR's AUTHOR keeps getting wrong. Runs
+            // on its own conversation so neither pass sees the other's reply — the curated-knowledge prompt
+            // forbids naming people and this one is entirely about one person.
+            async Task<KnowledgeExtractionResult> ExtractReviewFeedbackAsync(
+                ReviewedPr pr, string notesInput, string sourcePrRef, string todayUtc, CancellationToken ct)
+            {
+                var workspace = await EnsureExtractionWorkspaceAsync(pr, ct).ConfigureAwait(false);
+                await using var loop = loopFactory.Create(
+                    DaemonAgentFactory.CreateReviewFeedbackExtractionProfile(),
+                    modelId: knowledgeModelId,
+                    threadId: $"feedback-extract-{pr.Provider}-{pr.PrId}",
+                    reviewWorkspace: workspace);
+                var agent = new ReviewFeedbackAgent(
+                    loop, slots.HostFileSystem, loggerFactory.CreateLogger<ReviewFeedbackAgent>());
+                return await agent
+                    .TryExtractAsync(sweeperRepoRoot, pr.Author, notesInput, sourcePrRef, todayUtc, ct)
+                    .ConfigureAwait(false);
+            }
+
             extractKnowledgeAsync = (pr, ct) =>
             {
                 // sourcePrRef is a stable, human-readable id for the source PR; todayUtc is daemon-supplied
@@ -667,36 +725,35 @@ if (daemonOptions.EnableToolAssistedReview
                 var sourcePrRef = $"{pr.Provider}/{pr.Repo.NormalizedKey}/{pr.PrId}";
                 return committer.RunAsync(pr.Branch, sourcePrRef, async innerCt =>
                 {
+                    // Both passes read the SAME notes and write under KnowledgeBase/ on the same notes branch,
+                    // so they share one committer run: one checkout, one commit, one push.
                     var notesInput = await ReadPrNotesFromBranchAsync(hostGit, sweeperRepoRoot, pr.Branch, innerCt)
                         .ConfigureAwait(false);
-                    var profile = DaemonAgentFactory.CreateKnowledgeExtractionProfile();
-                    // KnowledgeModelId (empty ⇒ null ⇒ inherit ReviewModelId) lets the extraction pass run on a
-                    // dedicated model, e.g. claude-opus-4.8, independent of the gpt-* dispatcher.
-                    var knowledgeModelId = string.IsNullOrWhiteSpace(daemonOptions.KnowledgeModelId)
-                        ? null
-                        : daemonOptions.KnowledgeModelId;
-                    // Idempotent: reuses the workspace pointing at this leaf across every extraction.
-                    PreparedReviewWorkspace? knowledgeWorkspace = null;
-                    if (s2sPreparer is not null)
-                    {
-                        var workspaceId = await s2sPreparer
-                            .EnsureWorkspaceForLeafAsync(sweeperLeaf, "Knowledge extraction store", innerCt)
-                            .ConfigureAwait(false);
-                        knowledgeWorkspace = new PreparedReviewWorkspace(
-                            sweeperLeaf, workspaceId, sweeperRepoRoot, pr.PrId);
-                    }
-
-                    await using var loop = loopFactory.Create(
-                        profile,
-                        modelId: knowledgeModelId,
-                        threadId: $"knowledge-extract-{pr.Provider}-{pr.PrId}",
-                        reviewWorkspace: knowledgeWorkspace);
-                    var agent = new KnowledgeAgent(
-                        loop, slots.HostFileSystem, loggerFactory.CreateLogger<KnowledgeAgent>());
                     var todayUtc = DateTime.UtcNow.ToString(
                         "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
-                    return await agent.TryExtractAsync(sweeperRepoRoot, notesInput, sourcePrRef, todayUtc, innerCt)
-                        .ConfigureAwait(false);
+
+                    var knowledge = daemonOptions.EnableKnowledgeAgent
+                        ? await ExtractCuratedKnowledgeAsync(pr, notesInput, sourcePrRef, todayUtc, innerCt)
+                            .ConfigureAwait(false)
+                        : KnowledgeExtractionResult.Declined(null);
+                    var feedback = daemonOptions.EnableReviewFeedbackAgent
+                        ? await ExtractReviewFeedbackAsync(pr, notesInput, sourcePrRef, todayUtc, innerCt)
+                            .ConfigureAwait(false)
+                        : KnowledgeExtractionResult.Declined(null);
+
+                    // Wrote > Failed > Declined, and a write is committed even when the other pass failed —
+                    // see AtCloseExtractionSeam.Combine for why holding the commit back would be worse.
+                    var combined = AtCloseExtractionSeam.Combine(knowledge, feedback);
+                    if (combined.DroppedPass is { } dropped)
+                    {
+                        extractionLogger.LogWarning(
+                            "At-close extraction for {SourcePr}: the {Pass} pass failed while the other wrote; "
+                                + "committing the write and dropping the failed pass for this PR.",
+                            sourcePrRef,
+                            dropped);
+                    }
+
+                    return combined.Result;
                 }, ct);
             };
         }
@@ -829,6 +886,33 @@ builder.Services.AddSingleton(sp => new RetryGovernor(
     () => DateTimeOffset.UtcNow,
     sp.GetRequiredService<ILogger<RetryGovernor>>()));
 builder.Services.AddSingleton<PrOrchestrator>();
+// The route back for a run the poll can no longer reach. The poll only ever enumerates OPEN PRs inside its
+// recency window, so a run left non-terminal when its PR merges, closes, or goes quiet is never retried by
+// anything again. Registered unless the operator disables it by zeroing the grace period.
+if (daemonOptions.StrandedRunGraceHours > 0)
+{
+    builder.Services.AddSingleton(sp =>
+    {
+        var store = sp.GetRequiredService<ReviewStore>();
+        var providers = sp.GetServices<IPrProvider>().ToList();
+        var orchestrator = sp.GetRequiredService<PrOrchestrator>();
+        return new StrandedRunReconciler(
+            listStrandedRuns: store.ListStrandedRuns,
+            getPrLifecycleAsync: (row, ct) => PrLifecycleSweepSeam.ResolveLifecycleAsync(
+                providers,
+                row.Repo,
+                PrLifecycleSweepSeam.MapProviderNamespace(row.Repo.Provider),
+                row.Run.PrId,
+                ct),
+            resumeAsync: orchestrator.ReconcileAsync,
+            updateRunState: store.UpdateReviewRunState,
+            timeProvider: TimeProvider.System,
+            grace: TimeSpan.FromHours(daemonOptions.StrandedRunGraceHours),
+            scanLimit: daemonOptions.StrandedRunScanLimit,
+            maxResumesPerPass: daemonOptions.StrandedRunMaxResumesPerSweep,
+            logger: sp.GetRequiredService<ILogger<StrandedRunReconciler>>());
+    });
+}
 // The PR-watching loop. Registering a BackgroundService adds NO route, so the host's mapped routes stay
 // exactly the one webhook below. With the allow-list empty (default) it has no targets and is inert.
 builder.Services.AddHostedService(sp => new PrPollingService(
@@ -837,31 +921,34 @@ builder.Services.AddHostedService(sp => new PrPollingService(
     sp.GetRequiredService<ReviewStore>(),
     sp.GetRequiredService<PrOrchestrator>(),
     sp.GetRequiredService<ILogger<PrPollingService>>(),
-    // Maintenance runs on the poller cadence: the PR-lifecycle sweep (registered by the pooled path) and the
-    // deep-link retention sweep (registered by the S2S path when a window is configured). Either or both may
-    // be absent, in which case the poller keeps polling with no sweep (design §4.5).
+    // Maintenance runs on the poller cadence: the PR-lifecycle sweep (registered by the pooled path), the
+    // deep-link retention sweep (registered by the S2S path when a window is configured), and the stranded-run
+    // reconciler. Any of them may be absent, in which case the poller keeps polling with whatever remains
+    // (design §4.5). The reconciler runs last so it observes the state this cycle's polls left behind.
     sweepAsync: ComposeMaintenanceSweep(
         sp.GetService<PrLifecycleSweeper>() is { } lifecycleSweeper ? lifecycleSweeper.SweepAsync : null,
-        sp.GetService<DeepLinkRetentionSweeper>() is { } retentionSweeper ? retentionSweeper.SweepAsync : null)));
+        sp.GetService<DeepLinkRetentionSweeper>() is { } retentionSweeper ? retentionSweeper.SweepAsync : null,
+        sp.GetService<StrandedRunReconciler>() is { } strandedReconciler ? strandedReconciler.SweepAsync : null)));
 
 // Chains the optional maintenance sweeps into the poller's single seam, in the order they were introduced:
-// the lifecycle sweep first, so its today's-semantics timing is unchanged by the retention sweep landing
-// behind it. The poller already wraps the whole seam in its own try/catch, so a throwing sweep skips the
-// rest of THIS cycle and both are retried on the next one — harmless against a 24-hour ceiling checked every
+// the lifecycle sweep first, so its today's-semantics timing is unchanged by the sweeps landing behind it.
+// The poller already wraps the whole seam in its own try/catch, so a throwing sweep skips the rest of THIS
+// cycle and all of them are retried on the next one — harmless against a 24-hour ceiling checked every
 // 30 seconds.
-static Func<CancellationToken, Task>? ComposeMaintenanceSweep(
-    Func<CancellationToken, Task>? first,
-    Func<CancellationToken, Task>? second)
+static Func<CancellationToken, Task>? ComposeMaintenanceSweep(params Func<CancellationToken, Task>?[] sweeps)
 {
-    if (first is null || second is null)
+    var present = sweeps.Where(s => s is not null).Select(s => s!).ToArray();
+    if (present.Length <= 1)
     {
-        return first ?? second;
+        return present.FirstOrDefault();
     }
 
     return async ct =>
     {
-        await first(ct).ConfigureAwait(false);
-        await second(ct).ConfigureAwait(false);
+        foreach (var sweep in present)
+        {
+            await sweep(ct).ConfigureAwait(false);
+        }
     };
 }
 

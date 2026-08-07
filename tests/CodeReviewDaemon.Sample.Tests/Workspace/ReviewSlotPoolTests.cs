@@ -1,4 +1,5 @@
 using CodeReviewDaemon.Sample.Agents;
+using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -8,15 +9,23 @@ public class ReviewSlotPoolTests : IDisposable
 {
     private readonly string _hostRoot = Path.Combine(Path.GetTempPath(), "crd-pool-" + Guid.NewGuid().ToString("N"));
 
+    /// <summary>Where a planted link points. Outside the pool, so following one is visible as an escape.</summary>
+    private readonly string _outsideRoot = Path.Combine(
+        Path.GetTempPath(), "crd-outside-" + Guid.NewGuid().ToString("N"));
+
     public void Dispose()
     {
-        try
+        foreach (var root in new[] { _hostRoot, _outsideRoot })
         {
-            Directory.Delete(_hostRoot, true);
-        }
-        catch
-        {
-            // Best-effort cleanup only; leaving a stray temp dir must never fail the test.
+            DirectoryLink.UnlinkAllUnder(root);
+            try
+            {
+                Directory.Delete(root, true);
+            }
+            catch
+            {
+                // Best-effort cleanup only; leaving a stray temp dir must never fail the test.
+            }
         }
     }
 
@@ -121,5 +130,119 @@ public class ReviewSlotPoolTests : IDisposable
             1, _hostRoot, "scratch", NullLogger<ReviewSlotPool>.Instance, slotDirPrefix: "  ");
 
         act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task LeaseAsync_WhenTheSlotDirIsRedirected_RefusesAndCreatesNothingThroughIt()
+    {
+        Directory.CreateDirectory(_hostRoot);
+        Directory.CreateDirectory(_outsideRoot);
+        DirectoryLink.Create(Path.Combine(_hostRoot, "slot-0"), _outsideRoot);
+        var pool = CreatePool(maxSlots: 1);
+
+        var act = async () => await pool.LeaseAsync(default);
+
+        await act.Should().ThrowAsync<SlotHostPathRefusedException>();
+        Directory.Exists(Path.Combine(_outsideRoot, "scratch")).Should().BeFalse(
+            "CreateDirectory succeeds through a junction, so an unguarded lease builds the slot outside the pool");
+    }
+
+    [Fact]
+    public async Task LeaseAsync_WhenOnlyTheStoreIsRedirected_StillRefuses()
+    {
+        Directory.CreateDirectory(Path.Combine(_hostRoot, "slot-0"));
+        Directory.CreateDirectory(_outsideRoot);
+        DirectoryLink.Create(Path.Combine(_hostRoot, "slot-0", "store"), _outsideRoot);
+        var pool = CreatePool(maxSlots: 1);
+
+        var act = async () => await pool.LeaseAsync(default);
+
+        await act.Should().ThrowAsync<SlotHostPathRefusedException>()
+            .WithMessage("*store*", "the store is the path the clone and the wipe both write to");
+    }
+
+    [Fact]
+    public async Task LeaseAsync_WhenOnlyTheScratchDirIsRedirected_StillRefuses()
+    {
+        Directory.CreateDirectory(Path.Combine(_hostRoot, "slot-0"));
+        Directory.CreateDirectory(_outsideRoot);
+        DirectoryLink.Create(Path.Combine(_hostRoot, "slot-0", "scratch"), _outsideRoot);
+        var pool = CreatePool(maxSlots: 1);
+
+        var act = async () => await pool.LeaseAsync(default);
+
+        await act.Should().ThrowAsync<SlotHostPathRefusedException>()
+            .WithMessage("*scratch*", "the lease creates the scratch dir, and the preparer later clears it");
+    }
+
+    [Fact]
+    public async Task LeaseAsync_WhenALinkSitsBeneathTheRedirectedSlotDir_NamesTheSlotDirAndNotTheFarEnd()
+    {
+        Directory.CreateDirectory(_hostRoot);
+        Directory.CreateDirectory(Path.Combine(_outsideRoot, "elsewhere"));
+        DirectoryLink.Create(Path.Combine(_hostRoot, "slot-0"), _outsideRoot);
+        DirectoryLink.Create(Path.Combine(_outsideRoot, "store"), Path.Combine(_outsideRoot, "elsewhere"));
+        var pool = CreatePool(maxSlots: 1);
+
+        var act = async () => await pool.LeaseAsync(default);
+
+        var refusal = await act.Should().ThrowAsync<SlotHostPathRefusedException>();
+        refusal.Which.Message.Should()
+            .Contain($"'{Path.Combine(_hostRoot, "slot-0")}'")
+            .And.NotContain(
+                Path.Combine(_hostRoot, "slot-0", "store"),
+                "checking a child resolves THROUGH the slot dir, so a child-first order reports an entry the "
+                    + "operator will never find at the address the message gives");
+    }
+
+    [Fact]
+    public async Task LeaseAsync_AfterARefusal_HandsOutAFreshAddressInsteadOfTheRefusedOne()
+    {
+        Directory.CreateDirectory(_hostRoot);
+        Directory.CreateDirectory(_outsideRoot);
+        DirectoryLink.Create(Path.Combine(_hostRoot, "slot-0"), _outsideRoot);
+        var pool = CreatePool(maxSlots: 1);
+        var refused = async () => await pool.LeaseAsync(default);
+        await refused.Should().ThrowAsync<SlotHostPathRefusedException>();
+
+        var next = await pool.LeaseAsync(default).WaitAsync(TimeSpan.FromSeconds(10));
+
+        next.Index.Should().Be(1, "the free list is a stack, so recycling a refused index refuses every later lease");
+        next.HostPath.Should().Be(Path.Combine(_hostRoot, "slot-1"));
+        Directory.Exists(next.ScratchPath).Should().BeTrue("the pool is still serving leases at full concurrency");
+    }
+
+    [Fact]
+    public async Task RetireAsync_DoesNotHandTheRetiredAddressOutAgain()
+    {
+        // The caller's half of the same rule the refused LEASE above already follows. A refusal raised during
+        // PREPARATION names an entry beneath the slot — a descendant of the three paths the lease guard checks —
+        // so the next lease of that index sees nothing wrong, hands it out, and the preparation refuses again.
+        // The free list is a stack, so ReturnAsync would make the poisoned index the VERY NEXT one out: a run
+        // per cycle, each burning a full lease and a re-clone attempt, with nothing that ever breaks it.
+        var pool = CreatePool(maxSlots: 2);
+        var first = await pool.LeaseAsync(default);
+
+        await pool.RetireAsync(first, default);
+        var next = await pool.LeaseAsync(default);
+
+        next.Index.Should().NotBe(first.Index, "a retired address is spent until somebody looks at the disk");
+        next.Index.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RetireAsync_StillReleasesTheLease()
+    {
+        // Retiring costs an address and must cost nothing else. If it withheld the permit as well as the index,
+        // one planted entry would permanently cut the pool's concurrency by one, and N of them would stop the
+        // daemon dead — turning a contained refusal into the outage the refusal was supposed to avoid.
+        var pool = CreatePool(maxSlots: 1);
+        var first = await pool.LeaseAsync(default);
+
+        await pool.RetireAsync(first, default);
+        var next = await pool.LeaseAsync(default).WaitAsync(TimeSpan.FromSeconds(10));
+
+        next.Index.Should().Be(1);
+        Directory.Exists(next.ScratchPath).Should().BeTrue();
     }
 }

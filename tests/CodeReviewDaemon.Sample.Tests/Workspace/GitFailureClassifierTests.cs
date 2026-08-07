@@ -30,6 +30,27 @@ public class GitFailureClassifierTests
     public void Non_corruption_stderr_containing_broad_fragments_is_not_Corrupt(string stderr) =>
         GitFailureClassifier.Classify(stderr).Should().NotBe(GitFailureKind.Corrupt);
 
+    [Theory]
+    [InlineData("fatal: not a git repository: sub/../.git/modules/sub")]
+    [InlineData(@"fatal: not a git repository: sub/../.git\modules\sub")]
+    public void A_deinitialized_submodules_missing_gitdir_is_not_Corrupt(string stderr) =>
+        // A prior lease can leave a submodule registered with its `.git/modules/<name>` gitdir removed. Read as
+        // corruption, that drove SlotHygiene into a second force-reset pass and then a re-clone — of a store
+        // whose superproject was never broken, and which the re-clone could not have fixed anyway, because
+        // hygiene leaves a deinit'd submodule for the review's own policy-enforced initializer to re-establish.
+        GitFailureClassifier.Classify(stderr).Should().NotBe(GitFailureKind.Corrupt);
+
+    [Fact]
+    public void A_missing_nested_gitdir_alongside_real_corruption_still_classifies_as_Corrupt() =>
+        // The subtraction removes exactly one marker, not the whole verdict: a stderr that also carries a stuck
+        // lock is still a slot a fresh clone repairs.
+        GitFailureClassifier
+            .Classify(
+                "fatal: not a git repository: sub/../.git/modules/sub\n"
+                    + "fatal: Unable to create '/store/.git/modules/repos/X/index.lock': File exists.")
+            .Should()
+            .Be(GitFailureKind.Corrupt);
+
     [Fact]
     public void Unrecognized_stderr_classifies_as_Unknown() =>
         GitFailureClassifier.Classify("something weird").Should().Be(GitFailureKind.Unknown);

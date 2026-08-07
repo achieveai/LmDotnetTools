@@ -162,12 +162,12 @@ internal sealed class ReviewStore : IDisposable
                 repo_id, pr_id, head_sha, base_sha, trigger_watermark, review_kind, variant_id, mode,
                 merge_sha, model_provider, model_id, prompt_template_hash, policy_bundle_version,
                 feature_flag_snapshot, stage, workflow_status, pr_lifecycle_state,
-                is_fork_pr, is_target_repo_public, created_at, updated_at)
+                is_fork_pr, is_target_repo_public, pr_author, created_at, updated_at)
             VALUES (
                 $repoId, $prId, $head, $base, $watermark, $kind, $variant, $mode,
                 $merge, $modelProvider, $modelId, $promptHash, $policyVersion,
                 $flags, $stage, $workflow, $prState,
-                $isForkPr, $isTargetRepoPublic, $now, $now);
+                $isForkPr, $isTargetRepoPublic, $prAuthor, $now, $now);
             """;
         _ = insert.Parameters.AddWithValue("$repoId", run.RepoId);
         _ = insert.Parameters.AddWithValue("$prId", run.PrId);
@@ -188,6 +188,7 @@ internal sealed class ReviewStore : IDisposable
         _ = insert.Parameters.AddWithValue("$prState", run.PrLifecycleState.ToString());
         _ = insert.Parameters.AddWithValue("$isForkPr", run.IsForkPr);
         _ = insert.Parameters.AddWithValue("$isTargetRepoPublic", run.IsTargetRepoPublic);
+        _ = insert.Parameters.AddWithValue("$prAuthor", (object?)run.PrAuthor ?? DBNull.Value);
         _ = insert.Parameters.AddWithValue("$now", now);
         _ = insert.ExecuteNonQuery();
 
@@ -302,10 +303,16 @@ internal sealed class ReviewStore : IDisposable
     private const string PrimaryVariantId = "primary";
 
     /// <summary>
-    /// Returns one row per PR that has at least one <c>review_run</c> (DISTINCT over the reviewed
+    /// Returns one row per PR that has at least one <c>review_run</c> (grouped over the reviewed
     /// (repo, pr) pairs — multiple runs, variants, or head shas for the same PR collapse to a single
     /// row). Consumed by the PR-lifecycle sweeper to enumerate the PRs it must re-poll for close/merge
     /// transitions; the caller derives the per-PR branch name itself.
+    /// <para>
+    /// Grouped rather than <c>DISTINCT</c> because of <c>pr_author</c>: a PR reviewed both before and
+    /// after the author column existed has runs with and without it, and a DISTINCT over the author
+    /// would emit that PR twice — sweeping it twice and, worse, once with the author erased.
+    /// <c>MAX</c> ignores NULLs, so a known author always beats an unknown one.
+    /// </para>
     /// </summary>
     /// <remarks>
     /// Keeps its <c>Async</c> signature (the sweeper awaits it) but runs synchronously under the store's
@@ -321,9 +328,11 @@ internal sealed class ReviewStore : IDisposable
         using var gate = _gate.EnterScope();
         using var command = _connection.CreateCommand();
         command.CommandText = """
-            SELECT DISTINCT r.provider, r.org_or_owner, r.project, r.repo_name, r.repo_stable_id, rr.pr_id
+            SELECT r.provider, r.org_or_owner, r.project, r.repo_name, r.repo_stable_id, rr.pr_id,
+                   MAX(rr.pr_author) AS pr_author
             FROM review_run rr
-            JOIN repo r ON r.id = rr.repo_id;
+            JOIN repo r ON r.id = rr.repo_id
+            GROUP BY r.provider, r.org_or_owner, r.project, r.repo_name, r.repo_stable_id, rr.pr_id;
             """;
         using var reader = command.ExecuteReader();
         while (reader.Read())
@@ -336,10 +345,99 @@ internal sealed class ReviewStore : IDisposable
                 RepoName = reader.GetString(reader.GetOrdinal("repo_name")),
                 RepoStableId = GetNullableString(reader, "repo_stable_id"),
             };
-            results.Add(new ReviewedPrRow(repo, repo.Provider, reader.GetString(reader.GetOrdinal("pr_id"))));
+            results.Add(new ReviewedPrRow(
+                repo,
+                repo.Provider,
+                reader.GetString(reader.GetOrdinal("pr_id")),
+                GetNullableString(reader, "pr_author")));
         }
 
         return Task.FromResult<IReadOnlyList<ReviewedPrRow>>(results);
+    }
+
+    /// <summary>
+    /// Returns the non-terminal runs that nothing else will ever advance — <c>workflow_status</c> is not
+    /// <see cref="WorkflowStatus.Completed"/> and <c>updated_at</c> is older than
+    /// <paramref name="staleBefore"/> — oldest first, capped at <paramref name="limit"/>.
+    /// <para>
+    /// A run only ever advances when a poll enumerates its PR, and the poll lists the OPEN pull requests
+    /// inside the operator's recency window. So a run whose PR has since closed, or whose PR has been quiet
+    /// for longer than that window, has no route back into the daemon at all: no retry ever arrives, and the
+    /// self-healing built into the retry path (a re-leased slot clearing its own stale locks, say) never gets
+    /// to run. Nothing else in the daemon reads <c>review_run</c> again. This query is that route.
+    /// </para>
+    /// <para>
+    /// <paramref name="staleBefore"/> is what keeps the query off runs the poll is still working: a healthy
+    /// run stamps <c>updated_at</c> at every stage boundary, so any grace period comfortably larger than a
+    /// stage deadline excludes everything currently in flight. Comparing the stored text against
+    /// <see cref="Utc"/> is sound because every timestamp is written round-trip (<c>"O"</c>) and therefore
+    /// orders lexicographically the same way it orders chronologically.
+    /// </para>
+    /// <para>
+    /// <see cref="StrandedRunRow.Superseded"/> reports whether a later run has already re-reviewed what this
+    /// one owes: same PR, same <c>review_kind</c> and <c>variant_id</c>, at a DIFFERENT COMMIT PAIR — either
+    /// <c>head_sha</c> or <c>base_sha</c> moved. What a review is ABOUT is the diff, and the diff is both
+    /// endpoints: a target-branch rebase moves <c>base_sha</c> under an unchanged head, and the later run then
+    /// reviewed the PR as it now stands while this one still owes findings about changes that have since landed
+    /// in the target branch. Keying on the head alone would resume it and, on a posting daemon, publish them.
+    /// The pair is also exactly the commit component of the identity tuple this store keys runs on, so the two
+    /// rows are legitimately distinct runs and the later one is the current one.
+    /// That distinction is the caller's safety rail — resuming a superseded run would review, and on a posting
+    /// daemon publish, a diff that a newer commit pair has already replaced. Each half of the predicate is load
+    /// bearing in the other direction too, because the caller's response to the flag is to retire the run
+    /// permanently, and this listing is the run's only remaining route back. Merely "a later run for the same
+    /// PR" also matches a sibling review that never produced this run's output at all — a second variant, or
+    /// another kind — and matches a duplicate row at the same base AND head, where nothing went stale. Either
+    /// one would silently drop a review that was still owed. <c>mode</c> is deliberately absent: it is an
+    /// authorization decision made at post time, not part of what the review IS (see
+    /// <see cref="CreateOrGetReviewRun"/>), so a newer head reviewed after posting was toggled still supersedes.
+    /// </para>
+    /// </summary>
+    /// <remarks>
+    /// One capped query, no offset paging: the rows are ordered by <c>id</c> but selected on
+    /// <c>workflow_status</c>, which the caller mutates as it works. A second page taken by offset over a
+    /// predicate that has shifted under it would skip rows.
+    /// </remarks>
+    public IReadOnlyList<StrandedRunRow> ListStrandedRuns(DateTimeOffset staleBefore, int limit)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+
+        var results = new List<StrandedRunRow>();
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT rr.*, r.provider, r.org_or_owner, r.project, r.repo_name, r.repo_stable_id,
+                   EXISTS (SELECT 1 FROM review_run n
+                            WHERE n.repo_id = rr.repo_id AND n.pr_id = rr.pr_id AND n.id > rr.id
+                              AND n.review_kind = rr.review_kind AND n.variant_id = rr.variant_id
+                              AND (n.head_sha <> rr.head_sha OR n.base_sha <> rr.base_sha)) AS superseded
+            FROM review_run rr
+            JOIN repo r ON r.id = rr.repo_id
+            WHERE rr.workflow_status <> $completed AND rr.updated_at < $staleBefore
+            ORDER BY rr.id
+            LIMIT $limit;
+            """;
+        _ = command.Parameters.AddWithValue("$completed", WorkflowStatus.Completed.ToString());
+        _ = command.Parameters.AddWithValue("$staleBefore", Utc(staleBefore));
+        _ = command.Parameters.AddWithValue("$limit", limit);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var repo = new RepoIdentity
+            {
+                Provider = reader.GetString(reader.GetOrdinal("provider")),
+                OrgOrOwner = reader.GetString(reader.GetOrdinal("org_or_owner")),
+                Project = GetNullableString(reader, "project"),
+                RepoName = reader.GetString(reader.GetOrdinal("repo_name")),
+                RepoStableId = GetNullableString(reader, "repo_stable_id"),
+            };
+            results.Add(new StrandedRunRow(
+                MapReviewRun(reader),
+                repo,
+                reader.GetInt64(reader.GetOrdinal("superseded")) != 0));
+        }
+
+        return results;
     }
 
     // ── poll_cursor (§12) ────────────────────────────────────────────────────────────────────────
@@ -694,6 +792,7 @@ internal sealed class ReviewStore : IDisposable
         PrLifecycleState = Enum.Parse<PrLifecycleState>(reader.GetString(reader.GetOrdinal("pr_lifecycle_state"))),
         IsForkPr = reader.GetBoolean(reader.GetOrdinal("is_fork_pr")),
         IsTargetRepoPublic = reader.GetBoolean(reader.GetOrdinal("is_target_repo_public")),
+        PrAuthor = GetNullableString(reader, "pr_author"),
     };
 
     private static OutboxEntry MapOutbox(SqliteDataReader reader) => new()
@@ -730,8 +829,19 @@ internal sealed class ReviewStore : IDisposable
 /// A PR that has been reviewed at least once, as enumerated by <see cref="ReviewStore.ListReviewedPrsAsync"/>
 /// for the PR-lifecycle sweeper. Carries the repo <paramref name="Repo"/> and its <paramref name="Provider"/>
 /// (the provider to poll) plus the external <paramref name="PrId"/>; the caller derives any branch name.
+/// <paramref name="Author"/> is the identity that opened the PR, or null when no run recorded one —
+/// the at-close feedback extraction writes nothing rather than guessing.
 /// </summary>
-internal sealed record ReviewedPrRow(RepoIdentity Repo, string Provider, string PrId);
+internal sealed record ReviewedPrRow(RepoIdentity Repo, string Provider, string PrId, string? Author = null);
+
+/// <summary>
+/// One non-terminal run that the poll can no longer reach, as enumerated by
+/// <see cref="ReviewStore.ListStrandedRuns"/>. <paramref name="Repo"/> is joined in because
+/// <see cref="ReviewRun"/> carries only the local <c>repo_id</c> and the caller must ask the PR provider what
+/// became of the PR. <paramref name="Superseded"/> is true when a later run exists for the same (repo, PR) —
+/// this run's head has been reviewed again since, so it must be retired rather than resumed.
+/// </summary>
+internal sealed record StrandedRunRow(ReviewRun Run, RepoIdentity Repo, bool Superseded);
 
 /// <summary>
 /// The re-review context for a PR, as computed by <see cref="ReviewStore.GetPriorReviewSummary"/>:
