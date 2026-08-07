@@ -337,11 +337,27 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
             // never learns there is an address to go and look at. The refusal names the offending entry, so it
             // is logged at Error with that entry in it.
             //
-            // Not rethrown, because there is nothing here for a caller to do with it. This runs from the run's
-            // terminal cleanup, where a throw would abandon the remaining teardown; and unlike the pooled
-            // preparer's wipe there is no address to retire, since the next run provisions a fresh
-            // review-run-{id} name rather than recycling this one. Leaving the directory standing is the whole
-            // of the cost, and it is the fail-closed outcome: nothing was followed, nothing was stripped.
+            // Not rethrown, because nothing here is at risk and everything at the CALLERS is. The sandbox
+            // session is destroyed at the top of this method, long before the wipe can refuse, and this wipe is
+            // the last statement in it — so there is no local teardown left for a throw to abandon. What a throw
+            // does abandon is pool bookkeeping queued behind the call at all three call sites:
+            //
+            //   ReleaseReviewLeaseAsync — Pool.ReturnAsync is the NEXT statement, and the lease has already been
+            //     taken out of _leasedReviews by the TryRemove in the `if` that guards the block. A throw here
+            //     leaks the slot PERMANENTLY: the entry that would let any other path return it is already gone.
+            //   the pooled-prepare finally — RetireAsync/ReturnAsync sit after this call inside a finally, so a
+            //     throw both skips them and masks the in-flight exception that decided which of the two to run.
+            //   the Posted-stage cleanup — abandons the whole retention block: notes commit, strip, slot return.
+            //     That site survives on its own, since the lease is read with TryGetValue and left in place; but
+            //     the exception then reaches the orchestrator's terminal finally, which calls
+            //     ReleaseReviewLeaseAsync, which calls this method again, refuses again on the same entry — the
+            //     refusal is deterministic, the directory is deliberately left standing — and lands on the
+            //     permanent leak above.
+            //
+            // So a rethrow would convert a contained and logged refusal into a stuck pooled slot, which is the
+            // failure class this PR exists to fix. The swallow is load-bearing, not a concession. Leaving the
+            // directory standing is the whole of the cost, and it is the fail-closed outcome: nothing was
+            // followed, nothing was stripped.
             _logger.LogError(
                 ex,
                 "Host-dir cleanup REFUSED for {HostDir} — it was not deleted and nothing under it was touched. "
