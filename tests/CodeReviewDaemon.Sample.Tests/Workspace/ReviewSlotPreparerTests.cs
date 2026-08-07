@@ -196,7 +196,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
 
         var act = async () => await preparer.RecloneStoreAsync(storeRoot, StoreUrl, CancellationToken.None);
 
-        _ = await act.Should().ThrowAsync<InvalidOperationException>();
+        _ = await act.Should().ThrowAsync<SlotHostPathRefusedException>();
         File.GetAttributes(victim).HasFlag(FileAttributes.ReadOnly).Should().BeTrue(
             "clearing read-only THROUGH the root is the same write outside the store the child check refuses");
         HostPathGuard.Check(storeRoot).Should().Be(
@@ -234,7 +234,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
             slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
             CancellationToken.None);
 
-        _ = await act.Should().ThrowAsync<InvalidOperationException>();
+        _ = await act.Should().ThrowAsync<SlotHostPathRefusedException>();
         File.GetAttributes(victim).HasFlag(FileAttributes.ReadOnly).Should().BeTrue();
         HostPathGuard.Check(slot.ScratchPath).Should().Be(
             new HostPathRefusal(slot.ScratchPath, HostPathVerdict.Redirected),
@@ -265,7 +265,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
 
         var act = async () => await preparer.RecloneStoreAsync(storeRoot, StoreUrl, CancellationToken.None);
 
-        _ = await act.Should().ThrowAsync<InvalidOperationException>();
+        _ = await act.Should().ThrowAsync<SlotHostPathRefusedException>();
         runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
             command => command.Contains(" clone ", StringComparison.Ordinal),
             "a root that reads as absent is still a root that redirects, and cloning onto it writes outside");
@@ -293,7 +293,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
 
         var act = async () => await preparer.RecloneStoreAsync(denied.Path, StoreUrl, CancellationToken.None);
 
-        _ = await act.Should().ThrowAsync<InvalidOperationException>();
+        _ = await act.Should().ThrowAsync<SlotHostPathRefusedException>();
         runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
             command => command.Contains(" clone ", StringComparison.Ordinal),
             "cloning onto a path the daemon could not inspect is the write the whole check exists to prevent");
@@ -301,6 +301,34 @@ public sealed class ReviewSlotPreparerTests : IDisposable
             new HostPathRefusal(denied.Path, HostPathVerdict.Unreadable),
             "the refusal has to name what actually stopped it — reporting a link that was never there sends "
                 + "the next reader looking for one");
+    }
+
+    [RequiresUnreadableEntryFact("a listable directory cannot show the difference between empty and un-listable")]
+    public async Task RecloneStoreAsync_HostPreparer_RefusesADirectoryInsideTheStoreItCannotList()
+    {
+        // The walk decides what to delete from what it enumerates, so a directory whose CONTENTS will not list
+        // is the same failure to establish containment as an entry whose attributes will not read — one call
+        // later. Returning an empty array there says "nothing inside", and the delete below then removes the
+        // directory without ever having looked in it. Only ListDirectory is denied, so TRAVERSAL survives and
+        // git goes on opening paths underneath by name: nothing else in the sequence reports a thing.
+        var slot = CreateSlot();
+        var opaque = Path.Combine(slot.StorePath, ".git", "objects");
+        _ = Directory.CreateDirectory(opaque);
+        using var denied = UnreadableEntry.UnlistableDirectory(opaque);
+        var runner = new FakeSandboxCommandRunner();
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), new HostFileSystem(), "github", NullLoggerFactory.Instance);
+
+        var act = async () => await preparer.RecloneStoreAsync(slot.StorePath, StoreUrl, CancellationToken.None);
+
+        var refusal = await act.Should().ThrowAsync<SlotHostPathRefusedException>();
+        refusal.Which.Message.Should().Contain(opaque, "the message is the operator's only account of what stopped");
+        refusal.Which.InnerException.Should().BeOfType<UnauthorizedAccessException>(
+            "a denial and a failing device produce the same refusal but not the same operator response");
+        Directory.Exists(opaque).Should().BeTrue("refusing means refusing both ways — it is not deleted either");
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
+            command => command.Contains(" clone ", StringComparison.Ordinal),
+            "a clone here would write a fresh store over a directory nobody established anything about");
     }
 
     [Fact]

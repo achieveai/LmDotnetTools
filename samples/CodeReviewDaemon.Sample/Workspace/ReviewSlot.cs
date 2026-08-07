@@ -11,6 +11,21 @@ internal interface IReviewSlotPool
     Task<ReviewSlot> LeaseAsync(CancellationToken cancellationToken);
 
     Task ReturnAsync(ReviewSlot slot, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Releases the lease WITHOUT putting the address back into circulation, for a slot whose host paths could
+    /// not be established as contained (<see cref="SlotHostPathRefusedException"/>).
+    /// <para>
+    /// The distinction from <see cref="ReturnAsync"/> is the whole reason this exists. Returning is for a slot
+    /// whose next lease might go differently, which is every ordinary failure. A refusal is not one: it is a
+    /// statement about the ADDRESS, and it stays true until somebody looks at the disk. The free list is a
+    /// stack, so returning a refused index makes it the very next one handed out — one planted entry would then
+    /// consume a slot's worth of the pool's throughput on a run that cannot possibly prepare, indefinitely.
+    /// Retiring costs a directory name and nothing else: the gate is released either way, so the pool goes on
+    /// serving its full concurrency at a fresh address.
+    /// </para>
+    /// </summary>
+    Task RetireAsync(ReviewSlot slot, CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -68,16 +83,9 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
         catch (SlotHostPathRefusedException)
         {
             // Every other failure here is about this attempt, so the index goes back on the free list and the next
-            // lease retries it. A refusal is about the ADDRESS, and it will still be true on the next lease: the
-            // free list is a stack, so pushing a refused index back makes it the very next one handed out, and a
-            // single planted junction under one slot would then refuse every lease the pool ever serves. Retiring
-            // the index costs a directory name and nothing else — the gate is released either way, so concurrency
-            // is unchanged and the next lease allocates a fresh address.
-            _logger.LogError(
-                "Retiring slot index {SlotIndex} at {HostPath}: its host paths could not be established as contained.",
-                index,
-                slot.HostPath);
-            _gate.Release();
+            // lease retries it. A refusal is about the ADDRESS, and it will still be true on the next lease, so it
+            // is retired instead — see the reasoning on IReviewSlotPool.RetireAsync.
+            Retire(slot);
             throw;
         }
         catch
@@ -102,6 +110,24 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
 
         _gate.Release();
         return Task.CompletedTask;
+    }
+
+    public Task RetireAsync(ReviewSlot slot, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(slot);
+        Retire(slot);
+        return Task.CompletedTask;
+    }
+
+    private void Retire(ReviewSlot slot)
+    {
+        _logger.LogError(
+            "Retiring slot index {SlotIndex} at {HostPath}: its host paths could not be established as contained. "
+                + "The address is not returned to the pool; concurrency is unaffected and the next lease allocates a "
+                + "fresh one.",
+            slot.Index,
+            slot.HostPath);
+        _gate.Release();
     }
 
     /// <summary>

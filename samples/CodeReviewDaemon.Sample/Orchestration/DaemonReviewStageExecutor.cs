@@ -688,8 +688,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// the review agent's tools address. Returns <c>true</c> when it handled the run (the lease is carried
     /// forward on <see cref="_leasedReviews"/> for the review + commit-notes + return), or <c>false</c> when
     /// the reviewed repo is not a submodule of the store so the caller falls back to the per-run checkout.
-    /// The slot is always returned on any decline/failure so a transient error can never leak pool capacity;
+    /// The slot is always released on any decline/failure so a transient error can never leak pool capacity;
     /// a genuine prep/diff failure surfaces (throws) so the stage retries with no partial artifact (§8).
+    /// <b>Released</b>, not necessarily returned: a <see cref="SlotHostPathRefusedException"/> retires the
+    /// address instead. That distinction is the whole point — see <see cref="IReviewSlotPool.RetireAsync"/>.
+    /// This is the one place a refusal raised anywhere in preparation can reach the pool, because every
+    /// preparer entry point on the pooled path (both the in-process and the S2S branch) runs inside this
+    /// <c>try</c>, and the two other <c>ReturnAsync</c> call sites act on a lease that already handed off.
     /// </summary>
     private async Task<bool> TryPooledFetchContextAsync(
         ReviewRun run, RepoIdentity repo, string provider, CancellationToken cancellationToken)
@@ -697,6 +702,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var storeUrl = _options.ResolvedStoreUrl!;
         var slot = await _slotWorkspace!.Pool.LeaseAsync(cancellationToken).ConfigureAwait(false);
         var handedOff = false;
+        var refused = false;
         ReviewRunSession? session = null;
         try
         {
@@ -793,6 +799,17 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 ManifestFileCount(fileManifest), prepared.TargetDir);
             return true;
         }
+        catch (SlotHostPathRefusedException)
+        {
+            // Preparation refused to cross an entry under this slot that it could not establish as contained.
+            // Nothing about a later attempt changes that, and the pool's free list is a STACK, so returning the
+            // index here would hand it straight back to the next run — which would lease it, refuse again, and
+            // return it again, forever, at a cost of a full lease plus a re-clone attempt per cycle. The lease
+            // guard cannot break the cycle either: it checks the three slot paths, and the offending entry is a
+            // descendant of one of them, so the next lease sees nothing wrong. Retire the address instead.
+            refused = true;
+            throw;
+        }
         finally
         {
             if (!handedOff)
@@ -802,7 +819,11 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                     await _provisioner.DestroyAsync(run, CancellationToken.None).ConfigureAwait(false);
                 }
 
-                await _slotWorkspace.Pool.ReturnAsync(slot, CancellationToken.None).ConfigureAwait(false);
+                var pool = _slotWorkspace.Pool;
+                await (refused
+                        ? pool.RetireAsync(slot, CancellationToken.None)
+                        : pool.ReturnAsync(slot, CancellationToken.None))
+                    .ConfigureAwait(false);
             }
         }
     }
@@ -880,6 +901,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// structurally unusable (<see cref="SlotNeedsRecloneException"/>) or a git step fails corrupt
     /// (<see cref="SlotCorruptException"/>), the slot's store is re-cloned from scratch and prepare is
     /// retried ONCE. A second failure surfaces so the stage retries and the retry governor bounds it.
+    /// <para>
+    /// The filter is by TYPE and not by "prepare failed" for a reason. A
+    /// <see cref="SlotHostPathRefusedException"/> also comes out of prepare, and the re-clone is precisely the
+    /// wrong answer to it: the wipe it starts with walks into the entry the refusal declined to cross. Widening
+    /// this catch — or adding a bare <c>catch</c> beside it — turns the recovery step into the redirected write.
+    /// </para>
     /// </summary>
     private async Task<PreparedCheckout> PrepareWithRecoveryAsync(
         IReviewSlotPreparer preparer,

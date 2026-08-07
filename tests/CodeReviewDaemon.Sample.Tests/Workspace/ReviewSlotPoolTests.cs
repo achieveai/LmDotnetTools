@@ -211,4 +211,38 @@ public class ReviewSlotPoolTests : IDisposable
         next.HostPath.Should().Be(Path.Combine(_hostRoot, "slot-1"));
         Directory.Exists(next.ScratchPath).Should().BeTrue("the pool is still serving leases at full concurrency");
     }
+
+    [Fact]
+    public async Task RetireAsync_DoesNotHandTheRetiredAddressOutAgain()
+    {
+        // The caller's half of the same rule the refused LEASE above already follows. A refusal raised during
+        // PREPARATION names an entry beneath the slot — a descendant of the three paths the lease guard checks —
+        // so the next lease of that index sees nothing wrong, hands it out, and the preparation refuses again.
+        // The free list is a stack, so ReturnAsync would make the poisoned index the VERY NEXT one out: a run
+        // per cycle, each burning a full lease and a re-clone attempt, with nothing that ever breaks it.
+        var pool = CreatePool(maxSlots: 2);
+        var first = await pool.LeaseAsync(default);
+
+        await pool.RetireAsync(first, default);
+        var next = await pool.LeaseAsync(default);
+
+        next.Index.Should().NotBe(first.Index, "a retired address is spent until somebody looks at the disk");
+        next.Index.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RetireAsync_StillReleasesTheLease()
+    {
+        // Retiring costs an address and must cost nothing else. If it withheld the permit as well as the index,
+        // one planted entry would permanently cut the pool's concurrency by one, and N of them would stop the
+        // daemon dead — turning a contained refusal into the outage the refusal was supposed to avoid.
+        var pool = CreatePool(maxSlots: 1);
+        var first = await pool.LeaseAsync(default);
+
+        await pool.RetireAsync(first, default);
+        var next = await pool.LeaseAsync(default).WaitAsync(TimeSpan.FromSeconds(10));
+
+        next.Index.Should().Be(1);
+        Directory.Exists(next.ScratchPath).Should().BeTrue();
+    }
 }

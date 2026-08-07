@@ -133,6 +133,33 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task ContextReady_retires_the_slot_instead_of_returning_it_when_preparation_refuses_a_host_path()
+    {
+        using var fixture = Fixture.Create();
+        // The refusal above is about the ATTEMPT, so the slot goes back. This one is about the ADDRESS: an entry
+        // under the slot could not be established as contained, and it will still be uncontained on the next
+        // lease. The lease guard cannot catch it — it checks the three slot paths and the entry is a descendant
+        // of one — so returning the index to a free list that is a STACK hands it to the very next run, which
+        // refuses again, forever. Retiring costs one directory name; the permit is released either way.
+        fixture.Preparer.ThrowThenSucceed.Enqueue(
+            new SlotHostPathRefusedException("Refusing to wipe host directory 'store': '.git/objects' — unreadable."));
+        var run = fixture.SeedRun();
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        await act.Should().ThrowAsync<SlotHostPathRefusedException>();
+        fixture.Preparer.RecloneCount.Should().Be(0,
+            "the re-clone starts by wiping the store, which is the walk that just refused — escalating there is "
+                + "the redirected write, so the recovery ladder must filter by TYPE and not by 'prepare failed'");
+        fixture.Preparer.PrepareCount.Should().Be(1, "and with no re-clone there is nothing to retry against");
+        fixture.Pool.RetireCount.Should().Be(1);
+        fixture.Pool.Retired.Should().ContainSingle().Which.Should().Be(fixture.Pool.Leased.Single());
+        fixture.Pool.ReturnCount.Should().Be(0,
+            "returning is what recycles the address — the test above pins that an ordinary prepare failure DOES "
+                + "return, so this zero is a routing decision and not an unreached path");
+    }
+
+    [Fact]
     public async Task Reviewed_builds_a_scoped_write_tool_context_with_the_notes_and_scratch_roots()
     {
         using var fixture = Fixture.Create();
@@ -1618,8 +1645,10 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         public int LeaseCount { get; private set; }
         public int ReturnCount { get; private set; }
+        public int RetireCount { get; private set; }
         public int RecloneCount { get; private set; }
         public List<ReviewSlot> Returned { get; } = [];
+        public List<ReviewSlot> Retired { get; } = [];
 
         /// <summary>Every slot handed out, in lease order — lets a test assert two concurrent reviews were
         /// never given the same slot.</summary>
@@ -1651,6 +1680,18 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 ReturnCount++;
                 Returned.Add(slot);
                 Order?.Add("return");
+            }
+
+            return Task.CompletedTask;
+        }
+
+        public Task RetireAsync(ReviewSlot slot, CancellationToken cancellationToken)
+        {
+            lock (_gate)
+            {
+                RetireCount++;
+                Retired.Add(slot);
+                Order?.Add("retire");
             }
 
             return Task.CompletedTask;

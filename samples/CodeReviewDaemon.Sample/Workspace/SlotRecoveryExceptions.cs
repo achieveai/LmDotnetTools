@@ -24,5 +24,11 @@ internal sealed class SlotCorruptException(string message) : Exception(message);
 /// is then the one response that must not happen: it wipes and then clones through the very entry the refusal
 /// declined to cross. A handler that lumps this in with corruption performs the redirected write itself.
 /// </para>
+/// <para>
+/// It also says something the other two do not: the condition belongs to the ADDRESS and not to the attempt.
+/// Nothing about a later try makes a planted entry contained or a denied directory listable, so a slot whose
+/// paths raised this is retired rather than retried — see <see cref="IReviewSlotPool.RetireAsync"/>.
+/// </para>
 /// </summary>
-internal sealed class SlotHostPathRefusedException(string message) : Exception(message);
+internal sealed class SlotHostPathRefusedException(string message, Exception? innerException = null)
+    : Exception(message, innerException);
