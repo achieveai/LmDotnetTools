@@ -88,9 +88,22 @@ internal static class SlotHygiene
         // A store whose own cleanup cannot be walked is condemned rather than repaired: unlinking a redirected
         // entry would be a write chosen by whoever planted it, re-creating the directory afterwards hands the next
         // one a fresh target, and an entry that cannot be read is not something to make a decision about at all.
-        // The re-clone is the safe answer precisely because it does not walk the tree — it wipes the whole store,
-        // unlinking the offending entry instead of following it. A second pass cannot change this, so the gate
-        // goes ahead of the retry ladder. See <see cref="HostPathGuard.Check"/>.
+        //
+        // The re-clone answers a REDIRECTED entry, and it is worth being exact about how, because it does walk the
+        // tree: <see cref="HostDirectoryWipe"/> removes each link by NAME as it meets it, so the offending entry is
+        // unlinked instead of followed and the fresh clone lands on clean ground.
+        //
+        // It does NOT answer an UNREADABLE one. That wipe refuses on an entry it cannot classify, for the same
+        // reason this gate does, so the re-clone walks into the same wall and the store is never replaced —
+        // routing Unreadable here names a repair that cannot happen. What bounds the mis-routing is the typed
+        // refusal added alongside this gate: the wipe raises <see cref="SlotHostPathRefusedException"/>, the pooled
+        // preparer spends the address rather than returning it to the free stack, and the condition ends in a
+        // retired slot instead of a re-clone loop. Fail-closed, but by a mechanism this verdict does not name. A
+        // verdict that routes Unreadable somewhere it can actually be handled is a behaviour change, filed
+        // separately rather than made here.
+        //
+        // A second pass cannot change either case, so the gate goes ahead of the retry ladder.
+        // See <see cref="HostPathGuard.Check"/>.
         if (pass.Blocked is { } blocked)
         {
             logger?.LogWarning(
