@@ -1404,6 +1404,26 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                     : [];
             }
 
+            // A replayed message is delivered as surely as a live one — the loop below yields the whole
+            // snapshot (or the advisory that stands in for it) before it ever reads the channel, even for
+            // a subscriber that is dropped straight afterwards — so it must advance the delivery cursor
+            // too. Seeding it HERE, inside the same critical section that registers the subscriber, is
+            // what keeps the cursor monotonic: a publisher snapshots `_outputSubscribers` under this same
+            // lock, so it either misses this subscriber entirely or sees it already seeded, and can only
+            // move the cursor forward from there. Advancing it from the yield loop instead would race
+            // live writes that have already moved it past the (strictly older) snapshot.
+            // `SyncRoot` is deliberately NOT taken: nothing else can reach this subscriber yet, and
+            // nesting it under `_replayLock` would invert the publish path's lock order.
+            if (truncationAdvisory is not null)
+            {
+                subscriber.Identity = subscriber.Identity.Advance(truncationAdvisory);
+            }
+
+            foreach (var buffered in replay)
+            {
+                subscriber.Identity = subscriber.Identity.Advance(buffered);
+            }
+
             _outputSubscribers[subscriberId] = subscriber;
         }
 

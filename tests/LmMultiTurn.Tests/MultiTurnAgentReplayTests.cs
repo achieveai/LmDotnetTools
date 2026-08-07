@@ -61,7 +61,10 @@ public sealed class MultiTurnAgentReplayTests
     private static TextMessage CompleteText(string runId, string genId, string text) =>
         new() { Text = text, Role = Role.Assistant, RunId = runId, GenerationId = genId };
 
-    private static ToolCallMessage ToolCall(string runId, string genId, string toolCallId, int orderIdx) =>
+    // runId/genId are nullable because that is the wire reality: finalized tool_call messages reach a
+    // subscriber WITHOUT a runId (0 of 267 across recordings/*.ws.jsonl), which is exactly the shape
+    // that leaves a delivery cursor empty unless the replay already seeded it.
+    private static ToolCallMessage ToolCall(string? runId, string? genId, string toolCallId, int orderIdx) =>
         new()
         {
             Role = Role.Assistant,
@@ -784,6 +787,111 @@ public sealed class MultiTurnAgentReplayTests
         recovery.RunId.Should().Be("run-1");
 
         (await e.MoveNextAsync()).Should().BeFalse("the recovery control is terminal");
+        await e.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task A_subscriber_dropped_after_replaying_a_run_is_stamped_with_that_run_not_with_nothing()
+    {
+        // A replayed message is DELIVERED just as surely as a live one — SubscribeAsync yields the whole
+        // snapshot before it ever reads the channel — so it must advance the delivery cursor too.
+        // Recording only live writes leaves a subscriber that replayed all of run-1 and then received
+        // only runId-less content (finalized tool_call/tool_call_result) stamped with NOTHING, handing
+        // the client a resume point that names no run at all.
+        await using var agent = new ReplayTestAgent("thread-1", outputChannelCapacity: 2);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+
+        // A run is already in flight and buffered before anyone subscribes, so these reach the
+        // subscriber below via REPLAY, never via its live channel.
+        await agent.PublishForTest(Assignment("thread-1", "run-1", "gen-1"));
+        await agent.PublishForTest(CompleteText("run-1", "gen-1", "already-published"));
+
+        var e = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+        (await e.MoveNextAsync()).Should().BeTrue();
+        e.Current.Should().BeOfType<RunAssignmentMessage>();
+        (await e.MoveNextAsync()).Should().BeTrue();
+        e.Current.Should().BeOfType<TextMessage>().Which.Text.Should().Be("already-published");
+
+        // Replay drained; now the live queue fills and overflows behind a subscriber that stops reading.
+        // Every live message is runId-less, so the cursor can only be non-empty if the replay seeded it.
+        await agent.PublishForTest(ToolCall(null, null, "tc-1", 0));
+        await agent.PublishForTest(ToolCall(null, null, "tc-2", 1));
+        await agent.PublishForTest(ToolCall(null, null, "tc-3", 2));
+
+        (await e.MoveNextAsync()).Should().BeTrue();
+        (await e.MoveNextAsync()).Should().BeTrue();
+        (await e.MoveNextAsync()).Should().BeTrue();
+        var recovery = e.Current.Should().BeOfType<StreamRecoveryMessage>().Subject;
+        recovery.Reason.Should().Be(StreamRecoveryReason.SlowConsumer);
+        recovery.RunId.Should().Be("run-1", "the replayed prefix was delivered, so it is part of the resume point");
+        recovery.GenerationId.Should().Be("gen-1");
+
+        await e.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task A_subscriber_advised_of_a_truncated_replay_is_stamped_with_the_run_it_was_advised_about()
+    {
+        // The withheld-replay path delivers no buffered messages at all — only the leading advisory,
+        // which itself names the run. That advisory is the only thing this subscriber received from the
+        // run, so it is what the cursor must start from; otherwise a subscriber advised about run-1 and
+        // then dropped reports a resume point of nothing.
+        await using var agent = new ReplayTestAgent("thread-1", outputChannelCapacity: 2, maxReplayBufferSize: 1);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+
+        await agent.PublishForTest(Assignment("thread-1", "run-1", "gen-1"));
+        await agent.PublishForTest(CompleteText("run-1", "gen-1", "overflows-the-bridge"));
+
+        var e = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+        (await e.MoveNextAsync()).Should().BeTrue();
+        e.Current.Should()
+            .BeOfType<StreamRecoveryMessage>()
+            .Which.Reason.Should()
+            .Be(StreamRecoveryReason.ReplayTruncated);
+
+        await agent.PublishForTest(ToolCall(null, null, "tc-1", 0));
+        await agent.PublishForTest(ToolCall(null, null, "tc-2", 1));
+        await agent.PublishForTest(ToolCall(null, null, "tc-3", 2));
+
+        (await e.MoveNextAsync()).Should().BeTrue();
+        (await e.MoveNextAsync()).Should().BeTrue();
+        (await e.MoveNextAsync()).Should().BeTrue();
+        var recovery = e.Current.Should().BeOfType<StreamRecoveryMessage>().Subject;
+        recovery.Reason.Should().Be(StreamRecoveryReason.SlowConsumer);
+        recovery.RunId.Should().Be("run-1");
+        recovery.GenerationId.Should().Be("gen-1");
+
+        await e.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task A_replay_seeded_cursor_still_advances_to_a_later_run_delivered_live()
+    {
+        // Distinguishing case for the seed: it is a STARTING point, not a pin. A fix that stamped the
+        // replayed run unconditionally — or that froze the cursor once seeded — would report run-1 here,
+        // telling the client to resume from a run it has already moved past.
+        await using var agent = new ReplayTestAgent("thread-1", outputChannelCapacity: 2);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+
+        await agent.PublishForTest(Assignment("thread-1", "run-1", "gen-1"));
+        await agent.PublishForTest(CompleteText("run-1", "gen-1", "already-published"));
+
+        var e = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+        (await e.MoveNextAsync()).Should().BeTrue();
+        (await e.MoveNextAsync()).Should().BeTrue();
+
+        // run-2 starts and IS delivered live (it fits), then the run overflows the stalled channel.
+        await agent.PublishForTest(Assignment("thread-1", "run-2", "gen-2"));
+        await agent.PublishForTest(CompleteText("run-2", "gen-2", "live"));
+        await agent.PublishForTest(CompleteText("run-2", "gen-2", "overflow"));
+
+        (await e.MoveNextAsync()).Should().BeTrue();
+        (await e.MoveNextAsync()).Should().BeTrue();
+        (await e.MoveNextAsync()).Should().BeTrue();
+        var recovery = e.Current.Should().BeOfType<StreamRecoveryMessage>().Subject;
+        recovery.RunId.Should().Be("run-2", "live delivery moves the cursor forward past the replayed run");
+        recovery.GenerationId.Should().Be("gen-2");
+
         await e.DisposeAsync();
     }
 
