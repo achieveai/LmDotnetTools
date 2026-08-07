@@ -8,6 +8,14 @@ internal sealed record PreparedCheckout(string StoreRoot, string TargetDir, stri
 
 internal interface IReviewSlotPreparer
 {
+    /// <summary>
+    /// A HOST <paramref name="storeRoot"/> must be established as contained BEFORE this call: the probe below
+    /// is <c>git -C storeRoot</c>, which follows a junction standing there as readily as a real directory, and
+    /// nothing in this method checks. Today that obligation is discharged by <c>GuardSlotPaths</c> in
+    /// <see cref="ReviewSlotPool.LeaseAsync"/>, before the slot escapes its lease; the in-process caller passes
+    /// a fixed container path instead. <see cref="RecloneStoreAsync"/> carries no such duty — its wipe guards
+    /// the root itself.
+    /// </summary>
     Task EnsureStoreAsync(string storeRoot, string storeUrl, CancellationToken cancellationToken) =>
         Task.CompletedTask;
 
@@ -133,7 +141,7 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         // Remove it with the same host filesystem pattern the scratch wipe uses; keep `rm -rf` for the sandbox.
         if (_fileSystem is HostFileSystem)
         {
-            DeleteHostDirectory(storeRoot);
+            HostDirectoryWipe.Delete(storeRoot);
         }
         else
         {
@@ -331,31 +339,8 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
 
     private static void ClearHostScratch(string scratchRoot)
     {
-        DeleteHostDirectory(scratchRoot);
+        HostDirectoryWipe.Delete(scratchRoot);
         _ = Directory.CreateDirectory(scratchRoot);
-    }
-
-    /// <summary>
-    /// Recursively deletes a host directory, clearing the read-only attribute first: a git store is full of
-    /// read-only pack/object files that <see cref="Directory.Delete(string, bool)"/> otherwise refuses.
-    /// </summary>
-    private static void DeleteHostDirectory(string root)
-    {
-        if (!Directory.Exists(root))
-        {
-            return;
-        }
-
-        foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
-        {
-            var attributes = File.GetAttributes(file);
-            if ((attributes & FileAttributes.ReadOnly) != 0)
-            {
-                File.SetAttributes(file, attributes & ~FileAttributes.ReadOnly);
-            }
-        }
-
-        Directory.Delete(root, recursive: true);
     }
 
     private async Task RunCommandOrThrowAsync(

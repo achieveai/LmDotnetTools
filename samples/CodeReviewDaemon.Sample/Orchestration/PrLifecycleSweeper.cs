@@ -30,7 +30,7 @@ internal static class PrLifecycleSweepSeam
             return null;
         }
 
-        var provider = string.Equals(row.Provider, "azure-devops", StringComparison.Ordinal) ? "ado" : row.Provider;
+        var provider = MapProviderNamespace(row.Provider);
         return new ReviewedPr(
             row.Repo,
             provider,
@@ -40,19 +40,42 @@ internal static class PrLifecycleSweepSeam
     }
 
     /// <summary>
+    /// Maps a storage provider name to the branch/poll namespace the <see cref="IPrProvider"/> registry is
+    /// keyed by (<c>azure-devops</c> → <c>ado</c>; everything else passes through unchanged).
+    /// </summary>
+    public static string MapProviderNamespace(string provider) =>
+        string.Equals(provider, "azure-devops", StringComparison.Ordinal) ? "ado" : provider;
+
+    /// <summary>
     /// Routes a sweep unit's lifecycle lookup to the <see cref="IPrProvider"/> whose namespace matches the
     /// PR's (mapped) provider, throwing when none is registered — the <c>getPrLifecycleAsync</c> seam.
     /// </summary>
     public static Task<PrLifecycle> ResolveLifecycleAsync(
         IReadOnlyList<IPrProvider> providers, ReviewedPr pr, CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(providers);
         ArgumentNullException.ThrowIfNull(pr);
+        return ResolveLifecycleAsync(providers, pr.Repo, pr.Provider, pr.PrId, cancellationToken);
+    }
 
-        var provider = providers.FirstOrDefault(p =>
-            string.Equals(p.Provider, pr.Provider, StringComparison.OrdinalIgnoreCase))
-            ?? throw new InvalidOperationException($"No IPrProvider registered for '{pr.Provider}'.");
-        return provider.GetPrStateAsync(pr.Repo, pr.PrId, cancellationToken);
+    /// <summary>
+    /// The same lookup addressed by identity rather than by sweep unit, for callers (the stranded-run
+    /// reconciler) that hold a repo and PR id but no notes branch. <paramref name="provider"/> must already be
+    /// in the registry's namespace — see <see cref="MapProviderNamespace"/>.
+    /// </summary>
+    public static Task<PrLifecycle> ResolveLifecycleAsync(
+        IReadOnlyList<IPrProvider> providers,
+        RepoIdentity repo,
+        string provider,
+        string prId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(providers);
+        ArgumentNullException.ThrowIfNull(repo);
+
+        var prProvider = providers.FirstOrDefault(p =>
+            string.Equals(p.Provider, provider, StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidOperationException($"No IPrProvider registered for '{provider}'.");
+        return prProvider.GetPrStateAsync(repo, prId, cancellationToken);
     }
 }
 

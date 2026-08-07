@@ -316,33 +316,57 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
         }
 
         // Best-effort remove the per-run HOST workspace dir (Task 18) — untrusted checkouts can leave
-        // read-only files behind, so read-only is cleared before the recursive delete.
+        // read-only files behind, so read-only is cleared before the recursive delete. That clearing is why
+        // this goes through the guarded wipe rather than SearchOption.AllDirectories: the checkout is written
+        // by the review agent, which takes its instructions from the reviewed repo's own CLAUDE.md/AGENTS.md as
+        // read at the PR head, so a junction planted anywhere under this directory aimed a naive enumeration at
+        // an arbitrary path on the daemon host and stripped the read-only bit off whatever it found. The
+        // recursive delete that follows would have thrown on the junction and been swallowed below as a warning
+        // — but the attribute strip had already landed, so the visible failure was never the damage.
         var hostDir = Path.Combine(HostWorkspaceRoot, workspaceId);
         try
         {
-            if (Directory.Exists(hostDir))
-            {
-                ClearReadOnly(hostDir);
-                Directory.Delete(hostDir, recursive: true);
-            }
+            HostDirectoryWipe.Delete(hostDir);
+        }
+        catch (SlotHostPathRefusedException ex)
+        {
+            // Deliberately NOT the best-effort warning below, and deliberately not rethrown either.
+            //
+            // Not the warning, because "best-effort host-dir cleanup failed" is exactly the sentence that would
+            // hide a planted link forever: it reads as a transient I/O nuisance, and an operator who skims it
+            // never learns there is an address to go and look at. The refusal names the offending entry, so it
+            // is logged at Error with that entry in it.
+            //
+            // Not rethrown, because nothing here is at risk and everything at the CALLERS is. The sandbox
+            // session is destroyed at the top of this method, long before the wipe can refuse, and this wipe is
+            // the last statement in it — so there is no local teardown left for a throw to abandon. What a throw
+            // does abandon is pool bookkeeping queued behind the call at all three call sites:
+            //
+            //   ReleaseReviewLeaseAsync — Pool.ReturnAsync is the NEXT statement, and the lease has already been
+            //     taken out of _leasedReviews by the TryRemove in the `if` that guards the block. A throw here
+            //     leaks the slot PERMANENTLY: the entry that would let any other path return it is already gone.
+            //   the pooled-prepare finally — RetireAsync/ReturnAsync sit after this call inside a finally, so a
+            //     throw both skips them and masks the in-flight exception that decided which of the two to run.
+            //   the Posted-stage cleanup — abandons the whole retention block: notes commit, strip, slot return.
+            //     That site survives on its own, since the lease is read with TryGetValue and left in place; but
+            //     the exception then reaches the orchestrator's terminal finally, which calls
+            //     ReleaseReviewLeaseAsync, which calls this method again, refuses again on the same entry — the
+            //     refusal is deterministic, the directory is deliberately left standing — and lands on the
+            //     permanent leak above.
+            //
+            // So a rethrow would convert a contained and logged refusal into a stuck pooled slot, which is the
+            // failure class this PR exists to fix. The swallow is load-bearing, not a concession. Leaving the
+            // directory standing is the whole of the cost, and it is the fail-closed outcome: nothing was
+            // followed, nothing was stripped.
+            _logger.LogError(
+                ex,
+                "Host-dir cleanup REFUSED for {HostDir} — it was not deleted and nothing under it was touched. "
+                    + "Investigate the entry named in the message before reusing this host workspace root.",
+                hostDir);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Best-effort host-dir cleanup failed for {HostDir}.", hostDir);
-        }
-    }
-
-    /// <summary>Recursively clears the read-only attribute so an untrusted checkout's read-only files
-    /// (e.g. from a git object store) do not block the subsequent recursive delete.</summary>
-    private static void ClearReadOnly(string path)
-    {
-        foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
-        {
-            var attributes = File.GetAttributes(file);
-            if ((attributes & FileAttributes.ReadOnly) != 0)
-            {
-                File.SetAttributes(file, attributes & ~FileAttributes.ReadOnly);
-            }
         }
     }
 }
