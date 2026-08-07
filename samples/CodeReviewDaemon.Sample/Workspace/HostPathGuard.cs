@@ -27,11 +27,18 @@ internal readonly record struct HostPathRefusal(string Path, HostPathVerdict Ver
     /// the throw site because the two verdicts are refused identically and would otherwise both be reported as
     /// "it is a symlink or junction" — a reason that is false for half of them, and a false reason in a refusal
     /// message sends the next reader looking for a link that was never there.
+    /// <para>
+    /// The unreadable clause names no particular call, because <see cref="HostPathVerdict.Unreadable"/> is
+    /// reached from more than one: an entry whose ATTRIBUTES will not read here, and a directory whose
+    /// CONTENTS will not list in <c>SlotHygiene</c>'s sweep. Naming the attributes would be exactly the same
+    /// mistake as naming a link — in the second case they read perfectly well.
+    /// </para>
     /// </summary>
     public string Reason =>
         Verdict == HostPathVerdict.Redirected
             ? "it is a symlink or junction, so a walk through it would reach outside the store"
-            : "its attributes cannot be read, so whether a walk through it stays inside the store is unknowable";
+            : "it cannot be read well enough to tell, so whether a walk through it stays inside the store is "
+                + "unknowable";
 }
 
 /// <summary>

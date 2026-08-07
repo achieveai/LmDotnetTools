@@ -33,4 +33,48 @@ internal static class DirectoryLink
         new DirectoryInfo(link).Attributes.HasFlag(FileAttributes.ReparsePoint).Should().BeTrue(
             $"the test needs '{link}' to actually redirect a walk");
     }
+
+    /// <summary>
+    /// Removes every planted link under <paramref name="root"/>, so a recursive delete of the temp tree can
+    /// reach the end. <see cref="Directory.Delete(string, bool)"/>'s own recursion THROWS on a Windows junction
+    /// rather than removing it, so without this every link-planting test leaves its whole tree behind in the
+    /// temp directory. Each delete is non-recursive on purpose: it takes the link and never its target.
+    /// </summary>
+    public static void UnlinkAllUnder(string root)
+    {
+        if (!Directory.Exists(root))
+        {
+            return;
+        }
+
+        foreach (var entry in Children(root))
+        {
+            try
+            {
+                if (new DirectoryInfo(entry).Attributes.HasFlag(FileAttributes.ReparsePoint))
+                {
+                    Directory.Delete(entry);
+                    continue;
+                }
+
+                UnlinkAllUnder(entry);
+            }
+            catch
+            {
+                // Best-effort cleanup only; a stray temp dir must never fail a test.
+            }
+        }
+    }
+
+    private static string[] Children(string directory)
+    {
+        try
+        {
+            return Directory.GetDirectories(directory);
+        }
+        catch
+        {
+            return [];
+        }
+    }
 }

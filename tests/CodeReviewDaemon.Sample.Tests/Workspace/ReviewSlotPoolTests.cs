@@ -17,7 +17,7 @@ public class ReviewSlotPoolTests : IDisposable
     {
         foreach (var root in new[] { _hostRoot, _outsideRoot })
         {
-            UnlinkPlantedLinks(root);
+            DirectoryLink.UnlinkAllUnder(root);
             try
             {
                 Directory.Delete(root, true);
@@ -25,38 +25,6 @@ public class ReviewSlotPoolTests : IDisposable
             catch
             {
                 // Best-effort cleanup only; leaving a stray temp dir must never fail the test.
-            }
-        }
-    }
-
-    /// <summary>
-    /// Removes the planted junctions before the recursive wipe below reaches them.
-    /// <see cref="Directory.Delete(string, bool)"/>'s own recursion throws on a Windows junction rather than
-    /// removing it, so without this every link-planting test here would leave its whole temp tree behind. The
-    /// delete is non-recursive on purpose: it takes the link and never its target.
-    /// </summary>
-    private static void UnlinkPlantedLinks(string root)
-    {
-        if (!Directory.Exists(root))
-        {
-            return;
-        }
-
-        foreach (var entry in Directory.GetDirectories(root))
-        {
-            try
-            {
-                if (new DirectoryInfo(entry).Attributes.HasFlag(FileAttributes.ReparsePoint))
-                {
-                    Directory.Delete(entry);
-                    continue;
-                }
-
-                UnlinkPlantedLinks(entry);
-            }
-            catch
-            {
-                // Best-effort cleanup only.
             }
         }
     }

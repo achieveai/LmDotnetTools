@@ -20,6 +20,7 @@ public sealed class SlotHygieneTests : IDisposable
 
     public void Dispose()
     {
+        DirectoryLink.UnlinkAllUnder(_root);
         try
         {
             Directory.Delete(_root, recursive: true);
@@ -594,6 +595,124 @@ public sealed class SlotHygieneTests : IDisposable
         await SlotHygiene.StripAsync(new GitRunner(runner), store, CancellationToken.None);
 
         runner.Commands.Should().BeEmpty("the strip's only purpose is a pristine store, and this one cannot be one");
+    }
+
+    [RequiresUnreadableEntryFact("a listable directory cannot show the difference between empty and unreadable")]
+    public async Task EnsureClean_refuses_a_store_whose_git_dir_cannot_be_enumerated()
+    {
+        // The sibling of the redirected case above, and refused for the same stated reason: the sweep's job is
+        // to establish that every *.lock under .git is gone, and "I could not look" is not an establishment.
+        // HostPathGuard says exactly that at the ATTRIBUTE level -- an entry whose attributes will not read is
+        // Unreadable and stops the walk. One level up, the ENUMERATION had the opposite answer: it returned no
+        // entries, which the walk cannot tell apart from an empty directory, so the sweep reported that it had
+        // finished having read nothing.
+        //
+        // Every git step here is scripted to succeed, and that is the realistic case rather than a convenient
+        // one: the denial leaves traversal intact (see UnlistableDirectory), a superproject `reset --hard`
+        // never reads .git/modules/<sub>/ at all, and a submodule step that did fail is classified non-fatal
+        // by design. So nothing downstream reports this store either.
+        var store = SeedStore();
+        var moduleDir = Path.Combine(store, ".git", "modules", "repos", "LmDotnetTools");
+        Directory.CreateDirectory(moduleDir);
+        var missedLock = Path.Combine(moduleDir, "index.lock"); // the exact 2026-07-12 incident's lock location
+        await File.WriteAllTextAsync(missedLock, string.Empty);
+        using var denied = UnreadableEntry.UnlistableDirectory(moduleDir);
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(
+            new GitRunner(new FakeSandboxCommandRunner()), store, CancellationToken.None,
+            NullLogger.Instance, new HostFileSystem());
+
+        verdict.Should().Be(
+            HygieneVerdict.NeedsReclone,
+            "the sweep could not establish that this store is clean, and a store it cannot walk is not one it "
+                + "can clean either -- the re-clone wipes it without walking it");
+        File.Exists(missedLock).Should().BeTrue(
+            "the point is that the sweep never reached this lock: it is still there, and every git step "
+                + "reported success, so nothing downstream would have reported it either");
+    }
+
+    [RequiresUnreadableEntryFact("a listable directory cannot show the difference between empty and unreadable")]
+    public async Task EnsureClean_runs_no_git_at_all_on_a_store_it_cannot_enumerate()
+    {
+        // Same reasoning as the redirected sibling: the refusal IS the verdict, so the four writes of the
+        // force-reset ladder would land on a store already booked for wholesale deletion. This is also the
+        // assertion that would catch a fix which merely LOGGED the unreadable directory and swept on.
+        var store = SeedStore();
+        using var denied = UnreadableEntry.UnlistableDirectory(
+            Directory.CreateDirectory(Path.Combine(store, ".git", "modules")).FullName);
+        var runner = new FakeSandboxCommandRunner();
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(
+            new GitRunner(runner), store, CancellationToken.None, NullLogger.Instance, new HostFileSystem());
+
+        verdict.Should().Be(HygieneVerdict.NeedsReclone);
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().HaveCount(
+            1, "nothing after the sweep can change the verdict, so nothing after the sweep should run");
+        commands[0].Should().EndWith("rev-parse --git-dir");
+    }
+
+    [RequiresUnreadableEntryFact("a listable directory cannot show the difference between empty and unreadable")]
+    public async Task Strip_runs_no_git_at_all_on_a_store_it_cannot_enumerate()
+    {
+        // The close-side half. The strip has no verdict to report and condemns nothing, but its whole purpose
+        // is leaving the slot pristine, and a store whose own .git will not enumerate cannot be established as
+        // pristine by anything the strip does.
+        var store = SeedStore();
+        using var denied = UnreadableEntry.UnlistableDirectory(
+            Directory.CreateDirectory(Path.Combine(store, ".git", "modules")).FullName);
+        var runner = new FakeSandboxCommandRunner();
+
+        await SlotHygiene.StripAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        runner.Commands.Should().BeEmpty("the strip's only purpose is a pristine store, and this one cannot be one");
+    }
+
+    [RequiresUnreadableEntryFact("a listable directory cannot show the difference between empty and unreadable")]
+    public async Task EnsureClean_reporting_an_unenumerable_dir_does_not_claim_it_is_a_link()
+    {
+        // The refusal's VERDICT is not decoration: HostPathRefusal.Reason is derived from it, and that warning
+        // is the entire account an operator gets of why a slot was condemned. Labelling this one Redirected
+        // still condemns the store -- the behaviour above is unchanged -- while telling whoever reads the log
+        // that a symlink or junction was planted under .git, and sending them to look for one that was never
+        // there. This is the assertion that makes the verdict load-bearing rather than incidental.
+        var store = SeedStore();
+        var moduleDir = Directory.CreateDirectory(Path.Combine(store, ".git", "modules")).FullName;
+        using var denied = UnreadableEntry.UnlistableDirectory(moduleDir);
+        var logs = new CapturingLoggerFactory();
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(
+            new GitRunner(new FakeSandboxCommandRunner()), store, CancellationToken.None,
+            logs.Capturing, new HostFileSystem());
+
+        verdict.Should().Be(HygieneVerdict.NeedsReclone);
+        logs.Capturing.WarningCount(moduleDir).Should().Be(
+            1, "the address that stopped the sweep is the one thing the operator cannot work out for themselves");
+        logs.Capturing.WarningCount("cannot be read well enough to tell").Should().Be(
+            1, "the reason has to be the one that is actually true of this entry");
+        logs.Capturing.WarningCount("symlink or junction").Should().Be(
+            0, "nothing here was redirected, and a refusal naming a link starts a hunt for one nobody planted");
+    }
+
+    [Fact]
+    public async Task EnsureClean_still_sweeps_a_store_whose_git_dir_holds_an_empty_directory()
+    {
+        // The non-vacuity companion to the three above. "Could not enumerate" and "enumerated nothing" arrive
+        // at this walk as the same empty array, and the fix distinguishes them -- so an empty directory, which
+        // is ordinary in a real .git, must still sweep to completion and reach the locks beside it. Without
+        // this, a fix that condemned every empty directory would pass all three tests above.
+        var store = SeedStore();
+        var gitDir = Path.Combine(store, ".git");
+        Directory.CreateDirectory(Path.Combine(gitDir, "refs", "heads")); // empty: no branch has been written yet
+        var staleLock = Path.Combine(gitDir, "index.lock");
+        await File.WriteAllTextAsync(staleLock, string.Empty);
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(
+            new GitRunner(new FakeSandboxCommandRunner()), store, CancellationToken.None,
+            NullLogger.Instance, new HostFileSystem());
+
+        verdict.Should().Be(HygieneVerdict.Clean);
+        File.Exists(staleLock).Should().BeFalse("an empty directory is a readable one, and the sweep goes on");
     }
 
     [Fact]

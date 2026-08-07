@@ -62,6 +62,42 @@ internal sealed class UnreadableEntry : IDisposable
         return new UnreadableEntry(parent, path);
     }
 
+    /// <summary>
+    /// Denies LISTING of an existing <paramref name="directory"/>, leaving it visible and TRAVERSABLE, then
+    /// asserts it really cannot be enumerated.
+    /// <para>
+    /// The sibling input to <see cref="Create"/>, one level up: that one is an entry whose attributes will not
+    /// read, this one is a directory whose CONTENTS will not list. A host walk meets them at different calls
+    /// and both mean the same thing — the walk cannot establish what is in there — so both must stop it.
+    /// </para>
+    /// <para>
+    /// Only <see cref="FileSystemRights.ListDirectory"/> is denied, and that is deliberate rather than
+    /// minimal-by-habit: traversal survives it, so git goes on opening paths underneath by name and
+    /// succeeding. That is what makes this the dangerous shape instead of a merely broken store — the git
+    /// steps that are supposed to notice a wedged store report nothing at all. Denying more would break git
+    /// too, and a test built on that would prove only that a broken store gets reported.
+    /// </para>
+    /// </summary>
+    public static UnreadableEntry UnlistableDirectory(string directory)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException("Guard the test with RequiresUnreadableEntryFact.");
+        }
+
+        var denied = new DirectoryInfo(directory);
+        Deny(denied, FileSystemRights.ListDirectory, InheritanceFlags.None);
+
+        var enumerate = () => Directory.GetFileSystemEntries(directory);
+        _ = enumerate.Should().Throw<UnauthorizedAccessException>(
+            "a directory the test could still enumerate would leave the body proving nothing");
+        Directory.Exists(directory).Should().BeTrue(
+            "the walk only descends into what it believes is a directory, so a denial that hid it entirely "
+                + "would route the test past the case instead of into it");
+
+        return new UnreadableEntry(denied, directory);
+    }
+
     public void Dispose()
     {
         if (!OperatingSystem.IsWindows())
@@ -117,10 +153,17 @@ internal sealed class UnreadableEntry : IDisposable
     }
 
     [SupportedOSPlatform("windows")]
-    private static void Deny(DirectoryInfo directory)
+    private static void Deny(DirectoryInfo directory) =>
+        Deny(
+            directory,
+            FileSystemRights.FullControl,
+            InheritanceFlags.ObjectInherit | InheritanceFlags.ContainerInherit);
+
+    [SupportedOSPlatform("windows")]
+    private static void Deny(DirectoryInfo directory, FileSystemRights rights, InheritanceFlags inheritance)
     {
         var security = directory.GetAccessControl();
-        security.AddAccessRule(Rule(InheritanceFlags.ObjectInherit | InheritanceFlags.ContainerInherit));
+        security.AddAccessRule(Rule(inheritance, rights));
         directory.SetAccessControl(security);
     }
 
@@ -128,14 +171,16 @@ internal sealed class UnreadableEntry : IDisposable
     private static void Allow(DirectoryInfo directory)
     {
         var security = directory.GetAccessControl();
+        // Matches on identity and access type, not on rights, so it lifts either denial shape above.
         security.RemoveAccessRuleAll(Rule(InheritanceFlags.None));
         directory.SetAccessControl(security);
     }
 
     [SupportedOSPlatform("windows")]
-    private static FileSystemAccessRule Rule(InheritanceFlags inheritance) => new(
+    private static FileSystemAccessRule Rule(
+        InheritanceFlags inheritance, FileSystemRights rights = FileSystemRights.FullControl) => new(
         WindowsIdentity.GetCurrent().User!,
-        FileSystemRights.FullControl,
+        rights,
         inheritance,
         PropagationFlags.None,
         AccessControlType.Deny);

@@ -534,7 +534,13 @@ internal static class SlotHygiene
         pending.Push(gitDir);
         while (pending.Count > 0)
         {
-            foreach (var entry in ChildrenOf(pending.Pop()))
+            var directory = pending.Pop();
+            if (ChildrenOf(directory) is not { } children)
+            {
+                return new HostPathRefusal(directory, HostPathVerdict.Unreadable);
+            }
+
+            foreach (var entry in children)
             {
                 if (HostPathGuard.Check(entry) is { } refusal)
                 {
@@ -568,10 +574,26 @@ internal static class SlotHygiene
     }
 
     /// <summary>
-    /// One directory's entries, or none when it cannot be read. A slot the daemon cannot enumerate is not a slot
-    /// it can clean either, and the reset below reports that far more usefully than an exception from the sweep.
+    /// One directory's entries, or <c>null</c> when it could not be read.
+    /// <para>
+    /// The distinction is the whole point of the return type. This used to answer an unreadable directory with
+    /// an EMPTY array, which the walk above cannot tell apart from a directory that genuinely holds nothing —
+    /// so the sweep ran to completion, returned "finished", and reported a store it had never looked inside as
+    /// swept clean. <see cref="HostPathGuard.Check"/> already refuses the same condition one level down: an
+    /// entry whose ATTRIBUTES will not read is <see cref="HostPathVerdict.Unreadable"/>, because the walk's job
+    /// is to establish containment and "I could not look" is not an establishment. Exactly the same is true of
+    /// its CONTENTS, so it returns the same refusal and the caller condemns the store.
+    /// </para>
+    /// <para>
+    /// The reset below does not cover this, which is what the earlier note here claimed. The denial that
+    /// produces it is on LISTING, and traversal survives one: git goes on opening
+    /// <c>.git/modules/&lt;sub&gt;/…</c> by name and succeeding, so a superproject <c>reset --hard</c> — which
+    /// never reads that directory — reports nothing, and a submodule step that did fail is classified
+    /// non-fatal by design. A store carrying a stale lock the sweep could not reach was handed to the next
+    /// review as Clean.
+    /// </para>
     /// </summary>
-    private static string[] ChildrenOf(string directory)
+    private static string[]? ChildrenOf(string directory)
     {
         try
         {
@@ -579,11 +601,11 @@ internal static class SlotHygiene
         }
         catch (IOException)
         {
-            return [];
+            return null;
         }
         catch (UnauthorizedAccessException)
         {
-            return [];
+            return null;
         }
     }
 
