@@ -60,6 +60,16 @@ internal static class HostDirectoryWipe
     /// workspace.
     /// </para>
     /// <para>
+    /// Two costs in this shape are deliberate, and both read as waste. <see cref="ChildrenOf"/> materializes
+    /// each directory's entries into an array rather than streaming them, because the walk MUTATES the
+    /// directory it is enumerating: <see cref="Unlink"/> removes a redirected entry as the walk meets it, and
+    /// a lazy enumeration's results are unspecified once the directory changes underneath it. And the closing
+    /// <see cref="Directory.Delete(string, bool)"/> re-walks a tree this method has already walked. Replacing
+    /// it with a hand-rolled post-order delete would save that pass and buy back the decision the guarded walk
+    /// exists to remove — what is safe to recurse into, taken per entry, on the untrusted side of the store.
+    /// One redundant traversal of a tree that is being deleted anyway is the cheaper half of that trade.
+    /// </para>
+    /// <para>
     /// Two residuals are accepted rather than chased. Ancestors ABOVE <paramref name="root"/> are not checked:
     /// they are the operator's own configured workspace path, and refusing there would refuse every deployment
     /// that deliberately puts the pool behind a junction. And an entry can be swapped between the check and the
