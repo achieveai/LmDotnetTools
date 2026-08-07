@@ -4,7 +4,7 @@ namespace AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 
 public sealed class CapturingLogger<T> : ILogger<T>
 {
-    private readonly List<(LogLevel Level, string Text)> _entries = [];
+    private readonly List<(LogLevel Level, string Text, Exception? Error)> _entries = [];
 
     public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
@@ -17,7 +17,7 @@ public sealed class CapturingLogger<T> : ILogger<T>
         Exception? exception,
         Func<TState, Exception?, string> formatter)
     {
-        _entries.Add((logLevel, formatter(state, exception)));
+        _entries.Add((logLevel, formatter(state, exception), exception));
     }
 
     public int WarningCount(string substring)
@@ -31,4 +31,28 @@ public sealed class CapturingLogger<T> : ILogger<T>
     public int CountAtLevel(LogLevel level, string substring)
         => _entries.Count(e => e.Level == level
             && e.Text.Contains(substring, StringComparison.Ordinal));
+
+    /// <summary>
+    ///     Number of captured entries at <paramref name="level"/> whose logged EXCEPTION — rather than its
+    ///     rendered message — carries <paramref name="substring"/> somewhere in its <c>InnerException</c> chain
+    ///     (ordinal comparison). Entries logged without an exception never match.
+    ///     <para>
+    ///     This exists because <see cref="CountAtLevel"/> cannot see it. The default MEL formatter renders the
+    ///     message template ALONE and drops the exception, so a call site that stops passing one produces a
+    ///     byte-identical rendered string — and a test written against the rendered text goes on passing while
+    ///     the operator loses everything the exception was carrying. Where two log lines at a site share a
+    ///     template, the exception is often the only thing that distinguishes them.
+    ///     </para>
+    /// </summary>
+    public int CountAtLevelWithExceptionText(LogLevel level, string substring)
+        => _entries.Count(e => e.Level == level
+            && Chain(e.Error).Any(message => message.Contains(substring, StringComparison.Ordinal)));
+
+    private static IEnumerable<string> Chain(Exception? error)
+    {
+        for (var current = error; current is not null; current = current.InnerException)
+        {
+            yield return current.Message;
+        }
+    }
 }

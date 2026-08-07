@@ -8,6 +8,14 @@ internal sealed record PreparedCheckout(string StoreRoot, string TargetDir, stri
 
 internal interface IReviewSlotPreparer
 {
+    /// <summary>
+    /// A HOST <paramref name="storeRoot"/> must be established as contained BEFORE this call: the probe below
+    /// is <c>git -C storeRoot</c>, which follows a junction standing there as readily as a real directory, and
+    /// nothing in this method checks. Today that obligation is discharged by <c>GuardSlotPaths</c> in
+    /// <see cref="ReviewSlotPool.LeaseAsync"/>, before the slot escapes its lease; the in-process caller passes
+    /// a fixed container path instead. <see cref="RecloneStoreAsync"/> carries no such duty — its wipe guards
+    /// the root itself.
+    /// </summary>
     Task EnsureStoreAsync(string storeRoot, string storeUrl, CancellationToken cancellationToken) =>
         Task.CompletedTask;
 

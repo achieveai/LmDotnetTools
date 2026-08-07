@@ -338,14 +338,14 @@ public class ReviewSessionProvisionerTests : IDisposable
     /// did not" would still pass if the refusal had gone to the warning and something else logged an error.
     /// </para>
     /// <para>
-    /// That the Error NAMES the offending entry is pinned one layer down rather than here, and deliberately:
-    /// the entry appears in the exception's message, which
-    /// <c>ReviewSlotPreparerTests.RecloneStoreAsync_HostPreparer_RefusesARedirectedEntryItIsNotPermittedToUnlink</c>
-    /// asserts directly, and the production line passes that exception to
-    /// <see cref="LoggerExtensions.LogError(ILogger, Exception, string, object?[])"/> where a real logger
-    /// renders it. <see cref="CapturingLoggerFactory"/> cannot see it — the default formatter returns the
-    /// rendered template and drops the exception — so asserting it here would need the double to retain
-    /// exceptions.
+    /// The third leg is the exception argument, and it is asserted through the exception rather than the
+    /// rendered text because that is the only place it survives. The Error template carries <c>{HostDir}</c> —
+    /// the slot directory, which is not the offending entry and is the same value the warning renders — so the
+    /// address an operator is actually sent to reaches them ONLY through the exception passed to
+    /// <see cref="LoggerExtensions.LogError(ILogger, Exception, string, object?[])"/>. Drop that argument and
+    /// the two assertions above still pass while the line degrades into a report that something under this slot
+    /// was refused, without saying what: the hiding failure this site exists to prevent, arriving on the branch
+    /// the test just proved was the good one.
     /// </para>
     /// </summary>
     [RequiresUnreadableEntryFact("a removable link cannot show what happens when the unlink is refused")]
@@ -382,6 +382,11 @@ public class ReviewSessionProvisionerTests : IDisposable
                 0,
                 "this is the sentence the catch comment calls out by name — reported as a transient nuisance, "
                     + "a planted link stays hidden for as long as anyone cares to skim");
+        loggerFactory.Capturing.CountAtLevelWithExceptionText(LogLevel.Error, planted).Should().Be(
+            1,
+            "the Error template renders the slot directory, not the entry, so the only address the operator "
+                + "can act on rides in on the exception — an error that says something here was refused, "
+                + "without saying what, sends them to a tree to search by hand");
         Directory.Exists(planted).Should().BeTrue(
             "the entry that stopped the wipe is left exactly as found — it was refused, not raced");
         (await File.ReadAllTextAsync(victim)).Should().Be("notes", "nothing may reach through the link");
