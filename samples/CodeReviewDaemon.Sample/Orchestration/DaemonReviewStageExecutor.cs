@@ -3027,6 +3027,19 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         }
 
         var (repo, provider) = ResolveRepo(run);
+
+        // Resume-safety for the pooled path, mirroring ReviewAsync and PostAsync: the slot lease lives ONLY in
+        // the in-memory _leasedReviews, so a judge stage that runs in a LATER process (a daemon restart) or
+        // after the orchestrator's terminal `finally` released the lease (a retry, a StrandedRunReconciler
+        // resume) arrives here holding nothing. Judged was the one post-ContextReady stage without this guard,
+        // and it is the stage that calls EnsurePreparedAsync — so a lease-less resume asked the preparer for a
+        // workspace with no slot to adopt, which is the unmanaged per-PR clone FetchContextAsync fails closed
+        // to prevent, reached two stages later. Re-lease first so the judge runs over a recyclable pooled slot.
+        if (UsePooledReview && !_leasedReviews.ContainsKey(run.Id))
+        {
+            _ = await TryPooledFetchContextAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
+        }
+
         var reviewText = ReadReviewText(run.Id);
 
         var profile = DaemonAgentFactory.CreateJudgeProfile();
@@ -3639,12 +3652,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// Returns the prepared workspace (leaf + workspace id + host dir + PR id), or <c>null</c> on the in-process
     /// path (no preparer wired), where callers pass no workspace and the live/fake factory ignores it.
     /// <para>
-    /// Two sources, in preference order. When the context stage leased a pooled slot, that slot IS the
-    /// workspace (<c>AdoptSlotAsync</c>): it is already prepared — store, Knowledge Base, PR notes branch, PR
-    /// head checked out — so this only names it to LmStreaming, runs no git, and the hosted agent's
-    /// <c>/workspace/store/...</c> paths line up with what the pooled stage recorded. Absent a lease the
-    /// preparer host-clones a bare per-PR checkout, the degrade for a repo that is not a store submodule; the
-    /// context stage then takes its bounded diff from that same clone.
+    /// There is exactly ONE source: the pooled slot this run holds a lease on, which IS the workspace
+    /// (<c>AdoptSlotAsync</c>). It is already prepared — store, Knowledge Base, PR notes branch, PR head
+    /// checked out — so this only names it to LmStreaming, runs no git, and the hosted agent's
+    /// <c>/workspace/store/...</c> paths line up with what the pooled stage recorded. Without a lease this
+    /// throws rather than host-cloning a bare per-PR checkout; see the guard below for why that degrade is not
+    /// an option on any stage.
     /// </para>
     /// </summary>
     private async Task<PreparedReviewWorkspace?> EnsurePreparedAsync(
@@ -3661,9 +3674,27 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         }
 
         var slotHostPath = _leasedReviews.TryGetValue(run.Id, out var lease) ? lease.Slot.HostPath : null;
-        var prepared = lease is not null
-            ? await _preparer.AdoptSlotAsync(lease.Slot, run, cancellationToken).ConfigureAwait(false)
-            : await _preparer.PrepareAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
+        if (lease is null)
+        {
+            // Fail CLOSED, the same posture as FetchContextAsync's two guards and for the same reason: the only
+            // other source of a workspace is S2SReviewWorkspacePreparer.PrepareAsync, which mints a PERMANENT
+            // per-PR host clone plus an LmStreaming workspace REST record that nothing in this system ever
+            // reclaims — pooled slots are recycled, these are not. Those guards already reject, at ContextReady,
+            // every S2S configuration that has no pool to lease from, so an S2S run reaching a LATER stage with
+            // no lease has LOST one it held (a restart, or the terminal release before a retry), and the answer
+            // is to restore it — which each of those stages now does — not to mint an unmanaged replacement.
+            // The leak is only half of what that replacement costs: a bare per-PR clone carries no store, no
+            // notes and no Knowledge Base, so the conversation mounted over it reads none of what the persisted
+            // context points at and reports nothing wrong. This is the one place the rule can live for every
+            // caller, present and future, because it is the only place a preparation is made.
+            throw new InvalidOperationException(
+                $"Run {run.Id}: no pooled review slot is leased, so there is no prepared workspace to mount for "
+                + "the S2S conversation. Re-lease the slot before preparing (the review, judge and post stages "
+                + "each do) — the daemon will not fall back to an unmanaged per-PR host clone and LmStreaming "
+                + "workspace, which is never cleaned up and carries neither the review store nor the PR's notes.");
+        }
+
+        var prepared = await _preparer.AdoptSlotAsync(lease.Slot, run, cancellationToken).ConfigureAwait(false);
         _preparedWorkspaces[run.Id] = new CachedPreparation(prepared, slotHostPath);
         return prepared;
     }

@@ -805,6 +805,106 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.S2SGit.Commands.Should().BeEmpty("slot adoption must not run the fallback clone preparer");
     }
 
+    /// <summary>
+    /// The judge is the LAST stage that prepares an S2S workspace, and it was the only post-<c>ContextReady</c>
+    /// stage without the resume-safety re-lease that <c>ReviewAsync</c> and <c>PostAsync</c> carry. A restart
+    /// between <c>Reviewed</c> and <c>Judged</c> therefore reached <c>EnsurePreparedAsync</c> with no lease, and
+    /// the lease-less branch host-cloned a bare per-PR checkout plus a PERMANENT LmStreaming workspace record —
+    /// the very leak <c>FetchContextAsync</c> fails closed to prevent, reached two stages later, on a review
+    /// that was proceeding perfectly normally.
+    /// </summary>
+    [Fact]
+    public async Task S2S_judge_after_a_restart_re_leases_the_slot_rather_than_minting_an_unmanaged_workspace()
+    {
+        using var fixture = Fixture.CreateS2S(slots: 2, judge: true);
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] = "{\"score\": 8, \"rationale\": \"Solid.\"}";
+        var run = fixture.SeedRun();
+
+        // Process A reviews on slot 0, then disappears with all process-local lease/workspace caches.
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        var resumed = fixture.BuildExecutor();
+
+        await resumed.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+
+        fixture.Pool.LeaseCount.Should().Be(
+            2, "the resumed judge re-leases a slot because the prior lease died with the process");
+        fixture.Factory.WorkspaceIds.Should().Equal(
+            ["ws-review-slot-0", "ws-review-slot-1"],
+            "the judge's hosted conversation is mounted over the slot it holds NOW, not a bare per-PR clone");
+        fixture.S2SGit.Commands.Should().BeEmpty(
+            "no unmanaged per-PR host clone may be created for a resumed judge");
+        fixture.S2SHandler.Requests.Should().NotContain(
+            r => r.Body != null && r.Body.Contains("pr-118", StringComparison.Ordinal),
+            "no permanent per-PR LmStreaming workspace may be minted for a resumed judge");
+
+        // Non-vacuity: the judge really ran over that workspace, so the assertions above are about a stage that
+        // did its work — not about one that returned early and prepared nothing.
+        fixture.Store.GetArtifacts(run.Id).Should().Contain(
+            a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind, "the resumed judge still graded the review");
+    }
+
+    /// <summary>
+    /// The control for the case above, and the reason its lease count means what it claims: with the judge OFF
+    /// (production's default) the same restart must lease nothing and prepare nothing, because the stage
+    /// returns before it asks for a workspace. A re-lease that fired here would be pure cost — a slot
+    /// preparation for a stage that does no work.
+    /// </summary>
+    [Fact]
+    public async Task S2S_judge_disabled_after_a_restart_leases_nothing_and_prepares_no_workspace()
+    {
+        using var fixture = Fixture.CreateS2S(slots: 2);
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        var resumed = fixture.BuildExecutor();
+
+        await resumed.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+
+        fixture.Pool.LeaseCount.Should().Be(1, "the disabled judge returns before it needs a slot");
+        fixture.Factory.WorkspaceIds.Should().ContainSingle().Which.Should().Be(
+            "ws-review-slot-0", "only the review stage prepared a workspace");
+        fixture.S2SGit.Commands.Should().BeEmpty("nothing was prepared at all, so no clone either");
+        fixture.Store.GetArtifacts(run.Id).Should().NotContain(a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind);
+    }
+
+    /// <summary>
+    /// The other half of the fix, and the half that survives a failed re-lease. Restoring the lease is what the
+    /// stages now try; this is what happens when that try DECLINES — here because the store the resumed run
+    /// leases no longer carries the reviewed repo. <c>EnsurePreparedAsync</c> is the single place a preparation
+    /// is made, so refusing there is what stops any caller — this judge, a future stage, the re-lease that
+    /// silently returned false — from answering a lost lease with an unmanaged clone nothing ever reclaims.
+    /// </summary>
+    [Fact]
+    public async Task S2S_fails_closed_when_a_resumed_stage_cannot_re_lease_a_slot()
+    {
+        using var fixture = Fixture.CreateS2S(slots: 2, judge: true);
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        // The slot the resumed run will lease next declares a DIFFERENT submodule, so the pooled re-lease
+        // declines and the judge arrives at EnsurePreparedAsync still holding nothing.
+        fixture.HostFileSystem.Seed(
+            "/pool/review-slot-1/store/.gitmodules",
+            "[submodule \"other\"]\n\tpath = repos/other\n\turl = https://github.com/achieveai/other.git\n");
+        var resumed = fixture.BuildExecutor();
+
+        var act = () => resumed.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+
+        var thrown = (await act.Should().ThrowAsync<InvalidOperationException>()).Which;
+        thrown.Message.Should().MatchRegex("(?i)no pooled review slot is leased");
+        fixture.S2SGit.Commands.Should().BeEmpty(
+            "the refusal comes BEFORE any host git — no unmanaged per-PR clone is created");
+        fixture.S2SHandler.Requests.Should().NotContain(
+            r => r.Body != null && r.Body.Contains("pr-118", StringComparison.Ordinal),
+            "the refusal comes BEFORE any workspace REST call — no permanent per-PR workspace is minted");
+        fixture.Store.GetArtifacts(run.Id).Should().NotContain(
+            a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind, "the stage failed, so it graded nothing");
+    }
+
     [Fact]
     public async Task S2S_retry_in_the_same_process_binds_the_slot_it_holds_now_not_the_one_it_prepared_from()
     {
@@ -862,6 +962,63 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.Provisioner.GetOrCreateForSlotCalls.Should().Be(2,
             "the original context and resumed context each mount their own leased slot once");
         fixture.Provisioner.GetOrCreateCalls.Should().Be(0, "the resumed review must never fall back to the broken per-run mount");
+    }
+
+    /// <summary>
+    /// The in-process counterpart of the S2S judge restart: the re-lease is not conditioned on the S2S path, so
+    /// it fires here too. That uniformity is deliberate and it is not a cost — the terminal <c>Posted</c> stage
+    /// re-leases for its own reasons (it commits the notes into the pooled store), so a judge that restores the
+    /// lease first hands Posted the slot it would otherwise have leased itself. The pool sees the same two
+    /// leases either way; what changes is that no stage in between is left holding nothing.
+    /// </summary>
+    [Fact]
+    public async Task Judged_re_leases_a_slot_after_a_restart_and_the_post_stage_reuses_it()
+    {
+        using var fixture = Fixture.Create(slots: 2, judge: true);
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] = "{\"score\": 8, \"rationale\": \"Solid.\"}";
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        var resumed = fixture.BuildExecutor();
+
+        await resumed.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+
+        fixture.Pool.LeaseCount.Should().Be(
+            2, "the resumed judge re-leases a slot because the prior lease died with the process");
+        fixture.Store.GetArtifacts(run.Id).Should().Contain(
+            a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind, "the resumed judge still graded the review");
+
+        await resumed.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        fixture.Pool.LeaseCount.Should().Be(
+            2, "Posted reuses the lease the judge restored instead of leasing a third slot");
+        fixture.HostRunner.Commands.Select(Describe).Should().Contain(
+            a => a.Contains($"add -- {NotesRelPath}") && a.Contains("/pool/slot-1/store"),
+            "the notes are retained into the store of the slot the resumed run actually holds");
+        fixture.Pool.ReturnCount.Should().Be(1, "the re-leased slot is returned once, on the terminal stage");
+    }
+
+    /// <summary>
+    /// The other half of the judge's re-lease condition. Restoring a LOST lease is resume-safety; taking a
+    /// second one while the first is still held is a slow leak of the pool's own concurrency — every ordinary
+    /// review would consume two slots for one PR, and the notes would then be committed into a store the
+    /// review never ran in.
+    /// </summary>
+    [Fact]
+    public async Task Judged_in_the_same_process_reuses_the_lease_it_already_holds()
+    {
+        using var fixture = Fixture.Create(slots: 2, judge: true);
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] = "{\"score\": 8, \"rationale\": \"Solid.\"}";
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+
+        fixture.Pool.LeaseCount.Should().Be(1, "the judge already holds the context stage's lease");
+        fixture.Store.GetArtifacts(run.Id).Should().Contain(
+            a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind, "the judge ran — it just needed no new slot");
     }
 
     [Fact]
@@ -1413,7 +1570,9 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// EnableReviewerWrites + a resolved review store): when false, no <see cref="ReviewSlotWorkspace"/> is
         /// built at all, so <c>UsePooledReview</c> is false even though the S2S preparer (below) is still wired —
         /// exactly the "UseS2SReviewAgent on, pool never onboarded" operator misconfiguration PR #230 closes.</param>
-        private Fixture(bool s2s, int slots, bool wirePool = true)
+        /// <param name="judge">Turns on the judge stage (off by default, as in production), so a test can drive
+        /// <c>Judged</c> as a stage that does real work rather than one that returns immediately.</param>
+        private Fixture(bool s2s, int slots, bool wirePool = true, bool judge = false)
         {
             _db = new TempSqliteDatabase();
             Store = new ReviewStore(_db.ConnectionString);
@@ -1456,6 +1615,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 // run carries a sluggable PrAuthor (SeedRun leaves it null by default), so this changes nothing
                 // for the other cases while keeping the flag from being the reason a real defect goes unseen.
                 EnableReviewFeedbackAgent = true,
+                EnableJudgeAgent = judge,
             };
             // Only the HOSTED path's turns are durable, and the executor now refuses an S2S review whose loop
             // cannot checkpoint them — so the double has to be resumable on exactly the path production is.
@@ -1560,13 +1720,13 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// <summary>The git the S2S preparer runs through (S2S fixture only). Adoption must leave it EMPTY.</summary>
         public FakeSandboxCommandRunner S2SGit { get; } = new();
 
-        public static Fixture Create() => new(s2s: false, slots: 1);
+        public static Fixture Create(int slots = 1, bool judge = false) => new(s2s: false, slots, judge: judge);
 
         /// <summary>The S2S variant: the review runs in an LmStreaming-hosted conversation mounted over the
         /// leased slot, the daemon builds no tool context, and the Posted stage delivers the review host-side
         /// with the deep-link back to that conversation. <paramref name="slots"/> is how many slot leaves the
         /// fake pool is primed with — &gt;1 lets a test hold two leases at once.</summary>
-        public static Fixture CreateS2S(int slots = 1) => new(s2s: true, slots);
+        public static Fixture CreateS2S(int slots = 1, bool judge = false) => new(s2s: true, slots, judge: judge);
 
         /// <summary>The "explicit non-pooled S2S" variant (PR #230): <c>UseS2SReviewAgent</c> is on — so the
         /// S2S preparer is wired, mirroring Program.cs's unconditional registration — but none of the pool's
