@@ -18,11 +18,13 @@ namespace CodeReviewDaemon.Sample.Tests.Infrastructure;
 internal sealed class UnreadableEntry : IDisposable
 {
     private readonly DirectoryInfo _parent;
+    private readonly string? _link;
 
-    private UnreadableEntry(DirectoryInfo parent, string path)
+    private UnreadableEntry(DirectoryInfo parent, string path, string? link = null)
     {
         _parent = parent;
         Path = path;
+        _link = link;
     }
 
     /// <summary>The entry whose attributes cannot be read.</summary>
@@ -98,6 +100,76 @@ internal sealed class UnreadableEntry : IDisposable
         return new UnreadableEntry(denied, directory);
     }
 
+    /// <summary>
+    /// Plants a redirected entry the walk can see, classify, and refuse to follow — but is DENIED permission to
+    /// REMOVE. The third shape in this file, and the only one that is readable on purpose: the other two stop
+    /// the walk at "I could not look", this one lets it look, reach the right verdict, and then fail on the act
+    /// the verdict chose.
+    /// <para>
+    /// The denial must be INHERITED rather than applied to the link, and that is the whole trick. Setting an ACL
+    /// on a reparse point through <see cref="FileSystemInfo"/> opens it WITHOUT
+    /// <c>FILE_FLAG_OPEN_REPARSE_POINT</c>, so the ACE lands on the link's TARGET and the link itself stays
+    /// freely deletable — a "simpler" version that denies on the link directly builds a perfectly removable
+    /// junction and leaves the test body proving nothing. Denying on the parent FIRST and creating the link
+    /// AFTER makes the link inherit it at creation, which is the only way the ACE reaches the link object.
+    /// </para>
+    /// <para>
+    /// Both delete rights are denied, and neither is redundant: <see cref="FileSystemRights.Delete"/> is the
+    /// right on the link, and <see cref="FileSystemRights.DeleteSubdirectoriesAndFiles"/> is the right on the
+    /// PARENT that lets a caller remove a child regardless of the child's own. Denying one alone leaves the
+    /// other route open.
+    /// </para>
+    /// <para>
+    /// Nothing else is denied, which is what keeps the entry on the path under test: attributes still read, so
+    /// the guard still reaches its <c>Redirected</c> verdict, and the parent still enumerates, so the walk still
+    /// reaches the entry. Widening the denial would stop the walk one call earlier, at <c>ChildrenOf</c>, and
+    /// prove the case that is already covered.
+    /// </para>
+    /// <para>
+    /// <see cref="Supported"/> probes whether a deny ACE bites for READS; a machine could in principle honour
+    /// that and still let this process delete past a denial. That case does not skip — the assertions below
+    /// fail it, loudly, which is the right outcome: it says the input was not built, rather than passing an
+    /// unbuilt test.
+    /// </para>
+    /// </summary>
+    public static UnreadableEntry UndeletableLink(string link, string target)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException("Guard the test with RequiresUnreadableEntryFact.");
+        }
+
+        var parent = new DirectoryInfo(System.IO.Path.GetDirectoryName(link)!);
+        Deny(
+            parent,
+            FileSystemRights.Delete | FileSystemRights.DeleteSubdirectoriesAndFiles,
+            InheritanceFlags.ObjectInherit | InheritanceFlags.ContainerInherit);
+        DirectoryLink.Create(link, target);
+
+        Directory.Exists(link).Should().BeTrue(
+            "the walk only meets entries it can see, and a link the guard reads as absent would route the test "
+                + "past the case instead of into it");
+        Exception? refusedRemoval = null;
+        try
+        {
+            Directory.Delete(link);
+        }
+        catch (Exception ex)
+        {
+            refusedRemoval = ex;
+        }
+
+        (refusedRemoval is IOException or UnauthorizedAccessException).Should().BeTrue(
+            "the input IS the unremovable link, but removing it produced {0} — measured on Windows 11 the "
+                + "denial surfaces as IOException, not the UnauthorizedAccessException the File.Delete shape "
+                + "suggests, which is why the production catch has to keep both",
+            refusedRemoval?.GetType().Name ?? "no exception at all");
+        Directory.Exists(link).Should().BeTrue(
+            "a link the delete actually removed would leave the walk with nothing to fail on");
+
+        return new UnreadableEntry(parent, link, link);
+    }
+
     public void Dispose()
     {
         if (!OperatingSystem.IsWindows())
@@ -108,6 +180,14 @@ internal sealed class UnreadableEntry : IDisposable
         try
         {
             Allow(_parent);
+            if (_link is not null)
+            {
+                // Non-recursive on purpose: it takes the LINK and never its target. This has to happen BEFORE
+                // the parent goes, because Directory.Delete(recursive: true) throws on a junction rather than
+                // removing it — so without this the parent below cannot be deleted at all.
+                Directory.Delete(_link);
+            }
+
             _parent.Delete(recursive: true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

@@ -331,6 +331,55 @@ public sealed class ReviewSlotPreparerTests : IDisposable
             "a clone here would write a fresh store over a directory nobody established anything about");
     }
 
+    [RequiresUnreadableEntryFact("a removable link cannot show what happens when the unlink is refused")]
+    public async Task RecloneStoreAsync_HostPreparer_RefusesARedirectedEntryItIsNotPermittedToUnlink()
+    {
+        // The walk's answer to a redirected entry is to unlink it, and that unlink can be DENIED. Nothing caught
+        // it, so the raw I/O exception left the wipe untyped — and the pooled caller routes on TYPE: only
+        // SlotHostPathRefusedException sets refused=true and retires, everything else returns the slot to a free
+        // list that is a STACK. The next run takes the same index, meets the same entry, and is denied again. An
+        // entry the daemon is not PERMITTED to remove is not a transient failure the way a busy file is: it fails
+        // identically on every lease, forever, which is the exact loop the retire path exists to break.
+        //
+        // Retire-vs-return is already pinned both ways at DaemonReviewStageExecutorPooledTests, so what is left
+        // untested is the TRANSLATION — that a refused unlink reaches that router as a refusal at all. That is a
+        // missing catch, one call below the one ChildrenOf already has above.
+        var slot = CreateSlot();
+        var outside = Path.Combine(_hostRoot, "outside");
+        _ = Directory.CreateDirectory(outside);
+        var victim = Path.Combine(outside, "someone-elses.txt");
+        await File.WriteAllTextAsync(victim, "notes");
+        var objects = Path.Combine(slot.StorePath, "objects");
+        _ = Directory.CreateDirectory(objects);
+        var planted = Path.Combine(objects, "planted");
+        using var undeletable = UnreadableEntry.UndeletableLink(planted, outside);
+        var runner = new FakeSandboxCommandRunner();
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), new HostFileSystem(), "github", NullLoggerFactory.Instance);
+
+        var act = async () => await preparer.RecloneStoreAsync(slot.StorePath, StoreUrl, CancellationToken.None);
+
+        var refusal = await act.Should().ThrowAsync<SlotHostPathRefusedException>(
+            "an ordinary I/O exception here is returned to the pool and leased again forever");
+        refusal.Which.Message.Should().Contain(planted, "the message is the operator's only account of what stopped");
+        refusal.Which.Message.Should().Contain(
+            "symlink or junction",
+            "the verdict is the operator's next move: reporting this as unreadable sends them hunting a read "
+                + "permission on an entry whose problem is that it redirects and will not come out");
+        (refusal.Which.InnerException is IOException or UnauthorizedAccessException).Should().BeTrue(
+            "a denial and a failing device produce the same refusal but not the same operator response, and the "
+                + "cause carried here was {0}",
+            refusal.Which.InnerException?.GetType().Name ?? "nothing at all");
+        Directory.Exists(planted).Should().BeTrue(
+            "the entry that stopped the walk is left exactly as found — the wipe refused it, it did not lose a "
+                + "race with it");
+        (await File.ReadAllTextAsync(victim)).Should().Be("notes", "nothing may reach through the link");
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
+            command => command.Contains(" clone ", StringComparison.Ordinal),
+            "a clone onto a store still holding the entry the wipe could not remove writes into a tree that was "
+                + "never actually cleared");
+    }
+
     [Fact]
     public async Task EnsureStoreAsync_HostPreparer_ClonesWithNoWorkingDirectory()
     {

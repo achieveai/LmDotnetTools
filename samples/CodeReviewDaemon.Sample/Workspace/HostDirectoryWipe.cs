@@ -103,7 +103,7 @@ internal static class HostDirectoryWipe
                     // reasoning, because the reasoning depends on knowing what it is; the wipe stops instead.
                     if (refusal.Verdict == HostPathVerdict.Redirected)
                     {
-                        Unlink(entry);
+                        Unlink(root, entry);
                         continue;
                     }
 
@@ -162,16 +162,80 @@ internal static class HostDirectoryWipe
         }
     }
 
-    /// <summary>Removes a symlink or junction itself, never its target.</summary>
-    private static void Unlink(string entry)
+    /// <summary>
+    /// Removes a symlink or junction itself, never its target — or refuses the wipe when it is not permitted to.
+    /// <para>
+    /// <see cref="Directory.Exists(string)"/> is the right question here, and it is worth writing down what it
+    /// actually answers, because the obvious reading is wrong. It reports on the LINK, not on what the link aims
+    /// at, so a DANGLING directory link — one whose target has since been deleted — still answers true and still
+    /// takes the <see cref="Directory.Delete(string)"/> branch. Measured on Windows 11, junction and directory
+    /// symlink alike:
+    /// </para>
+    /// <code>
+    ///                         Directory.Exists  File.Exists  Attributes               File.Delete  Directory.Delete
+    ///   live junction         True              False        Directory, ReparsePoint  throws       unlinks
+    ///   DANGLING junction     True              False        Directory, ReparsePoint  throws       unlinks
+    ///   DANGLING dir symlink  True              False        Directory, ReparsePoint  throws       unlinks
+    /// </code>
+    /// <para>
+    /// The <see cref="File.Delete(string)"/> branch is therefore never reached for a directory link of any kind.
+    /// It is there for a FILE symlink, the one redirected shape that reads as absent — the same shape
+    /// <see cref="Delete"/>'s check order exists to catch. A review proposed replacing the test with the
+    /// reparse-point type read from metadata, on the theory that a dangling link reports
+    /// <see cref="Directory.Exists(string)"/> as false, falls into <see cref="File.Delete(string)"/>, and throws.
+    /// The table is that theory measured, and it does not happen. The replacement would also be strictly worse:
+    /// <see cref="FileSystemInfo.Attributes"/> returns <c>(FileAttributes)(-1)</c> for an entry that is absent or
+    /// cannot be read — every bit set, <see cref="FileAttributes.ReparsePoint"/> among them — so branching on it
+    /// treats "I could not look" as "it is a link", which is the exact conflation
+    /// <see cref="HostPathGuard"/> already spends a special case to keep out.
+    /// </para>
+    /// <para>
+    /// What does fail here is PERMISSION, and it gets the same answer <see cref="ChildrenOf"/> gives one call
+    /// up. An entry the daemon is not allowed to unlink leaves the walk with no move it may make: it will not
+    /// follow the link, it cannot remove it, and it must not delete the tree around it and call the store
+    /// cleared. Letting the raw exception out was fail-closed but arrived untyped, and the pooled caller routes
+    /// on TYPE — only <see cref="SlotHostPathRefusedException"/> retires the slot, everything else returns it to
+    /// a free list that is a STACK. A denied unlink is not transient the way a busy file is: it is a property of
+    /// the entry, so the next run takes the same index and is denied again, forever. Returning the slot is what
+    /// makes that loop, and the refusal type is what breaks it.
+    /// </para>
+    /// <para>
+    /// The catch is WIDER than the case that motivates it, deliberately. A denial is a property of the entry, but
+    /// an <see cref="IOException"/> here can equally be a sharing violation — an antivirus handle, an indexer
+    /// mid-scan — and nothing available at this point tells the two apart. They get the same treatment on purpose,
+    /// which means a transient lock now retires a slot that would have recovered on its next lease. That cost is
+    /// accepted: it is pool capacity down by one until restart, weighed against re-leasing an address that is
+    /// denied again on every single lease, forever. It stays cheap because of WHERE this runs — only on an entry
+    /// <see cref="HostPathGuard"/> has already ruled <see cref="HostPathVerdict.Redirected"/>, and a reparse point
+    /// inside a git store is anomalous before this method is reached at all. A transient lock on one is rare on
+    /// top of rare, while the denial it is being confused with is the shape someone plants on purpose.
+    /// </para>
+    /// <para>
+    /// The verdict is reused rather than re-derived. <see cref="Delete"/> established
+    /// <see cref="HostPathVerdict.Redirected"/> for this entry one line above; asking again here would re-read a
+    /// path that has already proven hostile, and open a second window between the two answers.
+    /// </para>
+    /// </summary>
+    private static void Unlink(string root, string entry)
     {
-        if (Directory.Exists(entry))
+        try
         {
-            Directory.Delete(entry);
+            if (Directory.Exists(entry))
+            {
+                Directory.Delete(entry);
+            }
+            else
+            {
+                File.Delete(entry);
+            }
         }
-        else
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            File.Delete(entry);
+            // BOTH types, and the pair is measured rather than defensive: a deny ACE on a junction surfaces as
+            // IOException ("Access to the path ... is denied"), not the UnauthorizedAccessException the
+            // File.Delete shape leads you to expect. Narrowing this to UnauthorizedAccessException would let the
+            // common case straight back out untyped.
+            throw Refuse(root, new HostPathRefusal(entry, HostPathVerdict.Redirected), ex);
         }
     }
 }
