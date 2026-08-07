@@ -55,6 +55,16 @@ public sealed class SandboxGitCloneInstructionChainTests
             "Could not resolve the adopted gateway's workspace base. Set SANDBOX_WORKSPACE_BASE, or "
                 + "ensure the sample's SandboxGateway:WorkspaceBasePath exists.");
 
+        // The assertions below are decisive only if the adopted gateway's own notion of "the
+        // workspace" really is this host directory. A Docker-backed (or otherwise non-host-mapped)
+        // gateway can genuinely complete both clones while reporting a workspace path that never
+        // corresponds to anything on this host (e.g. the fixed in-container mount point) — an
+        // environment/topology mismatch, not a product regression. Detect that up front and skip
+        // with a clear reason rather than fail on host-side assertions the gateway can never satisfy.
+        var hostVerification = await GitHubClonePrerequisites.VerifyHostVerifiableWorkspaceAsync(
+            gateway.BaseUrl, workspaceBase!);
+        Skip.IfNot(hostVerification.Verified, hostVerification.Reason);
+
         var id = Guid.NewGuid().ToString("N")[..8];
         // The adopted gateway resolves the workspace under its own WORKSPACE_BASE_PATH and requires
         // the leaf to already exist — create a unique one so concurrent/other sessions never collide.

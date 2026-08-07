@@ -37,6 +37,7 @@ import { sendChatMessage } from '@/api/chatClient';
 import type { ConversationUsageAggregate } from '@/api/conversationsApi';
 import { useMessageMerger } from './useMessageMerger';
 import { getMergeKey } from './messageMergeKey';
+import { createStreamResyncCoordinator } from './streamResync';
 import { buildDisplayItems } from './messageDisplay';
 import {
   serverToolUseToToolsCall,
@@ -46,6 +47,21 @@ import {
 import { logger } from '@/utils';
 
 const log = logger.forComponent('useChat');
+
+/**
+ * The WebSocket client module, imported once. Every socket operation below needs it and `import()`
+ * hands back the same module every time, so re-importing per call buys nothing — while two imports
+ * of it in flight at once (the close a drop starts overlapping the open of the next send) is a
+ * hazard worth simply not having.
+ */
+let wsClientModule: Promise<typeof import('@/api/wsClient')> | null = null;
+const loadWsClient = (): Promise<typeof import('@/api/wsClient')> =>
+  (wsClientModule ??= import('@/api/wsClient').catch((err) => {
+    // Only a SUCCESSFUL load is worth keeping: a chunk that failed to arrive (offline, bad deploy)
+    // must stay retryable, or one unlucky fetch would disable every socket operation for the session.
+    wsClientModule = null;
+    throw err;
+  }));
 
 /**
  * Transport type for streaming messages
@@ -259,6 +275,145 @@ export function useChat(options: UseChatOptions = {}) {
   
   // Persistent WebSocket connection for full-duplex communication
   let wsConnection: import('@/api/wsClient').WebSocketConnection | null = null;
+
+  /**
+   * Per-connection lifecycle facts the resync path needs. A drop is only recoverable if THIS socket
+   * neither completed its run (`doneReceived`) nor was torn down by us (`closedByClient`, e.g. a
+   * conversation switch or cancel) — otherwise `onClose` would resurrect streams the user ended.
+   * `resyncRequested` funnels the two signals of one logical drop (an explicit `stream_recovery`
+   * frame and the close that immediately follows it) into a single request.
+   */
+  interface StreamSocketState {
+    /** Identifies the one physical drop this socket can report, for the coordinator's coalescing. */
+    id: string;
+    threadId: string;
+    epoch: number;
+    /** The run the server has assigned to this socket, or null before it has assigned one. */
+    runId: string | null;
+    doneReceived: boolean;
+    resyncRequested: boolean;
+    closedByClient: boolean;
+    /**
+     * The server sent a structured error frame (an `onError` carrying a `code`). That is terminal
+     * for the run — the banner is the answer — so the close that follows must not be recovered from.
+     * Distinct from `closedByClient`: a code-less transport error is only the SYMPTOM of a drop.
+     */
+    terminalError: boolean;
+    /**
+     * The ROUTE this socket was opened for — thread, mode, provider and workspace, exactly as they
+     * were read when it connected. A prompt may only be handed to a socket somebody else opened if
+     * that socket is serving the same route the send itself asked for; the connection object knows
+     * only its thread, so the rest has to be remembered here.
+     */
+    route: string;
+  }
+  let activeSocketState: StreamSocketState | null = null;
+  let socketSequence = 0;
+
+  /** The identity a stream socket is bound to. Compared as a whole; never parsed apart. */
+  function streamRoute(
+    thread: string,
+    modeId: string | undefined,
+    providerId: string | null | undefined,
+    workspaceId: string | null | undefined
+  ): string {
+    return JSON.stringify([thread, modeId ?? null, providerId ?? null, workspaceId ?? null]);
+  }
+
+  /**
+   * A new run is starting on a socket that already carried one — the full-duplex reuse path in
+   * `sendMessageViaWebSocket`, where turn 2 goes out on turn 1's connection. `doneReceived` and
+   * `terminalError` are facts about the run that ENDED; the connection (and `closedByClient`, which
+   * is about the connection) outlives it. Leaving them set makes `requestStreamResync` read a live
+   * turn as "this run already finished" and abandon it, so no drop after turn 1 would ever recover.
+   *
+   * Called from BOTH ends of the run boundary: optimistically at send time, and — authoritatively —
+   * when the server's `run_assignment` names a run this socket is not already carrying. The send
+   * alone is not enough, because full duplex lets the user send turn 2 while turn 1 is still
+   * streaming: turn 1's `done` then lands AFTER that send and re-arms `doneReceived` for the queued
+   * turn. Only the server knows when a run actually begins, and `run_assignment` is how it says so.
+   *
+   * A non-null `wsConnection` implies `activeSocketState` is ITS state — `openStreamConnection`
+   * closes and nulls the previous connection before installing the new state.
+   */
+  function beginRunOnActiveSocket(runId: string | null = null): void {
+    const state = activeSocketState;
+    if (!state) return;
+    // A socket that has already asked for recovery is detached and being replaced. Re-arming it
+    // would let a second signal from the same corpse start a SECOND recovery for one physical drop.
+    if (state.resyncRequested) return;
+    // The same run re-announcing itself is not a new run: the backend replays `run_assignment` at
+    // the head of every resumed stream, so a replacement socket sees the id it is already carrying.
+    if (runId !== null && state.runId === runId) return;
+    state.runId = runId;
+    state.doneReceived = false;
+    state.terminalError = false;
+  }
+
+  /**
+   * Conversation generation. Bumped whenever the composable stops being "about" the conversation it
+   * was about (thread switch, clear), so a close callback that lands after the switch can be
+   * recognised as stale and dropped instead of rehydrating an abandoned conversation.
+   */
+  let conversationEpoch = 0;
+
+  /** Move to a new conversation generation and abandon any recovery that belonged to the old one. */
+  function beginConversationEpoch(): void {
+    conversationEpoch += 1;
+    resyncCoordinator.invalidate();
+  }
+
+  /**
+   * Close the active socket. By DEFAULT this is a deliberate client action (conversation switch,
+   * cancel, sandbox refresh) and marks the connection so its `onClose` is not mistaken for a
+   * server-side drop. Pass `deliberate: false` for cleanup triggered BY the transport: wsClient
+   * reports an abnormal drop as `onError` immediately followed by `onClose`, so latching
+   * "the client closed this" from the error handler would make that close unrecoverable.
+   * Single place for what used to be five copies of the dynamic-import + close + null dance.
+   */
+  async function closeActiveConnection(options: { deliberate?: boolean } = {}): Promise<void> {
+    const connection = wsConnection;
+    if (!connection) return;
+    // Detach synchronously: a resync request can run during the await below, and must not find
+    // (nor re-close) a socket this call already owns.
+    wsConnection = null;
+    if (options.deliberate !== false && activeSocketState) activeSocketState.closedByClient = true;
+    const { closeWebSocketConnection } = await loadWsClient();
+    closeWebSocketConnection(connection);
+  }
+
+  /**
+   * The in-flight close of the socket a drop detached from `wsConnection`. Started at DETACH time
+   * rather than as the recovery's first step, because the coordinator REJECTS stale and over-budget
+   * requests without running a single step — a socket released only by that step would then stay open
+   * forever, still pushing frames from a stream we have declared dead. The step awaits this promise
+   * instead, so an ACCEPTED request keeps the strict close → REST → run-state → open ordering.
+   *
+   * One slot is enough: `request()` starts its operation synchronously, and that operation's first
+   * step takes this promise before its own first await, so an accepted request always consumes the
+   * close belonging to the socket it detached. Closes that pile up behind a REJECTED request chain
+   * onto each other (see `parkDroppedSocketClose`) instead of overwriting one another.
+   */
+  let droppedSocketClose: Promise<void> | null = null;
+
+  /**
+   * Remember the close of a socket a drop just detached. CHAINS onto an unconsumed previous close
+   * rather than replacing it: a request the coordinator rejected leaves its close parked, and simply
+   * overwriting that promise would let a replacement socket open while the one it replaces is still
+   * closing — the overlap the strict close -> REST -> run-state -> open ordering exists to prevent.
+   */
+  function parkDroppedSocketClose(closing: Promise<void>): void {
+    const previous = droppedSocketClose;
+    droppedSocketClose = previous ? previous.then(() => closing) : closing;
+  }
+
+  /** Wait for the close (or chain of closes) a drop started, if there was one. */
+  async function awaitDroppedSocketClose(): Promise<void> {
+    const closing = droppedSocketClose;
+    droppedSocketClose = null;
+    await closing;
+  }
+
   let pendingSandboxRefreshRetry: (() => Promise<void>) | null = null;
   let pendingSandboxRefreshFailure: (() => void) | null = null;
   let sandboxRefreshDeferred = false;
@@ -399,6 +554,11 @@ export function useChat(options: UseChatOptions = {}) {
     const parentRunId = assignment.parentRunId;
     
     currentRunId.value = runId;
+    // The SERVER decides when a run begins, and the connection outlives the run: full duplex sends
+    // turn 2 on turn 1's socket, and the server starts that queued turn on its own schedule (after
+    // turn 1's `done`). Clearing the previous run's lifecycle flags here — not only at send time —
+    // is what keeps a drop on any turn but the first recoverable.
+    beginRunOnActiveSocket(runId);
     log.info('Run assignment received', { 
       runId, 
       generationId,
@@ -512,6 +672,64 @@ export function useChat(options: UseChatOptions = {}) {
     if (reconcileId) {
       void reconcileUsageFromServer(reconcileId);
     }
+  }
+
+  /**
+   * Handle a `generation_abandoned` control frame: a provider stream was cut mid-reply, the loop
+   * threw that generation away, and the SAME turn is being retried under a fresh generation id on
+   * this still-open connection. Without this, the abandoned generation's half-written block stays on
+   * screen forever and the retry renders as a SECOND assistant block beside it.
+   *
+   * Removes exactly the still-streaming blocks of the abandoned generation. A block that already
+   * finalized under that generation (`isStreaming === false`) is canonical — the server delivered it
+   * whole before the cut — so it is preserved. Deliberately NOT a `reset()`/reconnect: the socket is
+   * alive and the run continues; a terminal drop is a different frame entirely.
+   *
+   * Matching is on the {@link InternalChatMessage.generationId} FIELD, never by parsing the merge-key
+   * string: a generationId may itself contain `-` and the key's trailing segments vary by message
+   * kind (tool calls append a tool_call_id), so substring matching would both over- and under-match.
+   *
+   * A no-op when nothing matches, which is what makes a replayed/duplicated frame idempotent.
+   */
+  function handleGenerationAbandoned(info: {
+    threadId?: string;
+    runId?: string;
+    generationId?: string;
+  }): void {
+    const abandonedGenerationId = info.generationId;
+    if (!abandonedGenerationId) {
+      log.warn('generation_abandoned frame without a generationId; ignoring', { runId: info.runId });
+      return;
+    }
+
+    const abandonedKeys: string[] = [];
+    for (const [mergeKey, message] of messageIndex.value.entries()) {
+      if (message.generationId === abandonedGenerationId && message.isStreaming) {
+        abandonedKeys.push(mergeKey);
+      }
+    }
+
+    if (abandonedKeys.length > 0) {
+      const dropped = new Set(abandonedKeys);
+      for (const mergeKey of abandonedKeys) {
+        messageIndex.value.delete(mergeKey);
+      }
+      // messageOrder must drop the same keys: sortMessages() walks it and a dangling id that no
+      // longer resolves in messageIndex would leave a hole in the rendered transcript.
+      messageOrder.value = messageOrder.value.filter((id) => !dropped.has(id));
+    }
+
+    // Clear the merger accumulators for this generation (`genId` plus every `genId::t*` turn-scoped
+    // key) so the retry's deltas start from empty instead of concatenating onto the abandoned
+    // partial. Safe to call unconditionally — clearing an already-cleared generation is itself a
+    // no-op, which keeps a replayed frame idempotent.
+    finalize(abandonedGenerationId);
+
+    log.info('Generation abandoned; dropped its unfinalized blocks', {
+      generationId: abandonedGenerationId,
+      runId: info.runId,
+      droppedCount: abandonedKeys.length,
+    });
   }
 
   /**
@@ -768,6 +986,11 @@ export function useChat(options: UseChatOptions = {}) {
     log.info('User sending message', { textLength: text.length, transport: transport.value, isStreaming: isLoading.value });
 
     error.value = null;
+    // A new run is a fresh start for stream recovery. The attempt budget is keyed by
+    // (threadId, epoch) and a send changes neither, so without this an earlier run that exhausted
+    // the budget would leave every later run in the same conversation permanently unrecoverable.
+    // Deliberately NOT invalidate(): that would also abandon a recovery still legitimately running.
+    resyncCoordinator.resetAttempts();
     isSending.value = true;
     
     // Only set isLoading if not already streaming (backward compatibility)
@@ -817,6 +1040,72 @@ export function useChat(options: UseChatOptions = {}) {
   }
   
   /**
+   * Recovery policy for a stream the server dropped without finishing it. The steps below are the
+   * EXISTING conversation-restore path — nothing about how a conversation is rehydrated or resumed
+   * is duplicated here; the coordinator only decides whether, when and how often to run it.
+   */
+  const resyncCoordinator = createStreamResyncCoordinator({
+    isCurrent: (thread, epoch) => epoch === conversationEpoch && threadId.value === thread,
+    // The dead socket itself, plus the merger's unfinalized accumulators (a half-received delta from
+    // it) and the content turn epoch that keys them — NOT messageIndex/messageOrder, which stay on
+    // screen and are re-merged by stable identity when the REST history lands. The close was STARTED
+    // when the drop detached the socket (so a request this coordinator rejects cannot leak it), and
+    // WAITING for it here is what stops the replacement overlapping the socket it replaces.
+    // loadMessagesFromBackend repeats the accumulator reset; doing it here too protects the path
+    // where that load throws.
+    discardDroppedStream: async () => {
+      await awaitDroppedSocketClose();
+      resetContentTurnEpoch();
+      reset();
+    },
+    loadHistory: loadMessagesFromBackend,
+    // Consults authoritative run state and opens a subscribe-only socket only while the run is
+    // genuinely in flight; settles the UI to idle (markStreamIdle) when it is not.
+    resubscribe: resumeStreamIfActive,
+    reportFailure: (message) => {
+      error.value = message;
+      markStreamIdle();
+    },
+  });
+
+  /**
+   * Funnel every signal of one logical drop into the single-flight coordinator.
+   * Ignores closes we caused, closes after a completed run, and repeats for the same socket.
+   */
+  function requestStreamResync(socketState: StreamSocketState, reason: string): void {
+    if (
+      socketState.closedByClient ||
+      socketState.doneReceived ||
+      socketState.terminalError ||
+      socketState.resyncRequested
+    ) {
+      return;
+    }
+    socketState.resyncRequested = true;
+
+    if (activeSocketState === socketState) {
+      // This socket is gone (or about to be — the recovery frame is always followed by a close).
+      // `closeActiveConnection` detaches the reference before its first await, so the subscribe-only
+      // reopen is not short-circuited by resumeStreamIfActive's "already connected" guard — and it
+      // starts the close NOW rather than in the recovery's first step: a `stream_recovery` frame
+      // arrives while the socket is still OPEN, one left open keeps pushing frames from the stream we
+      // just declared dead, and the request below may be rejected (stale epoch, or the attempt budget
+      // is spent) without ever running a recovery step. `deliberate: false` because we did not choose
+      // this close — the drop did.
+      parkDroppedSocketClose(closeActiveConnection({ deliberate: false }));
+      // The transport may have surfaced "closed unexpectedly" moments ago; a drop we are actively
+      // recovering from is not a user-facing failure. If recovery gives up, reportFailure replaces
+      // this with one actionable message.
+      error.value = null;
+    }
+
+    // The socket id doubles as the DROP id: the guard above lets one socket report at most one drop,
+    // so a request bearing a new id is a genuinely new drop — including the replacement socket that
+    // dies while the very recovery which created it is still running.
+    void resyncCoordinator.request(socketState.threadId, socketState.epoch, reason, socketState.id);
+  }
+
+  /**
    * Build the stream callbacks (message handler + completion/error handling) shared by the
    * send path and the resume path. Extracted so `resumeStreamIfActive` can re-attach the exact
    * same rendering pipeline to a reconnected, subscribe-only socket.
@@ -853,14 +1142,77 @@ export function useChat(options: UseChatOptions = {}) {
   }
 
   /**
+   * Settles when the open that STARTED most recently has finished — installed its connection, been
+   * superseded, or failed. A send whose own open was superseded needs this: at the instant it finds
+   * out, the winner is usually still in flight and `wsConnection` is null, so "is there a connection
+   * I may hand my prompt to?" has no answer yet. Only ever AWAITED after an open has returned, so a
+   * loser can never await its own (already settled) promise and deadlock.
+   */
+  let activeOpenSettled: Promise<void> = Promise.resolve();
+
+  /**
    * Open (or replace) the persistent WebSocket for a thread and wire the stream callbacks.
    * Does NOT send anything — callers send afterwards (new message) or leave it subscribe-only
    * (resume). Shared by `sendMessageViaWebSocket` and `resumeStreamIfActive`.
+   *
+   * Returns the connection it INSTALLED, or `null` when a later open superseded this one while it
+   * was in flight. Callers that need to talk on the socket they asked for (a send) must use the
+   * returned reference rather than `wsConnection`, which by then belongs to the winner.
    */
   async function openStreamConnection(
     effectiveThreadId: string,
     callbacks: { onMessage: (msg: Message) => void; onDone: () => void; onError: (err: string) => void }
-  ): Promise<void> {
+  ): Promise<import('@/api/wsClient').WebSocketConnection | null> {
+    let markSettled!: () => void;
+    activeOpenSettled = new Promise<void>((resolve) => {
+      markSettled = resolve;
+    });
+    try {
+      return await openStreamConnectionCore(effectiveThreadId, callbacks);
+    } finally {
+      // Every exit — installed, superseded, or thrown — must release whoever is waiting on us.
+      markSettled();
+    }
+  }
+
+  /**
+   * The connection a superseded send may hand its prompt to. Losing the race releases the send's own
+   * socket, but the prompt is already on screen: dropping it costs the user their message, while the
+   * winner is serving the very stream the prompt belongs to. Safe ONLY when the winner is the
+   * installed, currently-owned socket for exactly the route the send asked for — same thread, mode,
+   * provider and workspace — and has not itself been declared dropped. Anything else (no winner, a
+   * different route, a stale generation) leaves the send to fail loudly instead.
+   */
+  async function adoptOwnedConnection(
+    effectiveThreadId: string,
+    route: string
+  ): Promise<import('@/api/wsClient').WebSocketConnection | null> {
+    await activeOpenSettled;
+    const connection = wsConnection;
+    const state = activeSocketState;
+    // A non-null `wsConnection` implies `activeSocketState` is ITS state (see beginRunOnActiveSocket),
+    // and the connection's own `threadId` is checked too rather than trusted through that invariant.
+    if (
+      !connection ||
+      !connection.isConnected ||
+      connection.socket.readyState !== WebSocket.OPEN ||
+      connection.threadId !== effectiveThreadId ||
+      !state ||
+      state.route !== route ||
+      state.epoch !== conversationEpoch ||
+      state.resyncRequested ||
+      state.closedByClient
+    ) {
+      log.debug('No connection the superseded send may safely reuse', { threadId: effectiveThreadId });
+      return null;
+    }
+    return connection;
+  }
+
+  async function openStreamConnectionCore(
+    effectiveThreadId: string,
+    callbacks: { onMessage: (msg: Message) => void; onDone: () => void; onError: (err: string) => void }
+  ): Promise<import('@/api/wsClient').WebSocketConnection | null> {
     const currentModeId = getModeId?.();
     const currentProviderId = getProviderId?.() ?? null;
     const currentWorkspaceId = getWorkspaceId?.() ?? null;
@@ -873,15 +1225,25 @@ export function useChat(options: UseChatOptions = {}) {
     });
 
     // Close old connection if exists
-    if (wsConnection) {
-      const { closeWebSocketConnection } = await import('@/api/wsClient');
-      closeWebSocketConnection(wsConnection);
-      wsConnection = null;
-    }
+    await closeActiveConnection();
 
-    const { createWebSocketConnection } = await import('@/api/wsClient');
+    const { createWebSocketConnection } = await loadWsClient();
 
-    wsConnection = await createWebSocketConnection({
+    // Lifecycle bookkeeping for THIS socket, captured by the callbacks below.
+    const socketState: StreamSocketState = {
+      id: `socket-${++socketSequence}`,
+      threadId: effectiveThreadId,
+      epoch: conversationEpoch,
+      runId: null,
+      doneReceived: false,
+      resyncRequested: false,
+      closedByClient: false,
+      terminalError: false,
+      route: streamRoute(effectiveThreadId, currentModeId, currentProviderId, currentWorkspaceId),
+    };
+    activeSocketState = socketState;
+
+    const connection = await createWebSocketConnection({
       threadId: effectiveThreadId,
       modeId: currentModeId,
       providerId: currentProviderId,
@@ -889,6 +1251,7 @@ export function useChat(options: UseChatOptions = {}) {
       record: recordEnabled,
       ...callbacks,
       onAuthEvent: handleAuthEvent,
+      onGenerationAbandoned: handleGenerationAbandoned,
       onSandboxSessionRefresh: async (deferred) => {
         if (sandboxRefreshThreadId !== effectiveThreadId || threadId.value !== effectiveThreadId) {
           clearSandboxRefreshState();
@@ -903,11 +1266,7 @@ export function useChat(options: UseChatOptions = {}) {
         const fail = pendingSandboxRefreshFailure;
         pendingSandboxRefreshRetry = null;
         pendingSandboxRefreshFailure = null;
-        if (wsConnection) {
-          const { closeWebSocketConnection } = await import('@/api/wsClient');
-          closeWebSocketConnection(wsConnection);
-          wsConnection = null;
-        }
+        await closeActiveConnection();
         if (retry) {
           await retry();
         } else {
@@ -916,6 +1275,17 @@ export function useChat(options: UseChatOptions = {}) {
       },
       onDone: () => {
         log.debug('WebSocket stream done signal received');
+        // The run completed on this socket: a later close is a normal shutdown, not a drop, and the
+        // resync attempt budget starts fresh for whatever comes next.
+        socketState.doneReceived = true;
+        // `doneReceived` is per-socket and safe to record either way, but the coordinator is SHARED:
+        // only the live socket may reset it. A `done` from a socket whose recovery already opened a
+        // replacement would otherwise abandon that replacement's in-flight rehydrate — and a socket
+        // we have DECLARED DROPPED is equally not the live one, it merely stays `activeSocketState`
+        // until its replacement is installed. Its own late `done` (a queued turn completing after
+        // the drop) must not abandon the recovery it started; `resubscribe` consults authoritative
+        // run state, so continuing is self-correcting when the run really did finish.
+        if (activeSocketState === socketState && !socketState.resyncRequested) resyncCoordinator.invalidate();
         callbacks.onDone();
         if (
           sandboxRefreshDeferred &&
@@ -928,11 +1298,7 @@ export function useChat(options: UseChatOptions = {}) {
           pendingSandboxRefreshRetry = null;
           pendingSandboxRefreshFailure = null;
           void (async () => {
-            if (wsConnection) {
-              const { closeWebSocketConnection } = await import('@/api/wsClient');
-              closeWebSocketConnection(wsConnection);
-              wsConnection = null;
-            }
+            await closeActiveConnection();
             if (retry) {
               await retry();
             } else {
@@ -942,8 +1308,23 @@ export function useChat(options: UseChatOptions = {}) {
         }
         // Keep connection open for next message (don't close)
       },
-      onError: async (error) => {
-        log.error('WebSocket error', { error });
+      onError: async (error, code) => {
+        log.error('WebSocket error', { error, code });
+        // A `code` means the SERVER sent a structured error frame: the run is over and the banner is
+        // the answer, so the close that follows must not be recovered from. A code-less error is a
+        // TRANSPORT failure — merely the first half of an abnormal drop that onClose recovers from.
+        // Per-SOCKET state, so it is safe to record even for a socket that is no longer active.
+        if (code) socketState.terminalError = true;
+        // Everything below mutates state SHARED by every connection. A socket whose recovery already
+        // opened a REPLACEMENT can still report its own death afterwards; acting on that here would
+        // tear down the live replacement and put a banner on a run that is streaming perfectly well.
+        // A socket we have already declared DROPPED is equally not the live one: it stays
+        // `activeSocketState` until its replacement is installed, so without the second clause a
+        // late transport error would repaint the banner and drop the spinner mid-recovery.
+        if (activeSocketState !== socketState || socketState.resyncRequested) {
+          log.debug('Ignoring an error reported by a socket that is no longer the live one');
+          return;
+        }
         clearSandboxRefreshState();
         // #246 defect 2: settle any in-flight submitClientToolResult() as a retryable error —
         // it will never receive an ack/error frame on a connection that just errored, and without
@@ -954,21 +1335,25 @@ export function useChat(options: UseChatOptions = {}) {
           message: error || 'WebSocket connection error',
         });
         callbacks.onError(error);
-        // Close and cleanup on error
-        if (wsConnection) {
-          const { closeWebSocketConnection } = await import('@/api/wsClient');
-          closeWebSocketConnection(wsConnection);
-          wsConnection = null;
-        }
+        // Cleanup — but NOT as a deliberate client close: wsClient emits onError then onClose for an
+        // abnormal drop, and marking this socket client-closed would make that close unrecoverable.
+        await closeActiveConnection({ deliberate: false });
       },
       // #246 defect 2: mirrors the onError settle above — a clean or unclean close with no ack ever
       // sent must also unlock a pending submission rather than leaking its resolver forever.
-      onClose: () => {
+      onClose: (info) => {
         settlePendingSubmissions({
           status: 'error',
           code: 'not_connected',
           message: 'WebSocket connection closed',
         });
+        // A close with no preceding `done` means the run is still out there — the server drops slow
+        // consumers with a CLEAN close (reason `resync_required`), so `wasClean` proves nothing.
+        requestStreamResync(socketState, info.reason || `closed_${info.code}`);
+      },
+      // The server announced the drop up front; recover without waiting for the close that follows.
+      onStreamRecovery: (info) => {
+        requestStreamResync(socketState, info.reason || 'stream_recovery');
       },
       // #246: settle whichever submitClientToolResult() call is waiting on this toolCallId.
       // Wired here (not per-call) so ANY caller opening the connection — send, resume, or a
@@ -999,6 +1384,37 @@ export function useChat(options: UseChatOptions = {}) {
         }
       },
     });
+
+    // OWNERSHIP, not arrival order. `activeSocketState` is claimed synchronously above, so the
+    // LAST open to start is the one the app wants; `wsConnection` is assigned only now, so without
+    // this guard the last open to RESOLVE would win instead. Those differ whenever two opens
+    // overlap — a recovery reopen racing a user send is the everyday case — and the loser would
+    // clobber the winner's connection, leaving the winner's socket unreachable (and its prompt
+    // delivered on a socket nobody is listening to).
+    if (activeSocketState !== socketState) {
+      log.debug('Discarding a stream connection that a newer open superseded while it was in flight');
+      // We chose this close, so its `onClose` must not be mistaken for a drop and start a recovery
+      // for a socket that never carried a run.
+      socketState.closedByClient = true;
+      const { closeWebSocketConnection } = await loadWsClient();
+      closeWebSocketConnection(connection);
+      return null;
+    }
+    wsConnection = connection;
+
+    // The socket can be declared dead DURING its own open: a close (or a `stream_recovery` frame)
+    // delivered before `createWebSocketConnection` hands the reference back finds `wsConnection`
+    // still null, so `requestStreamResync` had nothing to detach. Honour it now that the reference
+    // exists — otherwise the corpse stays installed as the active connection, every later recovery
+    // attempt short-circuits on resumeStreamIfActive's "already connected" guard, and the spinner
+    // never comes down.
+    if (socketState.resyncRequested) {
+      log.debug('Releasing a replacement socket that was dropped before it was installed');
+      parkDroppedSocketClose(closeActiveConnection({ deliberate: false }));
+      return null;
+    }
+
+    return connection;
   }
 
   /**
@@ -1037,15 +1453,30 @@ export function useChat(options: UseChatOptions = {}) {
         threadId: wsConnection.threadId
       });
 
+      // The connection outlives the run it was opened for, so this send starts a NEW run on it.
+      beginRunOnActiveSocket();
+
       // Send message on existing connection
-      const { sendWebSocketMessage } = await import('@/api/wsClient');
+      const { sendWebSocketMessage } = await loadWsClient();
       sendWebSocketMessage(wsConnection, text);
     } else {
-      await openStreamConnection(effectiveThreadId, callbacks);
+      const route = streamRoute(effectiveThreadId, getModeId?.(), getProviderId?.(), getWorkspaceId?.());
+      const opened = await openStreamConnection(effectiveThreadId, callbacks);
+      // Send on the socket THIS call opened, never on whatever is installed now. When a later open
+      // superseded ours the prompt is not lost: hand it to the winner, but only while the winner is
+      // serving exactly the route we asked for. With no safe socket the send fails loudly and
+      // `sendMessage`'s catch turns it into one actionable banner.
+      const connection = opened ?? (await adoptOwnedConnection(effectiveThreadId, route));
+      if (!connection) {
+        throw new Error('The connection was replaced before the message could be sent. Please try again.');
+      }
+      // An adopted socket was opened to SUBSCRIBE to the stream; this prompt starts a new run on it,
+      // exactly like the reuse path above.
+      if (!opened) beginRunOnActiveSocket();
 
       // Send message on new connection
-      const { sendWebSocketMessage } = await import('@/api/wsClient');
-      sendWebSocketMessage(wsConnection!, text);
+      const { sendWebSocketMessage } = await loadWsClient();
+      sendWebSocketMessage(connection, text);
     }
   }
 
@@ -1096,7 +1527,7 @@ export function useChat(options: UseChatOptions = {}) {
     if (!wsConnection) {
       return { status: 'error', code: 'not_connected', message: 'No active connection' };
     }
-    const { sendClientToolResult } = await import('@/api/wsClient');
+    const { sendClientToolResult } = await loadWsClient();
     return new Promise((resolve) => {
       pendingSubmissions.set(toolCallId, resolve);
       try {
@@ -1273,6 +1704,7 @@ export function useChat(options: UseChatOptions = {}) {
     resetContentTurnEpoch();
     reset();
     clearSandboxRefreshState();
+    beginConversationEpoch();
 
     // Close WebSocket connection
     await disconnectWebSocket();
@@ -1284,9 +1716,7 @@ export function useChat(options: UseChatOptions = {}) {
   async function disconnectWebSocket(): Promise<void> {
     if (wsConnection) {
       log.info('Disconnecting WebSocket', { connectionId: wsConnection.connectionId });
-      const { closeWebSocketConnection } = await import('@/api/wsClient');
-      closeWebSocketConnection(wsConnection);
-      wsConnection = null;
+      await closeActiveConnection();
     }
   }
 
@@ -1299,6 +1729,8 @@ export function useChat(options: UseChatOptions = {}) {
     if (!isLoading.value && !isSending.value && !wsConnection) return;
     log.info('Cancelling active stream');
 
+    // The user ended this run: nothing left to recover, and the next drop starts with a full budget.
+    resyncCoordinator.invalidate();
     await disconnectWebSocket();
     clearSandboxRefreshState();
 
@@ -1323,6 +1755,9 @@ export function useChat(options: UseChatOptions = {}) {
     log.info('Setting thread ID externally', { oldThreadId: threadId.value, newThreadId });
     if (threadId.value !== newThreadId) {
       clearSandboxRefreshState();
+      // A different conversation is now current: any recovery in flight (or any close still to
+      // land) belongs to the conversation we just left and must not touch this one.
+      beginConversationEpoch();
     }
     threadId.value = newThreadId;
   }
@@ -1333,8 +1768,21 @@ export function useChat(options: UseChatOptions = {}) {
   async function loadMessagesFromBackend(existingThreadId: string): Promise<void> {
     log.info('Loading messages from backend', { threadId: existingThreadId });
 
+    // Everything below the await is DESTRUCTIVE (it wipes the message index and reassigns
+    // threadId), so a load whose conversation the user has since left must discard its result
+    // BEFORE applying it — checking afterwards would already have overwritten the new conversation.
+    // A slow resync rehydrate of the previous thread landing after a switch is exactly this case.
+    const epochAtEntry = conversationEpoch;
     const { loadConversationMessages } = await import('@/api/conversationsApi');
     const persistedMessages = await loadConversationMessages(existingThreadId);
+
+    if (epochAtEntry !== conversationEpoch) {
+      log.debug('Discarding history for a conversation the user has left', {
+        threadId: existingThreadId,
+        count: persistedMessages.length,
+      });
+      return;
+    }
 
     log.debug('Loaded persisted messages', { count: persistedMessages.length });
 
@@ -1451,7 +1899,10 @@ export function useChat(options: UseChatOptions = {}) {
     try {
       const { getConversationUsage } = await import('@/api/conversationsApi');
       const usageAggregate = await getConversationUsage(existingThreadId);
-      if (usageAggregate) {
+      // A SECOND round-trip, so the conversation can change under it exactly as it can under the
+      // message load above — and the banner is GLOBAL, not per-conversation. Re-check before
+      // painting, or the totals of the conversation the user left land on the one they opened.
+      if (usageAggregate && epochAtEntry === conversationEpoch && threadId.value === existingThreadId) {
         applyAggregateToBanner(usageAggregate);
       }
     } catch (e) {

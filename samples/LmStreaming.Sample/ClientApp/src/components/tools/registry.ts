@@ -158,7 +158,9 @@ const flowRenderer: ToolRenderer = {
   family: 'flow',
   icon: '⛓',
   iconAlt: 'workflow',
-  summarize: (args) => firstString(args, ['node', 'currentNode', 'status']),
+  // workflowId leads: for the launch family (StartWorkflowAgent/CheckWorkflow/WaitWorkflow) it is the
+  // only argument, and WHICH workflow a pill refers to is what a reader needs when several are running.
+  summarize: (args) => firstString(args, ['workflowId', 'node', 'currentNode', 'status']),
 };
 
 const waitRenderer: ToolRenderer = {
@@ -256,6 +258,9 @@ register(
     'agent',
     'sendmessage',
     'checkagent',
+    // The legacy (collaboration-off) singular wait; registered alongside checkagent so a WaitAgent
+    // pill does not fall back to the generic renderer on the surface that actually offers it.
+    'waitagent',
     // Collaboration tools (#244): the plural checks and the directory/transcript reads.
     'checkagents',
     'waitforagents',
@@ -271,7 +276,12 @@ register(
     'setcurrentnode',
     'setstate',
     'setnotes',
+    // The launch family the Workspace Agent calls. 'startworkflow' is the HISTORICAL name and stays
+    // registered: it is on disk in conversations persisted before the rename to StartWorkflowAgent,
+    // and an unregistered name falls back to the generic renderer without failing anything.
     'startworkflow',
+    'startworkflowagent',
+    'getworkflows',
     'checkworkflow',
     'waitworkflow',
   ],

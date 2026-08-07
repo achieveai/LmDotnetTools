@@ -352,6 +352,35 @@ public class SubAgentManagerTests : IAsyncLifetime
         release.SetResult(true);
     }
 
+    /// <summary>
+    /// A non-positive <see cref="SubAgentOptions.OutputChannelCapacity"/> is rejected where the host
+    /// hands its options over, not where a child loop finally uses them.
+    /// </summary>
+    /// <remarks>
+    /// The value is only read when a spawned child builds a bounded output channel, so without this
+    /// guard a misconfigured host fails as an <see cref="ArgumentOutOfRangeException"/> thrown from
+    /// deep inside a live stream — surfacing as a broken sub-agent run rather than as bad configuration.
+    /// Mirrors the existing <c>MaxConcurrentSubAgents</c>/<c>MaxQueuedSubAgents</c> checks.
+    /// </remarks>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Constructor_RejectsNonPositiveOutputChannelCapacity(int capacity)
+    {
+        var options = CreateOptions() with { OutputChannelCapacity = capacity };
+
+        var act = () => new SubAgentManager(
+            _parentMock.Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            new MutableSubAgentTemplateSource(options.Templates));
+
+        act.Should()
+            .Throw<ArgumentOutOfRangeException>()
+            .WithMessage("*OutputChannelCapacity*");
+    }
+
     [Fact]
     public async Task SendMessageAsync_QueuedTargetReturnsActionableError()
     {

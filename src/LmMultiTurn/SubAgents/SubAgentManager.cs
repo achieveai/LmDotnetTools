@@ -369,6 +369,17 @@ public sealed class SubAgentManager : IAsyncDisposable
             );
         }
 
+        // Checked here rather than where a spawned child builds its bounded output channel: that read
+        // happens inside a live stream, so a misconfigured host would surface as a broken sub-agent run
+        // instead of as bad configuration.
+        if (options.OutputChannelCapacity <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                "OutputChannelCapacity must be greater than zero."
+            );
+        }
+
         _parentAgent = parentAgent;
         _parentContracts = parentContracts;
         _parentHandlers = parentHandlers;
@@ -2599,6 +2610,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                     systemPrompt: template.SystemPrompt,
                     defaultOptions: defaultOptions,
                     maxTurnsPerRun: template.MaxTurnsPerRun,
+                    outputChannelCapacity: _options.OutputChannelCapacity,
                     store: store,
                     logger: _logger is NullLogger ? null : new SubAgentLoopLoggerAdapter(_logger),
                     // Not _options: a child runs its own delegations, so it must not inherit the spawn

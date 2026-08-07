@@ -177,7 +177,7 @@ public sealed class WorkspaceWorkflowWiringTests
         // exactly what the migration's NonInheritedToolNames = StartWorkflowToolProvider.ToolNames guards.
         defaults.Values.Should().OnlyContain(t => t.EnabledTools == null);
         StartWorkflowToolProvider.ToolNames.Should()
-            .BeEquivalentTo(["StartWorkflowAgent", "CheckWorkflow", "WaitWorkflow"]);
+            .BeEquivalentTo(["StartWorkflowAgent", "GetWorkflows", "CheckWorkflow", "WaitWorkflow"]);
     }
 
     [Fact]
@@ -205,7 +205,7 @@ public sealed class WorkspaceWorkflowWiringTests
         );
 
         // A normal agent sees the launch tools...
-        loop.RegisteredToolNames.Should().Contain(["StartWorkflowAgent", "CheckWorkflow", "WaitWorkflow"]);
+        loop.RegisteredToolNames.Should().Contain(["StartWorkflowAgent", "GetWorkflows", "CheckWorkflow", "WaitWorkflow"]);
         // ...and NEVER the workflow-state/authoring tools (those live only inside a controller loop).
         loop.RegisteredToolNames.Should()
             .NotContain(["SetWorkflow", "GetWorkflow", "SetCurrentNode", "SetState", "SetNotes"]);

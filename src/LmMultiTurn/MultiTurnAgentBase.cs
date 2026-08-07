@@ -6,6 +6,7 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmLifecycle;
 using AchieveAi.LmDotnetTools.LmLifecycle.Payloads;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Delivery;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
@@ -38,7 +39,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     // Channels - _inputChannel is recreatable to support restart
     private Channel<QueuedInput> _inputChannel;
     private readonly object _channelLock = new();
-    private readonly ConcurrentDictionary<string, Channel<IMessage>> _outputSubscribers = new();
+    private readonly ConcurrentDictionary<string, Subscriber> _outputSubscribers = new();
 
     // Replay buffer for the in-flight run. A client that reconnects mid-run (after switching
     // conversations or refreshing the page) re-subscribes via SubscribeAsync; without replay it
@@ -1161,7 +1162,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             SingleWriter = true,
         });
 
-        if (!_outputSubscribers.TryAdd(subscriberId, outputChannel))
+        if (!_outputSubscribers.TryAdd(subscriberId, new Subscriber { Channel = outputChannel }))
         {
             throw new InvalidOperationException("Failed to create subscriber for ExecuteRun");
         }
@@ -1273,9 +1274,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         finally
         {
             // Clean up subscriber
-            if (_outputSubscribers.TryRemove(subscriberId, out var channel))
+            if (_outputSubscribers.TryRemove(subscriberId, out var subscriber))
             {
-                _ = channel.Writer.TryComplete();
+                _ = subscriber.Channel.Writer.TryComplete();
             }
         }
     }
@@ -1283,6 +1284,28 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     #endregion
 
     #region Output API
+
+    /// <summary>
+    /// Per-subscriber fan-out state. Tracks the bounded output channel alongside the run/generation
+    /// identity most recently observed for this subscriber (best-effort - not every message kind
+    /// carries both ids, see <see cref="PublishToSubscriber"/>), plus a reserved terminal recovery
+    /// control. <see cref="RecoveryControl"/> is completed ONLY when <see cref="PublishToSubscriber"/>
+    /// drops this subscriber for being too slow - never on an ordinary unsubscribe (this class's own
+    /// <see cref="SubscribeAsync"/> cleanup) or on agent disposal (<see cref="DisposeAsync"/>) - so a
+    /// terminal <see cref="StreamRecoveryMessage"/> stays observable even though the bounded
+    /// <see cref="Channel"/> it was dropped from is, by definition, full.
+    /// </summary>
+    private sealed class Subscriber
+    {
+        public required Channel<IMessage> Channel { get; init; }
+
+        public string? LastRunId { get; set; }
+
+        public string? LastGenerationId { get; set; }
+
+        public TaskCompletionSource<StreamRecoveryMessage> RecoveryControl { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
 
     /// <inheritdoc />
     public async IAsyncEnumerable<IMessage> SubscribeAsync(
@@ -1299,10 +1322,11 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         // Atomically register this subscriber AND snapshot the in-flight run's buffered messages,
         // so a message published concurrently is delivered EITHER via this replay snapshot OR via
         // the live channel below — never both, never neither. See `_replayLock` remarks.
+        var subscriber = new Subscriber { Channel = channel };
         IReadOnlyList<IMessage> replay;
         lock (_replayLock)
         {
-            _outputSubscribers[subscriberId] = channel;
+            _outputSubscribers[subscriberId] = subscriber;
             replay = _replayRunActive && _replayBuffer.Count > 0
                 ? [.. _replayBuffer]
                 : [];
@@ -1327,13 +1351,22 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             {
                 yield return message;
             }
+
+            // The channel completed without cancellation. If PublishToSubscriber dropped this
+            // subscriber for being too slow, its recovery control is already set — surface it
+            // as the stream's terminal message so the client can tell "you were disconnected,
+            // resync" apart from an ordinary run completion or unsubscribe (which leave it unset).
+            if (subscriber.RecoveryControl.Task.IsCompletedSuccessfully)
+            {
+                yield return subscriber.RecoveryControl.Task.Result;
+            }
         }
         finally
         {
             // Cleanup on unsubscribe
             if (_outputSubscribers.TryRemove(subscriberId, out var removed))
             {
-                _ = removed.Writer.TryComplete();
+                _ = removed.Channel.Writer.TryComplete();
             }
 
             Logger.LogDebug("Subscriber {SubscriberId} disconnected", subscriberId);
@@ -1347,8 +1380,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <param name="ct">Cancellation token</param>
     protected ValueTask PublishToAllAsync(IMessage message, CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(message);
         _ = ct;
-        KeyValuePair<string, Channel<IMessage>>[] targets;
+        KeyValuePair<string, Subscriber>[] targets;
         lock (_replayLock)
         {
             // Transient live-only frames (e.g. the conversation usage banner frame) are never buffered: a
@@ -1377,7 +1411,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                     }
                 }
 
-                if (_replayRunActive)
+                if (_replayRunActive && ReplayMessagePolicy.IsCanonicalOrControl(message))
                 {
                     if (_replayBuffer.Count < _maxReplayBufferSize && _replayBufferBytes < _maxReplayBufferBytes)
                     {
@@ -1419,9 +1453,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 #pragma warning restore IDE0305
         }
 
-        foreach (var (subscriberId, channel) in targets)
+        foreach (var (subscriberId, subscriber) in targets)
         {
-            PublishToSubscriber(subscriberId, channel, message);
+            PublishToSubscriber(subscriberId, subscriber, message);
         }
 
         return ValueTask.CompletedTask;
@@ -1438,17 +1472,41 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// the in-flight run from the buffer. A reconnecting replay consumer can therefore never block
     /// <see cref="PublishToAllAsync"/>.
     /// </summary>
-    private void PublishToSubscriber(string subscriberId, Channel<IMessage> channel, IMessage message)
+    private void PublishToSubscriber(string subscriberId, Subscriber subscriber, IMessage message)
     {
+        // Track the most recent run/generation identity actually delivered to this subscriber, so an
+        // eventual StreamRecoveryMessage (built below, only if this subscriber is dropped) can stamp
+        // the identifiers of the run it was last caught up on instead of nulls. Best-effort: several
+        // message kinds omit one or both ids (e.g. a finalized tool_call arrives without RunId), so a
+        // null on the message never overwrites an already-known value.
+        if (message.RunId != null)
+        {
+            subscriber.LastRunId = message.RunId;
+        }
+
+        if (message.GenerationId != null)
+        {
+            subscriber.LastGenerationId = message.GenerationId;
+        }
+
         // Fast path: succeeds whenever the subscriber is keeping up (the overwhelming common case).
-        if (channel.Writer.TryWrite(message))
+        if (subscriber.Channel.Writer.TryWrite(message))
         {
             return;
         }
 
         if (_outputSubscribers.TryRemove(subscriberId, out var removed))
         {
-            _ = removed.Writer.TryComplete();
+            // Reserve the terminal recovery control BEFORE completing the channel, so it is
+            // observable to SubscribeAsync even though the channel it was dropped from is (by
+            // definition) full: SubscribeAsync checks this TCS only after its own read loop ends,
+            // never by writing into the now-completed channel.
+            _ = removed.RecoveryControl.TrySetResult(new StreamRecoveryMessage(
+                ThreadId,
+                removed.LastRunId,
+                removed.LastGenerationId,
+                StreamRecoveryReason.SlowConsumer));
+            _ = removed.Channel.Writer.TryComplete();
             Logger.LogWarning(
                 "Dropping slow subscriber {SubscriberId}: output channel full at capacity {Capacity}; "
                     + "the live run is not blocked and the client can reconnect to resume.",
@@ -1698,10 +1756,18 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         // Complete input channel on disposal (final cleanup - no restart possible)
         _ = _inputChannel.Writer.TryComplete();
 
-        // Close all subscriber channels
-        foreach (var (_, channel) in _outputSubscribers)
+        // Close all subscriber channels. Disposal is not a slow-consumer eviction, so it never
+        // touches RecoveryControl - a subscriber still reading here simply sees its channel end
+        // (no StreamRecoveryMessage), same as any other clean shutdown. Remove BEFORE completing
+        // (matching PublishToSubscriber's slow-consumer path and SubscribeAsync's own unsubscribe
+        // cleanup): once a subscriber is removed here, a concurrent publish's TryRemove can no
+        // longer also see it, so it can never race this teardown into wrongly setting
+        // RecoveryControl on an ordinary disposal.
+        foreach (var (subscriberId, subscriber) in _outputSubscribers)
         {
-            _ = channel.Writer.TryComplete();
+            _ = _outputSubscribers.TryRemove(subscriberId, out _);
+            _ = subscriber.Channel.Writer.TryComplete();
+            await OnSubscriberChannelCompletedDuringDisposeAsync(subscriberId);
         }
 
         _outputSubscribers.Clear();
@@ -2209,6 +2275,16 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     {
         return Task.CompletedTask;
     }
+
+    /// <summary>
+    /// Test seam only (no-op in production): invoked once per subscriber during
+    /// <see cref="DisposeAsync"/>'s teardown, immediately after that subscriber's output channel is
+    /// completed. Lets a test deterministically simulate <see cref="PublishToSubscriber"/> racing
+    /// this exact instant - no sleeps, no real thread timing - to prove ordinary disposal can never
+    /// set <see cref="Subscriber.RecoveryControl"/> the way a slow-consumer eviction does.
+    /// </summary>
+    internal virtual ValueTask OnSubscriberChannelCompletedDuringDisposeAsync(string subscriberId) =>
+        ValueTask.CompletedTask;
 
     /// <summary>
     /// Called after the run loop stops. Override to perform async cleanup after each run cycle.

@@ -47,6 +47,7 @@ public class WorkflowControllerToolRestrictionTests
                     "Agent",
                     "SendMessage",
                     "CheckAgent",
+                    "WaitAgent",
                 ]
             );
     }

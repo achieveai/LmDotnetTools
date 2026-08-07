@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmTestUtils;
+using AchieveAi.LmDotnetTools.Sandbox;
 
 namespace LmStreaming.Sample.Browser.E2E.Tests.Infrastructure;
 
@@ -107,6 +108,100 @@ public sealed class GitHubClonePrerequisites
         return null;
     }
 
+    /// <summary>
+    /// Probes whether the ADOPTED gateway at <paramref name="gatewayBaseUrl"/> reports a workspace
+    /// path that is genuinely verifiable on THIS host under <paramref name="workspaceBase"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>SandboxGitCloneInstructionChainTests</c> asserts against real files written under a
+    /// Windows host directory (<paramref name="workspaceBase"/>). That assertion is only meaningful
+    /// when the adopted gateway's own notion of "the workspace" is that same host directory. A
+    /// gateway fronting a Docker backend (or any backend whose workspace root is a container-internal
+    /// mount, a named volume, or otherwise not the resolved host path) reports a
+    /// <see cref="SandboxInfo.WorkspaceContainerPath"/> that never matches — the clone can genuinely
+    /// succeed inside the container while leaving nothing for this host-side test to find, which is
+    /// an environment/topology mismatch, not a product regression.
+    /// </para>
+    /// <para>
+    /// This creates one throwaway sandbox session under a unique probe leaf, inspects what the
+    /// gateway reports back, and tears the session down again — mirroring exactly the trust
+    /// <see cref="SandboxSessionRegistry" /> production code places in that same field (it takes
+    /// <c>info.WorkspaceContainerPath</c> as the session's host path verbatim). Never throws: any
+    /// failure (unreachable gateway, malformed response, timeout) degrades to a not-verified result
+    /// with a descriptive reason, so a broken probe skips the gated test rather than failing it.
+    /// </para>
+    /// </remarks>
+    public static async Task<HostWorkspaceVerification> VerifyHostVerifiableWorkspaceAsync(
+        string gatewayBaseUrl,
+        string workspaceBase,
+        CancellationToken ct = default)
+    {
+        var leaf = "e2e-prereq-probe-" + Guid.NewGuid().ToString("N")[..8];
+        var probeHostPath = Path.Combine(workspaceBase, leaf);
+
+        string? sessionId = null;
+        try
+        {
+            Directory.CreateDirectory(probeHostPath);
+
+            var options = new SandboxClientOptions(
+                new Uri(gatewayBaseUrl),
+                appId: "e2e-prereq-probe",
+                clientSecret: string.Empty,
+                executionTimeout: TimeSpan.FromSeconds(30),
+                transportTimeout: TimeSpan.FromSeconds(15),
+                allowInsecureDevelopmentTransport: true);
+            using var client = new SandboxClient(options);
+
+            var info = await client.CreateAsync(new SandboxCreateRequest(leaf), ct).ConfigureAwait(false);
+            sessionId = info.SessionId;
+
+            return HostWorkspacePathVerifier.Verify(info.WorkspaceContainerPath, probeHostPath);
+        }
+        catch (Exception ex)
+        {
+            return new HostWorkspaceVerification(
+                Verified: false,
+                Reason: "Could not verify the adopted gateway's workspace against this host: "
+                    + $"{ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (sessionId is not null)
+            {
+                try
+                {
+                    var options = new SandboxClientOptions(
+                        new Uri(gatewayBaseUrl),
+                        appId: "e2e-prereq-probe",
+                        clientSecret: string.Empty,
+                        executionTimeout: TimeSpan.FromSeconds(30),
+                        transportTimeout: TimeSpan.FromSeconds(15),
+                        allowInsecureDevelopmentTransport: true);
+                    using var client = new SandboxClient(options);
+                    await client.DeleteAsync(sessionId, ct).ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Best-effort teardown of the throwaway probe session.
+                }
+            }
+
+            try
+            {
+                if (Directory.Exists(probeHostPath))
+                {
+                    Directory.Delete(probeHostPath, recursive: true);
+                }
+            }
+            catch
+            {
+                // Best-effort cleanup of the probe directory.
+            }
+        }
+    }
+
     /// <summary>The fixed (non-expiring classic OAuth) client id placeholder — see <see cref="GitHubClonePrerequisites"/>.</summary>
     public const string PlaceholderClientId = "e2e-clone-test";
 
@@ -177,4 +272,99 @@ public sealed class EnvironmentVariableScope : IDisposable
             Environment.SetEnvironmentVariable(key, value);
         }
     }
+}
+
+/// <summary>
+/// Result of <see cref="GitHubClonePrerequisites.VerifyHostVerifiableWorkspaceAsync"/>: whether the
+/// adopted gateway's reported workspace path is verifiable on this host, and why not when it isn't.
+/// </summary>
+public sealed record HostWorkspaceVerification(bool Verified, string Reason);
+
+/// <summary>
+/// Pure decision logic for whether a gateway-reported workspace path is the same, real, existing
+/// directory on this host as the one the caller expects — deliberately separated from the live probe
+/// in <see cref="GitHubClonePrerequisites"/> so it is unit-testable without a running gateway.
+/// </summary>
+/// <remarks>
+/// On a local (non-Docker) gateway backend, <c>SandboxInfo.WorkspaceContainerPath</c> IS the real host
+/// path (there is no container — "inside the sandbox" and "on the host" are the same filesystem), so
+/// it round-trips back as a fully-qualified, existing Windows path. On a Docker backend that same
+/// field is instead the fixed in-container mount point (conventionally <c>/workspace</c>) — a
+/// Linux-style, non-drive-qualified path that is never a real Windows directory and can never match
+/// the resolved host workspace. This mirrors (without duplicating) the trust
+/// <c>SandboxSessionRegistry.CreateSessionAsync</c> places in the same field: it takes
+/// <c>info.WorkspaceContainerPath</c> as the session's host path verbatim, so whatever that method
+/// would treat as "the host path" is exactly what this verifies against the expected directory.
+/// </remarks>
+public static class HostWorkspacePathVerifier
+{
+    /// <summary>
+    /// Verifies that <paramref name="reportedPath"/> — the value a gateway returned as
+    /// <c>SandboxInfo.WorkspaceContainerPath</c> — both looks like and actually IS
+    /// <paramref name="expectedHostPath"/> on this host.
+    /// </summary>
+    public static HostWorkspaceVerification Verify(string? reportedPath, string expectedHostPath)
+    {
+        if (string.IsNullOrWhiteSpace(reportedPath))
+        {
+            return new HostWorkspaceVerification(
+                false,
+                "The adopted gateway reported no workspace container path for the probe session.");
+        }
+
+        var strippedReported = StripLongPathPrefix(reportedPath);
+
+        // A Docker-backend gateway reports its fixed in-container mount point (e.g. "/workspace"),
+        // which is never a Windows-rooted path — catches that case generically, without hardcoding
+        // "Docker" or any specific mount literal.
+        if (!Path.IsPathRooted(strippedReported) || !LooksDriveQualified(strippedReported))
+        {
+            return new HostWorkspaceVerification(
+                false,
+                $"The adopted gateway reported workspace path '{reportedPath}', which is not a "
+                    + "drive-qualified Windows host path — this looks like a container-internal mount "
+                    + "point (typical of a Docker-backed gateway), not this host's filesystem.");
+        }
+
+        string normalizedReported;
+        string normalizedExpected;
+        try
+        {
+            normalizedReported = Path.TrimEndingDirectorySeparator(Path.GetFullPath(strippedReported));
+            normalizedExpected = Path.TrimEndingDirectorySeparator(Path.GetFullPath(StripLongPathPrefix(expectedHostPath)));
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return new HostWorkspaceVerification(
+                false,
+                $"The adopted gateway reported workspace path '{reportedPath}', which is not a valid "
+                    + $"path on this host ({ex.GetType().Name}: {ex.Message}).");
+        }
+
+        if (!Directory.Exists(normalizedReported))
+        {
+            return new HostWorkspaceVerification(
+                false,
+                $"The adopted gateway reported workspace path '{normalizedReported}', but no such "
+                    + "directory exists on this host — the gateway's workspace is not this host's "
+                    + "filesystem.");
+        }
+
+        if (!string.Equals(normalizedReported, normalizedExpected, StringComparison.OrdinalIgnoreCase))
+        {
+            return new HostWorkspaceVerification(
+                false,
+                $"The adopted gateway reported workspace path '{normalizedReported}', which does not "
+                    + $"match the expected host workspace '{normalizedExpected}' — the gateway is not "
+                    + "resolving workspaces against this host's directory tree.");
+        }
+
+        return new HostWorkspaceVerification(true, string.Empty);
+    }
+
+    private static bool LooksDriveQualified(string path) =>
+        path.Length >= 2 && path[1] == ':' && char.IsLetter(path[0]);
+
+    private static string StripLongPathPrefix(string path) =>
+        path.StartsWith(@"\\?\", StringComparison.Ordinal) ? path[4..] : path;
 }

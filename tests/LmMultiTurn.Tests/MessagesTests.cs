@@ -1,4 +1,6 @@
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using FluentAssertions;
 using Xunit;
@@ -220,6 +222,26 @@ public class MessagesTests
         receiptId.Should().Be("receipt-2");
         deconstructedQueuedAt.Should().Be(queuedAt);
         resume.Should().BeNull();
+    }
+
+    #endregion
+
+    #region StreamRecoveryMessage Tests
+
+    [Fact]
+    public void StreamRecoveryReason_SerializesAsSlowConsumer_WithBareProductionOptions()
+    {
+        // Finding #4: StreamRecoveryReason's wire-format converter must be discoverable from the enum
+        // type itself (a [JsonConverter] attribute, mirroring Role's own convention - see Role.cs),
+        // not depend on a caller (e.g. ChatWebSocketManager) remembering to register it on its own
+        // private JsonSerializerOptions. Bare JsonSerializerOptionsFactory.CreateForProduction() - with
+        // NO manual converter added - must already serialize the enum as "slow_consumer".
+        var message = new StreamRecoveryMessage("thread-1", "run-1", "gen-1", StreamRecoveryReason.SlowConsumer);
+
+        var json = JsonSerializer.Serialize(message, JsonSerializerOptionsFactory.CreateForProduction());
+
+        using var doc = JsonDocument.Parse(json);
+        doc.RootElement.GetProperty("reason").GetString().Should().Be("slow_consumer");
     }
 
     #endregion

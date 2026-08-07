@@ -563,6 +563,125 @@ public sealed class ChatWebSocketManagerSubAgentTests
         socket.LastCloseStatus.Should().NotBe(WebSocketCloseStatus.InternalServerError);
     }
 
+    // ----- Task 3: stream_recovery resync control (shared by BOTH the primary /ws pump,
+    // StreamMessagesToClientAsync, and this sub-agent focus pump, PumpSubAgentStreamAsync - both
+    // route through the same private PumpMessagesToClientAsync with no per-caller branching, so
+    // exercising it here proves parity for both) -----
+
+    [Fact]
+    public async Task PumpSubAgentStream_OnStreamRecoveryMessage_SendsContentFreeFrame_ClosesResyncRequired_NeverEmitsDone()
+    {
+        // A StreamRecoveryMessage is the terminal control MultiTurnAgentBase.PublishToSubscriber yields
+        // when a slow subscriber's bounded channel is dropped (see MultiTurnAgentBase.SubscribeAsync). It
+        // is NOT a run completion, so the shared pump must forward it as a content-free frame, close the
+        // socket with the dedicated "resync_required" reason, and never emit the {"$type":"done"}
+        // sentinel that an ordinary RunCompletedMessage would trigger.
+        const string agentId = "alpha";
+        const string secretPromptText = "SENTINEL-PROMPT-b3f1-must-not-reach-recovery-frame";
+
+        var socket = new FakeWebSocket();
+        var connection = new WebSocketConnectionRegistry().Register($"subagent-{agentId}", socket);
+        var manager = CreateManager(EmptyPool());
+        using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        await manager.PumpSubAgentStreamAsync(
+          connection,
+          TextThenRecovery(
+            secretPromptText,
+            new StreamRecoveryMessage("thread-1", "run-1", "gen-1", StreamRecoveryReason.SlowConsumer)),
+          agentId,
+          testCts.Token);
+
+        // Exactly the preceding content frame plus the recovery frame - no done sentinel.
+        socket.SentFrames.Should().HaveCount(2, "the ordinary delta plus the recovery frame, and nothing else");
+        socket.SentContains("\"$type\":\"done\"").Should().BeFalse("a dropped subscriber must never see the done sentinel");
+
+        var recoveryFrame = socket.SentFrames[1];
+        recoveryFrame.Should().NotContain(secretPromptText, "the recovery control must carry no conversation content");
+
+        using var doc = JsonDocument.Parse(recoveryFrame);
+        doc.RootElement.GetProperty("$type").GetString().Should().Be("stream_recovery");
+        doc.RootElement.GetProperty("reason").GetString().Should().Be("slow_consumer");
+        doc.RootElement.GetProperty("threadId").GetString().Should().Be("thread-1");
+        doc.RootElement.GetProperty("runId").GetString().Should().Be("run-1");
+        doc.RootElement.GetProperty("generationId").GetString().Should().Be("gen-1");
+
+        // Exact wire contract: content-free means ONLY these five properties - not merely "these are
+        // present", but nothing else (e.g. IMessage.role/fromAgent/metadata) leaks alongside them.
+        doc.RootElement.EnumerateObject().Select(p => p.Name).Should().BeEquivalentTo(
+          ["$type", "reason", "threadId", "runId", "generationId"],
+          "a dropped subscriber's recovery control must carry identifiers and reason only");
+
+        socket.LastCloseStatus.Should().Be(WebSocketCloseStatus.NormalClosure);
+        socket.LastCloseStatusDescription.Should().Be("resync_required");
+        socket.CloseAsyncCalled.Should().BeTrue("the connection must close deliberately after the recovery frame");
+    }
+
+    [Fact]
+    public async Task PumpSubAgentStream_OnStreamRecoveryMessage_StopsPumping_AnyLaterSourceMessagesAreNeverSent()
+    {
+        // The recovery control is terminal: even if the wrapped source enumerates further messages after
+        // it (defensive - MultiTurnAgentBase.SubscribeAsync never does this, but the pump itself must not
+        // rely on that), PumpMessagesToClientAsync must break immediately and send nothing more.
+        const string agentId = "beta";
+        const string laterSecret = "SENTINEL-LATER-9c02-must-never-be-sent-after-recovery";
+
+        var socket = new FakeWebSocket();
+        var connection = new WebSocketConnectionRegistry().Register($"subagent-{agentId}", socket);
+        var manager = CreateManager(EmptyPool());
+        using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        await manager.PumpSubAgentStreamAsync(
+          connection,
+          RecoveryThenMoreMessages(laterSecret),
+          agentId,
+          testCts.Token);
+
+        socket.SentFrames.Should().ContainSingle("the recovery frame is terminal; nothing after it is ever pumped");
+        socket.SentContains(laterSecret).Should()
+          .BeFalse("a message enumerated after the recovery control must never reach the client");
+        socket.CloseAsyncCalled.Should().BeTrue();
+        socket.LastCloseStatusDescription.Should().Be("resync_required");
+    }
+
+    [Fact]
+    public async Task PumpSubAgentStream_OnStreamRecoveryMessage_ClosesResyncRequired_EvenWhenConnectionTokenCancelledRightAfterTheSend()
+    {
+        // Finding #2: a cancellation landing between the recovery frame's send and its deliberate close
+        // must not be able to suppress that close (and the "resync_required" reason it carries) - the
+        // close must use its own uncancellable token, the same way SendSubAgentStreamFailedErrorAsync
+        // already does for its terminal close. FakeWebSocket.CloseAsync throws OperationCanceledException
+        // for an already-cancelled token (as a real socket would); PumpMessagesToClientAsync swallows that
+        // exception internally as normal teardown, so - if the close call used the connection's (now
+        // cancelled) token - the close would silently never happen: CloseAsyncCalled would stay false and
+        // "resync_required" would never reach the client.
+        const string agentId = "gamma";
+        var socket = new FakeWebSocket();
+        var connection = new WebSocketConnectionRegistry().Register($"subagent-{agentId}", socket);
+        var manager = CreateManager(EmptyPool());
+        using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        // Simulate the race: cancel the connection token the instant the recovery frame's send completes,
+        // before the pump's own close call runs.
+        socket.OnSend = text =>
+        {
+            if (text.Contains("stream_recovery", StringComparison.Ordinal))
+            {
+                testCts.Cancel();
+            }
+        };
+
+        await manager.PumpSubAgentStreamAsync(
+          connection,
+          RecoveryThenMoreMessages("irrelevant"),
+          agentId,
+          testCts.Token);
+
+        socket.CloseAsyncCalled.Should().BeTrue(
+          "a cancellation racing right after the recovery frame's send must not suppress the deliberate close");
+        socket.LastCloseStatusDescription.Should().Be("resync_required");
+    }
+
     [Fact]
     public void LogSubAgentRelayFailure_NeverLeaksExceptionText_WhenExceptionMessageCarriesSecret()
     {
@@ -707,6 +826,24 @@ public sealed class ChatWebSocketManagerSubAgentTests
         throw new InvalidOperationException(secret);
     }
 
+    /// <summary>Yields one ordinary content frame, then the terminal recovery control (Task 3) - models a
+    /// dropped subscriber whose already-buffered backlog is delivered before the resync signal.</summary>
+    private static async IAsyncEnumerable<IMessage> TextThenRecovery(string precedingText, StreamRecoveryMessage recovery)
+    {
+        await Task.CompletedTask;
+        yield return new TextMessage { Role = Role.Assistant, Text = precedingText };
+        yield return recovery;
+    }
+
+    /// <summary>Yields the terminal recovery control first, then a further message - proves the pump
+    /// stops at the recovery control regardless of what the source does afterward.</summary>
+    private static async IAsyncEnumerable<IMessage> RecoveryThenMoreMessages(string laterText)
+    {
+        await Task.CompletedTask;
+        yield return new StreamRecoveryMessage("thread-2", "run-2", "gen-2", StreamRecoveryReason.SlowConsumer);
+        yield return new TextMessage { Role = Role.Assistant, Text = laterText };
+    }
+
     /// <summary>Blocks until the enumeration is cancelled (the normal-teardown path).</summary>
     private static async IAsyncEnumerable<IMessage> BlockUntilCancelled(
       [EnumeratorCancellation] CancellationToken ct)
@@ -842,12 +979,25 @@ public sealed class ChatWebSocketManagerSubAgentTests
 
         public WebSocketCloseStatus? LastCloseStatus { get; private set; }
 
+        /// <summary>Captures the close description passed to CloseAsync (Task 3: proves a
+        /// stream_recovery close uses the dedicated "resync_required" reason, not an ad-hoc string).</summary>
+        public string? LastCloseStatusDescription { get; private set; }
+
         public int ReceivedFrameCount => Volatile.Read(ref _receivedFrameCount);
 
         public IReadOnlyList<string> SentFrames
         {
             get { lock (_lock) { return [.. _sent]; } }
         }
+
+        /// <summary>
+        /// Test seam (Task 3, Finding #2): invoked synchronously with each sent frame's text, after it is
+        /// recorded, letting a test simulate a real socket's send completing right before the caller's
+        /// cancellation token is cancelled - e.g. to prove a subsequent close call must use its own,
+        /// uncancellable token rather than the connection's, or the close (and its "resync_required"
+        /// reason) can be silently lost to <see cref="OperationCanceledException"/>.
+        /// </summary>
+        public Action<string>? OnSend { get; set; }
 
         public bool SentContains(string fragment)
         {
@@ -888,6 +1038,7 @@ public sealed class ChatWebSocketManagerSubAgentTests
             var text = Encoding.UTF8.GetString(buffer.Array!, buffer.Offset, buffer.Count);
             lock (_lock) { _sent.Add(text); }
             _ = _activity.Release();
+            OnSend?.Invoke(text);
             return Task.CompletedTask;
         }
 
@@ -937,8 +1088,12 @@ public sealed class ChatWebSocketManagerSubAgentTests
         public override Task CloseAsync(
             WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken)
         {
+            // A real WebSocket implementation throws OperationCanceledException for an
+            // already-cancelled token (Task 3, Finding #2's close-seam test relies on this).
+            cancellationToken.ThrowIfCancellationRequested();
             CloseAsyncCalled = true;
             LastCloseStatus = closeStatus;
+            LastCloseStatusDescription = statusDescription;
             _state = WebSocketState.Closed;
             return Task.CompletedTask;
         }

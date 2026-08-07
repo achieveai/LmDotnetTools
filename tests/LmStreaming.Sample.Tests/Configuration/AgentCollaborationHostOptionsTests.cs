@@ -23,9 +23,55 @@ public class AgentCollaborationHostOptionsTests
     {
         var options = Bind([]);
 
-        options.Enabled.Should().BeFalse();
+        options.Enabled.Should().BeNull("an unconfigured flag means 'let the mode decide', not 'off'");
         options.ToCollaborationOptions().Should().BeNull(
             "absence of the library options object is the feature gate");
+    }
+
+    /// <summary>
+    /// The mode-default matrix: an UNSPECIFIED <c>Enabled</c> defers to the caller's per-mode default
+    /// (on for the Workspace Agent, off elsewhere), while an explicit value always wins over it. This is
+    /// what lets the Workspace Agent ship collaboration on without switching it on for every other mode.
+    /// </summary>
+    [Theory]
+    [InlineData(null, true, true)] // unspecified + Workspace Agent  -> on
+    [InlineData(null, false, false)] // unspecified + ordinary mode   -> off
+    [InlineData("false", true, false)] // explicit off beats the mode default
+    [InlineData("false", false, false)]
+    [InlineData("true", true, true)] // explicit on beats the mode default
+    [InlineData("true", false, true)]
+    public void ResolveForMode_HonoursTheExplicitFlagAndFallsBackToTheModeDefault(
+        string? configured, bool defaultEnabled, bool expectEnabled)
+    {
+        var values = new Dictionary<string, string?>
+        {
+            ["AgentCollaboration:MaxTotalAgents"] = "64",
+        };
+        if (configured is not null)
+        {
+            values["AgentCollaboration:Enabled"] = configured;
+        }
+
+        var resolved = Bind(values).ResolveForMode(defaultEnabled);
+
+        if (expectEnabled)
+        {
+            resolved.Should().NotBeNull();
+            resolved!.MaxTotalAgents.Should().Be(64, "the configured limits apply however the flag was resolved");
+        }
+        else
+        {
+            resolved.Should().BeNull();
+        }
+    }
+
+    [Fact]
+    public void ToCollaborationOptions_KeepsTheOffByDefaultContractForCallersThatHaveNoMode()
+    {
+        // The parameterless overload is the backward-compatible seam: no mode, no default-on.
+        Bind([]).ToCollaborationOptions().Should().BeNull();
+        Bind(new Dictionary<string, string?> { ["AgentCollaboration:Enabled"] = "true" })
+            .ToCollaborationOptions().Should().NotBeNull();
     }
 
     [Fact]

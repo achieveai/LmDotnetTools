@@ -62,7 +62,7 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var functions = provider.GetFunctions().ToList();
 
         functions.Select(f => f.Contract.Name)
-            .Should().BeEquivalentTo(["Agent", "SendMessage", "CheckAgent"]);
+            .Should().BeEquivalentTo(["Agent", "SendMessage", "CheckAgent", "WaitAgent"]);
 
         var agentParams = functions.First(f => f.Contract.Name == "Agent").Contract.Parameters!;
         agentParams.Select(p => p.Name).Should().NotContain("role");
@@ -83,6 +83,9 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         names.Should().BeEquivalentTo(
             ["Agent", "CheckAgents", "WaitForAgents", "GetAgents", "SendMessage"]);
         names.Should().NotContain("CheckAgent");
+        names.Should().NotContain(
+            "WaitAgent",
+            "the singular legacy wait is replaced by WaitForAgents — no alias is added under collaboration");
     }
 
     [Fact]
@@ -156,6 +159,39 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
 
         description.Should().Contain("WHEN TO USE IT").And.Contain("WHEN NOT TO USE IT");
     }
+
+    /// <summary>
+    /// BOTH waits must name the id namespace they accept, and the pin covers both in one test so they
+    /// cannot drift apart.
+    /// </summary>
+    /// <remarks>
+    /// WaitAgent carried this guidance first, but WaitAgent is the LEGACY tool: the Workspace Agent —
+    /// the one mode where collaboration now defaults on, and the only surface where StartWorkflowAgent
+    /// sits beside the Agent tool handing out ids that look identical — sees WaitForAgents instead. A
+    /// warning that appears only on the surface the affected model never loads is no warning at all.
+    /// </remarks>
+    [Fact]
+    public void BothWaits_TellTheModelThatWorkflowIdsAreADifferentNamespace()
+    {
+        var (_, legacy) = CreateManager(collaboration: null);
+        var (_, collaborative) = CreateManager(CreateRegisteredRoot());
+
+        var waitAgent = Description(legacy, "WaitAgent");
+        var waitForAgents = Description(collaborative, "WaitForAgents");
+
+        waitAgent.Should().Contain("Use an `agent_id` returned by `Agent`; do not pass workflow IDs.");
+        waitForAgents.Should().Contain("Use `agent_ids` returned by `Agent`")
+            .And.Contain("do not pass workflow IDs.");
+
+        // The redirect is the actionable half — "not this tool" only helps if it names the one that
+        // does work — so it is shared verbatim rather than paraphrased per descriptor.
+        waitAgent.Should().Contain(SubAgentToolProvider.WorkflowIdRedirect);
+        waitForAgents.Should().Contain(SubAgentToolProvider.WorkflowIdRedirect);
+        SubAgentToolProvider.WorkflowIdRedirect.Should().Contain("WaitWorkflow");
+    }
+
+    private static string Description(SubAgentToolProvider provider, string toolName) =>
+        provider.GetFunctions().Single(f => f.Contract.Name == toolName).Contract.Description!;
 
     #endregion
 

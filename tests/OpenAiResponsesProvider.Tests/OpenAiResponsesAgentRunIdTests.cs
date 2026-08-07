@@ -299,6 +299,35 @@ public sealed class OpenAiResponsesAgentRunIdTests
     }
 
     [Fact]
+    public async Task Empty_output_text_done_without_deltas_does_not_emit_empty_text_message()
+    {
+        ResponseEvent[] events =
+        [
+            new ResponseOutputTextDoneEvent
+            {
+                Type = ResponseEventTypes.OutputTextDone,
+                OutputIndex = 0,
+                Text = string.Empty,
+            },
+        ];
+
+        using var agent = new OpenAiResponsesAgent("test", new ScriptedClient(events));
+        var stream = await agent.GenerateReplyStreamingAsync(
+            [new TextMessage { Role = Role.User, Text = "go" }]
+        );
+
+        var messages = new List<IMessage>();
+        await foreach (var message in stream)
+        {
+            messages.Add(message);
+        }
+
+        messages.OfType<TextMessage>().Should().BeEmpty(
+            "an empty terminal output-text event must not poison persisted cross-provider history"
+        );
+    }
+
+    [Fact]
     public async Task Run_id_stays_null_when_options_advertise_none()
     {
         // No regression for the no-run case: when the caller supplies no RunId, messages keep a null

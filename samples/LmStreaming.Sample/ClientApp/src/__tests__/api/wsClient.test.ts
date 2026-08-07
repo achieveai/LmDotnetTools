@@ -381,3 +381,110 @@ describe('openWebSocketConnection client_tool_result_ack / client_tool_result_er
     expect(onClientToolResultError).toHaveBeenCalledWith('call-10', code, message);
   });
 });
+
+// `generation_abandoned`: the server cut a provider stream mid-reply, threw that generation away and
+// is retrying the same turn under a NEW generation id — on this SAME, still-open socket. It must
+// reach its own dedicated callback and must NOT fall through to `onMessage` (it is a control frame
+// carrying no renderable content; routing it as a message would push a junk block into the
+// transcript).
+describe('openWebSocketConnection generation_abandoned inbound frame', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    MockWebSocket.instances = [];
+  });
+
+  async function open(callbacks: {
+    onMessage?: (m: unknown) => void;
+    onDone?: () => void;
+    onError?: (error: string, code?: string) => void;
+    onGenerationAbandoned?: (info: { threadId?: string; runId?: string; generationId?: string }) => void;
+  }): Promise<{ socket: MockWebSocket; connection: WebSocketConnection }> {
+    vi.stubGlobal('WebSocket', MockWebSocket as unknown as typeof WebSocket);
+    const promise = openWebSocketConnection('ws://x/ws', 'thread-42', 'conn-7', {
+      onMessage: callbacks.onMessage ?? (() => {}),
+      onDone: callbacks.onDone ?? (() => {}),
+      onError: (callbacks.onError ?? (() => {})) as (error: string) => void,
+      onGenerationAbandoned: callbacks.onGenerationAbandoned,
+    });
+    const socket = MockWebSocket.instances[MockWebSocket.instances.length - 1];
+    socket.readyState = MockWebSocket.OPEN;
+    socket.onopen?.();
+    const connection = await promise;
+    return { socket, connection };
+  }
+
+  it('routes a generation_abandoned frame to onGenerationAbandoned and not to onMessage', async () => {
+    const onGenerationAbandoned = vi.fn();
+    const onMessage = vi.fn();
+    const onError = vi.fn();
+    const { socket } = await open({ onGenerationAbandoned, onMessage, onError });
+
+    socket.onmessage?.({
+      data: JSON.stringify({
+        $type: 'generation_abandoned',
+        threadId: 'thread-42',
+        runId: 'run-1',
+        generationId: 'gen-A',
+      }),
+    });
+
+    expect(onGenerationAbandoned).toHaveBeenCalledTimes(1);
+    expect(onGenerationAbandoned).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: 'thread-42', runId: 'run-1', generationId: 'gen-A' }),
+    );
+    // Must not also fall through to the generic message handler...
+    expect(onMessage).not.toHaveBeenCalled();
+    // ...and it is NOT a failure: the socket stays open and the run continues.
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  // The frame is content-free by contract; this handler is shared with the sub-agent transcript
+  // stream, so the diagnostic must stay ids-only even if a server ever over-populates it.
+  it('logs only identifiers for a generation_abandoned frame', async () => {
+    const logSpy = vi.spyOn(
+      logger as unknown as { _logWithComponent: (...a: unknown[]) => void },
+      '_logWithComponent',
+    );
+    const { socket } = await open({ onGenerationAbandoned: vi.fn() });
+
+    socket.onmessage?.({
+      data: JSON.stringify({ $type: 'generation_abandoned', generationId: 'gen-A' }),
+    });
+
+    const entry = logSpy.mock.calls.find((c) => c[1] === 'Received generation_abandoned');
+    expect(entry).toBeTruthy();
+    expect(Object.keys(entry![2] as Record<string, unknown>).sort()).toEqual([
+      'generationId',
+      'runId',
+      'threadId',
+    ]);
+  });
+
+  // The chat wrapper destructures its options AND rebuilds an explicit literal for
+  // openWebSocketConnection (it does not spread), so a callback added to only one of the two is
+  // silently dropped. Pin the wrapper path independently of the shared opener.
+  it('forwards generation_abandoned through the chat connection wrapper', async () => {
+    vi.stubGlobal('WebSocket', MockWebSocket as unknown as typeof WebSocket);
+    const onGenerationAbandoned = vi.fn();
+    const promise = createWebSocketConnection({
+      threadId: 'thread-wrapper',
+      onMessage: () => {},
+      onDone: () => {},
+      onError: () => {},
+      onGenerationAbandoned,
+    });
+    const socket = MockWebSocket.instances[MockWebSocket.instances.length - 1];
+    socket.readyState = MockWebSocket.OPEN;
+    socket.onopen?.();
+    await promise;
+
+    socket.onmessage?.({
+      data: JSON.stringify({ $type: 'generation_abandoned', generationId: 'gen-A' }),
+    });
+
+    expect(onGenerationAbandoned).toHaveBeenCalledWith(
+      expect.objectContaining({ generationId: 'gen-A' }),
+    );
+  });
+});

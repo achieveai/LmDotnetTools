@@ -1,7 +1,11 @@
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Delivery;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace LmMultiTurn.Tests;
@@ -23,12 +27,13 @@ public sealed class MultiTurnAgentReplayTests
             string threadId,
             int outputChannelCapacity = 1000,
             int maxReplayBufferSize = 10_000,
-            long maxReplayBufferBytes = 8L * 1024 * 1024)
+            long maxReplayBufferBytes = 8L * 1024 * 1024,
+            ILogger? logger = null)
             : base(
                 threadId,
                 systemPrompt: null,
                 store: null,
-                logger: null,
+                logger: logger,
                 outputChannelCapacity: outputChannelCapacity,
                 maxReplayBufferSize: maxReplayBufferSize,
                 maxReplayBufferBytes: maxReplayBufferBytes)
@@ -49,6 +54,11 @@ public sealed class MultiTurnAgentReplayTests
 
     private static TextUpdateMessage TextDelta(string runId, string genId, string text) =>
         new() { Text = text, Role = Role.Assistant, RunId = runId, GenerationId = genId, MessageOrderIdx = 0 };
+
+    // Canonical (complete) text message — the counterpart CompleteText emits to replace TextDelta as a
+    // bridge filler in tests below, since streaming deltas no longer enter the replay bridge at all.
+    private static TextMessage CompleteText(string runId, string genId, string text) =>
+        new() { Text = text, Role = Role.Assistant, RunId = runId, GenerationId = genId };
 
     private static ToolCallMessage ToolCall(string runId, string genId, string toolCallId, int orderIdx) =>
         new()
@@ -80,31 +90,34 @@ public sealed class MultiTurnAgentReplayTests
         const string runId = "run-1";
         const string genId = "gen-1";
 
-        // The run is already in flight and has published several messages BEFORE the client
-        // (re)connects — exactly the switch-away/refresh window.
+        // The run is already in flight and has published the assignment, far more streaming deltas
+        // than the bridge's default count cap (10,000), and one canonical complete text — all BEFORE
+        // the client (re)connects (the switch-away/refresh window). The deltas must never enter the
+        // canonical/control bridge at all, so publishing 10,001 of them must not truncate or evict the
+        // canonical complete message that follows.
         await agent.PublishForTest(Assignment("thread-1", runId, genId));
-        await agent.PublishForTest(TextDelta(runId, genId, "Hel"));
-        await agent.PublishForTest(TextDelta(runId, genId, "lo"));
+        for (var i = 0; i < 10_001; i++)
+        {
+            await agent.PublishForTest(TextDelta(runId, genId, i.ToString()));
+        }
+
+        await agent.PublishForTest(CompleteText(runId, genId, "Hello!"));
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await using var e = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
 
-        // The reconnecting subscriber must REPLAY the in-flight run's already-published messages.
+        // The reconnecting subscriber replays ONLY the canonical/control messages — the assignment and
+        // the complete text — never the 10,001 streaming deltas that preceded it.
         (await e.MoveNextAsync()).Should().BeTrue();
         e.Current.Should().BeOfType<RunAssignmentMessage>();
         (await e.MoveNextAsync()).Should().BeTrue();
-        e.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("Hel");
-        (await e.MoveNextAsync()).Should().BeTrue();
-        e.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("lo");
+        e.Current.Should().BeOfType<TextMessage>().Which.Text.Should().Be("Hello!");
 
-        // Now the run continues live — the same subscriber must keep receiving.
-        await agent.PublishForTest(TextDelta(runId, genId, "!"));
-        await agent.PublishForTest(new RunCompletedMessage { CompletedRunId = runId, ThreadId = "thread-1" });
-
+        // Now the run continues live — the same subscriber must keep receiving NEW deltas too: live
+        // fan-out is never filtered, only bridge insertion is.
+        await agent.PublishForTest(TextDelta(runId, genId, "new-delta"));
         (await e.MoveNextAsync()).Should().BeTrue();
-        e.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("!");
-        (await e.MoveNextAsync()).Should().BeTrue();
-        e.Current.Should().BeOfType<RunCompletedMessage>();
+        e.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("new-delta");
     }
 
     [Fact]
@@ -185,19 +198,19 @@ public sealed class MultiTurnAgentReplayTests
         var aFirst = a.MoveNextAsync();
 
         await agent.PublishForTest(Assignment("thread-1", runId, genId));
-        await agent.PublishForTest(TextDelta(runId, genId, "Hel"));
+        await agent.PublishForTest(CompleteText(runId, genId, "Hel"));
 
         (await aFirst).Should().BeTrue();
         a.Current.Should().BeOfType<RunAssignmentMessage>();
         (await a.MoveNextAsync()).Should().BeTrue();
-        a.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("Hel");
+        a.Current.Should().BeOfType<TextMessage>().Which.Text.Should().Be("Hel");
 
-        // Subscriber B reconnects mid-run and REPLAYS what A already saw live.
+        // Subscriber B reconnects mid-run and REPLAYS the canonical message A already saw live.
         await using var b = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
         (await b.MoveNextAsync()).Should().BeTrue();
         b.Current.Should().BeOfType<RunAssignmentMessage>();
         (await b.MoveNextAsync()).Should().BeTrue();
-        b.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("Hel");
+        b.Current.Should().BeOfType<TextMessage>().Which.Text.Should().Be("Hel");
 
         // A subsequent live message reaches BOTH exactly once.
         await agent.PublishForTest(TextDelta(runId, genId, "lo"));
@@ -261,11 +274,13 @@ public sealed class MultiTurnAgentReplayTests
         const string genId = "gen-1";
         const int cap = 10_000; // mirrors MultiTurnAgentBase.MaxReplayBufferSize
 
-        // Assignment fills slot #1; the next `cap` deltas overflow by one, which must be dropped.
+        // Assignment fills slot #1; the next `cap` CANONICAL messages overflow by one, which must be
+        // dropped. Streaming deltas are excluded from the bridge entirely (ReplayMessagePolicy), so the
+        // count cap is exercised here with canonical complete-text messages instead of deltas.
         await agent.PublishForTest(Assignment("thread-1", runId, genId));
         for (var i = 0; i < cap; i++)
         {
-            await agent.PublishForTest(TextDelta(runId, genId, i.ToString()));
+            await agent.PublishForTest(CompleteText(runId, genId, i.ToString()));
         }
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
@@ -278,13 +293,13 @@ public sealed class MultiTurnAgentReplayTests
         }
 
         // Prove the buffer held EXACTLY `cap` (not cap+1): the next message must be a sentinel
-        // published live AFTER subscribing, not the overflowed delta that was dropped.
-        await agent.PublishForTest(TextDelta(runId, genId, "SENTINEL"));
+        // published live AFTER subscribing, not the overflowed canonical message that was dropped.
+        await agent.PublishForTest(CompleteText(runId, genId, "SENTINEL"));
         (await e.MoveNextAsync()).Should().BeTrue();
         e.Current.Should()
-            .BeOfType<TextUpdateMessage>()
+            .BeOfType<TextMessage>()
             .Which.Text.Should()
-            .Be("SENTINEL", "the in-flight replay buffer is bounded at the cap, so the overflow delta was dropped");
+            .Be("SENTINEL", "the in-flight replay buffer is bounded at the cap, so the overflow message was dropped");
     }
 
     [Fact]
@@ -294,7 +309,8 @@ public sealed class MultiTurnAgentReplayTests
         // output channel fills must NOT backpressure the live run (or other subscribers). Before the
         // fix, the publisher awaited each subscriber's WriteAsync via Task.WhenAll, so one full channel
         // hung PublishToAllAsync indefinitely; now a full subscriber is dropped instead.
-        await using var agent = new ReplayTestAgent("thread-1", outputChannelCapacity: 4);
+        const int slowSubscriberCapacity = 4;
+        await using var agent = new ReplayTestAgent("thread-1", outputChannelCapacity: slowSubscriberCapacity);
         const string runId = "run-1";
         const string genId = "gen-1";
         const int burst = 50; // >> the slow subscriber's capacity, so its channel overflows
@@ -333,6 +349,32 @@ public sealed class MultiTurnAgentReplayTests
         (await bEnum.MoveNextAsync()).Should().BeTrue();
         bEnum.Current.Should().BeOfType<RunCompletedMessage>();
 
+        // Before A was dropped, its bounded channel had already buffered `slowSubscriberCapacity`
+        // deltas (the ones written while A was still registered but not draining) — those are
+        // ordinary queued content and must be drained first, in order, exactly like any subscriber's
+        // backlog.
+        for (var i = 0; i < slowSubscriberCapacity; i++)
+        {
+            (await aEnum.MoveNextAsync()).Should().BeTrue("A's buffered backlog must be delivered before the terminal control");
+            aEnum.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be(i.ToString());
+        }
+
+        // A's stream must NOT silently end when its backlog is exhausted — it must yield exactly one
+        // StreamRecoveryMessage stamped with the run/generation it was last caught up on (the
+        // assignment), so the client can tell "you were disconnected, resync" apart from a normal
+        // run completion or unsubscribe.
+        (await aEnum.MoveNextAsync()).Should()
+            .BeTrue("a dropped subscriber must surface an explicit resync control, not a silent end");
+        var recovery = aEnum.Current.Should().BeOfType<StreamRecoveryMessage>().Subject;
+        recovery.Reason.Should().Be(StreamRecoveryReason.SlowConsumer);
+        recovery.ThreadId.Should().Be("thread-1");
+        recovery.RunId.Should().Be(runId);
+        recovery.GenerationId.Should().Be(genId);
+
+        // The recovery control is yielded exactly once; the enumerable then ends cleanly.
+        (await aEnum.MoveNextAsync()).Should()
+            .BeFalse("the recovery control is terminal and must not repeat or be followed by more messages");
+
         await aEnum.DisposeAsync();
         await bEnum.DisposeAsync();
     }
@@ -341,9 +383,11 @@ public sealed class MultiTurnAgentReplayTests
     public async Task Replay_buffer_is_capped_by_estimated_bytes_not_just_count()
     {
         // Generous count cap, tiny byte budget: prove the BYTE cap stops buffering before the count
-        // cap would. EstimateMessageBytes ≈ 128 + text.Length*2, so a 200-char delta ≈ 528 bytes:
-        // assignment (≈128) + two deltas (≈528 each = 1184) crosses the 1000-byte budget, so only the
-        // assignment + first two deltas are retained; the third and all later deltas are dropped.
+        // cap would. EstimateMessageBytes ≈ 128 + text.Length*2 for both TextMessage and
+        // TextUpdateMessage, so a 200-char canonical message ≈ 528 bytes: assignment (≈128) + two
+        // canonical messages (≈528 each = 1184) crosses the 1000-byte budget, so only the assignment +
+        // first two canonical messages are retained; the third and all later ones are dropped. Uses
+        // canonical complete-text fillers (not deltas — deltas never enter the bridge at all now).
         await using var agent = new ReplayTestAgent(
             "thread-1",
             maxReplayBufferSize: 1_000_000,
@@ -355,7 +399,7 @@ public sealed class MultiTurnAgentReplayTests
         await agent.PublishForTest(Assignment("thread-1", runId, genId));
         for (var i = 0; i < 20; i++)
         {
-            await agent.PublishForTest(TextDelta(runId, genId, big));
+            await agent.PublishForTest(CompleteText(runId, genId, big));
         }
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -365,15 +409,90 @@ public sealed class MultiTurnAgentReplayTests
         (await e.MoveNextAsync()).Should().BeTrue();
         e.Current.Should().BeOfType<RunAssignmentMessage>();
         (await e.MoveNextAsync()).Should().BeTrue();
-        e.Current.Should().BeOfType<TextUpdateMessage>();
+        e.Current.Should().BeOfType<TextMessage>();
         (await e.MoveNextAsync()).Should().BeTrue();
-        e.Current.Should().BeOfType<TextUpdateMessage>();
+        e.Current.Should().BeOfType<TextMessage>();
 
         // Prove the buffer held EXACTLY those three: the next message must be a sentinel published live
-        // AFTER subscribing, not the byte-capped (dropped) third delta.
+        // AFTER subscribing (a plain delta — proving live fan-out still delivers deltas even though the
+        // bridge never buffers them), not the byte-capped (dropped) third canonical message.
         await agent.PublishForTest(TextDelta(runId, genId, "SENTINEL"));
         (await e.MoveNextAsync()).Should().BeTrue();
         e.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("SENTINEL");
+    }
+
+    [Fact]
+    public async Task Large_streaming_deltas_never_consume_bridge_bytes_but_a_canonical_message_still_enters()
+    {
+        // Deltas are excluded from the bridge before byte accounting even runs, so a large burst of
+        // large deltas must never threaten a tiny byte budget; only a canonical/control message counts
+        // against it and is still faithfully replayed.
+        await using var agent = new ReplayTestAgent(
+            "thread-1",
+            maxReplayBufferSize: 1_000_000,
+            maxReplayBufferBytes: 1_000);
+        const string runId = "run-1";
+        const string genId = "gen-1";
+        // Each delta would be ≈128 + 5,000*2 = 10,128 bytes if buffered — 10x the entire byte budget on
+        // its own, and there are 50 of them.
+        var hugeDelta = new string('x', 5_000);
+
+        await agent.PublishForTest(Assignment("thread-1", runId, genId));
+        for (var i = 0; i < 50; i++)
+        {
+            await agent.PublishForTest(TextDelta(runId, genId, hugeDelta));
+        }
+
+        await agent.PublishForTest(CompleteText(runId, genId, "final"));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using var e = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+
+        // Replay contains ONLY the assignment and the canonical complete text — none of the 50 huge
+        // deltas ever occupied a byte of the bridge's budget.
+        (await e.MoveNextAsync()).Should().BeTrue();
+        e.Current.Should().BeOfType<RunAssignmentMessage>();
+        (await e.MoveNextAsync()).Should().BeTrue();
+        e.Current.Should().BeOfType<TextMessage>().Which.Text.Should().Be("final");
+
+        var next = e.MoveNextAsync();
+        next.IsCompleted.Should().BeFalse("nothing beyond the assignment and the canonical text was buffered");
+
+        // Complete the pending read with a genuinely live delta — proves live fan-out of deltas is
+        // untouched by the byte-starved bridge, and avoids leaving MoveNextAsync outstanding when the
+        // enumerator disposes (IAsyncEnumerator forbids overlapping MoveNextAsync/DisposeAsync calls).
+        await agent.PublishForTest(TextDelta(runId, genId, "live-after"));
+        (await next).Should().BeTrue();
+        e.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("live-after");
+    }
+
+    [Fact]
+    public async Task Bridge_truncation_warning_fires_only_for_canonical_overflow_never_for_raw_deltas()
+    {
+        // The truncation warning must reflect the CANONICAL/control bridge's cap, not raw deltas: a run
+        // that emits far more deltas than a deliberately tiny cap must never warn (deltas never enter
+        // the bridge), while a canonical/control entry that overflows that same tiny cap must.
+        var capturingLogger = new CapturingLogger<ReplayTestAgent>();
+        await using var agent = new ReplayTestAgent("thread-1", maxReplayBufferSize: 1, logger: capturingLogger);
+        const string runId = "run-1";
+        const string genId = "gen-1";
+
+        // The assignment alone fills the single-slot cap.
+        await agent.PublishForTest(Assignment("thread-1", runId, genId));
+
+        for (var i = 0; i < 500; i++)
+        {
+            await agent.PublishForTest(TextDelta(runId, genId, i.ToString()));
+        }
+
+        capturingLogger.WarningCount("replay buffer hit its cap").Should().Be(
+            0, "500 raw deltas alone must never trip the canonical/control bridge's truncation warning");
+
+        // A canonical message now overflows the single-slot cap.
+        await agent.PublishForTest(CompleteText(runId, genId, "overflow"));
+
+        capturingLogger.WarningCount("replay buffer hit its cap").Should().BeGreaterThan(
+            0, "a canonical/control entry exceeding the cap must trip the truncation warning");
     }
 
     [Fact]
@@ -388,22 +507,23 @@ public sealed class MultiTurnAgentReplayTests
         const string genId = "gen-1";
 
         await agent.PublishForTest(Assignment("thread-1", runId, genId));
-        await agent.PublishForTest(TextDelta(runId, genId, "Hel"));
-        await agent.PublishForTest(TextDelta(runId, genId, "lo"));
+        await agent.PublishForTest(CompleteText(runId, genId, "Hel"));
+        await agent.PublishForTest(CompleteText(runId, genId, "lo"));
         // The notification's injection assignment — same run.
         await agent.PublishForTest(InjectedAssignment("thread-1", runId, genId));
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await using var e = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
 
-        // A reconnecting subscriber still replays the run's earlier assignment + deltas (not cleared).
+        // A reconnecting subscriber still replays the run's earlier assignment + canonical messages
+        // (not cleared).
         (await e.MoveNextAsync()).Should().BeTrue();
         e.Current.Should().BeOfType<RunAssignmentMessage>()
             .Which.Assignment.WasInjected.Should().BeFalse("the original run assignment is replayed first");
         (await e.MoveNextAsync()).Should().BeTrue();
-        e.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("Hel");
+        e.Current.Should().BeOfType<TextMessage>().Which.Text.Should().Be("Hel");
         (await e.MoveNextAsync()).Should().BeTrue();
-        e.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("lo");
+        e.Current.Should().BeOfType<TextMessage>().Which.Text.Should().Be("lo");
         // Followed by the injection assignment itself (also buffered within the same run).
         (await e.MoveNextAsync()).Should().BeTrue();
         e.Current.Should().BeOfType<RunAssignmentMessage>()
@@ -435,5 +555,106 @@ public sealed class MultiTurnAgentReplayTests
         await agent.PublishForTest(TextDelta("run-2", "gen-2", "new"));
         (await next).Should().BeTrue();
         e.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("new");
+    }
+
+    /// <summary>
+    ///     Classification cases for <see cref="ReplayMessagePolicy.IsCanonicalOrControl" />: every known
+    ///     streaming update/fragment type is NOT canonical (a resynchronizing consumer rebuilds the text it
+    ///     carries from the canonical complete message), while complete content, control and accounting
+    ///     messages ARE.
+    /// </summary>
+    public static TheoryData<IMessage, bool> ReplayClassificationCases() => new()
+    {
+        // Fragments — never canonical.
+        { TextDelta("run-1", "gen-1", "Hel"), false },
+        { new ReasoningUpdateMessage { Reasoning = "thin", Role = Role.Assistant }, false },
+        { new ToolCallUpdateMessage { Role = Role.Assistant, FunctionName = "get_weather" }, false },
+        { new ToolsCallUpdateMessage { Role = Role.Assistant, ToolCallUpdates = [] }, false },
+        // A JSON fragment arrives as an argument-fragment-bearing tool-call update, not a distinct
+        // message type — pinned explicitly so the fragment path is covered by the policy.
+        {
+            new ToolCallUpdateMessage
+            {
+                Role = Role.Assistant,
+                FunctionName = "get_weather",
+                FunctionArgs = "{\"loc",
+                JsonFragmentUpdates = [],
+            },
+            false
+        },
+
+        // Canonical content and control — always replayed.
+        { Assignment("thread-1", "run-1", "gen-1"), true },
+        { new TextMessage { Text = "Hello", Role = Role.Assistant }, true },
+        { new ReasoningMessage { Reasoning = "thought", Role = Role.Assistant }, true },
+        { ToolCall("run-1", "gen-1", "call_1", 1), true },
+        { ToolResult("run-1", "gen-1", "call_1", 2), true },
+        { new NotifyMessage { NotifyKind = NotifyKinds.ClientNotification, Label = "done" }, true },
+        { new UsageMessage { Usage = new Usage() }, true },
+        { new RunCompletedMessage { CompletedRunId = "run-1", ThreadId = "thread-1" }, true },
+    };
+
+    [Theory]
+    [MemberData(nameof(ReplayClassificationCases))]
+    public void Replay_policy_classifies_only_canonical_and_control_messages(
+        IMessage message,
+        bool expected)
+    {
+        ReplayMessagePolicy.IsCanonicalOrControl(message).Should().Be(expected);
+    }
+
+    /// <summary>
+    /// Agent whose <see cref="MultiTurnAgentBase.OnSubscriberChannelCompletedDuringDisposeAsync"/>
+    /// override simulates a publish racing <see cref="MultiTurnAgentBase.DisposeAsync"/>'s teardown
+    /// at the exact instant a subscriber's output channel is completed - no sleeps, no real thread
+    /// timing. If disposal completes-then-removes (the bug), the simulated publish still finds the
+    /// subscriber present, its fast-path write fails against the now-completed channel, and it is
+    /// "dropped" as if slow, wrongly setting <see cref="StreamRecoveryMessage"/> on ordinary
+    /// shutdown. If disposal removes-then-completes (the fix), the simulated publish's snapshot
+    /// never includes the already-removed subscriber and nothing is set.
+    /// </summary>
+    private sealed class DisposeRaceTestAgent : MultiTurnAgentBase
+    {
+        public DisposeRaceTestAgent()
+            : base("thread-1", systemPrompt: null, store: null)
+        {
+        }
+
+        protected override Task RunLoopAsync(CancellationToken ct) => Task.CompletedTask;
+
+        public ValueTask PublishForTest(IMessage message) => PublishToAllAsync(message, CancellationToken.None);
+
+        internal override ValueTask OnSubscriberChannelCompletedDuringDisposeAsync(string subscriberId) =>
+            PublishToAllAsync(
+                new RunCompletedMessage { CompletedRunId = "race-run", ThreadId = "thread-1" },
+                CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task DisposeAsync_NeverProducesStreamRecoveryMessage_EvenWhenPublishRacesTeardown()
+    {
+        var agent = new DisposeRaceTestAgent();
+
+        // Publish a canonical message BEFORE subscribing so SubscribeAsync's registration snapshot
+        // has one buffered item. The first MoveNextAsync() below then yields it synchronously via
+        // the replay loop's `yield return` - the iterator never reaches `await foreach` over the
+        // live channel, so no reader continuation is ever registered on it. That keeps the rest of
+        // this scenario single-threaded and deterministic: nothing but our own code below reacts to
+        // the channel completing, so the hook's simulated publish is the only thing racing teardown.
+        await agent.PublishForTest(Assignment("thread-1", "run-1", "gen-1"));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var e = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+        (await e.MoveNextAsync()).Should().BeTrue();
+        e.Current.Should().BeOfType<RunAssignmentMessage>();
+
+        // Disposal tears down the subscriber. Its hook (DisposeRaceTestAgent) simulates a publish
+        // racing the exact instant the subscriber's channel is completed.
+        await agent.DisposeAsync();
+
+        // Ordinary disposal - even with a publish simulated to race the exact teardown instant - must
+        // end the subscriber's stream cleanly. It must never surface a StreamRecoveryMessage; that is
+        // reserved for PublishToSubscriber's slow-consumer eviction path.
+        (await e.MoveNextAsync()).Should().BeFalse();
     }
 }

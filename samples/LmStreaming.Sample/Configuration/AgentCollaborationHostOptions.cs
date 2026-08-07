@@ -8,13 +8,15 @@ namespace LmStreaming.Sample.Configuration;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Collaboration is <em>opt-in</em>. In the library the feature gate is the absence of an
-/// <see cref="AgentCollaborationOptions"/> object; configuration files cannot express "absent"
-/// as cleanly as they express "present but false", so this host shape adds an explicit
-/// <see cref="Enabled"/> flag and only materialises the library options when it is set. A sample
-/// deployment that never adds the section — or adds it with <c>Enabled: false</c> — keeps today's
-/// behaviour byte-for-byte: legacy tool schemas, one level of ordinary nesting, per-manager limits
-/// only, and no collaboration state written anywhere.
+/// In the library the feature gate is the absence of an <see cref="AgentCollaborationOptions"/>
+/// object; configuration files cannot express "absent" as cleanly as they express "present but
+/// false", so this host shape adds an explicit <see cref="Enabled"/> flag and only materialises the
+/// library options when it resolves to on. The flag is <em>nullable</em> on purpose: an unset value
+/// means "let the chat mode decide" (see <see cref="ResolveForMode"/>), which is what lets the
+/// Workspace Agent ship with collaboration on without switching it on for every other mode. A
+/// deployment that sets <c>Enabled: false</c> keeps today's behaviour byte-for-byte everywhere:
+/// legacy tool schemas, one level of ordinary nesting, per-manager limits only, and no collaboration
+/// state written anywhere.
 /// </para>
 /// <para>
 /// Follows the same idiom as <c>ContextDiscoveryOptions</c> / <c>SandboxGatewayOptions</c>: a
@@ -30,10 +32,11 @@ public sealed class AgentCollaborationHostOptions
     public const string SectionName = "AgentCollaboration";
 
     /// <summary>
-    /// Whether to enable hierarchy-wide collaboration. Default <c>false</c>, which reproduces the
-    /// pre-#244 surface exactly.
+    /// Whether to enable hierarchy-wide collaboration, or <c>null</c> (the default) to defer to the
+    /// per-mode default the caller passes to <see cref="ResolveForMode"/>. A configured value always
+    /// wins, in both directions — that is the deployment's override.
     /// </summary>
-    public bool Enabled { get; set; }
+    public bool? Enabled { get; set; }
 
     /// <summary>Deepest ordinary delegation hop allowed; the root sits at delegation depth 0.</summary>
     public int MaxDelegationDepth { get; set; } = 1;
@@ -72,6 +75,20 @@ public sealed class AgentCollaborationHostOptions
     /// Materialises the validated library options, or null when collaboration is switched off.
     /// </summary>
     /// <remarks>
+    /// Equivalent to <see cref="ResolveForMode"/> with a default of <c>false</c>: the pre-existing
+    /// "off unless configured on" contract, kept for callers that have no chat mode in hand.
+    /// </remarks>
+    public AgentCollaborationOptions? ToCollaborationOptions() => ResolveForMode(defaultEnabled: false);
+
+    /// <summary>
+    /// Materialises the validated library options for a chat mode whose default is
+    /// <paramref name="defaultEnabled"/>, or null when collaboration resolves to off.
+    /// </summary>
+    /// <param name="defaultEnabled">
+    /// What collaboration means for this mode when <see cref="Enabled"/> is unset. Only the Workspace
+    /// Agent passes <c>true</c>; a configured <see cref="Enabled"/> overrides it either way.
+    /// </param>
+    /// <remarks>
     /// Validation runs here — at startup, from the composition root — rather than at the first spawn,
     /// so a typo in <c>appsettings.json</c> fails the boot it belongs to instead of surfacing as a
     /// confusing mid-conversation tool error.
@@ -80,9 +97,10 @@ public sealed class AgentCollaborationHostOptions
     /// <see cref="TranscriptVisibility"/> is not a defined mode.
     /// </exception>
     /// <exception cref="ArgumentOutOfRangeException">A limit or retention value is unusable.</exception>
-    public AgentCollaborationOptions? ToCollaborationOptions()
+    public AgentCollaborationOptions? ResolveForMode(bool defaultEnabled)
     {
-        if (!Enabled)
+        var enabled = Enabled ?? defaultEnabled;
+        if (!enabled)
         {
             return null;
         }

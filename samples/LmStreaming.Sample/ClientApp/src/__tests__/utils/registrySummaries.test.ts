@@ -87,10 +87,50 @@ describe('registry — collaboration tool summaries (#244)', () => {
     expect(resolveRenderer('sandbox-CheckAgents').family).toBe('agent');
   });
 
+  it('routes the legacy singular WaitAgent to the agent renderer too', () => {
+    // WaitAgent only exists on the collaboration-OFF surface, which is exactly the surface whose pills
+    // would otherwise fall back to the generic renderer.
+    expect(resolveRenderer('WaitAgent').family).toBe('agent');
+  });
+
   it('summarizes GetAgents, which takes no arguments, without throwing', () => {
     const view = deriveToolPillState({ functionArgs: '{}', result: null, hasResult: false });
     const s = resolveRenderer('GetAgents').summarize(view.parsedArgs, view.resultText, view);
     expect(s).toBe('');
+  });
+});
+
+// The workflow launch family the Workspace Agent actually calls. The names moved (StartWorkflow →
+// StartWorkflowAgent) and one is new (GetWorkflows), and an unregistered name silently falls back to
+// the generic renderer — which is how a renamed tool loses its icon without anything failing.
+describe('registry — workflow launch tools', () => {
+  it.each(['StartWorkflowAgent', 'GetWorkflows', 'CheckWorkflow', 'WaitWorkflow'])(
+    'routes %s to the flow renderer',
+    (name) => {
+      expect(resolveRenderer(name).family).toBe('flow');
+      expect(resolveRenderer(`sandbox-${name}`).family).toBe('flow');
+    }
+  );
+
+  it('still routes the historical StartWorkflow name, which is on disk in old conversations', () => {
+    expect(resolveRenderer('StartWorkflow').family).toBe('flow');
+  });
+
+  it.each(['StartWorkflowAgent', 'CheckWorkflow', 'WaitWorkflow'])(
+    'summarizes %s with the workflow it names',
+    (name) => {
+      const view = deriveToolPillState({
+        functionArgs: '{"workflowId":"triage-42"}',
+        result: null,
+        hasResult: false,
+      });
+      expect(resolveRenderer(name).summarize(view.parsedArgs, view.resultText, view)).toContain('triage-42');
+    }
+  );
+
+  it('summarizes GetWorkflows, which takes no arguments, without throwing', () => {
+    const view = deriveToolPillState({ functionArgs: '{}', result: null, hasResult: false });
+    expect(resolveRenderer('GetWorkflows').summarize(view.parsedArgs, view.resultText, view)).toBe('');
   });
 });
 
