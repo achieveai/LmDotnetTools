@@ -319,6 +319,77 @@ public class ReviewSessionProvisionerTests : IDisposable
     }
 
     /// <summary>
+    /// The sibling of the test above, on the OTHER refusal this method can meet: not a redirected root the
+    /// walk refuses to enter, but a redirected entry inside it that the walk classifies correctly and is then
+    /// DENIED permission to unlink.
+    /// <para>
+    /// This pins the argument for leaving the swallow at this call site alone. That argument is entirely about
+    /// which branch the refusal lands on: the comment above the catch says the best-effort warning "is exactly
+    /// the sentence that would hide a planted link forever", and the whole defence of not rethrowing is that
+    /// the operator still gets an Error naming an address to go and look at. A denied unlink used to arrive as
+    /// a raw <see cref="IOException"/> and land in precisely that hiding warning; it now arrives typed and
+    /// lands on the Error branch. Nothing asserted that, so widening the generic catch below, or swapping the
+    /// two, would drop it back to the hiding sentence with a fully green suite — and the comment would go on
+    /// reading as though it were still true.
+    /// </para>
+    /// <para>
+    /// Both legs are asserted because neither alone identifies a branch: both handlers log, and both render
+    /// the same <c>{HostDir}</c>. What separates them is which one fired, so "Error fired" without "Warning
+    /// did not" would still pass if the refusal had gone to the warning and something else logged an error.
+    /// </para>
+    /// <para>
+    /// That the Error NAMES the offending entry is pinned one layer down rather than here, and deliberately:
+    /// the entry appears in the exception's message, which
+    /// <c>ReviewSlotPreparerTests.RecloneStoreAsync_HostPreparer_RefusesARedirectedEntryItIsNotPermittedToUnlink</c>
+    /// asserts directly, and the production line passes that exception to
+    /// <see cref="LoggerExtensions.LogError(ILogger, Exception, string, object?[])"/> where a real logger
+    /// renders it. <see cref="CapturingLoggerFactory"/> cannot see it — the default formatter returns the
+    /// rendered template and drops the exception — so asserting it here would need the double to retain
+    /// exceptions.
+    /// </para>
+    /// </summary>
+    [RequiresUnreadableEntryFact("a removable link cannot show what happens when the unlink is refused")]
+    public async Task DestroyAsync_logs_a_refused_unlink_as_an_error_rather_than_a_best_effort_warning()
+    {
+        var hostRoot = Path.Combine(_tempRoot, "workspaces");
+        var hostDir = Path.Combine(hostRoot, "review-run-7");
+        var checkout = Path.Combine(hostDir, "checkout");
+        _ = Directory.CreateDirectory(checkout);
+        var outside = Path.Combine(_tempRoot, "outside");
+        _ = Directory.CreateDirectory(outside);
+        var victim = Path.Combine(outside, "someone-elses.txt");
+        await File.WriteAllTextAsync(victim, "notes");
+        var planted = Path.Combine(checkout, "planted");
+        using var undeletable = UnreadableEntry.UndeletableLink(planted, outside);
+
+        var fake = new FakeSessionSource();
+        var loggerFactory = new CapturingLoggerFactory();
+        var provisioner = new ReviewSessionProvisioner(
+            fake,
+            new CodeReviewDaemonOptions { WorkspaceHostRoot = hostRoot },
+            loggerFactory,
+            workspaceBasePath: "/ws",
+            diskSpaceProbe: SufficientDisk);
+
+        await provisioner.DestroyAsync(Run(), default);
+
+        loggerFactory.Capturing.CountAtLevel(LogLevel.Error, "REFUSED").Should().Be(
+            1,
+            "an operator who is never told the teardown hit an entry it may not remove has no reason to go "
+                + "looking for the one that is still sitting there");
+        loggerFactory.Capturing.CountAtLevel(LogLevel.Warning, "Best-effort host-dir cleanup failed")
+            .Should().Be(
+                0,
+                "this is the sentence the catch comment calls out by name — reported as a transient nuisance, "
+                    + "a planted link stays hidden for as long as anyone cares to skim");
+        Directory.Exists(planted).Should().BeTrue(
+            "the entry that stopped the wipe is left exactly as found — it was refused, not raced");
+        (await File.ReadAllTextAsync(victim)).Should().Be("notes", "nothing may reach through the link");
+        fake.DestroyedWorkspaceIds.Should().Contain(
+            "review-run-7", "the refusal is logged, not thrown, so the rest of the teardown still ran");
+    }
+
+    /// <summary>
     /// A redirected entry is removed by NAME — never by a recursive delete — and a file symlink is the only
     /// input that can show the difference. For a junction the two spellings are indistinguishable:
     /// <see cref="Directory.Delete(string, bool)"/> applied to the reparse point ITSELF does not recurse into
