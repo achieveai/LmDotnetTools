@@ -94,17 +94,7 @@ internal static class GitFailureClassifier
     /// submodule alone for the review's own policy-enforced initializer to re-establish with a permitted fetch.
     /// The nested <c>.git/modules/</c> path in the message is what separates it from a superproject that really
     /// has lost its git dir; both path separators are matched because git reports the path it was handed.
-    /// <para>
-    /// Public because <see cref="SlotHygiene"/>'s submodule-residue probe is a second <c>submodule foreach</c>
-    /// and therefore fails with this same stderr — and a probe failure is otherwise reported as residue, which
-    /// would condemn the slot on precisely the state <see cref="Classify"/> just decided to keep. The two gates
-    /// have to reach that decision from one predicate rather than each pattern-matching the message separately,
-    /// because a divergence between them is invisible in either one's own tests.
-    /// </para>
     /// </summary>
-    public static bool IsDeinitializedSubmodule(string? stderr) =>
-        IsMissingNestedGitDir((stderr ?? string.Empty).ToLowerInvariant());
-
     private static bool IsMissingNestedGitDir(string text) =>
         text.Contains(NotARepositoryMarker + ": ", StringComparison.Ordinal)
         && (text.Contains(".git/modules/", StringComparison.Ordinal)

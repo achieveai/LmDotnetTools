@@ -295,9 +295,12 @@ public sealed class SlotHygieneTests : IDisposable
         // submodule state therefore condemned the slot on EVERY lease, forever, for a defect re-cloning is
         // structurally incapable of fixing. The superproject is what a clone repairs, so it alone decides:
         // hygiene must read status with --ignore-submodules=all and never fall back to a full status. The one
-        // submodule state that IS allowed to decide is untracked residue, read per-submodule through `submodule
-        // foreach` and excluded from the assertion below: it is a previous lease's leftovers rather than the
-        // repo's own content, so it is the one thing here a fresh clone is guaranteed to arrive without.
+        // submodule state that IS allowed to decide is untracked residue, read per-submodule by the residue walk
+        // and excluded from the assertion below: it is a previous lease's leftovers rather than the repo's own
+        // content, so it is the one thing here a fresh clone is guaranteed to arrive without. That exclusion is
+        // spelled as "the probe run AT THE STORE ROOT", not as "the probe that mentions foreach" — the walk no
+        // longer runs `foreach`, and a name-based exclusion that stops matching silently widens this assertion
+        // into a claim the residue walk is designed to violate.
         var store = SeedStore();
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
@@ -311,9 +314,11 @@ public sealed class SlotHygieneTests : IDisposable
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
         verdict.Should().Be(HygieneVerdict.Clean);
-        runner.Commands.Select(c => string.Join(' ', c.Argv))
-            .Where(a => a.Contains("status --porcelain") && !a.Contains("foreach"))
-            .Should()
+        var storeStatusProbes = runner.Commands.Select(c => string.Join(' ', c.Argv))
+            .Where(a => a.Contains($"-C {store} status --porcelain"))
+            .ToList();
+        storeStatusProbes.Should().NotBeEmpty("the superproject status gate is what this test is about");
+        storeStatusProbes.Should()
             .OnlyContain(
                 a => a.Contains("--ignore-submodules=all"),
                 "submodule state must never gate the verdict — a re-clone reproduces it byte for byte");
@@ -341,28 +346,29 @@ public sealed class SlotHygieneTests : IDisposable
     [Fact]
     public async Task EnsureClean_reclones_when_a_failed_submodule_sweep_left_untracked_residue()
     {
-        // Tolerating the failure was silently tolerating what it left behind. `submodule foreach` stops at the
-        // FIRST submodule whose command fails, so every submodule after it kept whatever the previous lease put
-        // there — and nothing else in the pass reaches them: the superproject's `clean -ffdx` does not descend
-        // into a registered submodule's working tree, and `submodule update --checkout --force` only restores
-        // TRACKED content. One review's untracked files crossed into the next review's checkout.
+        // Tolerating the failure was silently tolerating what it left behind. `submodule foreach` ABORTS the walk
+        // at the first submodule it cannot resolve, so every submodule after it kept whatever the previous lease
+        // put there — and nothing else in the pass reaches them: the superproject's `clean -ffdx` stops at a
+        // tracked gitlink, and `submodule update --checkout --force` only restores TRACKED content. One review's
+        // untracked files crossed into the next review's checkout.
         var store = SeedStore();
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             "submodule foreach --recursive",
             new SandboxCommandResult(1, string.Empty, "fatal: run_command returned non-zero status for repos/First"));
-        runner.OnArgvContains(
-            "submodule --quiet foreach --recursive git status",
-            new SandboxCommandResult(0, "?? notes-from-the-last-review.md\n", string.Empty));
+        ScriptOneSubmodule(
+            runner, store, new SandboxCommandResult(0, "?? notes-from-the-last-review.md\n", string.Empty));
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
         verdict.Should().Be(HygieneVerdict.NeedsReclone);
-        runner.Commands.Select(c => string.Join(' ', c.Argv))
-            .Should()
-            .Contain(
-                a => a.Contains("submodule --quiet foreach --recursive git clean -ffdx || true"),
-                "the re-sweep must reach the submodules AFTER the one that aborted the first walk");
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().Contain(
+            a => a.Contains("ls-files -s"),
+            "the re-sweep must read its list from the INDEX, which no broken submodule can interrupt");
+        commands.Should().Contain(
+            a => a.Contains($"-C {OnlySubmodulePath(store)} clean -ffdx"),
+            "the re-sweep must reach the submodules AFTER the one that aborted the first walk");
     }
 
     [Fact]
@@ -370,15 +376,15 @@ public sealed class SlotHygieneTests : IDisposable
     {
         // A check whose clean answer can be produced by its own failure is not a check: reading an empty stdout
         // from a status command that never ran would turn the residue gate into a rubber stamp for exactly the
-        // broken submodule states it exists to catch.
+        // broken submodule states it exists to catch. This is the probe failing at a submodule that has ALREADY
+        // answered for itself, which is what separates it from the skipped-path case below.
         var store = SeedStore();
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             "submodule foreach --recursive",
             new SandboxCommandResult(1, string.Empty, "fatal: run_command returned non-zero status for repos/First"));
-        runner.OnArgvContains(
-            "submodule --quiet foreach --recursive git status",
-            new SandboxCommandResult(1, string.Empty, "fatal: not a git repository: 'repos/First/.git'"));
+        ScriptOneSubmodule(
+            runner, store, new SandboxCommandResult(1, string.Empty, "fatal: unable to read index file"));
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
@@ -388,17 +394,17 @@ public sealed class SlotHygieneTests : IDisposable
     [Fact]
     public async Task EnsureClean_does_not_condemn_a_deinitialized_submodule_through_the_residue_probe()
     {
-        // The two gates have to agree about the SAME stderr, and this is where they nearly didn't.
-        // GitFailureClassifier deliberately reads `not a git repository: .../.git/modules/...` as a
-        // deinitialized submodule rather than a damaged store, so the sweep tolerates it — but the residue
-        // probe that runs immediately afterwards is another `submodule foreach`, so it fails for the identical
-        // reason, and a probe failure is otherwise reported AS residue. That would have condemned the slot on
-        // exactly the state the classifier had just decided to keep, re-cloning on every lease: the forever-loop
-        // this PR exists to close, rebuilt out of two fixes that were each correct alone.
+        // The two gates have to agree about the SAME state, and this is where they nearly didn't.
+        // GitFailureClassifier deliberately reads `not a git repository: .../.git/modules/...` as a deinitialized
+        // submodule rather than a damaged store, so the sweep tolerates it. The residue walk used to be a second
+        // `submodule foreach`, so it failed for the identical reason — and a probe failure is otherwise reported
+        // AS residue, which would have condemned the slot on exactly the state the classifier had just decided to
+        // keep, re-cloning on every lease.
         //
-        // Re-cloning cannot help here either, which is what makes tolerating it the only coherent answer: a
-        // fresh clone leaves submodules UNINITIALIZED, so the next lease's `foreach` visits nothing and reports
-        // exactly the same nothing.
+        // The walk no longer has to recognize that stderr at all: it asks each indexed path to answer for itself
+        // with `rev-parse --show-toplevel` FIRST, and a submodule whose gitdir is gone cannot, so it is skipped
+        // before anything is run in it. The assertion is therefore not just the verdict — it is that nothing was
+        // run in that path, which is what distinguishes a gate that skipped from a probe that was tolerated.
         var store = SeedStore();
         var runner = new FakeSandboxCommandRunner();
         const string deinitialized =
@@ -407,30 +413,48 @@ public sealed class SlotHygieneTests : IDisposable
             "submodule foreach --recursive",
             new SandboxCommandResult(1, string.Empty, deinitialized));
         runner.OnArgvContains(
-            "submodule --quiet foreach --recursive git status",
-            new SandboxCommandResult(1, string.Empty, deinitialized));
+            "rev-parse --show-toplevel", new SandboxCommandResult(128, string.Empty, deinitialized));
+        ScriptOneSubmodule(
+            runner, store, new SandboxCommandResult(0, "?? would-have-condemned-the-slot.md\n", string.Empty));
+        var logs = new CapturingLoggerFactory();
 
-        var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
+        var verdict = await SlotHygiene.EnsureCleanAsync(
+            new GitRunner(runner), store, CancellationToken.None, logs.Capturing);
 
         verdict.Should().Be(HygieneVerdict.Clean);
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().Contain(
+            a => a.Contains($"-C {OnlySubmodulePath(store)} rev-parse --show-toplevel"),
+            "the walk must have REACHED this path — a Clean verdict from a walk that enumerated nothing would"
+                + " assert the same thing while proving none of it");
+        commands.Should().NotContain(
+            a => a.Contains($"-C {OnlySubmodulePath(store)} clean")
+                || a.Contains($"-C {OnlySubmodulePath(store)} status"),
+            "a path that cannot answer for itself is skipped, not swept and not probed");
+
+        // Skipping is the decision; being silent about it is not. Neither cleaned nor surfaced is the same
+        // fail-quiet shape this PR closes, so the only thing standing between an operator and a store quietly
+        // accumulating residue behind a broken gitlink is this line — and a line nothing asserts on rots away.
+        logs.Capturing.WarningCount(OnlySubmodulePath(store)).Should().Be(
+            1, "the skipped path is the one thing the operator cannot work out for themselves");
+        logs.Capturing.WarningCount("crosses into the next review").Should().Be(
+            1, "the log has to say what the skip COSTS, not merely that a probe returned nothing");
     }
 
     [Fact]
-    public async Task EnsureClean_still_condemns_when_the_residue_probe_fails_for_an_unrelated_reason()
+    public async Task EnsureClean_condemns_when_the_submodule_listing_itself_fails()
     {
-        // The over-tolerance pin for the deferral above. The carve-out is for ONE stderr shape — a registered
-        // submodule whose gitdir is gone — and not for "the probe failed and the classifier didn't call it
-        // corruption". Widening it that far would swallow every unrecognized probe failure, which is the whole
-        // class the residue gate exists to catch, and no existing test would notice: the pin next door happens
-        // to use a stderr that classifies as corruption, so it stays green under that widening.
+        // The enumeration is now the thing the whole re-sweep stands on, so its failure is the new way this check
+        // could quietly answer "no residue" without having looked. It is reported for the same reason a failed
+        // status probe is: a walk that could not read its own list has established nothing about what is in the
+        // submodules, and reading that as a clean store hands the next review whatever is actually there.
         var store = SeedStore();
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             "submodule foreach --recursive",
             new SandboxCommandResult(1, string.Empty, "fatal: run_command returned non-zero status for repos/First"));
         runner.OnArgvContains(
-            "submodule --quiet foreach --recursive git status",
-            new SandboxCommandResult(1, string.Empty, "fatal: could not read Username for 'https://github.com'"));
+            "ls-files -s", new SandboxCommandResult(128, string.Empty, "fatal: unable to read index file"));
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
@@ -450,13 +474,53 @@ public sealed class SlotHygieneTests : IDisposable
             new SandboxCommandResult(
                 1, string.Empty, "fatal: cannot create directory at 'VotingApp/VotingWeb/wwwroot/lib'"
                     + ": Filename too long"));
-        runner.OnArgvContains(
-            "submodule --quiet foreach --recursive git status",
+        ScriptOneSubmodule(
+            runner,
+            store,
             new SandboxCommandResult(0, " D VotingApp/VotingWeb/wwwroot/lib/jquery.js\n", string.Empty));
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
         verdict.Should().Be(HygieneVerdict.Clean);
+        runner.Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .Contain(
+                a => a.Contains($"-C {OnlySubmodulePath(store)} status --porcelain"),
+                "the tracked-damage line has to have been READ and judged harmless — a Clean verdict from a walk"
+                    + " that never probed anything would assert the same thing while proving none of it");
+    }
+
+    /// <summary>
+    /// The one submodule path <see cref="ScriptOneSubmodule"/> puts in the scripted store, spelled the way the
+    /// walk composes it: git answers <c>--show-toplevel</c> in forward slashes, so the walk normalizes to them
+    /// and passes the normalized path to <c>-C</c>.
+    /// </summary>
+    private static string OnlySubmodulePath(string store) => $"{store.Replace('\\', '/')}/repos/First";
+
+    /// <summary>
+    /// Scripts <paramref name="runner"/> as a store holding exactly one submodule at <c>repos/First</c> that
+    /// answers for itself, so the residue walk gets past its gate and reaches <paramref name="status"/>. The
+    /// listing is a SEQUENCE — the gitlink once, then nothing — because the walk re-reads <c>ls-files</c> inside
+    /// each submodule it validates (that recursion is what replaces <c>foreach --recursive</c>), and a rule that
+    /// answered every call with the same gitlink would describe a store that contains itself forever.
+    /// </summary>
+    private static void ScriptOneSubmodule(
+        FakeSandboxCommandRunner runner, string store, SandboxCommandResult status)
+    {
+        runner.OnArgvContainsSequence(
+            "ls-files -s",
+            new SandboxCommandResult(0, "160000 deadbeefdeadbeefdeadbeefdeadbeefdeadbeef 0\trepos/First\n", string.Empty),
+            new SandboxCommandResult(0, string.Empty, string.Empty));
+        runner.OnArgvContains(
+            "rev-parse --show-toplevel",
+            new SandboxCommandResult(0, OnlySubmodulePath(store) + "\n", string.Empty));
+
+        // The superproject's own status probe carries --ignore-submodules=all and must keep its own answer; only
+        // the per-submodule probe is being scripted here.
+        runner.On(
+            c => string.Join(' ', c.Argv).Contains("status --porcelain", StringComparison.Ordinal)
+                && !string.Join(' ', c.Argv).Contains("--ignore-submodules", StringComparison.Ordinal),
+            status);
     }
 
     [Fact]
@@ -758,6 +822,107 @@ public sealed class SlotHygieneTests : IDisposable
         await SlotHygiene.StripAsync(new GitRunner(runner), super, CancellationToken.None);
 
         AssertSubmoduleNotCloned(sub);
+    }
+
+    [Fact]
+    public async Task EnsureClean_sweeps_residue_in_a_submodule_ordered_after_one_whose_gitdir_is_gone()
+    {
+        // REAL-GIT regression, and it has to be real git: the defect is a property of `submodule foreach`
+        // that no argv assertion and no scripted runner reproduces. `foreach` does not SKIP a submodule whose
+        // command fails — at a registered submodule whose gitdir is gone it ABORTS the traversal, dying while
+        // resolving that submodule and before the per-submodule command is ever invoked. The `|| true` guarding
+        // the command's exit status is therefore never reached, and every submodule ORDERED AFTER the broken one
+        // is never swept at all. Measured on git 2.53: the sweep prints its banner for `first`, fatals, and never
+        // reaches `second`.
+        //
+        // Nothing else in the pass covers them. The superproject's own `clean -ffdx` stops at a tracked gitlink
+        // whether or not a repository is present at that path (measured: it leaves both the broken submodule's
+        // worktree and its untracked residue untouched, and still exits 0 reporting a clean superproject), and
+        // `submodule update --checkout --force` only restores TRACKED content. So the previous review's untracked
+        // file sat in `second` while every gate in EnsureCleanAsync reported the store fit to reuse.
+        //
+        // The assertion is the FILE, not the verdict: the verdict is Clean either way, which is exactly what made
+        // this invisible. On Windows this also pins the path normalization — the store path composed here carries
+        // backslashes while git answers `rev-parse --show-toplevel` in forward slashes, and an unnormalized
+        // comparison fails toward "skip", reproducing the same silent survival it is meant to end.
+        var runner = NewHostGitRunner();
+        var (super, residues) = await SetupOrderedSubmoduleResidueStoreAsync(runner);
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), super, CancellationToken.None);
+
+        File.Exists(residues.AfterBroken).Should().BeFalse(
+            "a submodule ordered AFTER the one that stops `foreach` must still be swept");
+        File.Exists(residues.NestedAfterBroken).Should().BeFalse(
+            "the replacement sweep must keep the `--recursive` reach it replaces, not just the top level");
+        verdict.Should().Be(
+            HygieneVerdict.Clean,
+            "the residue was cleaned rather than merely surfaced, so nothing is left to condemn the slot for");
+    }
+
+    /// <summary>
+    /// Real-git setup for the ordered-residue regression: a superproject with submodules <c>first</c> and
+    /// <c>second</c> (that index order), <c>second</c> carrying a nested submodule of its own, untracked residue
+    /// in <c>second</c> and in the nested one, and <c>first</c> left registered-but-DEINIT'd in the shape that
+    /// aborts the walk — its worktree and its <c>.git</c> FILE retained, the <c>.git/modules/first</c> gitdir it
+    /// points at removed. Returns the store and the two residue paths that must not survive hygiene.
+    /// </summary>
+    private async Task<(string Super, (string AfterBroken, string NestedAfterBroken) Residues)>
+        SetupOrderedSubmoduleResidueStoreAsync(HostGitCommandRunner runner)
+    {
+        var super = Path.Combine(_root, "super");
+        Directory.CreateDirectory(_root);
+
+        async Task Git(string dir, params string[] args)
+        {
+            Directory.CreateDirectory(dir);
+            var r = await runner.RunAsync(new SandboxCommand(["git", .. args], dir), default);
+            r.Succeeded.Should().BeTrue($"setup `git {string.Join(' ', args)}` failed: {r.Stderr}");
+        }
+
+        // Three sources: `first` (the one that will be broken), `nested`, and `second` — which carries `nested`
+        // as a submodule so the replacement sweep's recursion is exercised rather than assumed.
+        async Task<string> Source(string name)
+        {
+            var path = Path.Combine(_root, "src", name);
+            await Git(path, "init", "-q", ".");
+            await File.WriteAllTextAsync(Path.Combine(path, "f.txt"), name);
+            await Git(path, "add", "f.txt");
+            await Git(path, "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "-m", "init");
+            return path.Replace('\\', '/');
+        }
+
+        var firstSrc = await Source("first");
+        var nestedSrc = await Source("nested");
+        var secondSrc = await Source("second");
+        await Git(secondSrc, "-c", "protocol.file.allow=always", "-c", "user.email=a@b", "-c", "user.name=a",
+            "submodule", "add", "-q", nestedSrc, "nested");
+        await Git(secondSrc, "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "-m", "addnested");
+
+        await Git(super, "init", "-q", ".");
+        await File.WriteAllTextAsync(Path.Combine(super, "seed.txt"), "seed\n");
+        await Git(super, "add", "seed.txt");
+        await Git(super, "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "-m", "seed");
+        foreach (var (name, source) in new[] { ("first", firstSrc), ("second", secondSrc) })
+        {
+            await Git(super, "-c", "protocol.file.allow=always", "-c", "user.email=a@b", "-c", "user.name=a",
+                "submodule", "add", "-q", source, name);
+        }
+
+        await Git(super, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive", "-q");
+        await Git(super, "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "-m", "addsubs");
+
+        var afterBroken = Path.Combine(super, "second", "notes-from-the-last-review.md");
+        var nestedAfterBroken = Path.Combine(super, "second", "nested", "notes-from-the-last-review.md");
+        await File.WriteAllTextAsync(afterBroken, "a previous lease's leftovers");
+        await File.WriteAllTextAsync(nestedAfterBroken, "a previous lease's leftovers");
+
+        // Break `first`: keep its worktree AND its `.git` file, delete the gitdir that file points at. This is
+        // the shape that ABORTS the walk. (Deleting the `.git` file too gives the other deinit shape, which
+        // `foreach` merely skips — it would not reproduce this defect.)
+        DeleteRecursive(Path.Combine(super, ".git", "modules", "first"));
+        File.Exists(Path.Combine(super, "first", ".git")).Should().BeTrue(
+            "the aborting shape needs the dangling gitfile — without it `foreach` skips instead of dying");
+        return (super, (afterBroken, nestedAfterBroken));
     }
 
     private static HostGitCommandRunner NewHostGitRunner() =>

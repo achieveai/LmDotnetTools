@@ -194,14 +194,17 @@ internal static class SlotHygiene
                 return HygieneVerdict.NeedsReclone;
             }
 
-            // Tolerating the FAILURE is not the same as tolerating what it left behind. `submodule foreach` stops
-            // at the first submodule whose command fails, so every submodule after that one was never cleaned —
-            // and nothing else in this pass reaches them: the superproject's `clean -ffdx` does not descend into a
-            // registered submodule's working tree, and `submodule update --checkout --force` only restores TRACKED
-            // content. One review's UNTRACKED leftovers therefore survived the lease and crossed into the next
-            // review. Sweep the whole list again with a command that cannot abort the walk, and condemn the slot
-            // only for what is still there afterwards.
-            var residue = await SubmoduleResidueAsync(git, storePath, ct).ConfigureAwait(false);
+            // Tolerating the FAILURE is not the same as tolerating what it left behind, and `submodule foreach`
+            // is worse than "stops at the first submodule whose command fails": at a registered submodule whose
+            // gitdir is gone it ABORTS THE TRAVERSAL, dying while resolving that submodule and before the
+            // per-submodule command is invoked at all. Every submodule ORDERED AFTER it was therefore never
+            // cleaned — and nothing else in this pass reaches them: the superproject's `clean -ffdx` stops at a
+            // tracked gitlink whether or not a repository is present at that path, and
+            // `submodule update --checkout --force` only restores TRACKED content. One review's UNTRACKED
+            // leftovers therefore survived the lease and crossed into the next review. Sweep the whole list
+            // again over an enumeration nothing in the submodule tree can interrupt, and condemn the slot only
+            // for what is still there afterwards.
+            var residue = await SubmoduleResidueAsync(git, storePath, ct, logger).ConfigureAwait(false);
             if (residue is { } left)
             {
                 logger?.LogWarning(
@@ -245,8 +248,35 @@ internal static class SlotHygiene
         git.RunAsync(["-C", storePath, "status", "--porcelain", "--ignore-submodules=all"], storePath, ct);
 
     /// <summary>
-    /// Re-runs the submodule clean so it CANNOT abort the walk, then reports what untracked content is still
-    /// present anywhere in the submodule tree, or <c>null</c> when there is none.
+    /// Re-runs the submodule clean over a walk that no broken submodule can cut short, then reports what untracked
+    /// content is still present in the submodules it was able to sweep, or <c>null</c> when there is none. The
+    /// walk can still be stopped by a failure of its OWN enumeration, and that is reported rather than swallowed —
+    /// the guarantee is that it never ends in silence, not that it never ends.
+    /// <para>
+    /// It does NOT use <c>submodule foreach</c>, and the <c>|| true</c> that used to stand here did not make it
+    /// safe to. That guards the per-submodule COMMAND's exit status, and the failure being guarded against is
+    /// not the command's: at a registered submodule whose gitdir is gone, git dies RESOLVING the submodule and
+    /// never invokes the command, so the traversal ends there and every submodule after it is skipped in silence.
+    /// The same is true of <c>submodule status</c> with or without <c>--recursive</c>. The walk here is built
+    /// from <c>git ls-files -s</c> filtered to gitlink mode <c>160000</c> instead, which reads the INDEX and never
+    /// opens a submodule repository, so a broken entry is listed alongside the healthy ones rather than ending the
+    /// list. <c>ls-files</c> reports one repository's own gitlinks, so the walk recurses by re-reading it inside
+    /// each submodule it validates — that is what replaces <c>--recursive</c>.
+    /// </para>
+    /// <para>
+    /// Each path is gated on <c>rev-parse --show-toplevel</c> ANSWERING WITH THAT PATH before anything is run in
+    /// it, because a path listed in the index is not evidence that a repository is there. A deinitialized
+    /// submodule comes in two shapes and <c>--show-toplevel</c> is the one predicate that handles both. Where the
+    /// <c>.git</c> FILE is retained but dangling — the shape that ABORTS <c>foreach</c> — every probe fatals
+    /// <c>not a git repository</c>. Where the <c>.git</c> file is GONE, <c>-C &lt;path&gt;</c> does not fail at
+    /// all: git walks UP and answers about the SUPERPROJECT, so a gate built on <c>--is-inside-work-tree</c> reads
+    /// <c>true</c> and the clean that follows runs in superproject context from inside a submodule path (measured:
+    /// with <c>-- :/</c> it offers to remove a file above the submodule). <c>--show-toplevel</c> separates them
+    /// because it returns the submodule's own root only when the submodule really is one. Both sides of the
+    /// comparison are normalized (git answers in forward slashes, the composed path carries the host's separators
+    /// and possibly a trailing one) and compared case-insensitively, because an unnormalized mismatch fails toward
+    /// SKIP — the same fail-quiet shape as the aborted walk this replaces.
+    /// </para>
     /// <para>
     /// Only UNTRACKED residue counts, and that narrowness is the point: the restore step already put every
     /// submodule back on its recorded gitlink, and the tracked state that outlives it is exactly the unrepairable
@@ -257,57 +287,156 @@ internal static class SlotHygiene
     /// </para>
     /// <para>
     /// A probe that could not run reports itself AS residue instead of being read as an empty status — a check
-    /// whose clean answer is produced by its own failure is not a check. That cannot wedge the slot the way
-    /// failing closed on the foreach itself would: a re-clone leaves the submodules UNINITIALIZED, so
-    /// <c>foreach</c> visits nothing on the next lease and there is nothing left to report. The single exception
-    /// is a probe that failed because a registered submodule's gitdir is gone
-    /// (<see cref="GitFailureClassifier.IsDeinitializedSubmodule"/>), which the caller already tolerates.
+    /// whose clean answer is produced by its own failure is not a check. The old probe had a subtler version of
+    /// that defect which no carve-out could have fixed: it was ONE <c>foreach</c> whose stdout aggregated every
+    /// submodule, so when the walk aborted that stdout was PARTIAL, and a short or empty one said nothing about
+    /// the submodules the walk never reached. Reading it as cleanliness was the same silence as the abort itself.
+    /// Here each status is scoped to a single repository that has already answered as its own root, so an empty
+    /// stdout means that repository is clean and nothing else — there is no partial aggregate left to misread,
+    /// and the deinitialized submodule that used to fail this check is skipped (and logged) before it is asked.
     /// </para>
     /// <para>
-    /// Two known residuals, both accepted for the same reason — a re-clone does not observe the content either,
-    /// so condemning the slot spends a full clone to learn nothing. First, the deinitialized-submodule deferral
-    /// above stops the walk at that submodule, so untracked leftovers in submodules ORDERED AFTER it go
-    /// unreported. Second, <c>foreach</c> skips uninitialized submodules outright, so it never visits them at
-    /// all; there, the superproject's own <c>clean -ffdx</c> is what takes the residue, because an uninitialized
-    /// submodule's path holds no repository to stop it descending.
+    /// CLEANED and SURFACED are not the same set, and this paragraph replaces one that got both of its residuals
+    /// wrong. It used to ACCEPT two gaps, each on a mechanism that was reasoned about rather than run.
+    /// </para>
+    /// <para>
+    /// The first — submodules ORDERED AFTER a deinitialized one, described as merely going "unreported" — is
+    /// CLOSED, and was never only a reporting gap. `foreach` aborted the traversal there, so those submodules were
+    /// not cleaned either, and untracked leftovers crossing a lease is the contamination this function exists to
+    /// prevent, not an acceptable price for skipping a clone. The index-driven walk reaches them, so they are now
+    /// both cleaned and probed.
+    /// </para>
+    /// <para>
+    /// The second — residue in a submodule whose path holds no repository — survives, but NOT for the reason
+    /// given. The old text said the superproject's <c>clean -ffdx</c> takes it "because an uninitialized
+    /// submodule's path holds no repository to stop it descending". Measured: it does not. The boundary is the
+    /// tracked GITLINK in the INDEX, not what is on disk, so clean declines to descend into an uninitialized
+    /// submodule's path exactly as it declines a live one — leaving the file there and exiting 0. The stated
+    /// fallback cleans nothing.
+    /// </para>
+    /// <para>
+    /// So a path that fails the gate is neither cleaned nor surfaced, and nothing else in the pass covers it. That
+    /// sits against this file's own principle three paragraphs up — untracked residue is a previous lease's
+    /// leftovers that a fresh clone is guaranteed to arrive without, which argues FOR condemning the slot. Not
+    /// condemning is a deliberate scope choice and not a claim the gap is harmless: reporting it would re-clone on
+    /// precisely the deinitialized state <see cref="GitFailureClassifier"/> subtracts from its corruption markers
+    /// in order to tolerate, on every lease, which is a verdict change rather than a repair of this walk. What is
+    /// NOT deferred is the silence — every skipped path is logged at warning with the gate's own output, so a
+    /// store accumulating residue behind a broken gitlink is visible in the daemon log rather than inferred from
+    /// this paragraph.
     /// </para>
     /// </summary>
-    private static async Task<string?> SubmoduleResidueAsync(GitRunner git, string storePath, CancellationToken ct)
+    private static async Task<string?> SubmoduleResidueAsync(
+        GitRunner git, string storePath, CancellationToken ct, ILogger? logger)
     {
-        // `|| true` per submodule, because without it this second sweep aborts at the same submodule the first one
-        // did and never reaches the ones holding the residue — which is the whole defect being closed. `--quiet`
-        // suppresses the per-submodule "Entering '<path>'" banner so the probe's stdout is status output alone.
-        _ = await git.RunAsync(
-                ["-C", storePath, "submodule", "--quiet", "foreach", "--recursive", "git clean -ffdx || true"],
-                storePath, ct)
-            .ConfigureAwait(false);
+        var pending = new Queue<string>();
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var root = NormalizePath(storePath);
+        pending.Enqueue(root);
+        visited.Add(root);
+        string? residue = null;
 
-        var probe = await git.RunAsync(
-                ["-C", storePath, "submodule", "--quiet", "foreach", "--recursive",
-                    "git status --porcelain || echo '?? (submodule status unavailable)'"],
-                storePath, ct)
-            .ConfigureAwait(false);
-        if (!probe.Succeeded)
+        // The walk continues past anything it finds. A first residue is enough for the caller's verdict, but the
+        // clean is worth finishing anyway: the caller may yet tolerate what is reported (only `??` lines condemn),
+        // and stopping early would leave the rest of the tree in the state this sweep exists to remove.
+        while (pending.Count > 0)
         {
-            // …unless it failed for the one reason the caller's classifier has ALREADY decided to tolerate. The
-            // probe is itself a `submodule foreach`, so a registered submodule whose gitdir is gone fails it with
-            // the same stderr that got the sweep tolerated one gate earlier — and reporting that as residue would
-            // condemn the slot on exactly the state hygiene just chose to keep, on every lease, forever. Deferring
-            // costs less than it looks: a re-clone leaves submodules UNINITIALIZED, so the next lease's `foreach`
-            // visits nothing and reports the same nothing. The condemnation would buy no information and spend a
-            // full re-clone of the store to do it.
-            if (GitFailureClassifier.IsDeinitializedSubmodule(probe.Stderr))
+            var repo = pending.Dequeue();
+            var listing = await git.RunAsync(["-C", repo, "ls-files", "-s"], repo, ct).ConfigureAwait(false);
+            if (!listing.Succeeded)
             {
-                return null;
+                residue ??= $"the submodule listing at {repo} itself failed: {listing.Stderr}";
+                continue;
             }
 
-            return $"the submodule status probe itself failed: {probe.Stderr}";
+            foreach (var relativePath in GitlinkPaths(listing.Stdout))
+            {
+                if (relativePath is null)
+                {
+                    // `ls-files` quotes a path it cannot print literally, and a mis-parsed path would resolve to
+                    // nothing, fail the gate, and be skipped — silence in the one place silence is the defect.
+                    residue ??= $"the submodule listing at {repo} contains a path this sweep cannot parse";
+                    continue;
+                }
+
+                var submodule = NormalizePath($"{repo}/{relativePath}");
+                if (!visited.Add(submodule))
+                {
+                    continue;
+                }
+
+                var toplevel = await git.RunAsync(
+                        ["-C", submodule, "rev-parse", "--show-toplevel"], submodule, ct)
+                    .ConfigureAwait(false);
+                if (!toplevel.Succeeded
+                    || !NormalizePath(toplevel.Stdout ?? string.Empty).Equals(
+                        submodule, StringComparison.OrdinalIgnoreCase))
+                {
+                    // Skipping is the deliberate choice (see the doc); being SILENT about it is not. This path is
+                    // neither cleaned nor reported, so without this line the only trace of a store accumulating
+                    // residue behind a broken gitlink would be a doc paragraph — and a doc is not an observable.
+                    // Logged rather than returned so the verdict is unchanged: reporting it condemns the slot on
+                    // exactly the deinitialized state the caller tolerates on purpose.
+                    logger?.LogWarning(
+                        "Slot hygiene at {StorePath}: NOT sweeping the indexed submodule path {SubmodulePath} — it "
+                            + "does not answer as its own repository, so anything untracked under it survives this "
+                            + "lease and crosses into the next review. A re-clone would clear it; this pass "
+                            + "deliberately does not condemn the slot for it. (`rev-parse --show-toplevel` exit "
+                            + "{ExitCode}, stdout {Stdout}, stderr {Stderr}.)",
+                        storePath, submodule, toplevel.ExitCode, toplevel.Stdout, toplevel.Stderr);
+                    continue;
+                }
+
+                await git.RunAsync(["-C", submodule, "clean", "-ffdx"], submodule, ct).ConfigureAwait(false);
+                var status = await git.RunAsync(["-C", submodule, "status", "--porcelain"], submodule, ct)
+                    .ConfigureAwait(false);
+                if (!status.Succeeded)
+                {
+                    residue ??= $"the submodule status probe at {submodule} itself failed: {status.Stderr}";
+                    continue;
+                }
+
+                residue ??= status.Stdout
+                    ?.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .FirstOrDefault(line => line.StartsWith("??", StringComparison.Ordinal));
+                pending.Enqueue(submodule);
+            }
         }
 
-        return probe.Stdout
-            ?.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .FirstOrDefault(line => line.StartsWith("??", StringComparison.Ordinal));
+        return residue;
     }
+
+    /// <summary>
+    /// The gitlink paths in one <c>git ls-files -s</c> listing — <c>&lt;mode&gt; &lt;sha&gt; &lt;stage&gt;\t&lt;path&gt;</c>
+    /// rows filtered to mode <c>160000</c>. Yields <c>null</c> for a row whose path git QUOTED (it does that for a
+    /// path holding a quote, a newline or a non-ASCII byte), so the caller reports it rather than unquoting it
+    /// wrongly and silently skipping a submodule.
+    /// </summary>
+    private static IEnumerable<string?> GitlinkPaths(string? listing)
+    {
+        foreach (var line in (listing ?? string.Empty).Split(
+                     '\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var tab = line.IndexOf('\t', StringComparison.Ordinal);
+            if (tab < 0 || !line.StartsWith("160000 ", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var path = line[(tab + 1)..].Trim();
+            yield return path.StartsWith('"') ? null : path;
+        }
+    }
+
+    /// <summary>
+    /// One path in the single spelling both sides of the <c>--show-toplevel</c> gate are compared in: forward
+    /// slashes (git's answer is always in them; a composed host path is not), no trailing separator, no
+    /// surrounding whitespace (git's stdout ends in a newline). Deliberately NOT <see cref="Path.GetFullPath(string)"/>,
+    /// which would rewrite a sandbox-container path like <c>/workspace/store</c> into a host-rooted one and make
+    /// every comparison in the container fail.
+    /// </summary>
+    private static string NormalizePath(string path) =>
+        path.Trim().Replace('\\', '/').TrimEnd('/');
 
     /// <summary>
     /// Is a second force-reset pass worth its cost? Only when the failure is one a repeated sweep-and-reset can
