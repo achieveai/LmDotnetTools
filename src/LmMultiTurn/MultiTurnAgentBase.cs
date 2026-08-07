@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Threading.Channels;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -1886,52 +1887,74 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
     private async Task DisposeCoreAsync()
     {
-        // Before StopAsync, so an internal enqueue still parked on a full channel is released
-        // rather than holding the loop's shutdown open behind it.
-        await _lifetimeCts.CancelAsync();
-
-        await StopAsync();
-
-        // Disposal is a terminal boundary: if no run-level outcome stamped completeness (e.g. the loop was
-        // disposed without RunAsync having reached its finally, or only descendant usage was relayed), mark
-        // Complete — but never upgrade a run's Partial. force: false only advances from InProgress (#196).
-        SetUsageCompleteness(UsageCompleteness.Complete, force: false);
-
-        // Normally a no-op: StopAsync has already closed whatever was in flight. It matters for an
-        // agent disposed without ever having been started-and-stopped, whose lifecycle runs would
-        // otherwise never be closed by anyone.
-        await Lifecycle.TerminalizeOutstandingAsync(LifecycleRunOutcomes.Interrupted, CancellationToken.None);
-
-        // Final durability boundary: flush any usage write scheduled by a late/background descendant that
-        // finished after the run stopped, so it is persisted rather than lost at shutdown (#196).
-        await FlushUsageAsync();
-
-        _internalCts?.Dispose();
-        _lifetimeCts.Dispose();
-
-        // Channel teardown is what ENDS every live stream, so it cannot be conditional on a
-        // descendant's cleanup succeeding. Without the finally, a throwing OnDisposeAsync skips it
-        // and leaves every SubscribeAsync/ExecuteRunAsync enumerator parked forever on a channel
-        // nobody will ever complete — the agent is unusable AND its readers never learn. The
-        // original failure still propagates (the finally adds no exception of its own), so the
-        // caller, and every later DisposeAsync awaiting the same published task, still sees it.
+        // Channel teardown is what ENDS every live stream, so it cannot be conditional on ANY
+        // earlier step succeeding. Guarding only OnDisposeAsync left every step before it — a run
+        // loop that faulted and resurfaces through StopAsync, a lifecycle terminalization, a
+        // CancellationTokenSource already disposed by a racing caller — able to abandon the
+        // teardown outright, leaving every SubscribeAsync/ExecuteRunAsync enumerator parked forever
+        // on a channel nobody will ever complete: the agent is gone AND its readers never learn.
+        // The finally is therefore OUTERMOST, wrapping the whole body rather than one step of it.
+        //
+        // It reports no exception of its own — CompleteChannelsOnDisposeAsync RETURNS its failure
+        // instead of throwing — because a finally that throws REPLACES the in-flight exception, and
+        // a subscriber hook failing during cleanup must never be what the caller sees in place of
+        // the real reason disposal failed.
+        Exception? cleanupFailure;
         try
         {
+            // Before StopAsync, so an internal enqueue still parked on a full channel is released
+            // rather than holding the loop's shutdown open behind it.
+            await _lifetimeCts.CancelAsync();
+
+            await StopAsync();
+
+            // Disposal is a terminal boundary: if no run-level outcome stamped completeness (e.g. the loop was
+            // disposed without RunAsync having reached its finally, or only descendant usage was relayed), mark
+            // Complete — but never upgrade a run's Partial. force: false only advances from InProgress (#196).
+            SetUsageCompleteness(UsageCompleteness.Complete, force: false);
+
+            // Normally a no-op: StopAsync has already closed whatever was in flight. It matters for an
+            // agent disposed without ever having been started-and-stopped, whose lifecycle runs would
+            // otherwise never be closed by anyone.
+            await Lifecycle.TerminalizeOutstandingAsync(LifecycleRunOutcomes.Interrupted, CancellationToken.None);
+
+            // Final durability boundary: flush any usage write scheduled by a late/background descendant that
+            // finished after the run stopped, so it is persisted rather than lost at shutdown (#196).
+            await FlushUsageAsync();
+
+            _internalCts?.Dispose();
+            _lifetimeCts.Dispose();
+
             await OnDisposeAsync();
         }
         finally
         {
-            await CompleteChannelsOnDisposeAsync();
+            cleanupFailure = await CompleteChannelsOnDisposeAsync();
+
+            // Inside the finally so a failed disposal still suppresses finalization: the object is
+            // just as disposed either way, and only the reporting differs.
+            GC.SuppressFinalize(this);
         }
 
-        GC.SuppressFinalize(this);
+        // Reached only when the body completed, so there is no earlier failure to preserve and a
+        // returned cleanup failure would otherwise be swallowed into a silent success.
+        if (cleanupFailure != null)
+        {
+            ExceptionDispatchInfo.Capture(cleanupFailure).Throw();
+        }
     }
 
     /// <summary>
-    /// Ends the input channel and every subscriber's stream. Runs on both the success and the
-    /// failure path of <see cref="OnDisposeAsync"/> — see the comment at its call site.
+    /// Ends the input channel and every subscriber's stream, then runs each subscriber's completion
+    /// hook. Never throws - it RETURNS the failure instead - so that it is safe to call from the
+    /// outermost <see langword="finally"/> of <see cref="DisposeCoreAsync"/> without replacing the
+    /// failure that sent us there.
     /// </summary>
-    private async Task CompleteChannelsOnDisposeAsync()
+    /// <returns>
+    /// The hook failure worth reporting, or <see langword="null"/> when every hook succeeded. The
+    /// caller decides whether to surface it, because an earlier failure outranks it.
+    /// </returns>
+    private async Task<Exception?> CompleteChannelsOnDisposeAsync()
     {
         // Complete input channel on disposal (final cleanup - no restart possible)
         _ = _inputChannel.Writer.TryComplete();
@@ -1954,11 +1977,44 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             _outputSubscribers.Clear();
         }
 
-        foreach (var (subscriberId, subscriber) in subscribers)
+        // PHASE 1 - end every stream first, in a pass that cannot fail. Completing a writer and
+        // running its hook per subscriber in ONE pass made each subscriber's hook a gate on the
+        // NEXT subscriber's stream ever ending: a single throwing hook and every client after it in
+        // the snapshot hangs forever on a channel that is now unreachable. The ordering is the fix;
+        // the error handling below only decides what gets reported.
+        foreach (var (_, subscriber) in subscribers)
         {
             _ = subscriber.Channel.Writer.TryComplete();
-            await OnSubscriberChannelCompletedDuringDisposeAsync(subscriberId);
         }
+
+        // PHASE 2 - notify, each hook independently, so one failure cannot skip the others.
+        List<Exception>? failures = null;
+        foreach (var (subscriberId, _) in subscribers)
+        {
+            try
+            {
+                await OnSubscriberChannelCompletedDuringDisposeAsync(subscriberId);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError(
+                    ex,
+                    "Subscriber {SubscriberId} teardown hook failed during disposal of thread {ThreadId}",
+                    subscriberId,
+                    ThreadId);
+                (failures ??= []).Add(ex);
+            }
+        }
+
+        return failures switch
+        {
+            null => null,
+            // A lone failure reports AS ITSELF: the overwhelmingly common case hands the caller the
+            // real exception to catch rather than an AggregateException it has to unwrap first.
+            [var only] => only,
+            _ => new AggregateException(
+                "One or more subscriber teardown hooks failed during disposal.", failures),
+        };
     }
 
     #endregion
@@ -2464,10 +2520,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
     /// <summary>
     /// Test seam only (no-op in production): invoked once per subscriber during
-    /// <see cref="DisposeAsync"/>'s teardown, immediately after that subscriber's output channel is
-    /// completed. Lets a test deterministically simulate <see cref="PublishToSubscriber"/> racing
-    /// this exact instant - no sleeps, no real thread timing - to prove ordinary disposal can never
-    /// set <see cref="Subscriber.RecoveryControl"/> the way a slow-consumer eviction does.
+    /// <see cref="DisposeAsync"/>'s teardown, after EVERY subscriber's output channel has been
+    /// completed (see <see cref="CompleteChannelsOnDisposeAsync"/>'s two phases - a throwing hook
+    /// must not be able to strand a later subscriber's stream). Lets a test deterministically
+    /// simulate <see cref="PublishToSubscriber"/> racing this instant - no sleeps, no real thread
+    /// timing - to prove ordinary disposal can never set <see cref="Subscriber.RecoveryControl"/>
+    /// the way a slow-consumer eviction does.
     /// </summary>
     internal virtual ValueTask OnSubscriberChannelCompletedDuringDisposeAsync(string subscriberId) =>
         ValueTask.CompletedTask;

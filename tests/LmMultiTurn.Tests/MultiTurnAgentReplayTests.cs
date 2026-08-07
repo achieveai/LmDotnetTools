@@ -3,9 +3,11 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Delivery;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using FluentAssertions;
+using LmMultiTurn.Tests.Lifecycle;
 using Microsoft.Extensions.Logging;
 using Xunit;
 
@@ -1283,6 +1285,238 @@ public sealed class MultiTurnAgentReplayTests
                     + "no one will complete");
 
         await e.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Reads a live subscription to its end. The assertion is always that this TERMINATES: a stream
+    /// still open after disposal is the hang under test.
+    /// </summary>
+    private static async Task DrainToEndAsync(IAsyncEnumerator<IMessage> stream)
+    {
+        while (await stream.MoveNextAsync())
+        {
+            // Drain only; the messages themselves are not what these tests are about.
+        }
+    }
+
+    /// <summary>
+    /// Registers a live subscriber that has already read one replayed message, so it is provably
+    /// registered (and parked on an open channel) before disposal begins — no sleeps, no races.
+    /// </summary>
+    private static async Task<Task> StartLiveSubscriberAsync(MultiTurnAgentBase agent, CancellationToken ct)
+    {
+        var stream = agent.SubscribeAsync(ct).GetAsyncEnumerator(ct);
+        (await stream.MoveNextAsync()).Should().BeTrue("the replayed message proves the subscriber is registered");
+
+        var drain = DrainToEndAsync(stream);
+        drain.IsCompleted.Should().BeFalse("the stream stays open until disposal completes its channel");
+        return drain;
+    }
+
+    /// <summary>
+    /// Agent whose run loop faults, so that <see cref="MultiTurnAgentBase.StopAsync"/> — the FIRST
+    /// step of disposal after cancellation — rethrows that fault when disposal awaits the stopped
+    /// run. The seam is real production control flow, not an override of disposal itself.
+    /// </summary>
+    private sealed class FaultingRunLoopAgent(Exception failure)
+        : MultiTurnAgentBase("thread-1", systemPrompt: null, store: null)
+    {
+        protected override Task RunLoopAsync(CancellationToken ct) => Task.FromException(failure);
+
+        public ValueTask PublishForTest(IMessage message) => PublishToAllAsync(message, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task A_run_loop_fault_resurfacing_through_StopAsync_still_ends_every_live_stream()
+    {
+        // StopAsync sat OUTSIDE disposal's only guarded region, so an agent whose loop had faulted —
+        // the single most likely reason anyone disposes one — threw here and skipped channel teardown
+        // entirely. Every connected client was then parked forever on an `await foreach` over a
+        // channel belonging to an agent that no longer exists.
+        var failure = new InvalidOperationException("run loop faulted");
+        var agent = new FaultingRunLoopAgent(failure);
+
+        // Drive the real path: RunAsync observes and rethrows the loop's fault, leaving _runTask
+        // faulted exactly as it would be in production.
+        var fromRun = await Assert.ThrowsAsync<InvalidOperationException>(() => agent.RunAsync());
+        fromRun.Should().BeSameAs(failure);
+
+        await agent.PublishForTest(Assignment("thread-1", "run-1", "gen-1"));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var drain = await StartLiveSubscriberAsync(agent, cts.Token);
+
+        var first = await Assert.ThrowsAsync<InvalidOperationException>(async () => await agent.DisposeAsync());
+        first.Should().BeSameAs(failure, "the primary failure must be preserved, not swallowed by cleanup");
+
+        await drain.WaitAsync(TimeSpan.FromSeconds(30));
+
+        var second = await Assert.ThrowsAsync<InvalidOperationException>(async () => await agent.DisposeAsync());
+        second.Should().BeSameAs(failure, "the published disposal outcome stays stable across repeat callers");
+    }
+
+    /// <summary>
+    /// A clock that is harmless until <see cref="Arm"/> is called, then throws. Lets a test pick
+    /// EXACTLY which lifecycle call fails — here, the terminal timestamp inside
+    /// <c>TerminalizeOutstandingAsync</c> — while the calls that set the scenario up still succeed.
+    /// </summary>
+    private sealed class ArmedFailingClock(Exception failure) : TimeProvider
+    {
+        private volatile bool _armed;
+
+        public void Arm() => _armed = true;
+
+        public override DateTimeOffset GetUtcNow() => _armed ? throw failure : DateTimeOffset.UnixEpoch;
+    }
+
+    /// <summary>
+    /// Agent with one outstanding lifecycle run and NO started loop, so disposal's StopAsync
+    /// early-returns and the armed clock's failure can only have come from the lifecycle
+    /// terminalization step.
+    /// </summary>
+    private sealed class OutstandingLifecycleRunAgent(MultiTurnLifecycleServices services)
+        : MultiTurnAgentBase("thread-1", systemPrompt: null, store: null, lifecycleServices: services)
+    {
+        protected override Task RunLoopAsync(CancellationToken ct) => Task.CompletedTask;
+
+        public Task StartRunForTest() => StartRunAsync([], ct: CancellationToken.None);
+
+        public ValueTask PublishForTest(IMessage message) => PublishToAllAsync(message, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task A_lifecycle_terminalization_failure_still_ends_every_live_stream()
+    {
+        // The second unguarded step. TerminalizeOutstandingAsync exists precisely for the agent
+        // disposed with runs still open, so a failure here lands on the path where subscribers are
+        // MOST likely to be connected — and used to abandon their channels unfinished.
+        var failure = new InvalidOperationException("lifecycle terminalization failed");
+        var clock = new ArmedFailingClock(failure);
+        var agent = new OutstandingLifecycleRunAgent(new MultiTurnLifecycleServices
+        {
+            Publisher = new RecordingLifecyclePublisher(),
+            TimeProvider = clock,
+        });
+
+        // Start the run while the clock still works (RunStartedAsync reads it too), so only the
+        // terminal timestamp taken during disposal can fail.
+        await agent.StartRunForTest();
+
+        await agent.PublishForTest(Assignment("thread-1", "run-1", "gen-1"));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var drain = await StartLiveSubscriberAsync(agent, cts.Token);
+
+        clock.Arm();
+
+        var first = await Assert.ThrowsAsync<InvalidOperationException>(async () => await agent.DisposeAsync());
+        first.Should().BeSameAs(failure);
+
+        await drain.WaitAsync(TimeSpan.FromSeconds(30));
+
+        var second = await Assert.ThrowsAsync<InvalidOperationException>(async () => await agent.DisposeAsync());
+        second.Should().BeSameAs(failure);
+    }
+
+    /// <summary>
+    /// Agent with independently configurable teardown failures: the descendant's own cleanup, and
+    /// the per-subscriber completion hook. One type covers both "a hook failure must not strand the
+    /// subscribers after it" and "a hook failure must not outrank the real reason disposal failed".
+    /// </summary>
+    private sealed class SubscriberHookFailureAgent(Exception? hookFailure, Exception? disposeFailure = null)
+        : MultiTurnAgentBase("thread-1", systemPrompt: null, store: null)
+    {
+        private int _hookCalls;
+        private readonly List<string> _hookedSubscribers = [];
+        private readonly Lock _gate = new();
+
+        /// <summary>Every subscriber whose hook actually ran, including the one that threw.</summary>
+        public IReadOnlyList<string> HookedSubscribers
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return [.. _hookedSubscribers];
+                }
+            }
+        }
+
+        protected override Task RunLoopAsync(CancellationToken ct) => Task.CompletedTask;
+
+        protected override Task OnDisposeAsync() =>
+            disposeFailure == null ? Task.CompletedTask : Task.FromException(disposeFailure);
+
+        internal override ValueTask OnSubscriberChannelCompletedDuringDisposeAsync(string subscriberId)
+        {
+            lock (_gate)
+            {
+                _hookedSubscribers.Add(subscriberId);
+            }
+
+            // Only the FIRST hook fails: the point of the test is what happens to the subscribers
+            // that come after it.
+            return hookFailure != null && Interlocked.Increment(ref _hookCalls) == 1
+                ? ValueTask.FromException(hookFailure)
+                : ValueTask.CompletedTask;
+        }
+
+        public ValueTask PublishForTest(IMessage message) => PublishToAllAsync(message, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task A_failing_subscriber_hook_still_ends_the_streams_of_every_other_subscriber()
+    {
+        // Teardown completed one subscriber's writer and then ran its hook, per subscriber, in a
+        // single pass — making each client's hook a gate on the NEXT client's stream ever ending. One
+        // throwing hook and every subscriber after it in the snapshot hung forever. Completing all
+        // writers FIRST is the fix; the reporting below is secondary to it.
+        var failure = new InvalidOperationException("subscriber teardown hook failed");
+        var agent = new SubscriberHookFailureAgent(failure);
+
+        await agent.PublishForTest(Assignment("thread-1", "run-1", "gen-1"));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        // Three, so "every stream after the first" is a real claim rather than a single instance.
+        var drains = new List<Task>();
+        for (var i = 0; i < 3; i++)
+        {
+            drains.Add(await StartLiveSubscriberAsync(agent, cts.Token));
+        }
+
+        var first = await Assert.ThrowsAsync<InvalidOperationException>(async () => await agent.DisposeAsync());
+        first.Should().BeSameAs(failure, "with no earlier failure, the cleanup failure is what disposal reports");
+
+        await Task.WhenAll(drains).WaitAsync(TimeSpan.FromSeconds(30));
+
+        agent.HookedSubscribers.Should()
+            .HaveCount(3, "every subscriber's hook runs independently; one failure must not skip the rest");
+
+        var second = await Assert.ThrowsAsync<InvalidOperationException>(async () => await agent.DisposeAsync());
+        second.Should().BeSameAs(failure, "a repeat caller sees the same outcome, not a fresh or absent one");
+    }
+
+    [Fact]
+    public async Task A_failing_subscriber_hook_never_masks_the_real_reason_disposal_failed()
+    {
+        // Channel teardown runs from disposal's outermost finally, and a finally that throws REPLACES
+        // the in-flight exception. If the hook's failure escaped from there, the caller would be told
+        // "a subscriber hook failed" while the actual fault — the descendant's own cleanup — vanished.
+        var primary = new InvalidOperationException("descendant teardown failed");
+        var secondary = new InvalidOperationException("subscriber teardown hook failed");
+        var agent = new SubscriberHookFailureAgent(secondary, primary);
+
+        await agent.PublishForTest(Assignment("thread-1", "run-1", "gen-1"));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var drainA = await StartLiveSubscriberAsync(agent, cts.Token);
+        var drainB = await StartLiveSubscriberAsync(agent, cts.Token);
+
+        var first = await Assert.ThrowsAsync<InvalidOperationException>(async () => await agent.DisposeAsync());
+        first.Should().BeSameAs(primary, "the earlier, primary failure outranks anything cleanup reports");
+
+        await Task.WhenAll(drainA, drainB).WaitAsync(TimeSpan.FromSeconds(30));
+        agent.HookedSubscribers.Should().HaveCount(2);
+
+        var second = await Assert.ThrowsAsync<InvalidOperationException>(async () => await agent.DisposeAsync());
+        second.Should().BeSameAs(primary);
     }
 
     #endregion
