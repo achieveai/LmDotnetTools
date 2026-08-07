@@ -228,11 +228,20 @@ public sealed class StrandedRunReconcilerTests
         harness.Retired.Should().BeEmpty(
             "a 5xx, a 401 or a timeout says nothing about the PR's state — writing the run off on one would "
                 + "discard live work over a blip");
-        harness.Log.Should().Contain(e => e.Contains("failed to settle run 11", StringComparison.Ordinal));
+        harness.StateWrites.Should().ContainSingle(
+            "the failure still has to be written down somewhere: `updated_at` is the only thing short of a "
+                + "terminal status that takes a row out of the stranded listing, so a run settled by writing "
+                + "nothing at all stays eligible and is re-read and re-failed on every single pass")
+            .Which.Should().Be(
+                (11L, ReviewStage.Discovered, WorkflowStatus.RetryPending, PrLifecycleState.Open),
+                "the backoff re-writes the state the row already had — it buys a grace period, it decides "
+                    + "nothing about the run");
+        harness.Log.Should().Contain(
+            e => e.Contains("could not reach the github provider for run 11", StringComparison.Ordinal));
     }
 
     [Fact]
-    public async Task A_run_whose_provider_lookup_throws_is_logged_and_the_pass_continues()
+    public async Task A_run_whose_provider_lookup_throws_is_backed_off_and_the_pass_continues()
     {
         var harness = new Harness()
             .WithRows(Row(11), Row(12))
@@ -242,7 +251,90 @@ public sealed class StrandedRunReconcilerTests
 
         harness.Resumed.Select(r => r.Id).Should().Equal(
             [12L], "one unreachable provider must not strand the rest of the backlog all over again");
-        harness.Log.Should().Contain(e => e.Contains("failed to settle run 11", StringComparison.Ordinal));
+        harness.Log.Should().Contain(
+            e => e.Contains("could not reach the github provider for run 11", StringComparison.Ordinal));
+        harness.Log.Should().NotContain(
+            e => e.Contains("failed to settle run 11", StringComparison.Ordinal),
+            "the lookup failure is settled where it happens; reaching the pass-level catch would mean nothing "
+                + "was written for the run, which is the state that makes it eligible again immediately");
+    }
+
+    [Fact]
+    public async Task A_backed_off_run_is_not_counted_against_the_pass_as_a_cap_deferral()
+    {
+        // The cap notice explains deferrals by one cause — the resume cap — and an operator sizes the cap from
+        // its number. A backed-off run never reached the cap check and cost no slot, so folding it in would
+        // report the wrong cause and argue for raising a cap that was never the constraint.
+        var harness = new Harness()
+            .WithRows(Row(11), Row(12))
+            .WithLifecycleThrowingFor(runId: 11)
+            .WithMaxResumes(1);
+
+        await harness.Reconciler().SweepAsync(CancellationToken.None);
+
+        harness.Resumed.Select(r => r.Id).Should().Equal(
+            [12L], "the unreachable run spent no slot, so the one slot this pass had was still there for run 12");
+        harness.Log.Should().NotContain(
+            e => e.Contains("deferred", StringComparison.OrdinalIgnoreCase),
+            "nothing was held back by the cap on this pass");
+    }
+
+    [Fact]
+    public async Task A_lookup_that_times_out_is_backed_off_rather_than_aborting_the_pass()
+    {
+        // An HttpClient per-request timeout surfaces as TaskCanceledException, which IS an
+        // OperationCanceledException. A filter written on the type alone therefore excludes exactly the timeout
+        // — the single most likely way an unreachable provider actually fails — and lets one slow call abort the
+        // pass and re-strand every run queued behind it.
+        var harness = new Harness()
+            .WithRows(Row(11), Row(12))
+            .WithLifecycleThrowingFor(
+                11,
+                new TaskCanceledException(
+                    "The request was canceled due to the configured HttpClient.Timeout of 100 seconds elapsing."));
+
+        await harness.Reconciler().SweepAsync(CancellationToken.None);
+
+        harness.Resumed.Select(r => r.Id).Should().Equal([12L], "the pass must survive one slow provider call");
+        harness.StateWrites.Should().Contain(
+            w => w.Item1 == 11L, "a timed-out lookup is backed off exactly like any other unreachable provider");
+    }
+
+    [Fact]
+    public async Task A_resume_that_times_out_does_not_abort_the_pass()
+    {
+        var harness = new Harness()
+            .WithRows(Row(11), Row(12))
+            .WithResumeThrowingFor(
+                11, new TaskCanceledException("HttpClient.Timeout elapsed while the review was posting"));
+
+        await harness.Reconciler().SweepAsync(CancellationToken.None);
+
+        harness.Resumed.Select(r => r.Id).Should().Equal(
+            [12L],
+            "a resume runs the review's whole remaining pipeline, so a timeout inside it is ordinary — and it "
+                + "arrives as a TaskCanceledException, which the pass must not mistake for its own shutdown");
+    }
+
+    [Fact]
+    public async Task A_cancelled_sweep_stops_instead_of_backing_the_run_off()
+    {
+        // The other side of admitting TaskCanceledException: a real shutdown must still get out. The two are
+        // told apart by the TOKEN, not by the exception, and nothing about a shutdown should be written to the
+        // store on the way past — a stamp there would push a run that was never even looked at out of the
+        // listing for a full grace period.
+        using var cts = new CancellationTokenSource();
+        var harness = new Harness()
+            .WithRows(Row(11), Row(12))
+            .WithLifecycleThrowingFor(
+                11, new OperationCanceledException("the daemon is shutting down"), before: cts.Cancel);
+
+        var sweep = async () => await harness.Reconciler().SweepAsync(cts.Token);
+
+        await sweep.Should().ThrowAsync<OperationCanceledException>(
+            "a shutdown is not a provider problem and is not this class's to swallow");
+        harness.Resumed.Should().BeEmpty("the pass stops where it was cancelled");
+        harness.StateWrites.Should().BeEmpty("a shutdown must never be recorded as a run's backoff");
     }
 
     [Fact]
@@ -411,6 +503,55 @@ public sealed class StrandedRunReconcilerTests
         attempts.Should().Equal(
             [run.Id, run.Id],
             "the claim delays the retry by one grace period; it must never remove the route back altogether");
+    }
+
+    [Fact]
+    public async Task An_unreachable_provider_holds_the_run_out_of_the_backlog_for_one_grace_period()
+    {
+        // Against the REAL store, for the same reason as the test above: the fake harness's listing hands back
+        // whatever rows it was given and never evaluates the `updated_at` predicate the entire backoff rests on,
+        // so the claim can only be made here. The defect this pins is a starvation one. A provider outage lasts
+        // longer than a poll cycle, so without a write of its own every run behind it is re-listed, re-looked-up
+        // and re-failed on every maintenance pass — each one eating a slice of the scan limit that a run the
+        // daemon could actually settle would otherwise have had, indefinitely.
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+        var run = store.CreateOrGetReviewRun(SampleRun(repoId, "101"));
+        // The store stamps updated_at from the wall clock, so the fake clock has to start beside it.
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        Backdate(db, run.Id, clock.GetUtcNow() - TimeSpan.FromDays(9));
+        var lookups = new List<long>();
+        var reconciler = new StrandedRunReconciler(
+            listStrandedRuns: store.ListStrandedRuns,
+            getPrLifecycleAsync: (row, _) =>
+            {
+                lookups.Add(row.Run.Id);
+                throw new HttpRequestException("Bad gateway", null, HttpStatusCode.ServiceUnavailable);
+            },
+            resumeAsync: (resuming, _) => Task.FromResult(resuming),
+            updateRunState: store.UpdateReviewRunState,
+            timeProvider: clock,
+            grace: Grace,
+            scanLimit: 50,
+            maxResumesPerPass: 5,
+            logger: new CapturingLogger<StrandedRunReconciler>([]));
+
+        await reconciler.SweepAsync(CancellationToken.None);
+        await reconciler.SweepAsync(CancellationToken.None);
+
+        lookups.Should().Equal(
+            [run.Id],
+            "the backoff stamp advanced updated_at, so the second pass's listing no longer sees the row at all");
+        clock.Advance(Grace + TimeSpan.FromMinutes(1));
+        await reconciler.SweepAsync(CancellationToken.None);
+
+        lookups.Should().Equal(
+            [run.Id, run.Id],
+            "the stamp delays the retry by one grace period; a provider blip must never cost a run its only "
+                + "route back, which is what a retirement here would do");
+        store.GetReviewRun(run.Id)!.WorkflowStatus.Should().Be(
+            WorkflowStatus.RetryPending, "the run is still open work — nothing about a 5xx retires it");
     }
 
     [Theory]
@@ -628,8 +769,10 @@ public sealed class StrandedRunReconcilerTests
         private PrLifecycle _lifecycle = PrLifecycle.Open;
         private long? _throwFor;
         private Exception _failure = new InvalidOperationException("provider unreachable");
+        private Action? _beforeLifecycleThrow;
         private long? _resolvesTo;
         private long? _resumeThrowsFor;
+        private Exception _resumeFailure = new TimeoutException("the review's remaining stages timed out");
         private int _maxResumes = 10;
 
         public List<ReviewRun> Resumed { get; } = [];
@@ -668,10 +811,11 @@ public sealed class StrandedRunReconcilerTests
             return this;
         }
 
-        public Harness WithLifecycleThrowingFor(long runId, Exception? failure = null)
+        public Harness WithLifecycleThrowingFor(long runId, Exception? failure = null, Action? before = null)
         {
             _throwFor = runId;
             _failure = failure ?? new InvalidOperationException("provider unreachable");
+            _beforeLifecycleThrow = before;
             return this;
         }
 
@@ -681,9 +825,10 @@ public sealed class StrandedRunReconcilerTests
             return this;
         }
 
-        public Harness WithResumeThrowingFor(long runId)
+        public Harness WithResumeThrowingFor(long runId, Exception? failure = null)
         {
             _resumeThrowsFor = runId;
+            _resumeFailure = failure ?? new TimeoutException("the review's remaining stages timed out");
             return this;
         }
 
@@ -702,14 +847,20 @@ public sealed class StrandedRunReconcilerTests
             getPrLifecycleAsync: (row, _) =>
             {
                 LifecycleLookups++;
-                return row.Run.Id == _throwFor ? throw _failure : Task.FromResult(_lifecycle);
+                if (row.Run.Id != _throwFor)
+                {
+                    return Task.FromResult(_lifecycle);
+                }
+
+                _beforeLifecycleThrow?.Invoke();
+                throw _failure;
             },
             resumeAsync: (run, _) =>
             {
                 Order.Add($"resume:{run.Id}");
                 if (run.Id == _resumeThrowsFor)
                 {
-                    throw new TimeoutException("the review's remaining stages timed out");
+                    throw _resumeFailure;
                 }
 
                 Resumed.Add(run);

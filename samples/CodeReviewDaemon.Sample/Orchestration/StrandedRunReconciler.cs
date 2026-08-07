@@ -55,7 +55,11 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// throws is written <see cref="WorkflowStatus.RetryPending"/> and rethrown
 /// (<see cref="PrOrchestrator"/>'s stage catch), and that write refreshes <c>updated_at</c> before the
 /// exception ever reaches this class. The claim stamp below covers only the narrower case where the resume
-/// throws BEFORE any such write. Either way the effect is the same and it is load-bearing: resumes here go
+/// throws BEFORE any such write. A provider lookup that fails for anything other than a confirmed 404 takes
+/// a stamp of its own, for the same reason but claiming nothing: the run was not taken over, it is only held
+/// out of the listing so one unreachable provider cannot re-spend the pass's scan attention every cycle.
+/// What none of the three cover is a failure BEFORE any write — see <see cref="SweepAsync"/>'s catch. Either
+/// way the effect where it applies is the same and it is load-bearing: resumes here go
 /// through <see cref="PrOrchestrator.ReconcileAsync"/>, which resets the <see cref="RetryGovernor"/> for the
 /// run on purpose, so the governor's backoff and park do not apply and <c>updated_at</c> + grace is the sole
 /// remaining bound. Make a failed resume literally eligible on the next pass and a permanently-broken run
@@ -145,12 +149,24 @@ internal sealed class StrandedRunReconciler
                     deferred++;
                 }
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
+                // Deliberately NOT the promise the earlier version of this line made. Every failure that leaves a
+                // write behind is handled where it happens — the lookup backs itself off below, a stage that throws
+                // is written RetryPending by the orchestrator, and a resume that throws after the claim keeps the
+                // claim. What is left here is the failures that write NOTHING: an unhandled PrLifecycle value, or
+                // the state write itself failing. Those rows are listed again by the very next pass, so telling an
+                // operator they are held for a grace period would send them looking for a delay that is not there.
+                //
+                // The filter admits a cancellation the caller did not ask for. An HttpClient per-request timeout
+                // arrives as TaskCanceledException, which IS an OperationCanceledException, so filtering on the type
+                // alone would let one slow provider call abort the whole pass and re-strand every run behind it —
+                // the exact starvation this class exists to end. A real shutdown still propagates: that is the case
+                // where the token is the one that was cancelled.
                 _logger.LogWarning(
                     ex,
-                    "Stranded-run reconciler failed to settle run {RunId} ({Provider} PR {PrId}); "
-                        + "it becomes eligible again once it is untouched for the grace period.",
+                    "Stranded-run reconciler failed to settle run {RunId} ({Provider} PR {PrId}) before anything "
+                        + "was written for it; the pass carries on, and this run is eligible again on the next one.",
                     row.Run.Id,
                     row.Repo.Provider,
                     row.Run.PrId);
@@ -203,6 +219,15 @@ internal sealed class StrandedRunReconciler
         /// <summary>Left for a later pass because the resume cap was already spent. The only outcome that
         /// leaves real work undone.</summary>
         Deferred,
+
+        /// <summary>
+        /// The provider could not say what became of the PR, for a reason that is not an answer about the PR.
+        /// Nothing was decided and no slot was spent; the run was stamped so it sits out one grace period.
+        /// Kept distinct from <see cref="Deferred"/> because the cap notice explains deferrals by the cap, and
+        /// a run that never reached the cap check — or was never established as open — would be explained by
+        /// the wrong cause and would inflate a number an operator uses to size the cap.
+        /// </summary>
+        BackedOff,
     }
 
     /// <summary>Settles one run — see <see cref="SettleOutcome"/> for what the return value means.</summary>
@@ -246,6 +271,30 @@ internal sealed class StrandedRunReconciler
             // timeout says nothing about the PR's state, and retiring on those would write off live work.
             Retire(row, "the provider no longer has this PR", PrLifecycleState.Abandoned);
             return SettleOutcome.Retired;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            // Everything that is NOT an answer about the PR: a 401, a 5xx, a DNS failure, a per-request timeout.
+            // Left to propagate, this run is settled by writing nothing at all, and writing nothing is what keeps
+            // it in the listing — `updated_at` is the only thing short of a terminal status that takes a row out.
+            // A provider that is down stays down for longer than one poll cycle, so every run behind it is re-read,
+            // re-looked-up and re-failed on every maintenance pass, and each one consumes a slice of the scan limit
+            // that a run the daemon could actually settle would otherwise have had. Stamping the row costs the run
+            // one grace period and hands that scan attention back.
+            //
+            // Re-writing the state the row already has, exactly as the claim below does: this is a backoff, not a
+            // decision. In particular it is not a retirement — the 404 case above is the only failure that says
+            // anything about the PR, and it is the only one allowed to write a run off.
+            _updateRunState(run.Id, run.Stage, run.WorkflowStatus, run.PrLifecycleState);
+            _logger.LogWarning(
+                ex,
+                "Stranded-run reconciler could not reach the {Provider} provider for run {RunId} (PR {PrId}); "
+                    + "backing the run off for one grace period rather than retiring it — the failure says nothing "
+                    + "about whether the PR is still open.",
+                row.Repo.Provider,
+                run.Id,
+                run.PrId);
+            return SettleOutcome.BackedOff;
         }
 
         var state = ToLifecycleState(lifecycle);
