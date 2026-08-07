@@ -1058,6 +1058,8 @@ public sealed class MultiTurnAgentReplayTests
         protected override Task RunLoopAsync(CancellationToken ct) => Task.CompletedTask;
 
         protected override Task OnDisposeAsync() => Task.FromException(failure);
+
+        public ValueTask PublishForTest(IMessage message) => PublishToAllAsync(message, CancellationToken.None);
     }
 
     /// <summary>
@@ -1148,6 +1150,49 @@ public sealed class MultiTurnAgentReplayTests
         first.Should().BeSameAs(failure);
         second.Should().BeSameAs(failure, "a repeat caller observes the one teardown's outcome, not a fresh one");
         third.Should().BeSameAs(failure);
+    }
+
+    [Fact]
+    public async Task A_failed_teardown_still_ends_every_live_subscriber_stream()
+    {
+        // Teardown used to complete the input and subscriber channels only AFTER OnDisposeAsync
+        // returned, on the same straight-line path. A descendant whose cleanup threw therefore
+        // skipped the completions entirely, and every connected client was left parked on
+        // `await foreach` over a channel nobody would ever complete — a hang with no error, on an
+        // agent that is already gone. The failure must be reported, not converted into silence.
+        var failure = new InvalidOperationException("teardown failed");
+        var agent = new ThrowingDisposeAgent(failure);
+
+        // A live subscriber, registered and reading, exactly like a connected client: publish first
+        // so the replay buffer makes the first MoveNextAsync return without racing anything, which
+        // is what proves the subscriber is registered before disposal begins.
+        await agent.PublishForTest(Assignment("thread-1", "run-1", "gen-1"));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var stream = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+        (await stream.MoveNextAsync()).Should().BeTrue();
+
+        // Now parked on the live channel with nothing more to read — only teardown can end it.
+        var drain = DrainAsync(stream);
+        drain.IsCompleted.Should().BeFalse("the stream stays open until disposal completes its channel");
+
+        var first = await Assert.ThrowsAsync<InvalidOperationException>(async () => await agent.DisposeAsync());
+        first.Should().BeSameAs(failure, "the disposing caller must still see the cleanup failure");
+
+        await drain.WaitAsync(TimeSpan.FromSeconds(30));
+
+        // Idempotency must survive the same path: a later caller sees the one teardown's fault, and
+        // A_failed_teardown_observed_by_its_only_caller_leaves_no_unobserved_task covers the
+        // corollary that no second, abandoned copy of it is left to surface as an unobserved fault.
+        var second = await Assert.ThrowsAsync<InvalidOperationException>(async () => await agent.DisposeAsync());
+        second.Should().BeSameAs(failure);
+
+        static async Task DrainAsync(IAsyncEnumerator<IMessage> stream)
+        {
+            while (await stream.MoveNextAsync())
+            {
+                // Drain to the end of the stream; the assertion is that this loop terminates.
+            }
+        }
     }
 
     [Fact]

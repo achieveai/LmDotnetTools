@@ -216,6 +216,89 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
 
     #endregion
 
+    #region The timeout_seconds argument
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task WaitAgent_WithNoTimeoutRequested_WaitsWithoutACapRatherThanBeingRejected(
+        bool asExplicitNull)
+    {
+        // The contract for an omitted optional cap is "no cap", and validating the argument must not
+        // cost that. An explicit null is the same statement — models routinely emit one for a
+        // parameter they chose not to set — so it must be accepted on the identical path, not
+        // rejected as a malformed integer.
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (manager, provider) = CreateManager(GatedAgent(gate.Task));
+        var agentId = await SpawnBackgroundAsync(manager);
+
+        object args = asExplicitNull
+            ? new { agent_id = agentId, timeout_seconds = (int?)null }
+            : new { agent_id = agentId };
+        var wait = InvokeAsync(provider, args);
+
+        // Non-vacuity: the wait is genuinely still waiting. Were the value rejected, this would
+        // already have produced a result rather than being parked on the agent.
+        wait.IsCompleted.Should().BeFalse("an uncapped wait ends only when the agent does");
+
+        gate.SetResult();
+        var payload = await wait.WaitAsync(Bound);
+
+        payload.IsError.Should().BeFalse(payload.Text);
+        using var doc = JsonDocument.Parse(payload.Text);
+        doc.RootElement.GetProperty("status").GetString().Should().Be("completed");
+    }
+
+    [Theory]
+    [InlineData("\"abc\"", "a value that is not a number at all")]
+    [InlineData("\"\"", "an empty string")]
+    [InlineData("true", "a value of the wrong JSON type")]
+    [InlineData("0", "zero")]
+    [InlineData("-5", "a negative")]
+    [InlineData("\"-5\"", "a negative sent as a string")]
+    public async Task WaitAgent_UnusableTimeout_IsRejectedInsteadOfSilentlyWaitingForever(
+        string rawTimeout,
+        string because)
+    {
+        // Every one of these used to parse to null — indistinguishable from omitted — and the
+        // `is > 0` gate then turned it into the UNBOUNDED wait the model passed timeout_seconds
+        // specifically to avoid. A cap that was asked for and not applied is an error, not a
+        // default: say so, so the model can correct the call. The agent here never finishes, so a
+        // regression does not merely assert wrong — it hangs against the bound.
+        var (manager, provider) = CreateManager(BlockingAgent());
+        var agentId = await SpawnBackgroundAsync(manager);
+
+        // Raw JSON rather than an anonymous object, so the wrong-type and empty-string shapes a real
+        // model emits are exercised exactly as they arrive on the wire.
+        var payload = await InvokeRawAsync(
+            provider, $$"""{"agent_id":"{{agentId}}","timeout_seconds":{{rawTimeout}}}""").WaitAsync(Bound);
+
+        payload.IsError.Should().BeTrue($"{because} cannot be honoured as a cap");
+        payload.ErrorCode.Should().Be("invalid_args");
+        payload.Text.Should().Contain("positive whole number",
+            "the rejection has to tell the model what would have worked");
+    }
+
+    [Fact]
+    public async Task WaitAgent_TimeoutSentAsANumericString_IsAcceptedLikeTheInteger()
+    {
+        // Models routinely emit integers as strings, and this parser has always accepted them. The
+        // validation must not narrow that: rejecting "600" would break working callers. Asserting on
+        // a completing agent keeps this free of any real delay — the cap is accepted, never reached.
+        // (WaitAgent_OnTimeout_ReportsTheAgentStillRunning covers a positive cap actually firing.)
+        var (manager, provider) = CreateManager(CompletingAgent("done"));
+        var agentId = await SpawnBackgroundAsync(manager);
+
+        var payload = await InvokeRawAsync(
+            provider, $$"""{"agent_id":"{{agentId}}","timeout_seconds":"600"}""").WaitAsync(Bound);
+
+        payload.IsError.Should().BeFalse(payload.Text);
+        using var doc = JsonDocument.Parse(payload.Text);
+        doc.RootElement.GetProperty("status").GetString().Should().Be("completed");
+    }
+
+    #endregion
+
     #region Helpers
 
     private (SubAgentManager Manager, SubAgentToolProvider Provider) CreateManager(
@@ -288,6 +371,9 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
         return (manager, new SubAgentToolProvider(manager, source), release);
     }
 
+    /// <summary>Bound on every wait here, so a regression fails one test instead of hanging the suite.</summary>
+    private static readonly TimeSpan Bound = TimeSpan.FromSeconds(30);
+
     private static async Task<string> SpawnBackgroundAsync(
         SubAgentManager manager,
         string template = "test-agent")
@@ -301,9 +387,19 @@ public class SubAgentWaitAgentToolTests : IAsyncLifetime
         SubAgentToolProvider provider,
         object args,
         CancellationToken ct = default)
+        => await InvokeRawAsync(provider, JsonSerializer.Serialize(args), ct);
+
+    /// <summary>
+    /// Invokes <c>WaitAgent</c> with a literal argument string, for the malformed shapes a real model
+    /// emits that a typed object cannot express (wrong JSON type, empty string).
+    /// </summary>
+    private static async Task<ToolHandlerResultPayload> InvokeRawAsync(
+        SubAgentToolProvider provider,
+        string argsJson,
+        CancellationToken ct = default)
     {
         var handler = provider.GetFunctions().Single(f => f.Contract.Name == "WaitAgent").Handler;
-        var result = await handler(JsonSerializer.Serialize(args), new ToolCallContext(), ct);
+        var result = await handler(argsJson, new ToolCallContext(), ct);
 
         return result.Should().BeOfType<ToolHandlerResult.Resolved>().Subject.Payload;
     }

@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -146,8 +147,22 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     // therefore covered without ever resolving a root. Entries are written only when a budget has
     // actually been spent — the overwhelmingly common zero case stores nothing — and are removed by
     // the run that inherits them, so this holds at most one entry per parked-and-recovered run.
+    //
+    // This dictionary is the fast path only, and it is keyed on a run id that a restart does not
+    // preserve: a deferred entry rebuilt from history carries no requesting run, so the chain hop
+    // above has nothing to look up. A park can easily outlive the process — the whole point of a
+    // deferred client tool is that its answer may arrive minutes later, from a human — and an
+    // in-memory-only budget is silently REFUNDED by that restart, handing the resumed input a second
+    // automatic recovery and a second provider call for a turn that already ran, once per restart,
+    // forever. So the park also writes a durable single-slot budget (see
+    // PersistRecoveryBudgetMarkerAsync), which the continuation claims when the in-memory chain has
+    // nothing to give. One slot is exact: the loop parks one run at a time, and the continuation that
+    // resumes a park consumes the slot before another park can write it.
     private readonly object _recoveryBudgetLock = new();
     private readonly Dictionary<string, int> _recoveryBudgetByRunId = [];
+    private int _restoredParkRecoveryBudget;
+
+    private const string RecoveryBudgetProperty = "recovery_budget_spent";
 
     /// <summary>
     /// Framework instruction appended to the request of a turn that is continuing work interrupted
@@ -939,10 +954,21 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
         // One hop along the ParentRunId chain. This child is the same logical input as the run that
         // parked, so it inherits that run's spent stream-recovery budget rather than a fresh one.
-        // Only the continuation owner reaches here, so the entry is taken exactly once however many
-        // siblings resolve.
+        // Only the continuation owner reaches here, so the budget is claimed exactly once however
+        // many siblings resolve.
+        //
+        // Both sources are claimed and the larger wins, because they are two views of the SAME park
+        // and only one is ever populated: in this process the chain entry holds it and the durable
+        // slot was never restored, while after a restart the chain entry is gone — a deferred entry
+        // rebuilt from history carries no requesting run id — and the slot is all that remembers.
         CarryRecoveryBudgetForward(
-            assignment.RunId, TakeCarriedRecoveryBudget(cause.RequestingRunId));
+            assignment.RunId,
+            Math.Max(TakeCarriedRecoveryBudget(cause.RequestingRunId), TakeRestoredParkBudget()));
+
+        // The park is over, so the durable slot describing it must go: the child now carries the
+        // budget in memory, and leaving the slot behind would re-arm a continuation that has already
+        // resumed. The child's own park, if it parks again, writes the slot afresh.
+        await PersistRecoveryBudgetMarkerAsync(spent: 0, ct);
 
         await ExecuteAssignedRunAsync(
             assignment, isExplicitFork: false, spawnSuppression, ct);
@@ -1016,6 +1042,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         // pause so a no-spawn guarantee already returned to the caller cannot silently disappear.
         await PersistSuppressedRunMarkerAsync(suppressedRunId, ct);
         CarryRecoveryBudgetForward(runId, recoverySpent);
+
+        // Same reasoning as the suppression marker above, for the same restart: a budget that lives
+        // only in this process is refunded by a crash, and the resumed input would buy a second
+        // automatic recovery — a second provider call for a turn that already ran.
+        await PersistRecoveryBudgetMarkerAsync(recoverySpent, ct);
 
         Logger.LogInformation(
             "Run {RunId} pausing on {Count} deferred tool call(s); awaiting external resolution",
@@ -1527,6 +1558,114 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         return metadata?.Properties?.TryGetValue(SpawnSuppressedRunIdProperty, out var marker) == true
             ? marker?.ToString()
             : null;
+    }
+
+    /// <summary>
+    /// Mirrors the parked run's spent recovery budget into thread metadata, so the resumed input is
+    /// still bound by "at most one automatic recovery" when its answer arrives in a different process.
+    /// <see langword="0"/> clears the slot.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately NOT keyed by run id. A deferred entry rebuilt from persisted history carries no
+    /// requesting run, so a keyed slot could never be matched by the continuation that needs it. A
+    /// bare count is exact anyway: the loop parks one run at a time, so at most one park is
+    /// outstanding, and the continuation consumes the slot before another park can write it. Writing
+    /// on every park — including the zero case, which clears — is what stops the slot from outliving
+    /// the park it describes.
+    /// <para>
+    /// Metadata rather than a schema change: this is the same mechanism, and the same
+    /// single-property shape, as <see cref="PersistSuppressedRunMarkerAsync"/>, so it works unchanged
+    /// across the in-memory, file, and SQLite stores with no migration.
+    /// </para>
+    /// </remarks>
+    private Task PersistRecoveryBudgetMarkerAsync(int spent, CancellationToken ct)
+    {
+        var store = Store;
+        if (store == null)
+        {
+            return Task.CompletedTask;
+        }
+
+        return store.UpdateMetadataAsync(
+            ThreadId,
+            existing =>
+            {
+                var properties = existing?.Properties?.ToBuilder()
+                    ?? ImmutableDictionary.CreateBuilder<string, object>();
+
+                if (spent <= 0)
+                {
+                    _ = properties.Remove(RecoveryBudgetProperty);
+                }
+                else
+                {
+                    // A string for the same reason the suppression marker is one: the value survives
+                    // the JSON round trip of the file and SQLite stores as text either way.
+                    properties[RecoveryBudgetProperty] = spent.ToString(CultureInfo.InvariantCulture);
+                }
+
+                return (existing ?? new ThreadMetadata { ThreadId = ThreadId, LastUpdated = 0 }) with
+                {
+                    LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    Properties = properties.ToImmutable(),
+                };
+            },
+            ct);
+    }
+
+    /// <summary>
+    /// Re-arms the durable park budget from metadata, so a continuation that resumes after a restart
+    /// inherits what its parked ancestor spent instead of a refunded budget.
+    /// </summary>
+    private async Task RestoreRecoveryBudgetAsync(CancellationToken ct)
+    {
+        var store = Store;
+        if (store == null)
+        {
+            return;
+        }
+
+        var metadata = await store.LoadMetadataAsync(ThreadId, ct);
+        if (metadata?.Properties?.TryGetValue(RecoveryBudgetProperty, out var marker) != true)
+        {
+            return;
+        }
+
+        var text = marker?.ToString();
+        if (!int.TryParse(text, CultureInfo.InvariantCulture, out var spent) || spent <= 0)
+        {
+            // A marker we cannot read must not stop the restore — the conversation still has to come
+            // back — so this reports and continues with a fresh budget.
+            Logger.LogWarning(
+                "Ignoring unreadable persisted recovery budget marker {Marker}", text ?? "(null)");
+            return;
+        }
+
+        lock (_recoveryBudgetLock)
+        {
+            _restoredParkRecoveryBudget = spent;
+        }
+
+        Logger.LogInformation(
+            "Restored parked recovery budget: {Spent} automatic recovery/recoveries already spent",
+            spent);
+    }
+
+    /// <summary>
+    /// Claims the durable park budget, if a restart left one, consuming it.
+    /// </summary>
+    /// <remarks>
+    /// Only the delayed continuation may call this. Any other run starting after a restart is a NEW
+    /// logical input and is entitled to its own full budget.
+    /// </remarks>
+    private int TakeRestoredParkBudget()
+    {
+        lock (_recoveryBudgetLock)
+        {
+            var spent = _restoredParkRecoveryBudget;
+            _restoredParkRecoveryBudget = 0;
+            return spent;
+        }
     }
 
     /// <summary>
@@ -2809,6 +2948,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         {
             _spawnSuppressedRunId = suppressedRunId;
         }
+
+        // Alongside the suppression marker, and for the same reason: both are guarantees the parked
+        // run already made that its continuation must keep. Must precede
+        // RecoverOwedContinuationsAsync below, which can run a continuation immediately.
+        await RestoreRecoveryBudgetAsync(ct);
 
         if (restoredCount > 0)
         {

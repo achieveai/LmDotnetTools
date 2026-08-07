@@ -1909,8 +1909,30 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         _internalCts?.Dispose();
         _lifetimeCts.Dispose();
 
-        await OnDisposeAsync();
+        // Channel teardown is what ENDS every live stream, so it cannot be conditional on a
+        // descendant's cleanup succeeding. Without the finally, a throwing OnDisposeAsync skips it
+        // and leaves every SubscribeAsync/ExecuteRunAsync enumerator parked forever on a channel
+        // nobody will ever complete — the agent is unusable AND its readers never learn. The
+        // original failure still propagates (the finally adds no exception of its own), so the
+        // caller, and every later DisposeAsync awaiting the same published task, still sees it.
+        try
+        {
+            await OnDisposeAsync();
+        }
+        finally
+        {
+            await CompleteChannelsOnDisposeAsync();
+        }
 
+        GC.SuppressFinalize(this);
+    }
+
+    /// <summary>
+    /// Ends the input channel and every subscriber's stream. Runs on both the success and the
+    /// failure path of <see cref="OnDisposeAsync"/> — see the comment at its call site.
+    /// </summary>
+    private async Task CompleteChannelsOnDisposeAsync()
+    {
         // Complete input channel on disposal (final cleanup - no restart possible)
         _ = _inputChannel.Writer.TryComplete();
 
@@ -1937,8 +1959,6 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             _ = subscriber.Channel.Writer.TryComplete();
             await OnSubscriberChannelCompletedDuringDisposeAsync(subscriberId);
         }
-
-        GC.SuppressFinalize(this);
     }
 
     #endregion

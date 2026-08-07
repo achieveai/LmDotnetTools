@@ -2911,6 +2911,29 @@ public sealed class SubAgentManager : IAsyncDisposable
         {
             await foreach (var msg in state.Agent.SubscribeAsync(ct))
             {
+                // A severed subscription is the monitor's ONLY channel to this run: it observes the
+                // sub-agent through nothing else. A terminal recovery reason (SlowConsumer) ends the
+                // stream CLEANLY — the channel is completed, not faulted — so without this branch
+                // the `await foreach` simply falls through to `finally`, no catch runs, and
+                // state.Completion is never resolved. Every WaitAgent/WaitForAgents/AwaitCompletionAsync
+                // caller then blocks forever on a run nobody is watching. Throwing routes it through
+                // the terminal catch below, which faults the latch, syncs the directory to Error and
+                // persists the terminal state — the same treatment as any other monitor failure.
+                // Mirrors WorkflowSession.DriveAndObserveAsync, which already pins this contract.
+                if (msg is StreamRecoveryMessage recovery)
+                {
+                    if (recovery.Reason == StreamRecoveryReason.ReplayTruncated)
+                    {
+                        // Non-terminal: only the run's already-published PREFIX was withheld. This
+                        // message LEADS the stream and the live tail — RunCompletedMessage included —
+                        // still arrives on this same subscription, so the monitor keeps watching.
+                        continue;
+                    }
+
+                    throw new InvalidOperationException(
+                        $"The sub-agent's message stream was severed ({recovery.Reason}) before the run completed.");
+                }
+
                 var summary = CreateTurnSummary(msg);
                 if (summary != null)
                 {

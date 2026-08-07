@@ -102,6 +102,38 @@ public class InterruptedDeferralRecoveryTests
         harness.LastRunError.Should().Contain("stream_interrupted_after_recovery");
     }
 
+    [Fact]
+    public async Task RecoveryBudgetSurvivesARestart_SoAResumedInputStillGetsNoSecondRecovery()
+    {
+        // The same property as the test above, across the boundary it is actually most likely to be
+        // crossed. A deferred client tool exists precisely so an answer can arrive later — minutes
+        // later, from a human, in a process that has since been restarted. A budget that lives only in
+        // the parking process is REFUNDED by that restart: the resumed input buys a second automatic
+        // recovery and issues a second provider call for a turn that already ran, and it can do so
+        // once per restart, forever.
+        await using var harness = await Harness.StartAsync(
+            (attempt, ct) => attempt == 1
+                ? Emit([DeferringToolCall()], ResponseEnded(), ct)
+                : Emit(
+                    [new TextUpdateMessage { Text = "still ", Role = Role.Assistant }],
+                    ResponseEnded(),
+                    ct));
+
+        harness.ProviderCallCount.Should().Be(1, "the parked run spent this input's one recovery");
+
+        // The process that parked dies here; a new one picks the conversation up from the store alone.
+        await harness.RestartAsync();
+
+        await harness.ResolveAndWaitAsync("blue");
+
+        harness.ProviderCallCount.Should().Be(
+            2,
+            "a restart must not refund the budget — the resumed input is still allowed only one recovery");
+        harness.LastRunFailed.Should().BeTrue();
+        harness.LastRunError.Should().Contain("stream_interrupted_after_recovery");
+        harness.ToolInvocations.Should().Be(1, "a completed client effect is never re-executed");
+    }
+
     private static ToolCallMessage DeferringToolCall() =>
         new()
         {
@@ -142,7 +174,8 @@ public class InterruptedDeferralRecoveryTests
     }
 
     /// <summary>
-    /// Drives a real loop through park-and-resume, observing every run it starts.
+    /// Drives a real loop through park-and-resume, observing every run it starts, and can replace the
+    /// loop with a fresh one over the same store to model a process restart.
     /// </summary>
     /// <remarks>
     /// A subscription rather than a single <c>ExecuteRunAsync</c> drain, because the run that parks
@@ -154,18 +187,22 @@ public class InterruptedDeferralRecoveryTests
         private readonly CancellationTokenSource _cts = new();
         private readonly List<IMessage> _messages = [];
         private readonly object _gate = new();
+
+        // Everything that must OUTLIVE a restart lives on the harness, not on the loop: the store and
+        // thread id are the conversation's identity, and the counters are the visible-effect totals
+        // the assertions are about — they span both processes.
+        private readonly InMemoryConversationStore _store = new();
+        private readonly string _threadId = $"thread-{Guid.NewGuid():N}";
+        private readonly Func<int, CancellationToken, IAsyncEnumerable<IMessage>> _attemptScript;
+        private readonly StrongBox<int> _toolInvocations = new();
         private TaskCompletionSource<RunCompletedMessage> _runCompleted =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _providerCallCount;
-        private readonly StrongBox<int> _toolInvocations;
 
-        private Harness(MultiTurnAgentLoop loop, StrongBox<int> toolInvocations)
-        {
-            Loop = loop;
-            _toolInvocations = toolInvocations;
-        }
+        private Harness(Func<int, CancellationToken, IAsyncEnumerable<IMessage>> attemptScript)
+            => _attemptScript = attemptScript;
 
-        public MultiTurnAgentLoop Loop { get; }
+        public MultiTurnAgentLoop Loop { get; private set; } = null!;
 
         public int ProviderCallCount => Volatile.Read(ref _providerCallCount);
 
@@ -193,12 +230,47 @@ public class InterruptedDeferralRecoveryTests
         public static async Task<Harness> StartAsync(
             Func<int, CancellationToken, IAsyncEnumerable<IMessage>> attemptScript)
         {
+            var harness = new Harness(attemptScript);
+            harness.Start();
+
+            var parked = harness.NextRunCompletion();
+            await harness.Loop.SendAsync(
+                [new TextMessage { Text = "What is my favourite colour?", Role = Role.User }]);
+            await parked.WaitAsync(TimeSpan.FromSeconds(10));
+
+            (await harness.Loop.GetDeferredToolCallsAsync()).Should().NotBeEmpty(
+                "every test here starts from a run parked on a deferral");
+            return harness;
+        }
+
+        /// <summary>
+        /// Replaces the running loop with a new one over the same store — the process that parked is
+        /// gone, and its successor knows only what was persisted.
+        /// </summary>
+        public async Task RestartAsync()
+        {
+            await Loop.DisposeAsync();
+            Start();
+            _ = (await Loop.RecoverAsync()).Should().BeTrue(
+                "the successor process has a parked conversation to pick up");
+        }
+
+        /// <summary>Answers the outstanding deferral and waits for the child run it causes to finish.</summary>
+        public async Task ResolveAndWaitAsync(string result)
+        {
+            var continued = NextRunCompletion();
+            await Loop.ResolveToolCallAsync(DeferringToolCallId, result);
+            await continued.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+
+        /// <summary>Builds a loop over the shared store, subscribes to it, and starts its run loop.</summary>
+        private void Start()
+        {
             var mockAgent = new Mock<IStreamingAgent>();
 
             // The registry has to be complete before the loop is constructed: the loop builds its tool
             // pipeline from it once, so a function registered afterwards is invisible and its call comes
             // back as an unknown-tool error instead of a deferral.
-            var toolInvocations = new StrongBox<int>();
             var registry = new FunctionRegistry();
             registry.AddFunction(
                 new FunctionContract
@@ -209,17 +281,9 @@ public class InterruptedDeferralRecoveryTests
                 },
                 (_, _, _) =>
                 {
-                    Interlocked.Increment(ref toolInvocations.Value);
+                    Interlocked.Increment(ref _toolInvocations.Value);
                     return Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred());
                 });
-
-            var loop = new MultiTurnAgentLoop(
-                mockAgent.Object,
-                registry,
-                $"thread-{Guid.NewGuid():N}",
-                store: new InMemoryConversationStore());
-
-            var harness = new Harness(loop, toolInvocations);
 
             mockAgent
                 .Setup(a => a.GenerateReplyStreamingAsync(
@@ -228,33 +292,18 @@ public class InterruptedDeferralRecoveryTests
                     It.IsAny<CancellationToken>()))
                 .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((sent, _, ct) =>
                 {
-                    var attempt = Interlocked.Increment(ref harness._providerCallCount);
+                    var attempt = Interlocked.Increment(ref _providerCallCount);
                     if (attempt == 2)
                     {
-                        harness.SecondRequest = [.. sent];
+                        SecondRequest = [.. sent];
                     }
 
-                    return Task.FromResult(attemptScript(attempt, ct));
+                    return Task.FromResult(_attemptScript(attempt, ct));
                 });
 
-            harness.Observe();
-            _ = loop.RunAsync(harness._cts.Token);
-
-            var parked = harness.NextRunCompletion();
-            await loop.SendAsync([new TextMessage { Text = "What is my favourite colour?", Role = Role.User }]);
-            await parked.WaitAsync(TimeSpan.FromSeconds(10));
-
-            (await loop.GetDeferredToolCallsAsync()).Should().NotBeEmpty(
-                "every test here starts from a run parked on a deferral");
-            return harness;
-        }
-
-        /// <summary>Answers the outstanding deferral and waits for the child run it causes to finish.</summary>
-        public async Task ResolveAndWaitAsync(string result)
-        {
-            var continued = NextRunCompletion();
-            await Loop.ResolveToolCallAsync(DeferringToolCallId, result);
-            await continued.WaitAsync(TimeSpan.FromSeconds(10));
+            Loop = new MultiTurnAgentLoop(mockAgent.Object, registry, _threadId, store: _store);
+            Observe();
+            _ = Loop.RunAsync(_cts.Token);
         }
 
         /// <summary>Arms a wait for the next run completion BEFORE the action that causes it.</summary>

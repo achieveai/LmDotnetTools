@@ -496,7 +496,9 @@ public class SubAgentToolProvider : IFunctionProvider
                     Name = "timeout_seconds",
                     Description =
                         "Optional cap on the wait. On expiry the call returns with status "
-                        + "'timeout' and the agent keeps running — nothing is cancelled.",
+                        + "'timeout' and the agent keeps running — nothing is cancelled. "
+                        + "Must be a positive whole number of seconds; omit it entirely to wait "
+                        + "without a cap.",
                     ParameterType = new JsonSchemaObject { Type = new("integer") },
                     IsRequired = false,
                 },
@@ -596,7 +598,9 @@ public class SubAgentToolProvider : IFunctionProvider
                     Name = "timeout_seconds",
                     Description =
                         "Optional cap on the wait. On expiry the call returns with status "
-                        + "'timeout' and the agents keep running — nothing is cancelled.",
+                        + "'timeout' and the agents keep running — nothing is cancelled. "
+                        + "Must be a positive whole number of seconds; omit it entirely to wait "
+                        + "without a cap.",
                     ParameterType = new JsonSchemaObject { Type = new("integer") },
                     IsRequired = false,
                 },
@@ -1137,7 +1141,11 @@ public class SubAgentToolProvider : IFunctionProvider
                 "unknown_agent");
         }
 
-        var timeoutSeconds = GetOptionalInt(root, "timeout_seconds");
+        if (!TryReadTimeoutSeconds(root, out var timeoutSeconds, out var timeoutError))
+        {
+            return ToolHandlerResult.FromError(timeoutError!, "invalid_args");
+        }
+
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         // Every racer must complete rather than fault when the race is torn down: none of them is
@@ -1149,8 +1157,8 @@ public class SubAgentToolProvider : IFunctionProvider
 
         var completion = mode == "any" ? Task.WhenAny(waits) : Task.WhenAll(waits);
         var question = WatchForQuestionAsync(linked.Token);
-        var timeout = timeoutSeconds is > 0
-            ? DelayQuietlyAsync(TimeSpan.FromSeconds(timeoutSeconds.Value), linked.Token)
+        var timeout = timeoutSeconds is { } cap
+            ? DelayQuietlyAsync(TimeSpan.FromSeconds(cap), linked.Token)
             : null;
 
         Task[] races = timeout is null
@@ -1383,15 +1391,19 @@ public class SubAgentToolProvider : IFunctionProvider
                 DescribeUnknownAgent(agentId, WaitAgentToolName), "unknown_agent");
         }
 
-        var timeoutSeconds = GetOptionalInt(root, "timeout_seconds");
+        if (!TryReadTimeoutSeconds(root, out var timeoutSeconds, out var timeoutError))
+        {
+            return ToolHandlerResult.FromError(timeoutError!, "invalid_args");
+        }
+
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         // Quiet racer: the loser is never awaited, so a cancellation fault would surface as an
         // unobserved task exception long after this tool call is gone.
         var completion = AwaitQuietlyAsync(
             _manager.ObserveTargetCompletionAsync(agentId, linked.Token));
-        var timeout = timeoutSeconds is > 0
-            ? DelayQuietlyAsync(TimeSpan.FromSeconds(timeoutSeconds.Value), linked.Token)
+        var timeout = timeoutSeconds is { } cap
+            ? DelayQuietlyAsync(TimeSpan.FromSeconds(cap), linked.Token)
             : null;
 
         var winner = timeout is null
@@ -1488,6 +1500,57 @@ public class SubAgentToolProvider : IFunctionProvider
             JsonValueKind.String when bool.TryParse(prop.GetString(), out var parsed) => parsed,
             _ => null,
         };
+    }
+
+    /// <summary>
+    /// Reads the optional <c>timeout_seconds</c> cap shared by <c>WaitAgent</c> and
+    /// <c>WaitForAgents</c>, separating ABSENT from PRESENT-BUT-UNUSABLE.
+    /// <para>
+    /// Both tools tell the model to pass this "so a wedged agent cannot stall you indefinitely".
+    /// Parsing it with <see cref="GetOptionalInt"/> collapsed every unusable value — a malformed
+    /// string, 0, a negative — onto the same <c>null</c> as an omitted parameter, and the
+    /// <c>is &gt; 0</c> gate then turned all of them into the unbounded wait the model passed the
+    /// argument to avoid, with nothing said about it. A cap the caller asked for and did not get is
+    /// an error, not a default: reject it so the model can correct the call.
+    /// </para>
+    /// </summary>
+    /// <param name="root">The tool call's parsed arguments.</param>
+    /// <param name="seconds">The requested cap, or <c>null</c> for "no cap" (absent or explicit null).</param>
+    /// <param name="error">The rejection message when the value is present but unusable.</param>
+    /// <returns><c>true</c> when the argument is usable (including when it is absent).</returns>
+    private static bool TryReadTimeoutSeconds(JsonElement root, out int? seconds, out string? error)
+    {
+        seconds = null;
+        error = null;
+
+        // Omitted keeps the established contract: an optional cap that was not requested means the
+        // wait is bounded only by the caller's own cancellation. An explicit null is the same
+        // statement — models routinely emit one for a parameter they chose not to set.
+        if (!root.TryGetProperty("timeout_seconds", out var prop) || prop.ValueKind == JsonValueKind.Null)
+        {
+            return true;
+        }
+
+        int? requested = prop.ValueKind switch
+        {
+            JsonValueKind.Number when prop.TryGetInt32(out var number) => number,
+            // Some models emit integers as strings ("30").
+            JsonValueKind.String when int.TryParse(prop.GetString(), out var fromText) => fromText,
+            _ => null,
+        };
+
+        // One rejection for every unusable shape: unparseable, zero, and negative alike. Zero and
+        // negative are rejected rather than read as "expire immediately", because a wait that
+        // returns "timeout" before observing anything is indistinguishable from a wedged agent.
+        if (requested is not > 0)
+        {
+            error = "The 'timeout_seconds' parameter must be a positive whole number of seconds. "
+                + "Omit it entirely to wait without a cap.";
+            return false;
+        }
+
+        seconds = requested;
+        return true;
     }
 
     private static int? GetOptionalInt(JsonElement root, string propertyName)
