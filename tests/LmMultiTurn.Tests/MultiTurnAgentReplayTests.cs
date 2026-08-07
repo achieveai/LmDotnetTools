@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
@@ -274,11 +275,12 @@ public sealed class MultiTurnAgentReplayTests
         const string genId = "gen-1";
         const int cap = 10_000; // mirrors MultiTurnAgentBase.MaxReplayBufferSize
 
-        // Assignment fills slot #1; the next `cap` CANONICAL messages overflow by one, which must be
-        // dropped. Streaming deltas are excluded from the bridge entirely (ReplayMessagePolicy), so the
-        // count cap is exercised here with canonical complete-text messages instead of deltas.
+        // Assignment fills slot #1; the next `cap - 1` CANONICAL messages fill the buffer to EXACTLY
+        // its cap without overflowing. Streaming deltas are excluded from the bridge entirely
+        // (ReplayMessagePolicy), so the count cap is exercised here with canonical complete-text
+        // messages instead of deltas.
         await agent.PublishForTest(Assignment("thread-1", runId, genId));
-        for (var i = 0; i < cap; i++)
+        for (var i = 0; i < cap - 1; i++)
         {
             await agent.PublishForTest(CompleteText(runId, genId, i.ToString()));
         }
@@ -286,20 +288,31 @@ public sealed class MultiTurnAgentReplayTests
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         await using var e = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
 
-        // Drain exactly `cap` replayed messages — the buffer must hold no more than this.
+        // A buffer filled to exactly its cap is NOT truncated, so it replays in full.
         for (var i = 0; i < cap; i++)
         {
             (await e.MoveNextAsync()).Should().BeTrue();
+            e.Current.Should().NotBeOfType<StreamRecoveryMessage>("an un-truncated buffer replays without a resync control");
         }
 
-        // Prove the buffer held EXACTLY `cap` (not cap+1): the next message must be a sentinel
-        // published live AFTER subscribing, not the overflowed canonical message that was dropped.
+        // Prove the buffer held EXACTLY `cap` messages: the next one must be a sentinel published
+        // live AFTER subscribing, i.e. nothing was left over in the replay snapshot.
         await agent.PublishForTest(CompleteText(runId, genId, "SENTINEL"));
         (await e.MoveNextAsync()).Should().BeTrue();
         e.Current.Should()
             .BeOfType<TextMessage>()
             .Which.Text.Should()
-            .Be("SENTINEL", "the in-flight replay buffer is bounded at the cap, so the overflow message was dropped");
+            .Be("SENTINEL", "the replay snapshot ended exactly at the cap");
+
+        // One more canonical message cannot fit, so the buffer becomes truncated — and a subscriber
+        // joining from here is told to resync rather than handed a silently partial replay.
+        await agent.PublishForTest(CompleteText(runId, genId, "OVERFLOW"));
+        await using var late = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+        (await late.MoveNextAsync()).Should().BeTrue();
+        late.Current.Should()
+            .BeOfType<StreamRecoveryMessage>("the cap+1'th message did not fit, so the buffer is truncated")
+            .Which.Reason.Should()
+            .Be(StreamRecoveryReason.ReplayTruncated);
     }
 
     [Fact]
@@ -397,7 +410,7 @@ public sealed class MultiTurnAgentReplayTests
         var big = new string('x', 200);
 
         await agent.PublishForTest(Assignment("thread-1", runId, genId));
-        for (var i = 0; i < 20; i++)
+        for (var i = 0; i < 2; i++)
         {
             await agent.PublishForTest(CompleteText(runId, genId, big));
         }
@@ -405,7 +418,7 @@ public sealed class MultiTurnAgentReplayTests
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         await using var e = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
 
-        // Exactly three messages were buffered before the byte budget tripped.
+        // The budget has not tripped yet, so all three buffered messages replay in full.
         (await e.MoveNextAsync()).Should().BeTrue();
         e.Current.Should().BeOfType<RunAssignmentMessage>();
         (await e.MoveNextAsync()).Should().BeTrue();
@@ -415,10 +428,21 @@ public sealed class MultiTurnAgentReplayTests
 
         // Prove the buffer held EXACTLY those three: the next message must be a sentinel published live
         // AFTER subscribing (a plain delta — proving live fan-out still delivers deltas even though the
-        // bridge never buffers them), not the byte-capped (dropped) third canonical message.
+        // bridge never buffers them).
         await agent.PublishForTest(TextDelta(runId, genId, "SENTINEL"));
         (await e.MoveNextAsync()).Should().BeTrue();
         e.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("SENTINEL");
+
+        // A third big canonical message crosses the budget and cannot be buffered, so from here the
+        // replay is incomplete — a joining subscriber is told to resync instead of being handed the
+        // silently partial prefix.
+        await agent.PublishForTest(CompleteText(runId, genId, big));
+        await using var late = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+        (await late.MoveNextAsync()).Should().BeTrue();
+        late.Current.Should()
+            .BeOfType<StreamRecoveryMessage>("the byte budget tripped, so the buffered prefix is incomplete")
+            .Which.Reason.Should()
+            .Be(StreamRecoveryReason.ReplayTruncated);
     }
 
     [Fact]
@@ -657,4 +681,456 @@ public sealed class MultiTurnAgentReplayTests
         // reserved for PublishToSubscriber's slow-consumer eviction path.
         (await e.MoveNextAsync()).Should().BeFalse();
     }
+
+    #region Dropped-subscriber identity (run/generation stamped on the recovery control)
+
+    [Fact]
+    public async Task A_dropped_subscriber_is_stamped_with_what_it_received_not_with_the_message_that_failed()
+    {
+        // The StreamRecoveryMessage tells the client where to resume from, so it must name the last
+        // run/generation the subscriber ACTUALLY received. Stamping identity before attempting the
+        // write means the message that overflowed (and was therefore never delivered) sets the
+        // resume point, telling the client it is caught up on a run it never saw.
+        await using var agent = new ReplayTestAgent("thread-1", outputChannelCapacity: 2);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+
+        var e = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+        var first = e.MoveNextAsync();
+        await agent.PublishForTest(Assignment("thread-1", "run-1", "gen-1"));
+        (await first).Should().BeTrue();
+        e.Current.Should().BeOfType<RunAssignmentMessage>();
+
+        // The subscriber stops draining here; these two fill its bounded channel to capacity.
+        await agent.PublishForTest(CompleteText("run-1", "gen-1", "a"));
+        await agent.PublishForTest(CompleteText("run-1", "gen-1", "b"));
+
+        // This one cannot be written, so it is never delivered — and it belongs to a DIFFERENT run.
+        await agent.PublishForTest(CompleteText("run-2", "gen-2", "never-delivered"));
+
+        (await e.MoveNextAsync()).Should().BeTrue();
+        (await e.MoveNextAsync()).Should().BeTrue();
+        (await e.MoveNextAsync()).Should().BeTrue();
+        var recovery = e.Current.Should().BeOfType<StreamRecoveryMessage>().Subject;
+        recovery.Reason.Should().Be(StreamRecoveryReason.SlowConsumer);
+        recovery.RunId.Should().Be("run-1", "the resume point is the last run actually delivered");
+        recovery.GenerationId.Should().Be("gen-1");
+
+        await e.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task A_dropped_subscribers_run_and_generation_are_stamped_as_one_coherent_pair()
+    {
+        // Tracking RunId and GenerationId as independent fields lets a run-2 message inherit run-1's
+        // generation, producing a pair that never existed. The resume point must be a pair, advanced
+        // atomically: a message that moves the run to a new one carries that run's generation (even
+        // when it has none) rather than keeping the previous run's.
+        await using var agent = new ReplayTestAgent("thread-1", outputChannelCapacity: 2);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+
+        var e = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+        var first = e.MoveNextAsync();
+        await agent.PublishForTest(Assignment("thread-1", "run-1", "gen-1"));
+        (await first).Should().BeTrue();
+
+        // Delivered: moves the subscriber onto run-2, which carries no generation of its own.
+        await agent.PublishForTest(new TextMessage { Text = "a", Role = Role.Assistant, RunId = "run-2" });
+        await agent.PublishForTest(new TextMessage { Text = "b", Role = Role.Assistant, RunId = "run-2" });
+
+        // Overflows and is dropped, triggering the recovery control.
+        await agent.PublishForTest(new TextMessage { Text = "c", Role = Role.Assistant, RunId = "run-2" });
+
+        (await e.MoveNextAsync()).Should().BeTrue();
+        (await e.MoveNextAsync()).Should().BeTrue();
+        (await e.MoveNextAsync()).Should().BeTrue();
+        var recovery = e.Current.Should().BeOfType<StreamRecoveryMessage>().Subject;
+        recovery.RunId.Should().Be("run-2");
+        recovery.GenerationId.Should()
+            .BeNull("run-2 carried no generation, so run-1's generation must not be paired with it");
+
+        await e.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task ExecuteRunAsync_surfaces_the_resync_control_when_its_subscriber_is_dropped()
+    {
+        // ExecuteRunAsync's own subscriber is subject to the same slow-consumer eviction as
+        // SubscribeAsync's. Ending the iterator silently at that point is indistinguishable from an
+        // ordinary run completion, so callers that collect its output report a truncated run as a
+        // successful one. It must yield the same terminal recovery control SubscribeAsync does.
+        await using var agent = new ReplayTestAgent("thread-1", outputChannelCapacity: 2);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+
+        var input = new UserInput(
+            [new TextMessage { Text = "hello", Role = Role.User }],
+            InputId: "input-1");
+        var e = agent.ExecuteRunAsync(input, cts.Token).GetAsyncEnumerator(cts.Token);
+        var first = e.MoveNextAsync();
+        await agent.PublishForTest(Assignment("thread-1", "run-1", "gen-1"));
+        (await first).Should().BeTrue();
+        e.Current.Should().BeOfType<RunAssignmentMessage>();
+
+        // The caller stops draining; these fill the run channel and then overflow it.
+        await agent.PublishForTest(CompleteText("run-1", "gen-1", "a"));
+        await agent.PublishForTest(CompleteText("run-1", "gen-1", "b"));
+        await agent.PublishForTest(CompleteText("run-1", "gen-1", "overflow"));
+
+        (await e.MoveNextAsync()).Should().BeTrue();
+        (await e.MoveNextAsync()).Should().BeTrue();
+        (await e.MoveNextAsync()).Should()
+            .BeTrue("a dropped ExecuteRun subscriber must surface an explicit resync control, not end silently");
+        var recovery = e.Current.Should().BeOfType<StreamRecoveryMessage>().Subject;
+        recovery.Reason.Should().Be(StreamRecoveryReason.SlowConsumer);
+        recovery.RunId.Should().Be("run-1");
+
+        (await e.MoveNextAsync()).Should().BeFalse("the recovery control is terminal");
+        await e.DisposeAsync();
+    }
+
+    #endregion
+
+    #region Truncated replay (explicit resync instead of a silently partial prefix)
+
+    [Fact]
+    public async Task A_truncated_replay_is_withheld_and_the_joining_subscriber_is_told_to_resync()
+    {
+        // A capped buffer drops the run's EARLIEST messages' successors — replaying what remains
+        // hands the client a prefix that silently omits part of the run, which it cannot detect.
+        // Withhold it entirely and say so, so the client reloads authoritative history instead.
+        await using var agent = new ReplayTestAgent("thread-1", maxReplayBufferSize: 4);
+        await agent.PublishForTest(Assignment("thread-1", "run-1", "gen-1"));
+        for (var i = 0; i < 4; i++)
+        {
+            await agent.PublishForTest(CompleteText("run-1", "gen-1", i.ToString()));
+        }
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using var e = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+
+        (await e.MoveNextAsync()).Should().BeTrue();
+        var recovery = e.Current.Should().BeOfType<StreamRecoveryMessage>().Subject;
+        recovery.Reason.Should().Be(StreamRecoveryReason.ReplayTruncated);
+        recovery.ThreadId.Should().Be("thread-1");
+        recovery.RunId.Should().Be("run-1");
+        recovery.GenerationId.Should().Be("gen-1");
+
+        // The advisory LEADS the stream, it does not end it. Only the run's already-published prefix
+        // is missing; the live tail is still perfectly good and this subscription goes on carrying it.
+        // Ending here would force the consumer to reconnect to keep following the run, and the
+        // reconnection lands on the same still-truncated buffer — advised again, for the rest of the run.
+        await agent.PublishForTest(TextDelta("run-1", "gen-1", "LIVE"));
+        (await e.MoveNextAsync()).Should()
+            .BeTrue("the advisory precedes the live tail instead of terminating the stream");
+        e.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("LIVE");
+    }
+
+    [Fact]
+    public async Task Every_subscription_to_a_truncated_run_is_advised_even_after_another_consumed_one()
+    {
+        // The advisory used to be latched by ONE per-run bool, so whichever subscriber reached the
+        // truncated state first consumed the only warning that would ever be issued. This process has
+        // several subscribers on the same agent — WorkspaceTranscriptMirror and the sub-agent
+        // forwarder subscribe alongside the browser — so the internal one could swallow the browser's
+        // warning, leaving the browser with an empty replay and a live tail it cannot tell apart from
+        // a complete stream. Every subscription must be advised for itself.
+        await using var agent = new ReplayTestAgent("thread-1", maxReplayBufferSize: 2);
+        await agent.PublishForTest(Assignment("thread-1", "run-1", "gen-1"));
+        await agent.PublishForTest(CompleteText("run-1", "gen-1", "buffered"));
+        await agent.PublishForTest(CompleteText("run-1", "gen-1", "truncates"));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        // First subscriber CONSUMES its advisory — the exact act that used to spend the latch.
+        await using var first = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+        (await first.MoveNextAsync()).Should().BeTrue();
+        first.Current.Should()
+            .BeOfType<StreamRecoveryMessage>()
+            .Which.Reason.Should()
+            .Be(StreamRecoveryReason.ReplayTruncated);
+
+        await using var second = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+        (await second.MoveNextAsync()).Should().BeTrue();
+        second.Current.Should()
+            .BeOfType<StreamRecoveryMessage>("a second consumer's replay is just as truncated as the first's")
+            .Which.Reason.Should()
+            .Be(StreamRecoveryReason.ReplayTruncated);
+
+        // Neither subscription was spent by being advised: both are still registered for fan-out, so
+        // one live message reaches BOTH. That is what makes advising everyone loop-free — no consumer
+        // has to reconnect to keep following the run.
+        await agent.PublishForTest(TextDelta("run-1", "gen-1", "LIVE"));
+        (await first.MoveNextAsync()).Should().BeTrue();
+        first.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("LIVE");
+        (await second.MoveNextAsync()).Should().BeTrue();
+        second.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("LIVE");
+    }
+
+    [Fact]
+    public async Task A_new_run_clears_truncation_so_its_replay_is_served_again()
+    {
+        // Truncation is a property of one run's buffer. The next run opens a fresh buffer, so its
+        // replay must be served normally — otherwise one oversized run poisons every later one.
+        await using var agent = new ReplayTestAgent("thread-1", maxReplayBufferSize: 2);
+        await agent.PublishForTest(Assignment("thread-1", "run-1", "gen-1"));
+        await agent.PublishForTest(CompleteText("run-1", "gen-1", "buffered"));
+        await agent.PublishForTest(CompleteText("run-1", "gen-1", "truncates"));
+
+        await agent.PublishForTest(Assignment("thread-1", "run-2", "gen-2"));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using var e = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+        (await e.MoveNextAsync()).Should().BeTrue();
+        e.Current.Should()
+            .BeOfType<RunAssignmentMessage>("run-2's buffer is complete, so it replays normally")
+            .Which.Assignment.RunId.Should()
+            .Be("run-2");
+    }
+
+    #endregion
+
+    #region Disposal: admission gating and idempotence
+
+    /// <summary>
+    /// Agent whose <see cref="MultiTurnAgentBase.OnDisposeAsync"/> override parks inside disposal
+    /// until released, so a test can deterministically observe a SECOND <c>DisposeAsync</c> arriving
+    /// while the first teardown is still running — no sleeps, no real thread timing.
+    /// </summary>
+    private sealed class GatedDisposeAgent : MultiTurnAgentBase
+    {
+        private int _onDisposeCount;
+
+        public GatedDisposeAgent()
+            : base("thread-1", systemPrompt: null, store: null)
+        {
+        }
+
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int OnDisposeCount => Volatile.Read(ref _onDisposeCount);
+
+        protected override Task RunLoopAsync(CancellationToken ct) => Task.CompletedTask;
+
+        protected override async Task OnDisposeAsync()
+        {
+            _ = Interlocked.Increment(ref _onDisposeCount);
+            _ = Entered.TrySetResult();
+            await Release.Task;
+        }
+    }
+
+    [Fact]
+    public async Task A_second_DisposeAsync_awaits_the_in_flight_teardown_instead_of_returning_early()
+    {
+        // A plain bool guard makes the second caller return while teardown is still mid-flight, so
+        // `await using` hands back a half-disposed agent. Disposal must be idempotent AND awaitable:
+        // every caller observes the same single teardown, completed.
+        var agent = new GatedDisposeAgent();
+
+        var firstDispose = agent.DisposeAsync().AsTask();
+        await agent.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var secondDispose = agent.DisposeAsync().AsTask();
+        secondDispose.IsCompleted.Should()
+            .BeFalse("a concurrent DisposeAsync must await the running teardown, not report success while it is unfinished");
+
+        _ = agent.Release.TrySetResult();
+        await Task.WhenAll(firstDispose, secondDispose).WaitAsync(TimeSpan.FromSeconds(10));
+        agent.OnDisposeCount.Should().Be(1, "teardown runs exactly once no matter how many callers dispose");
+    }
+
+    /// <summary>
+    /// Agent whose teardown always fails, with a per-instance exception the test can identify by
+    /// REFERENCE — the only way to tell our fault apart from any other test's on the process-wide
+    /// <see cref="TaskScheduler.UnobservedTaskException"/> event.
+    /// </summary>
+    private sealed class ThrowingDisposeAgent(Exception failure) : MultiTurnAgentBase("thread-1", systemPrompt: null, store: null)
+    {
+        protected override Task RunLoopAsync(CancellationToken ct) => Task.CompletedTask;
+
+        protected override Task OnDisposeAsync() => Task.FromException(failure);
+    }
+
+    /// <summary>
+    /// Disposes a failing agent from a SINGLE caller and drops every reference to it. Separate,
+    /// non-inlined method so the agent and the tasks it published become unreachable the moment it
+    /// returns — a local in the test's own async state machine would stay rooted, and the finaliser
+    /// that raises <see cref="TaskScheduler.UnobservedTaskException"/> would never run for it.
+    /// </summary>
+    /// <param name="failure">The exception the agent's teardown throws.</param>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static async Task DisposeAndAbandonAsync(Exception failure)
+    {
+        var agent = new ThrowingDisposeAgent(failure);
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(async () => await agent.DisposeAsync());
+        thrown.Should().BeSameAs(failure, "the single caller observes the teardown's own fault");
+    }
+
+    [Fact]
+    public async Task A_failed_teardown_observed_by_its_only_caller_leaves_no_unobserved_task()
+    {
+        // Disposal publishes one shared completion so that LATER callers can await the same teardown.
+        // The first caller, though, used to await a DIFFERENT task — the teardown's own — and a failing
+        // teardown then faulted BOTH: the one it awaited, and the published one that only a second
+        // caller would ever look at. With a single caller (the overwhelmingly common case, e.g. one
+        // `await using`) nobody observes the published fault, so the task finaliser re-raises it on
+        // TaskScheduler.UnobservedTaskException — a fault from an agent that was disposed correctly and
+        // whose exception the caller already handled, surfacing later and somewhere else entirely.
+        var failure = new InvalidOperationException("teardown failed");
+        var leaked = new List<Exception>();
+        var gate = new object();
+
+        void OnUnobserved(object? sender, UnobservedTaskExceptionEventArgs e)
+        {
+            // Reference identity, because this event is process-wide and every other test running in
+            // parallel shares it. Only OUR exception says anything about the code under test.
+            if (!e.Exception.Flatten().InnerExceptions.Any(inner => ReferenceEquals(inner, failure)))
+            {
+                return;
+            }
+
+            lock (gate)
+            {
+                leaked.Add(failure);
+            }
+
+            // Claim it so this test cannot fail an unrelated one via an escalation policy.
+            e.SetObserved();
+        }
+
+        TaskScheduler.UnobservedTaskException += OnUnobserved;
+        try
+        {
+            await DisposeAndAbandonAsync(failure);
+
+            // Force the finaliser that raises the event. Two passes: the first collection queues the
+            // abandoned tasks for finalisation, the second reclaims them after their finalisers ran.
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+
+            lock (gate)
+            {
+                leaked.Should()
+                    .BeEmpty("a teardown fault the disposing caller already observed must not be left on a second, abandoned task");
+            }
+        }
+        finally
+        {
+            TaskScheduler.UnobservedTaskException -= OnUnobserved;
+        }
+    }
+
+    [Fact]
+    public async Task Every_caller_of_a_failed_disposal_sees_the_same_exception()
+    {
+        // The corollary of the test above: routing all callers onto ONE task must not cost later
+        // callers the failure. Disposal is idempotent, and "idempotent" includes reporting the same
+        // outcome — a second caller that saw success while the teardown had actually failed would be
+        // handed an agent it believes is cleanly disposed.
+        var failure = new InvalidOperationException("teardown failed");
+        var agent = new ThrowingDisposeAgent(failure);
+
+        var first = await Assert.ThrowsAsync<InvalidOperationException>(async () => await agent.DisposeAsync());
+        var second = await Assert.ThrowsAsync<InvalidOperationException>(async () => await agent.DisposeAsync());
+        var third = await Assert.ThrowsAsync<InvalidOperationException>(async () => await agent.DisposeAsync());
+
+        first.Should().BeSameAs(failure);
+        second.Should().BeSameAs(failure, "a repeat caller observes the one teardown's outcome, not a fresh one");
+        third.Should().BeSameAs(failure);
+    }
+
+    [Fact]
+    public async Task SubscribeAsync_after_disposal_is_rejected_instead_of_hanging()
+    {
+        // Disposal completes every registered subscriber's channel, but nothing stops a LATER
+        // subscriber from registering into the dead fan-out map — its channel is never written to
+        // and never completed, so the caller waits forever. Reject the subscription instead.
+        var agent = new ReplayTestAgent("thread-1");
+        await agent.DisposeAsync();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var subscribe = async () =>
+        {
+            await foreach (var _ in agent.SubscribeAsync(cts.Token))
+            {
+                // Drain; the enumerable must not produce anything.
+            }
+        };
+
+        _ = await subscribe.Should().ThrowAsync<ObjectDisposedException>();
+    }
+
+    /// <summary>
+    /// Agent that subscribes from inside <see cref="MultiTurnAgentBase.DisposeAsync"/>'s teardown
+    /// loop, deterministically reproducing a client connecting in the window between "teardown has
+    /// passed the subscriber map" and "disposal has finished" — where a registration would otherwise
+    /// be stranded on a channel nobody will ever complete.
+    /// </summary>
+    private sealed class SubscribeDuringDisposeAgent : MultiTurnAgentBase
+    {
+        private int _hookRan;
+
+        public SubscribeDuringDisposeAgent()
+            : base("thread-1", systemPrompt: null, store: null)
+        {
+        }
+
+        public Exception? SubscribeFailure { get; private set; }
+
+        public bool SubscribeCompletedNormally { get; private set; }
+
+        protected override Task RunLoopAsync(CancellationToken ct) => Task.CompletedTask;
+
+        public ValueTask PublishForTest(IMessage message) => PublishToAllAsync(message, CancellationToken.None);
+
+        internal override async ValueTask OnSubscriberChannelCompletedDuringDisposeAsync(string subscriberId)
+        {
+            if (Interlocked.Exchange(ref _hookRan, 1) != 0)
+            {
+                return;
+            }
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            try
+            {
+                await foreach (var _ in SubscribeAsync(cts.Token))
+                {
+                    // Drain.
+                }
+
+                SubscribeCompletedNormally = true;
+            }
+            catch (Exception ex)
+            {
+                SubscribeFailure = ex;
+            }
+        }
+    }
+
+    [Fact]
+    public async Task SubscribeAsync_racing_disposal_teardown_is_rejected_rather_than_stranded()
+    {
+        var agent = new SubscribeDuringDisposeAgent();
+
+        // One registered subscriber, so disposal's teardown loop runs the hook exactly once.
+        await agent.PublishForTest(Assignment("thread-1", "run-1", "gen-1"));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var e = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+        (await e.MoveNextAsync()).Should().BeTrue();
+
+        await agent.DisposeAsync();
+
+        agent.SubscribeCompletedNormally.Should().BeFalse();
+        agent.SubscribeFailure.Should()
+            .BeOfType<ObjectDisposedException>(
+                "a subscription arriving mid-teardown must be refused outright, not left waiting on a channel "
+                    + "no one will complete");
+
+        await e.DisposeAsync();
+    }
+
+    #endregion
 }

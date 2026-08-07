@@ -727,6 +727,66 @@ describe('useChat — automatic resync when the stream drops before done (TASK 4
     expect(chat.isLoading.value).toBe(false);
   });
 
+  // The rehydrate a DROP recovery runs is the same destructive reload a conversation SWITCH runs, and
+  // that reload empties the pending queue. For a switch that is right — the queue belongs to the
+  // conversation being left. For a drop it is not: the conversation is still on screen, at the same
+  // epoch, and the prompts queued against it are still going to be sent. (The in-place
+  // `replay_truncated` fill already reasoned this out; the slow-consumer/transport drop is the same
+  // situation and must reach the same conclusion.) The rehydrate is HELD OPEN across the queueing so
+  // the queue is observed surviving the reload itself, not merely re-created after it.
+  it('keeps the prompts queued during the run when a normal drop recovery rehydrates', async () => {
+    const chat = await startStreaming();
+
+    // A second prompt queued while the run is still live, on the socket that is about to drop.
+    await chat.sendMessage('queued while streaming');
+    expect(
+      chat.pendingMessages.value.map((p) => p.content.text),
+      'both prompts are queued against the live run'
+    ).toEqual(['hi', 'queued while streaming']);
+
+    let resolveHistory!: (v: unknown) => void;
+    convMocks.loadConversationMessages.mockImplementation(
+      () => new Promise((resolve) => { resolveHistory = resolve; })
+    );
+
+    // A NORMAL drop — the clean `resync_required` close, NOT a `replay_truncated` advisory — so this
+    // pins the socket-replacing recovery path rather than the in-place fill.
+    captured[0].onClose(recoveryClose());
+    await vi.waitFor(() => expect(convMocks.loadConversationMessages).toHaveBeenCalledTimes(1));
+
+    // Let the destructive reload land while the recovery is still in flight.
+    resolveHistory([]);
+    await vi.waitFor(() => expect(wsMocks.createWebSocketConnection).toHaveBeenCalledTimes(2));
+    await settle();
+
+    expect(
+      chat.pendingMessages.value.map((p) => p.content.text),
+      'recovering the conversation on screen must not discard the prompts queued against it'
+    ).toEqual(['hi', 'queued while streaming']);
+    expect(
+      wsMocks.createWebSocketConnection,
+      'one drop, one replacement socket — preserving the queue must not re-send or re-open anything'
+    ).toHaveBeenCalledTimes(2);
+    expect(wsMocks.sendWebSocketMessage, 'only the two real sends; the recovery is subscribe-only').toHaveBeenCalledTimes(2);
+    expect(chat.isLoading.value, 'the run is still live across the recovery').toBe(true);
+    expect(chat.error.value).toBeNull();
+  });
+
+  // The counterpart guard: the DEFAULT caller of the reload is a conversation switch, and it must go
+  // on clearing. Preserving the queue is a property of the RECOVERY wiring, not a new default — a
+  // "fix" that flipped the default instead would leave one conversation's queue attached to another.
+  it('still empties the queue on the default (conversation-switch) history load', async () => {
+    const chat = await startStreaming();
+    expect(chat.pendingMessages.value).toHaveLength(1);
+
+    await chat.loadMessagesFromBackend('thread-2');
+
+    expect(
+      chat.pendingMessages.value,
+      'a switch leaves the queue behind with the conversation it belonged to'
+    ).toEqual([]);
+  });
+
   it('resyncs once on an explicit stream_recovery frame, not twice with the close that follows', async () => {
     const chat = await startStreaming();
 
@@ -745,6 +805,185 @@ describe('useChat — automatic resync when the stream drops before done (TASK 4
     expect(convMocks.loadConversationMessages, 'one rehydrate for one drop').toHaveBeenCalledTimes(1);
     expect(wsMocks.createWebSocketConnection, 'no second replacement socket').toHaveBeenCalledTimes(2);
     expect(chat.error.value).toBeNull();
+  });
+
+  // `replay_truncated` is a DIFFERENT signal from the slow-consumer drop above: the run's buffered
+  // PREFIX is gone, but this same socket still carries the live tail. Treating it as a drop would
+  // reconnect onto the same still-truncated buffer and be advised again for the rest of the run — a
+  // reconnect storm. So: refetch authoritative history IN PLACE and keep the socket.
+  it('fills the hole in place on replay_truncated instead of dropping the socket', async () => {
+    const chat = await startStreaming();
+    const socketsBefore = wsMocks.createWebSocketConnection.mock.calls.length;
+
+    captured[0].onStreamRecovery?.({
+      reason: 'replay_truncated',
+      threadId: 'thread-1',
+      runId: RUN,
+      generationId: GEN,
+    });
+    await vi.waitFor(() => expect(convMocks.loadConversationMessages).toHaveBeenCalledTimes(1));
+    await settle();
+
+    expect(wsMocks.createWebSocketConnection, 'no replacement socket is opened').toHaveBeenCalledTimes(socketsBefore);
+    expect(wsMocks.closeWebSocketConnection, 'the advised socket is never torn down').not.toHaveBeenCalled();
+    expect(convMocks.getRunState, 'no drop happened, so no run-state probe is needed').not.toHaveBeenCalled();
+    expect(chat.isLoading.value, 'the run is still live across the advisory').toBe(true);
+    expect(chat.error.value, 'a non-terminal advisory is not a user-facing failure').toBeNull();
+
+    // The SAME socket goes on to deliver the live tail, which renders and completes the run.
+    captured[0].onMessage(text('LIVE'));
+    captured[0].onDone();
+    const renderedTexts = chat.displayItems.value
+      .filter((i) => i.type === 'assistant-message')
+      .map((i) => (i as { content: { text?: string } }).content.text ?? '');
+    expect(renderedTexts, 'the live tail after the advisory reaches the UI').toEqual(['LIVE']);
+    expect(chat.isLoading.value).toBe(false);
+  });
+
+  // ...but that refetch is ASYNCHRONOUS and DESTRUCTIVE, and the socket is deliberately kept OPEN
+  // across it. Everything the live tail delivers while the REST round-trip is in flight lands in the
+  // message index and is then WIPED by the reload — and persisted history cannot contain those
+  // frames, because they are precisely the tail the server has not persisted yet. The same reload
+  // empties the pending queue, discarding prompts the user typed while the run streams even though
+  // the conversation they belong to is still the one on screen.
+  describe('while the truncated-replay refetch is in flight', () => {
+    const reasoning = (moi: number, r: string) =>
+      ({ $type: MessageType.Reasoning, role: 'assistant', reasoning: r, visibility: 1, generationId: GEN, messageOrderIdx: moi });
+    const toolCall = (id: string, moi: number) =>
+      ({ $type: MessageType.ToolCall, role: 'assistant', tool_call_id: id, function_name: 'Read', function_args: '{}', generationId: GEN, messageOrderIdx: moi });
+    const toolResult = (id: string, moi: number) =>
+      ({ $type: MessageType.ToolCallResult, role: 'tool', tool_call_id: id, result: `result ${id}`, generationId: GEN, messageOrderIdx: moi });
+    const persist = (id: string, ts: number, msg: Record<string, unknown>, moi: number) => ({
+      id, threadId: 'thread-1', runId: RUN, generationId: GEN, messageOrderIdx: moi,
+      timestamp: ts, messageType: String(msg.$type), role: String(msg.role), messageJson: JSON.stringify(msg),
+    });
+
+    const advise = (socket: any) =>
+      socket.onStreamRecovery?.({ reason: 'replay_truncated', threadId: 'thread-1', runId: RUN, generationId: GEN });
+
+    const textsOf = (chat: ReturnType<typeof useChat>) =>
+      chat.displayItems.value
+        .filter((i) => i.type === 'assistant-message')
+        .map((i) => (i as { content: { text?: string } }).content.text ?? '');
+    const reasoningsOf = (chat: ReturnType<typeof useChat>) =>
+      chat.displayItems.value
+        .filter((i) => i.type === 'pill')
+        .flatMap((i) => (i as { items: Array<{ $type?: string; reasoning?: string }> }).items)
+        .filter((m) => m.$type === MessageType.Reasoning)
+        .map((m) => m.reasoning ?? '');
+    const pillsFor = (chat: ReturnType<typeof useChat>, id: string) =>
+      chat.displayItems.value
+        .filter((i) => i.type === 'pill')
+        .flatMap((i) => (i as { items: Array<{ tool_calls?: Array<{ tool_call_id?: string }> }> }).items)
+        .filter((m) => m.tool_calls?.some((tc) => tc.tool_call_id === id));
+
+    /** Start a run, advise `replay_truncated`, and hold the REST rehydrate open so the tail can race it. */
+    async function adviseWithHistoryHeld() {
+      const chat = await startStreaming();
+      let resolveHistory!: (v: unknown) => void;
+      convMocks.loadConversationMessages.mockImplementation(
+        () => new Promise((resolve) => { resolveHistory = resolve; })
+      );
+      advise(captured[0]);
+      await vi.waitFor(() => expect(convMocks.loadConversationMessages).toHaveBeenCalledTimes(1));
+      return { chat, resolveHistory: (v: unknown) => resolveHistory(v) };
+    }
+
+    // The finding, exactly: a delta (plus every other modality — the resume path has shipped a green
+    // suite that only ever fed text before) and a queued prompt, all delivered DURING the fetch.
+    it('keeps the live tail and the queued prompts the reload would otherwise wipe', async () => {
+      const { chat, resolveHistory } = await adviseWithHistoryHeld();
+
+      // The same socket goes on streaming while the refetch is in flight, and the user queues a turn.
+      captured[0].onMessage(text('TAIL', 1));
+      captured[0].onMessage(toolCall('call_9', 2));
+      captured[0].onMessage(toolResult('call_9', 3));
+      await chat.sendMessage('queued while streaming');
+
+      // Authoritative history holds only the recovered PREFIX — never the tail above.
+      resolveHistory([persist('p1', 1000, reasoning(0, 'R1'), 0)]);
+      await settle();
+
+      expect(
+        chat.pendingMessages.value.map((p) => p.content.text),
+        'an in-place fill of the CURRENT conversation must not discard its queued prompts'
+      ).toEqual(['hi', 'queued while streaming']);
+      expect(reasoningsOf(chat), 'the recovered prefix is rehydrated').toEqual(['R1']);
+      expect(textsOf(chat), 'the delta that arrived during the fetch survives the reload').toEqual(['TAIL']);
+      expect(pillsFor(chat, 'call_9'), 'exactly one pill for the tool call that raced the reload').toHaveLength(1);
+      expect(chat.getResultForToolCall('call_9'), 'its result survives too').not.toBeNull();
+      expect(chat.isLoading.value, 'the run is still live').toBe(true);
+
+      captured[0].onDone();
+      expect(chat.isLoading.value).toBe(false);
+    });
+
+    // The server advises per resumed subscription, so the same hole can be announced repeatedly.
+    // A second refetch would restart the destructive reload and drop whatever the first is holding.
+    it('coalesces repeated advisories on one socket into a single refetch', async () => {
+      const { chat, resolveHistory } = await adviseWithHistoryHeld();
+
+      advise(captured[0]);
+      advise(captured[0]);
+      await settle();
+      expect(convMocks.loadConversationMessages, 'one hole, one refetch').toHaveBeenCalledTimes(1);
+
+      captured[0].onMessage(text('TAIL', 1));
+      resolveHistory([]);
+      await settle();
+      expect(textsOf(chat), 'the tail buffered across the repeats still lands once').toEqual(['TAIL']);
+
+      // Once it has settled, a LATER advisory is a new hole and is honoured.
+      advise(captured[0]);
+      await vi.waitFor(() => expect(convMocks.loadConversationMessages).toHaveBeenCalledTimes(2));
+    });
+
+    // Buffering must not become a way to resurrect an abandoned conversation: the reload already
+    // discards its own result on a stale epoch, and the frames held beside it must go the same way.
+    it('discards the buffered tail when the user leaves the conversation mid-refetch', async () => {
+      const { chat, resolveHistory } = await adviseWithHistoryHeld();
+
+      captured[0].onMessage(text('TAIL', 1));
+      await chat.clearMessages(); // the switch away: bumps the conversation epoch
+      resolveHistory([]);
+      await settle();
+
+      expect(textsOf(chat), 'nothing from the abandoned conversation paints onto the new one').toEqual([]);
+    });
+
+    // `done` says "everything before me is rendered". Letting it through while the tail it completes
+    // is still buffered marks the transcript finished and then appends a block nothing ever settles.
+    it('settles the run only after the buffered tail has been replayed', async () => {
+      const { chat, resolveHistory } = await adviseWithHistoryHeld();
+
+      captured[0].onMessage(text('TAIL', 1));
+      captured[0].onDone();
+      expect(chat.isLoading.value, 'the run is not finished while its own tail is still held').toBe(true);
+
+      resolveHistory([]);
+      await settle();
+      expect(textsOf(chat)).toEqual(['TAIL']);
+      expect(chat.isLoading.value, 'and it settles once the tail has landed').toBe(false);
+    });
+
+    // A failed refetch performs no wipe, so the tail it was holding is still valid — losing it would
+    // turn a transient REST hiccup into a permanently frozen transcript.
+    it('still replays the buffered tail when the refetch fails', async () => {
+      const chat = await startStreaming();
+      let rejectHistory!: (e: unknown) => void;
+      convMocks.loadConversationMessages.mockImplementation(
+        () => new Promise((_resolve, reject) => { rejectHistory = reject; })
+      );
+      advise(captured[0]);
+      await vi.waitFor(() => expect(convMocks.loadConversationMessages).toHaveBeenCalledTimes(1));
+
+      captured[0].onMessage(text('lo', 0));
+      rejectHistory(new Error('history unavailable'));
+      await settle();
+
+      expect(textsOf(chat), 'the tail lands on the history we already had').toEqual(['Hello']);
+      expect(chat.error.value, 'a failed in-place fill is not a user-facing run failure').toBeNull();
+    });
   });
 
   it('coalesces repeated close callbacks into one resync', async () => {

@@ -597,16 +597,22 @@ public sealed class ChatWebSocketManager
                     }
                 }
 
-                // A dropped-subscriber resync signal (see MultiTurnAgentBase.PublishToSubscriber /
-                // SubscribeAsync) is terminal and NOT a run completion: the frame above already carried
-                // it (content-free - only $type/reason/thread/run/generationId), so close deliberately
-                // with a dedicated reason instead of the `done` sentinel, and stop pumping. Applies
-                // identically to the primary /ws stream and the sub-agent focus view, since both call
-                // through this shared method. Uses CancellationToken.None (matching
+                // A resync signal (see MultiTurnAgentBase.PublishToSubscriber / SubscribeAsync) is NOT a
+                // run completion: the frame above already carried it (content-free - only
+                // $type/reason/thread/run/generationId). Whether it also ENDS the stream is a property of
+                // its reason:
+                //  - SlowConsumer: this subscriber was dropped from fan-out and receives nothing further,
+                //    so close deliberately with a dedicated reason instead of the `done` sentinel.
+                //  - ReplayTruncated: only the run's already-published PREFIX is missing and the live tail
+                //    still follows on this same subscription, so keep pumping. Closing here would make
+                //    every consumer reconnect, land on the same still-truncated buffer, and be advised
+                //    again for the rest of the run.
+                // Applies identically to the primary /ws stream and the sub-agent focus view, since both
+                // call through this shared method. The close uses CancellationToken.None (matching
                 // SendSubAgentStreamFailedErrorAsync's terminal close): a cancellation landing between the
                 // frame's send and this close must not be able to suppress the close (and the
                 // "resync_required" reason it carries) via OperationCanceledException.
-                if (message is StreamRecoveryMessage)
+                if (message is StreamRecoveryMessage { Reason: not StreamRecoveryReason.ReplayTruncated })
                 {
                     await connection.TryCloseAsync(
                         WebSocketCloseStatus.NormalClosure,

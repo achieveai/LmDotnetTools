@@ -683,6 +683,42 @@ public sealed class ChatWebSocketManagerSubAgentTests
     }
 
     [Fact]
+    public async Task PumpSubAgentStream_OnReplayTruncatedRecovery_ForwardsFrame_KeepsPumping_NeverCloses()
+    {
+        // The truncated-replay advisory is NON-terminal (see StreamRecoveryReason.ReplayTruncated): only
+        // the run's already-published PREFIX is missing, and the same subscription goes on to carry the
+        // live tail. Closing here would force every consumer to reconnect, land on the same still-
+        // truncated buffer, and be advised again for the rest of the run - a reconnect storm. So the pump
+        // must forward the frame and KEEP GOING; only the slow-consumer drop (which really is terminal)
+        // gets the "resync_required" close.
+        const string agentId = "delta";
+        const string liveTailText = "SENTINEL-LIVE-TAIL-71ab-must-reach-the-client";
+
+        var socket = new FakeWebSocket();
+        var connection = new WebSocketConnectionRegistry().Register($"subagent-{agentId}", socket);
+        var manager = CreateManager(EmptyPool());
+        using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        await manager.PumpSubAgentStreamAsync(
+          connection,
+          TruncationAdvisoryThenLiveTail(liveTailText),
+          agentId,
+          testCts.Token);
+
+        socket.SentFrames.Should().HaveCount(2, "the advisory frame plus the live tail that follows it");
+
+        using var doc = JsonDocument.Parse(socket.SentFrames[0]);
+        doc.RootElement.GetProperty("$type").GetString().Should().Be("stream_recovery");
+        doc.RootElement.GetProperty("reason").GetString().Should().Be("replay_truncated");
+
+        socket.SentContains(liveTailText).Should()
+          .BeTrue("the live tail after a truncated-replay advisory must still reach the client");
+        socket.CloseAsyncCalled.Should().BeFalse(
+          "a non-terminal advisory must not tear the socket down - that is what causes the reconnect storm");
+        socket.LastCloseStatusDescription.Should().NotBe("resync_required");
+    }
+
+    [Fact]
     public void LogSubAgentRelayFailure_NeverLeaksExceptionText_WhenExceptionMessageCarriesSecret()
     {
         // Finding #793 (EUII): the relay-failure log must record only a stable category + content-free
@@ -841,6 +877,16 @@ public sealed class ChatWebSocketManagerSubAgentTests
     {
         await Task.CompletedTask;
         yield return new StreamRecoveryMessage("thread-2", "run-2", "gen-2", StreamRecoveryReason.SlowConsumer);
+        yield return new TextMessage { Role = Role.Assistant, Text = laterText };
+    }
+
+    /// <summary>Yields the NON-terminal truncated-replay advisory first, then the run's live tail -
+    /// exactly the shape <c>MultiTurnAgentBase.SubscribeAsync</c> produces for a subscription that joins
+    /// a run whose replay buffer has been capped.</summary>
+    private static async IAsyncEnumerable<IMessage> TruncationAdvisoryThenLiveTail(string laterText)
+    {
+        await Task.CompletedTask;
+        yield return new StreamRecoveryMessage("thread-3", "run-3", "gen-3", StreamRecoveryReason.ReplayTruncated);
         yield return new TextMessage { Role = Role.Assistant, Text = laterText };
     }
 

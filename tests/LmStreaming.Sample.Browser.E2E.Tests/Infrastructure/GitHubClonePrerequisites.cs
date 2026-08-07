@@ -45,6 +45,13 @@ public sealed class GitHubClonePrerequisites
     /// <summary>Resolved directory holding the persisted <c>github.json</c> token (when available).</summary>
     public string? TokenStoreDir { get; }
 
+    /// <summary>
+    /// Upper bound on the probe session's teardown. Deliberately independent of the caller's token so
+    /// the DELETE still runs after a cancellation, and bounded so a wedged gateway cannot hang the
+    /// prerequisite gate indefinitely.
+    /// </summary>
+    private static readonly TimeSpan CleanupTimeout = TimeSpan.FromSeconds(15);
+
     /// <summary>Probes the environment for a persisted GitHub sign-in and returns availability.</summary>
     public static GitHubClonePrerequisites Detect()
     {
@@ -132,14 +139,28 @@ public sealed class GitHubClonePrerequisites
     /// with a descriptive reason, so a broken probe skips the gated test rather than failing it.
     /// </para>
     /// </remarks>
+    /// <param name="gatewayBaseUrl">Base address of the adopted gateway to probe.</param>
+    /// <param name="workspaceBase">The host workspace base the gateway is expected to resolve against.</param>
+    /// <param name="ct">Cancels the probe itself; never the teardown of a session it already created.</param>
+    /// <param name="clientFactory">
+    /// Test seam. Builds the <see cref="SandboxClient"/> this probe talks to; defaults to a real
+    /// client over its own transport. Supplying a stub transport is what makes the teardown and
+    /// error-reporting contracts above verifiable without a live gateway.
+    /// </param>
     public static async Task<HostWorkspaceVerification> VerifyHostVerifiableWorkspaceAsync(
         string gatewayBaseUrl,
         string workspaceBase,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        Func<SandboxClientOptions, SandboxClient>? clientFactory = null)
     {
         var leaf = "e2e-prereq-probe-" + Guid.NewGuid().ToString("N")[..8];
         var probeHostPath = Path.Combine(workspaceBase, leaf);
 
+        // Declared out here so the teardown below can reach the ONE client the probe built; still
+        // CONSTRUCTED inside the try, because both the Uri parse and the client's own construction can
+        // throw on a malformed gateway address, and this method's contract is to degrade to
+        // not-verified rather than fail the caller's gate.
+        SandboxClient? client = null;
         string? sessionId = null;
         try
         {
@@ -152,7 +173,7 @@ public sealed class GitHubClonePrerequisites
                 executionTimeout: TimeSpan.FromSeconds(30),
                 transportTimeout: TimeSpan.FromSeconds(15),
                 allowInsecureDevelopmentTransport: true);
-            using var client = new SandboxClient(options);
+            client = clientFactory?.Invoke(options) ?? new SandboxClient(options);
 
             var info = await client.CreateAsync(new SandboxCreateRequest(leaf), ct).ConfigureAwait(false);
             sessionId = info.SessionId;
@@ -161,31 +182,37 @@ public sealed class GitHubClonePrerequisites
         }
         catch (Exception ex)
         {
+            // Report the failure CATEGORY only. This catch is deliberately unfiltered, so ex is
+            // whatever the transport, the JSON layer or the filesystem threw, and its Message is
+            // text this reason string is not entitled to republish into test output and CI logs.
             return new HostWorkspaceVerification(
                 Verified: false,
-                Reason: "Could not verify the adopted gateway's workspace against this host: "
-                    + $"{ex.GetType().Name}: {ex.Message}");
+                Reason: "Could not verify the adopted gateway's workspace against this host: the probe "
+                    + $"failed with {ex.GetType().Name}. Run the probe manually against the gateway for "
+                    + "the underlying detail.");
         }
         finally
         {
-            if (sessionId is not null)
+            if (client is not null)
             {
-                try
+                if (sessionId is not null)
                 {
-                    var options = new SandboxClientOptions(
-                        new Uri(gatewayBaseUrl),
-                        appId: "e2e-prereq-probe",
-                        clientSecret: string.Empty,
-                        executionTimeout: TimeSpan.FromSeconds(30),
-                        transportTimeout: TimeSpan.FromSeconds(15),
-                        allowInsecureDevelopmentTransport: true);
-                    using var client = new SandboxClient(options);
-                    await client.DeleteAsync(sessionId, ct).ConfigureAwait(false);
+                    try
+                    {
+                        // The throwaway session must be deleted even when the CALLER's token is already
+                        // cancelled — passing ct here would skip the DELETE in exactly the case that
+                        // created a session and then abandoned it, leaking it on the real gateway. An
+                        // independent, bounded token keeps the cleanup both unconditional and finite.
+                        using var cleanupCts = new CancellationTokenSource(CleanupTimeout);
+                        await client.DeleteAsync(sessionId, cleanupCts.Token).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // Best-effort teardown of the throwaway probe session.
+                    }
                 }
-                catch
-                {
-                    // Best-effort teardown of the throwaway probe session.
-                }
+
+                client.Dispose();
             }
 
             try
@@ -314,16 +341,16 @@ public static class HostWorkspacePathVerifier
 
         var strippedReported = StripLongPathPrefix(reportedPath);
 
-        // A Docker-backend gateway reports its fixed in-container mount point (e.g. "/workspace"),
-        // which is never a Windows-rooted path — catches that case generically, without hardcoding
-        // "Docker" or any specific mount literal.
-        if (!Path.IsPathRooted(strippedReported) || !LooksDriveQualified(strippedReported))
+        // A Docker-backend gateway reports its fixed in-container mount point (e.g. "/workspace").
+        // Catch that generically, without hardcoding "Docker" or any specific mount literal — but only
+        // where it is syntactically decidable at all (see LooksLikeAHostPath).
+        if (!LooksLikeAHostPath(strippedReported, OperatingSystem.IsWindows()))
         {
             return new HostWorkspaceVerification(
                 false,
-                $"The adopted gateway reported workspace path '{reportedPath}', which is not a "
-                    + "drive-qualified Windows host path — this looks like a container-internal mount "
-                    + "point (typical of a Docker-backed gateway), not this host's filesystem.");
+                $"The adopted gateway reported workspace path '{reportedPath}', which is not shaped like "
+                    + "an absolute path on this host — this looks like a container-internal mount point "
+                    + "(typical of a Docker-backed gateway), not this host's filesystem.");
         }
 
         string normalizedReported;
@@ -362,8 +389,27 @@ public static class HostWorkspacePathVerifier
         return new HostWorkspaceVerification(true, string.Empty);
     }
 
-    private static bool LooksDriveQualified(string path) =>
-        path.Length >= 2 && path[1] == ':' && char.IsLetter(path[0]);
+    /// <summary>
+    /// Whether <paramref name="path"/> is shaped like an absolute path on a host of the given flavour.
+    /// This is only a PRE-check: its whole job is to reject the container-internal mount point a
+    /// Docker-backed gateway reports, in the one case where that is syntactically decidable — a
+    /// WINDOWS host, where a POSIX-rooted path such as <c>/workspace</c> can never name a local
+    /// directory. On a Unix host that mount point and a real host path are syntactically IDENTICAL, so
+    /// there is nothing to decide here and the existence/equality checks in <see cref="Verify"/> are
+    /// what reject it (a container-internal mount is not a real directory on the host, and even if a
+    /// same-named one existed it would not be the unique probe leaf the caller just created).
+    /// </summary>
+    /// <remarks>
+    /// The host flavour is a PARAMETER, and <see cref="Path.IsPathRooted(string)"/> is deliberately not
+    /// used: both that method and the previous drive-letter-only rule answer for whatever platform the
+    /// test process happens to run on, which is exactly the coupling that made this verifier reject
+    /// every legitimate path on a non-Windows CI agent. Windows UNC paths are intentionally out of
+    /// scope — the workspace bases this gate is used with are drive-qualified.
+    /// </remarks>
+    internal static bool LooksLikeAHostPath(string path, bool windowsHost) =>
+        windowsHost
+            ? path.Length >= 2 && path[1] == ':' && char.IsLetter(path[0])
+            : path.StartsWith('/');
 
     private static string StripLongPathPrefix(string path) =>
         path.StartsWith(@"\\?\", StringComparison.Ordinal) ? path[4..] : path;

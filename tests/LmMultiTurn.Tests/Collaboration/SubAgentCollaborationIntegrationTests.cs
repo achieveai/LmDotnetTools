@@ -4,10 +4,12 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using FluentAssertions;
 using Moq;
 using Xunit;
@@ -923,6 +925,45 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AChildWhoseMonitorFaults_IsPublishedAsError_RatherThanLeftLookingLive()
+    {
+        // A monitor fault ends the run terminally. The directory is what every OTHER agent reads, so
+        // leaving it at "running" keeps the whole hierarchy believing this child is live: a steer
+        // addressed to it passes admission, and a completion barrier waits on a run that can never
+        // answer. The fault is injected through the usage relay because that runs INSIDE the monitor
+        // loop, before any completion handling — i.e. while the entry still says "running", which is
+        // precisely the state under test.
+        var sink = new Mock<IUsageSink>();
+        _ = sink.Setup(s => s.RecordUsage(It.IsAny<UsageRecord>()))
+            .Throws(new InvalidOperationException("usage sink unavailable"));
+
+        _ = _subAgentMock
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(Task.FromResult(ToAsyncEnumerable([
+                new UsageMessage
+                {
+                    Usage = new Usage { PromptTokens = 10, CompletionTokens = 5 },
+                    GenerationId = "gen-1",
+                },
+                new TextMessage { Text = "never observed", Role = Role.Assistant },
+            ])));
+
+        var root = CreateRegisteredRoot();
+        var (manager, provider) = CreateManager(root, usageSink: sink.Object);
+        var childId = await SpawnAndResolveIdAsync(provider);
+
+        // The fault resolves the completion latch, and it does so only AFTER the status publish below —
+        // so awaiting it is a condition, not a clock.
+        var observe = async () => await manager.ObserveCompletionAsync(childId, CancellationToken.None);
+        _ = await observe.Should().ThrowAsync<InvalidOperationException>();
+
+        root.Directory.FindById(childId)!.Status.Should().Be(AgentCollaborationStatuses.Error);
+    }
+
+    [Fact]
     public async Task SendMessage_ToARealSubAgent_ArrivesAsTheTypedAgentMessage()
     {
         // Flattening to text would strip the sender, the kind, and the correlation the UI and the
@@ -964,6 +1005,203 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         payload.IsError.Should().BeTrue();
         payload.ErrorCode.Should().Be("invalid_msg_type");
         payload.Text.Should().Contain("delegate_task");
+    }
+
+    // Regression coverage for a persisted bug: GetOptionalString already collapses an omitted key or an
+    // explicit JSON null to C# null, but a JSON value that is a blank/whitespace STRING survived
+    // unnormalized. For question/delegate_task/steer that skipped the Response/TaskUpdate-only missing-
+    // correlation guard and was passed straight to the messenger, which the ledger then refused as
+    // unknown_correlation (a non-null in_response_to that matches no admitted message) instead of
+    // treating it as no correlation at all.
+
+    [Theory]
+    [InlineData("question")]
+    [InlineData("delegate_task")]
+    [InlineData("steer")]
+    public async Task SendMessage_NonReplyType_WithOmittedCorrelation_Succeeds(string msgType)
+    {
+        var root = CreateRegisteredRoot();
+        _ = RegisterPeer(root, "helper");
+        var (_, provider) = CreateManager(root);
+
+        var payload = await InvokeAsync(provider, "SendMessage", new Dictionary<string, object?>
+        {
+            ["target"] = "helper",
+            ["content"] = "hello",
+            ["msg_type"] = msgType,
+        });
+
+        payload.IsError.Should().BeFalse(payload.Text);
+    }
+
+    [Theory]
+    [InlineData("question")]
+    [InlineData("delegate_task")]
+    [InlineData("steer")]
+    public async Task SendMessage_NonReplyType_WithJsonNullCorrelation_Succeeds(string msgType)
+    {
+        var root = CreateRegisteredRoot();
+        _ = RegisterPeer(root, "helper");
+        var (_, provider) = CreateManager(root);
+
+        var payload = await InvokeAsync(provider, "SendMessage", new Dictionary<string, object?>
+        {
+            ["target"] = "helper",
+            ["content"] = "hello",
+            ["msg_type"] = msgType,
+            ["in_response_to"] = null,
+        });
+
+        payload.IsError.Should().BeFalse(payload.Text);
+    }
+
+    [Theory]
+    [InlineData("question")]
+    [InlineData("delegate_task")]
+    [InlineData("steer")]
+    public async Task SendMessage_NonReplyType_WithEmptyStringCorrelation_NormalizesToAbsentAndSucceeds(
+        string msgType)
+    {
+        var root = CreateRegisteredRoot();
+        _ = RegisterPeer(root, "helper");
+        var (_, provider) = CreateManager(root);
+
+        var payload = await InvokeAsync(provider, "SendMessage", new Dictionary<string, object?>
+        {
+            ["target"] = "helper",
+            ["content"] = "hello",
+            ["msg_type"] = msgType,
+            ["in_response_to"] = "",
+        });
+
+        payload.IsError.Should().BeFalse(payload.Text);
+    }
+
+    [Theory]
+    [InlineData("question")]
+    [InlineData("delegate_task")]
+    [InlineData("steer")]
+    public async Task SendMessage_NonReplyType_WithWhitespaceCorrelation_NormalizesToAbsentAndSucceeds(
+        string msgType)
+    {
+        var root = CreateRegisteredRoot();
+        _ = RegisterPeer(root, "helper");
+        var (_, provider) = CreateManager(root);
+
+        var payload = await InvokeAsync(provider, "SendMessage", new Dictionary<string, object?>
+        {
+            ["target"] = "helper",
+            ["content"] = "hello",
+            ["msg_type"] = msgType,
+            ["in_response_to"] = "   ",
+        });
+
+        payload.IsError.Should().BeFalse(payload.Text);
+    }
+
+    [Theory]
+    [InlineData("response")]
+    [InlineData("task_update")]
+    public async Task SendMessage_ReplyType_WithJsonNullCorrelation_ReturnsMissingCorrelation(string msgType)
+    {
+        var root = CreateRegisteredRoot();
+        _ = RegisterPeer(root, "helper");
+        var (_, provider) = CreateManager(root);
+
+        var payload = await InvokeAsync(provider, "SendMessage", new Dictionary<string, object?>
+        {
+            ["target"] = "helper",
+            ["content"] = "hello",
+            ["msg_type"] = msgType,
+            ["in_response_to"] = null,
+        });
+
+        payload.IsError.Should().BeTrue();
+        payload.ErrorCode.Should().Be(AgentMessageFailureCodes.MissingCorrelation);
+    }
+
+    [Theory]
+    [InlineData("response")]
+    [InlineData("task_update")]
+    public async Task SendMessage_ReplyType_WithEmptyStringCorrelation_ReturnsMissingCorrelation(string msgType)
+    {
+        var root = CreateRegisteredRoot();
+        _ = RegisterPeer(root, "helper");
+        var (_, provider) = CreateManager(root);
+
+        var payload = await InvokeAsync(provider, "SendMessage", new Dictionary<string, object?>
+        {
+            ["target"] = "helper",
+            ["content"] = "hello",
+            ["msg_type"] = msgType,
+            ["in_response_to"] = "",
+        });
+
+        payload.IsError.Should().BeTrue();
+        payload.ErrorCode.Should().Be(AgentMessageFailureCodes.MissingCorrelation);
+    }
+
+    [Theory]
+    [InlineData("response")]
+    [InlineData("task_update")]
+    public async Task SendMessage_ReplyType_WithWhitespaceCorrelation_ReturnsMissingCorrelation(string msgType)
+    {
+        var root = CreateRegisteredRoot();
+        _ = RegisterPeer(root, "helper");
+        var (_, provider) = CreateManager(root);
+
+        var payload = await InvokeAsync(provider, "SendMessage", new Dictionary<string, object?>
+        {
+            ["target"] = "helper",
+            ["content"] = "hello",
+            ["msg_type"] = msgType,
+            ["in_response_to"] = "   ",
+        });
+
+        payload.IsError.Should().BeTrue();
+        payload.ErrorCode.Should().Be(AgentMessageFailureCodes.MissingCorrelation);
+    }
+
+    [Fact]
+    public async Task SendMessage_ResponseWithARealButUnknownCorrelation_IsRefusedAsUnknownCorrelation()
+    {
+        // Proves the blank-normalization fix is scoped to blank/whitespace only: a real, well-formed but
+        // unrecognized id must still be refused rather than silently treated as absent.
+        var root = CreateRegisteredRoot();
+        _ = RegisterPeer(root, "helper");
+        var (_, provider) = CreateManager(root);
+
+        var payload = await InvokeAsync(provider, "SendMessage", new
+        {
+            target = "helper",
+            content = "the answer",
+            msg_type = "response",
+            in_response_to = "agentmsg-does-not-exist",
+        });
+
+        payload.IsError.Should().BeTrue();
+        payload.ErrorCode.Should().Be(AgentMessageFailureCodes.UnknownCorrelation);
+    }
+
+    [Fact]
+    public async Task SendMessage_QuestionWithARealButUnknownCorrelation_IsRefusedAsUnknownCorrelation()
+    {
+        // Same as above, for a NON-reply type: this is exactly the code path the fix touches, so it must
+        // not collapse a real-but-wrong id to "no correlation" the way it does for blank ones.
+        var root = CreateRegisteredRoot();
+        _ = RegisterPeer(root, "helper");
+        var (_, provider) = CreateManager(root);
+
+        var payload = await InvokeAsync(provider, "SendMessage", new
+        {
+            target = "helper",
+            content = "hello",
+            msg_type = "question",
+            in_response_to = "agentmsg-does-not-exist",
+        });
+
+        payload.IsError.Should().BeTrue();
+        payload.ErrorCode.Should().Be(AgentMessageFailureCodes.UnknownCorrelation);
     }
 
     #endregion
@@ -1255,7 +1493,8 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     private (SubAgentManager Manager, SubAgentToolProvider Provider) CreateManager(
         AgentCollaborationSetup? collaboration,
         SubAgentTemplate? template = null,
-        Func<SubAgentOptions, SubAgentOptions>? configure = null)
+        Func<SubAgentOptions, SubAgentOptions>? configure = null,
+        IUsageSink? usageSink = null)
     {
         var options = new SubAgentOptions
         {
@@ -1281,6 +1520,7 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
             parentHandlers: new Dictionary<string, ToolHandler>(),
             options: options,
             source: source,
+            usageSink: usageSink,
             collaboration: collaboration);
 
         _managers.Add(manager);

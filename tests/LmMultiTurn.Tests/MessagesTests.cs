@@ -245,4 +245,45 @@ public class MessagesTests
     }
 
     #endregion
+
+    #region Client wire-contract discriminators
+
+    /// <summary>
+    /// Serializes through the STATIC type and the options the WebSocket pump uses
+    /// (<c>ChatWebSocketManager.PumpMessagesToClientAsync</c> serializes an <see cref="IMessage"/> with
+    /// <see cref="JsonSerializerOptionsFactory.CreateForProduction"/>), so the bytes asserted below are
+    /// the bytes that reach the browser — not what a differently-typed call would produce.
+    /// </summary>
+    private static string SerializeAsProductionFrame(IMessage message) =>
+        JsonSerializer.Serialize(message, JsonSerializerOptionsFactory.CreateForProduction());
+
+    // Both control frames are routed by the chat client on a RAW SUBSTRING match against the serialized
+    // payload (samples/LmStreaming.Sample/ClientApp/src/api/wsClient.ts). Neither type is named in a
+    // [JsonDerivedType] attribute on IMessage — LmCore has no reference to LmMultiTurn, so it cannot
+    // name them — which means the discriminator actually emitted comes from IMessageJsonConverter's
+    // TYPE-NAME fallback (strip "Message", convert to snake_case). Nothing in either type's own source
+    // states the string the client depends on, so a plain rename or a tweak to that fallback is a
+    // SILENT client outage: the frame still ships and still parses, the client simply stops
+    // recognising it — never resyncing after a drop, never discarding an abandoned partial.
+
+    [Fact]
+    public void StreamRecoveryMessage_EmitsTheDiscriminatorTheChatClientMatchesOn()
+    {
+        var json = SerializeAsProductionFrame(
+            new StreamRecoveryMessage("thread-1", "run-1", "gen-1", StreamRecoveryReason.SlowConsumer));
+
+        // Matched by wsClient.ts: data.includes('"$type":"stream_recovery"').
+        json.Should().Contain("\"$type\":\"stream_recovery\"");
+    }
+
+    [Fact]
+    public void GenerationAbandonedMessage_EmitsTheDiscriminatorTheChatClientMatchesOn()
+    {
+        var json = SerializeAsProductionFrame(new GenerationAbandonedMessage("thread-1", "run-1", "gen-1"));
+
+        // Matched by wsClient.ts: data.includes('"$type":"generation_abandoned"').
+        json.Should().Contain("\"$type\":\"generation_abandoned\"");
+    }
+
+    #endregion
 }

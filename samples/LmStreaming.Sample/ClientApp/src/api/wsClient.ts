@@ -6,10 +6,13 @@ import { logger } from '@/utils';
 const log = logger.forComponent('WebSocketClient');
 
 /**
- * Payload of a server `stream_recovery` frame: the server is deliberately dropping this socket
- * (e.g. `reason: 'slow_consumer'`) and the client must resynchronize from REST instead of waiting
- * for frames that will never come. The frame is immediately followed by a CLEAN close with reason
- * `resync_required` and NO `done`.
+ * Payload of a server `stream_recovery` frame: this stream has a hole in it and the client must
+ * resynchronize from REST rather than wait for frames that will never come. Whether the socket also
+ * ENDS here is a property of `reason`:
+ * - `slow_consumer` — the server deliberately dropped this socket; the frame is immediately followed
+ *   by a CLEAN close with reason `resync_required` and NO `done`.
+ * - `replay_truncated` — only the run's already-published PREFIX is missing; the socket stays open
+ *   and goes on to deliver the live tail, so the client refetches history in place.
  */
 export interface StreamRecoveryInfo {
   reason: string;
@@ -304,12 +307,13 @@ export function openWebSocketConnection(
           return;
         }
 
-        // The server is deliberately dropping this stream and expects a REST-first resync. Sniffed
-        // before `done` because this socket will NEVER receive one — the frame is followed by a
-        // clean close with reason `resync_required`, which on its own looks like a normal shutdown.
+        // The server is telling this stream to resynchronize from REST. Sniffed before `done` because
+        // a `slow_consumer` socket will NEVER receive one — that frame is followed by a clean close
+        // with reason `resync_required`, which on its own looks like a normal shutdown. (A
+        // `replay_truncated` frame is NOT a drop: the socket stays open and carries the live tail.)
         if (data.includes('"$type":"stream_recovery"')) {
           const recovery = JSON.parse(data) as StreamRecoveryInfo;
-          log.warn('Received stream_recovery; server is dropping this stream', {
+          log.warn('Received stream_recovery; this stream must resynchronize from history', {
             reason: recovery.reason,
             connectionId,
             threadId: effectiveThreadId,

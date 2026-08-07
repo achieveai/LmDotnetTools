@@ -481,6 +481,19 @@ public static class WorkflowSession
         {
             await foreach (var message in loop.ExecuteRunAsync(objectiveInput, ct).ConfigureAwait(false))
             {
+                // The controller's stream was severed (this consumer was dropped) rather than the run
+                // having completed. Draining out of the loop from here would signal completion and
+                // report a truncated workflow as a successful one, so fail it explicitly.
+                if (message is StreamRecoveryMessage recovery)
+                {
+                    runtime.SignalFailure(
+                        new InvalidOperationException(
+                            $"The workflow controller's message stream was severed ({recovery.Reason}) before the run completed."
+                        )
+                    );
+                    return;
+                }
+
                 // Before a schema'd sub-agent result is recorded, give a cheap LLM one chance to rewrite an
                 // invalid reply into schema-valid JSON (auto-on only when the cheap tier is wired). This is the
                 // only genuinely async, lock-free point upstream of the runtime's synchronous, Monitor-locked

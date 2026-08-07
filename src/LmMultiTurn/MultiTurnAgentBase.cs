@@ -57,6 +57,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     private bool _replayBufferTruncated;
     private long _replayBufferBytes;
     private string? _replayRunId;
+    private string? _replayGenerationId;
     // Replay is bounded by BOTH a message count and an estimated byte budget: a long tool/reasoning
     // turn can stay under the count cap while still retaining large per-message payloads (text, tool
     // args/results), and multiple live conversations multiply that. Whichever cap trips first stops
@@ -99,6 +100,11 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     // ConversationUsageProjection.MaxCompleteness, so a stale InProgress write can never regress it.
     private UsageCompleteness _usageCompleteness = UsageCompleteness.InProgress;
     private volatile bool _isDisposed;
+
+    // The single teardown every DisposeAsync caller awaits. Assigned under _replayLock together with
+    // _isDisposed, so disposal is both idempotent AND awaitable: a second caller can never return
+    // "disposed" while the first teardown is still mid-flight.
+    private Task? _disposeTask;
 
     // Set once run-ledger reconciliation has run for this process instance, so RunAsync never
     // re-reconciles on an explicit restart within the same process (only a genuine new process
@@ -1162,9 +1168,17 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             SingleWriter = true,
         });
 
-        if (!_outputSubscribers.TryAdd(subscriberId, new Subscriber { Channel = outputChannel }))
+        var subscriber = new Subscriber { Channel = outputChannel };
+        lock (_replayLock)
         {
-            throw new InvalidOperationException("Failed to create subscriber for ExecuteRun");
+            // Same admission gate as SubscribeAsync: registering behind disposal's teardown drain
+            // would strand this run on a channel nobody will complete.
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            if (!_outputSubscribers.TryAdd(subscriberId, subscriber))
+            {
+                throw new InvalidOperationException("Failed to create subscriber for ExecuteRun");
+            }
         }
 
         try
@@ -1223,7 +1237,15 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
                 if (!hasMessage)
                 {
-                    // Channel completed — exit cleanly.
+                    // Channel completed. An ordinary completion and a slow-consumer eviction look
+                    // identical here, so a silent exit would report a run this caller only partly
+                    // received as one that finished. Surface the reserved recovery control (set only
+                    // by PublishToSubscriber's eviction path) as the terminal message instead.
+                    if (subscriber.RecoveryControl.Task.IsCompletedSuccessfully)
+                    {
+                        yield return subscriber.RecoveryControl.Task.Result;
+                    }
+
                     yield break;
                 }
 
@@ -1274,9 +1296,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         finally
         {
             // Clean up subscriber
-            if (_outputSubscribers.TryRemove(subscriberId, out var subscriber))
+            if (_outputSubscribers.TryRemove(subscriberId, out var removed))
             {
-                _ = subscriber.Channel.Writer.TryComplete();
+                _ = removed.Channel.Writer.TryComplete();
             }
         }
     }
@@ -1287,8 +1309,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
     /// <summary>
     /// Per-subscriber fan-out state. Tracks the bounded output channel alongside the run/generation
-    /// identity most recently observed for this subscriber (best-effort - not every message kind
-    /// carries both ids, see <see cref="PublishToSubscriber"/>), plus a reserved terminal recovery
+    /// identity of the last message actually DELIVERED to this subscriber (see
+    /// <see cref="PublishToSubscriber"/>), plus a reserved terminal recovery
     /// control. <see cref="RecoveryControl"/> is completed ONLY when <see cref="PublishToSubscriber"/>
     /// drops this subscriber for being too slow - never on an ordinary unsubscribe (this class's own
     /// <see cref="SubscribeAsync"/> cleanup) or on agent disposal (<see cref="DisposeAsync"/>) - so a
@@ -1299,12 +1321,38 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     {
         public required Channel<IMessage> Channel { get; init; }
 
-        public string? LastRunId { get; set; }
+        /// <summary>
+        /// Guards the write-then-record step in <see cref="PublishToSubscriber"/>. Two publishers
+        /// writing to the same subscriber concurrently must not interleave "write B" between
+        /// "write A" and "record A", or the recorded resume point can name an older message than
+        /// the one actually delivered last.
+        /// </summary>
+        public object SyncRoot { get; } = new();
 
-        public string? LastGenerationId { get; set; }
+        /// <summary>Run/generation of the last message this subscriber ACTUALLY received.</summary>
+        public DeliveredIdentity Identity { get; set; }
 
         public TaskCompletionSource<StreamRecoveryMessage> RecoveryControl { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    /// <summary>
+    /// The run/generation pair a subscriber is caught up on. Advanced as one unit so the pair is
+    /// always an identity that genuinely occurred, never a mix of two runs' identifiers.
+    /// </summary>
+    private readonly record struct DeliveredIdentity(string? RunId, string? GenerationId)
+    {
+        /// <summary>
+        /// Folds a just-delivered message into the pair. A message that moves this subscriber onto a
+        /// DIFFERENT run adopts that run's generation wholesale — including "none" — rather than
+        /// inheriting the previous run's, which would fabricate a pair that never existed. Within one
+        /// run, ids are merged forward: several message kinds omit one or both (e.g. a finalized
+        /// tool_call arrives without a RunId), and a null must not erase an already-known value.
+        /// </summary>
+        public DeliveredIdentity Advance(IMessage message) =>
+            message.RunId != null && !string.Equals(message.RunId, RunId, StringComparison.Ordinal)
+                ? new DeliveredIdentity(message.RunId, message.GenerationId)
+                : this with { GenerationId = message.GenerationId ?? GenerationId };
     }
 
     /// <inheritdoc />
@@ -1324,12 +1372,48 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         // the live channel below — never both, never neither. See `_replayLock` remarks.
         var subscriber = new Subscriber { Channel = channel };
         IReadOnlyList<IMessage> replay;
+        StreamRecoveryMessage? truncationAdvisory = null;
         lock (_replayLock)
         {
+            // Admission is gated under the SAME lock DisposeAsync marks itself with, so a subscriber
+            // can never register behind disposal's teardown drain and be left waiting forever on a
+            // channel nobody will complete.
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+
+            if (_replayRunActive && _replayBufferTruncated)
+            {
+                // The buffer no longer covers the whole run, and a client cannot tell a partial
+                // replay from a complete one. Withhold it entirely and advise THIS subscription to
+                // resync from authoritative history — every subscription, for itself. The advisory is
+                // a LEADING frame, not a terminal one: only the run's already-published PREFIX is
+                // missing, so the subscriber is still registered below and goes on to receive the live
+                // tail. That is what keeps advising everyone loop-free — no consumer has to reconnect
+                // in order to keep following the run, and so no consumer can be advised again by the
+                // reconnection landing on the same still-truncated buffer.
+                replay = [];
+                truncationAdvisory = new StreamRecoveryMessage(
+                    ThreadId,
+                    _replayRunId,
+                    _replayGenerationId,
+                    StreamRecoveryReason.ReplayTruncated);
+            }
+            else
+            {
+                replay = _replayRunActive && _replayBuffer.Count > 0
+                    ? [.. _replayBuffer]
+                    : [];
+            }
+
             _outputSubscribers[subscriberId] = subscriber;
-            replay = _replayRunActive && _replayBuffer.Count > 0
-                ? [.. _replayBuffer]
-                : [];
+        }
+
+        if (truncationAdvisory is not null)
+        {
+            Logger.LogWarning(
+                "Subscriber {SubscriberId} joined run {RunId} whose replay buffer is truncated; "
+                    + "withholding the partial replay and signalling resync.",
+                subscriberId,
+                truncationAdvisory.RunId);
         }
 
         Logger.LogDebug(
@@ -1340,7 +1424,15 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         try
         {
             // Replay the in-flight run's already-published messages first (so a reconnecting client
-            // resumes from the start of the live run), then stream subsequent live messages.
+            // resumes from the start of the live run), then stream subsequent live messages. When the
+            // replay was withheld as truncated there is nothing to replay and the advisory takes its
+            // place at the head of the stream, ahead of the live tail.
+            if (truncationAdvisory is not null)
+            {
+                ct.ThrowIfCancellationRequested();
+                yield return truncationAdvisory;
+            }
+
             foreach (var buffered in replay)
             {
                 ct.ThrowIfCancellationRequested();
@@ -1408,6 +1500,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                         _replayRunActive = true;
                         _replayBufferTruncated = false;
                         _replayRunId = incomingRunId;
+                        _replayGenerationId = ram.Assignment?.GenerationId;
                     }
                 }
 
@@ -1422,9 +1515,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                     {
                         _replayBufferTruncated = true;
                         Logger.LogWarning(
-                            "In-flight replay buffer hit its cap ({CountCap} messages / {ByteCap} bytes); a client "
-                                + "reconnecting mid-run may miss the earliest deltas of this run (persisted history "
-                                + "still covers its completed messages).",
+                            "In-flight replay buffer hit its cap ({CountCap} messages / {ByteCap} bytes); the "
+                                + "buffered prefix no longer covers this run, so it is withheld from a client "
+                                + "reconnecting mid-run — that client is told to resync from persisted history "
+                                + "instead of resuming on a silently partial stream.",
                             _maxReplayBufferSize,
                             _maxReplayBufferBytes);
                     }
@@ -1474,37 +1568,37 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// </summary>
     private void PublishToSubscriber(string subscriberId, Subscriber subscriber, IMessage message)
     {
-        // Track the most recent run/generation identity actually delivered to this subscriber, so an
-        // eventual StreamRecoveryMessage (built below, only if this subscriber is dropped) can stamp
-        // the identifiers of the run it was last caught up on instead of nulls. Best-effort: several
-        // message kinds omit one or both ids (e.g. a finalized tool_call arrives without RunId), so a
-        // null on the message never overwrites an already-known value.
-        if (message.RunId != null)
+        // Record the run/generation identity ONLY once the message is genuinely in the subscriber's
+        // channel, and under that subscriber's own lock so a concurrent publisher cannot interleave
+        // between the write and the record. The identity is the resume point stamped on an eventual
+        // StreamRecoveryMessage: recording a message that was never delivered would tell the client
+        // it is caught up on content it never saw.
+        lock (subscriber.SyncRoot)
         {
-            subscriber.LastRunId = message.RunId;
-        }
-
-        if (message.GenerationId != null)
-        {
-            subscriber.LastGenerationId = message.GenerationId;
-        }
-
-        // Fast path: succeeds whenever the subscriber is keeping up (the overwhelming common case).
-        if (subscriber.Channel.Writer.TryWrite(message))
-        {
-            return;
+            // Fast path: succeeds whenever the subscriber is keeping up (the overwhelming common case).
+            if (subscriber.Channel.Writer.TryWrite(message))
+            {
+                subscriber.Identity = subscriber.Identity.Advance(message);
+                return;
+            }
         }
 
         if (_outputSubscribers.TryRemove(subscriberId, out var removed))
         {
+            DeliveredIdentity identity;
+            lock (removed.SyncRoot)
+            {
+                identity = removed.Identity;
+            }
+
             // Reserve the terminal recovery control BEFORE completing the channel, so it is
             // observable to SubscribeAsync even though the channel it was dropped from is (by
             // definition) full: SubscribeAsync checks this TCS only after its own read loop ends,
             // never by writing into the now-completed channel.
             _ = removed.RecoveryControl.TrySetResult(new StreamRecoveryMessage(
                 ThreadId,
-                removed.LastRunId,
-                removed.LastGenerationId,
+                identity.RunId,
+                identity.GenerationId,
                 StreamRecoveryReason.SlowConsumer));
             _ = removed.Channel.Writer.TryComplete();
             Logger.LogWarning(
@@ -1719,15 +1813,59 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     }
 
     /// <inheritdoc />
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        if (_isDisposed)
+        var owned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task inFlight;
+        lock (_replayLock)
         {
+            // Marking disposed under the lock that gates subscriber admission closes the window where
+            // a subscriber registers behind the teardown drain below. Publishing the teardown task
+            // under the same lock makes disposal idempotent AND awaitable: a plain bool guard lets a
+            // second caller return "disposed" while the first teardown is still running, handing back
+            // a half-disposed agent.
+            _isDisposed = true;
+            inFlight = _disposeTask ??= owned.Task;
+        }
+
+        if (!ReferenceEquals(inFlight, owned.Task))
+        {
+            return new ValueTask(inFlight);
+        }
+
+        // The FIRST caller awaits the very task every later caller awaits, rather than the teardown's
+        // own. Returning the latter would give a failing teardown TWO faulted tasks — the one this
+        // caller handles, and the published one that only a second caller would ever look at. With a
+        // single caller (one `await using`, the common case) nobody observes the published fault, so
+        // the task finaliser re-raises it on TaskScheduler.UnobservedTaskException long after the
+        // disposal it belongs to was handled correctly. DisposeOnceAsync therefore PUBLISHES its
+        // outcome instead of throwing, which leaves its own task always successful and safe to drop.
+        _ = DisposeOnceAsync(owned);
+        return new ValueTask(owned.Task);
+    }
+
+    /// <summary>
+    /// Runs the one-and-only teardown and publishes its outcome — success or fault — to the single
+    /// task every caller of <see cref="DisposeAsync"/> awaits.
+    /// </summary>
+    /// <param name="completion">The published completion this teardown's outcome is reported on.</param>
+    private async Task DisposeOnceAsync(TaskCompletionSource completion)
+    {
+        try
+        {
+            await DisposeCoreAsync();
+        }
+        catch (Exception ex)
+        {
+            _ = completion.TrySetException(ex);
             return;
         }
 
-        _isDisposed = true;
+        _ = completion.TrySetResult();
+    }
 
+    private async Task DisposeCoreAsync()
+    {
         // Before StopAsync, so an internal enqueue still parked on a full channel is released
         // rather than holding the loop's shutdown open behind it.
         await _lifetimeCts.CancelAsync();
@@ -1758,19 +1896,27 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
         // Close all subscriber channels. Disposal is not a slow-consumer eviction, so it never
         // touches RecoveryControl - a subscriber still reading here simply sees its channel end
-        // (no StreamRecoveryMessage), same as any other clean shutdown. Remove BEFORE completing
-        // (matching PublishToSubscriber's slow-consumer path and SubscribeAsync's own unsubscribe
-        // cleanup): once a subscriber is removed here, a concurrent publish's TryRemove can no
-        // longer also see it, so it can never race this teardown into wrongly setting
-        // RecoveryControl on an ordinary disposal.
-        foreach (var (subscriberId, subscriber) in _outputSubscribers)
+        // (no StreamRecoveryMessage), same as any other clean shutdown. Drain the map under
+        // _replayLock and remove BEFORE completing (matching PublishToSubscriber's slow-consumer
+        // path and SubscribeAsync's own unsubscribe cleanup): once a subscriber is removed here, a
+        // concurrent publish's snapshot can no longer also see it, so it can never race this
+        // teardown into wrongly setting RecoveryControl on an ordinary disposal. Draining under the
+        // lock (which _isDisposed was set beneath) is what makes the drain final — no admission can
+        // follow it.
+        KeyValuePair<string, Subscriber>[] subscribers;
+        lock (_replayLock)
         {
-            _ = _outputSubscribers.TryRemove(subscriberId, out _);
+#pragma warning disable IDE0305 // See PublishToAllAsync: ToArray() is the only torn-snapshot-free copy.
+            subscribers = _outputSubscribers.ToArray();
+#pragma warning restore IDE0305
+            _outputSubscribers.Clear();
+        }
+
+        foreach (var (subscriberId, subscriber) in subscribers)
+        {
             _ = subscriber.Channel.Writer.TryComplete();
             await OnSubscriberChannelCompletedDuringDisposeAsync(subscriberId);
         }
-
-        _outputSubscribers.Clear();
 
         GC.SuppressFinalize(this);
     }

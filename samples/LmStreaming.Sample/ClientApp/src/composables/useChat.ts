@@ -310,6 +310,103 @@ export function useChat(options: UseChatOptions = {}) {
   let activeSocketState: StreamSocketState | null = null;
   let socketSequence = 0;
 
+  /**
+   * The in-place history fill started by a `replay_truncated` advisory, and the frames that arrived
+   * on the advised socket while it was in flight.
+   *
+   * `replay_truncated` keeps the socket OPEN (see `onStreamRecovery`), so the live tail goes on
+   * arriving throughout an asynchronous refetch whose tail-end is DESTRUCTIVE — it wipes the message
+   * index, the merger accumulators and the pending queue before rebuilding from persisted history.
+   * A frame applied during that window is therefore wiped by the reload that lands after it, and
+   * persisted history cannot bring it back: it is precisely the tail the server has not persisted
+   * yet. Holding those frames here and replaying them AFTERWARDS — in arrival order, through the
+   * very same `handleMessage` — is what keeps them, without re-implementing a single thing about
+   * merge keys, content-turn epochs or accumulation.
+   */
+  let truncatedReplayRehydrate: {
+    socket: StreamSocketState;
+    /** The conversation this fill belongs to; a queue outliving its epoch must be discarded. */
+    epoch: number;
+    deferred: Array<() => void>;
+  } | null = null;
+
+  /**
+   * Render `apply` now, or hold it until this socket's in-place history fill has finished. Used for
+   * everything that PAINTS (`onMessage` for every message kind, and the completion half of `onDone`);
+   * per-socket lifecycle bookkeeping stays immediate, because that is a fact about the connection
+   * rather than about the transcript.
+   */
+  function applyOrDefer(socketState: StreamSocketState, apply: () => void): void {
+    const rehydrate = truncatedReplayRehydrate;
+    if (rehydrate && rehydrate.socket === socketState) {
+      rehydrate.deferred.push(apply);
+      return;
+    }
+    apply();
+  }
+
+  /**
+   * Fill the hole a `replay_truncated` advisory reported, in place, without dropping the socket.
+   *
+   * Single-flight per socket: the server advises once per resumed subscription, so the SAME hole can
+   * be announced repeatedly — a second refetch would restart the destructive reload and throw away
+   * whatever the first one is holding. An advisory from a DIFFERENT socket supersedes instead: the
+   * superseded record's settle sees that it is no longer installed and drops its queue, which is
+   * right, because frames buffered for a socket that is no longer live are re-delivered by whatever
+   * replaced it.
+   */
+  function fillTruncatedReplayHole(socketState: StreamSocketState): void {
+    // Same guard the error path applies: a socket that is no longer the live one, has already asked
+    // for recovery, or belongs to a conversation the user has left must not trigger a reload of the
+    // conversation now on screen.
+    if (
+      activeSocketState !== socketState ||
+      socketState.resyncRequested ||
+      socketState.epoch !== conversationEpoch
+    ) {
+      log.debug('Ignoring a truncated-replay advisory from a socket that is no longer the live one', {
+        threadId: socketState.threadId,
+      });
+      return;
+    }
+    if (truncatedReplayRehydrate?.socket === socketState) return;
+
+    const rehydrate = { socket: socketState, epoch: conversationEpoch, deferred: [] as Array<() => void> };
+    truncatedReplayRehydrate = rehydrate;
+
+    // `preservePending`: unlike a conversation switch, this fills a hole in the conversation still on
+    // screen — the prompts queued against it are still going to be sent and must not be discarded.
+    void loadMessagesFromBackend(socketState.threadId, { preservePending: true })
+      .catch((err) => {
+        // Swallowed, not rethrown: this chain is void-ed, so a rejection escaping it would surface as
+        // an unhandled rejection. A failed fill is recoverable — the next frame still renders.
+        log.warn('Failed to rehydrate history after a truncated replay', {
+          threadId: socketState.threadId,
+          error: err instanceof Error ? err.name : 'unknown',
+        });
+      })
+      .finally(() => {
+        // A newer advisory took over; its record owns the socket now and this queue is not its.
+        if (truncatedReplayRehydrate !== rehydrate) return;
+        truncatedReplayRehydrate = null;
+        // The reload discards its own result on a stale epoch; the frames held beside it go the same
+        // way, or a conversation the user left would paint itself onto the one they opened. A socket
+        // that has been replaced is equally not the one being rendered.
+        if (rehydrate.epoch !== conversationEpoch || activeSocketState !== rehydrate.socket) {
+          log.debug('Discarding frames buffered for a stream that is no longer the live one', {
+            threadId: rehydrate.socket.threadId,
+            bufferedCount: rehydrate.deferred.length,
+          });
+          return;
+        }
+        // `finally`, so this also runs when the fetch FAILED: a refetch that threw performed no wipe,
+        // so the tail it was holding is still valid and dropping it would freeze the transcript over a
+        // transient error. (The catch above independently makes that true today; `finally` keeps the
+        // "the queue always drains" invariant local to this line rather than to its neighbour.)
+        for (const apply of rehydrate.deferred) apply();
+      });
+  }
+
   /** The identity a stream socket is bound to. Compared as a whole; never parsed apart. */
   function streamRoute(
     thread: string,
@@ -1034,6 +1131,11 @@ export function useChat(options: UseChatOptions = {}) {
       isSending.value = false;
     } catch (err) {
       error.value = err instanceof Error ? err.message : 'Unknown error';
+      // Nothing reached the wire (every throw above is raised BEFORE the send), so this prompt
+      // starts no run. Leaving it queued would let the next run's `run_assignment` activate it as
+      // that run's input — the queue is consumed positionally against `inputIds`. The banner is the
+      // user's record of it; the queue must only hold prompts that are still going to be sent.
+      pendingMessages.value = pendingMessages.value.filter(msg => msg.id !== tempId);
       isLoading.value = false;
       isSending.value = false;
     }
@@ -1058,7 +1160,11 @@ export function useChat(options: UseChatOptions = {}) {
       resetContentTurnEpoch();
       reset();
     },
-    loadHistory: loadMessagesFromBackend,
+    // `preservePending`, for the same reason the in-place `replay_truncated` fill passes it: a drop
+    // recovery rehydrates the conversation STILL ON SCREEN, at the same epoch, so the prompts queued
+    // against it are still going to be sent. Only a conversation SWITCH — the reload's default caller
+    // — legitimately leaves the queue behind, so the default stays as it is.
+    loadHistory: (thread) => loadMessagesFromBackend(thread, { preservePending: true }),
     // Consults authoritative run state and opens a subscribe-only socket only while the run is
     // genuinely in flight; settles the UI to idle (markStreamIdle) when it is not.
     resubscribe: resumeStreamIfActive,
@@ -1250,6 +1356,10 @@ export function useChat(options: UseChatOptions = {}) {
       workspaceId: currentWorkspaceId,
       record: recordEnabled,
       ...callbacks,
+      // Overrides the spread above. Every message kind reaches the transcript through here — text,
+      // reasoning, tool calls and their results, run lifecycle, usage — so ONE gate covers them all
+      // while an in-place `replay_truncated` fill is rewriting the index underneath us.
+      onMessage: (msg: Message) => applyOrDefer(socketState, () => callbacks.onMessage(msg)),
       onAuthEvent: handleAuthEvent,
       onGenerationAbandoned: handleGenerationAbandoned,
       onSandboxSessionRefresh: async (deferred) => {
@@ -1286,7 +1396,10 @@ export function useChat(options: UseChatOptions = {}) {
         // the drop) must not abandon the recovery it started; `resubscribe` consults authoritative
         // run state, so continuing is self-correcting when the run really did finish.
         if (activeSocketState === socketState && !socketState.resyncRequested) resyncCoordinator.invalidate();
-        callbacks.onDone();
+        // `done` means "everything before me is rendered". Letting it through while the frames it
+        // completes are still held by an in-place fill would mark the transcript finished and then
+        // append a block nothing ever settles, so it queues behind them.
+        applyOrDefer(socketState, callbacks.onDone);
         if (
           sandboxRefreshDeferred &&
           sandboxRefreshThreadId === effectiveThreadId &&
@@ -1353,6 +1466,15 @@ export function useChat(options: UseChatOptions = {}) {
       },
       // The server announced the drop up front; recover without waiting for the close that follows.
       onStreamRecovery: (info) => {
+        // `replay_truncated` is NOT a drop: only the run's already-published PREFIX is missing from the
+        // replay buffer, and THIS socket still carries the live tail. Fill the hole from authoritative
+        // history in place and keep the socket. Routing it through requestStreamResync would close and
+        // reopen, land on the same still-truncated buffer, and be advised again for the rest of the
+        // run — a reconnect storm.
+        if (info.reason === 'replay_truncated') {
+          fillTruncatedReplayHole(socketState);
+          return;
+        }
         requestStreamResync(socketState, info.reason || 'stream_recovery');
       },
       // #246: settle whichever submitClientToolResult() call is waiting on this toolCallId.
@@ -1763,9 +1885,17 @@ export function useChat(options: UseChatOptions = {}) {
   }
 
   /**
-   * Load messages from backend for an existing conversation
+   * Load messages from backend for an existing conversation.
+   *
+   * `preservePending` keeps the queue of not-yet-sent user prompts. Clearing it is right for the
+   * default caller — a conversation SWITCH, where the queue belongs to the conversation being left —
+   * but wrong for an in-place fill of the conversation still on screen (`replay_truncated`), whose
+   * queued prompts are still going to be sent.
    */
-  async function loadMessagesFromBackend(existingThreadId: string): Promise<void> {
+  async function loadMessagesFromBackend(
+    existingThreadId: string,
+    options: { preservePending?: boolean } = {}
+  ): Promise<void> {
     log.info('Loading messages from backend', { threadId: existingThreadId });
 
     // Everything below the await is DESTRUCTIVE (it wipes the message index and reassigns
@@ -1787,7 +1917,7 @@ export function useChat(options: UseChatOptions = {}) {
     log.debug('Loaded persisted messages', { count: persistedMessages.length });
 
     // Clear current state
-    pendingMessages.value = [];
+    if (!options.preservePending) pendingMessages.value = [];
     messageIndex.value.clear();
     messageOrder.value = [];
     toolResults.value.clear();

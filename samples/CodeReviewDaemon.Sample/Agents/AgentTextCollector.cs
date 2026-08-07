@@ -95,6 +95,15 @@ internal static class AgentTextCollector
 
                     break;
 
+                case StreamRecoveryMessage recovery:
+                    // The stream ended because this consumer was dropped, not because the run
+                    // finished. Returning what was collected so far would hand the caller a silently
+                    // truncated answer that reads exactly like a complete one.
+                    throw new InvalidOperationException(
+                        $"The agent's message stream was severed ({recovery.Reason}) before the run completed, "
+                            + "so the collected text would be a silent truncation of the agent's answer."
+                    );
+
                 default:
                     break;
             }

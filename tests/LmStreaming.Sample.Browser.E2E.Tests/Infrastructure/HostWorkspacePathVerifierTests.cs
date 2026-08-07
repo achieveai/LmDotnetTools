@@ -14,7 +14,10 @@ public sealed class HostWorkspacePathVerifierTests
     {
         var result = HostWorkspacePathVerifier.Verify("/workspace", @"B:\sandbox-workspaces\e2e-clone-abc12345");
 
-        result.Verified.Should().BeFalse("a Linux-style, non-drive-qualified path can never be this Windows host's filesystem");
+        // Rejected on either host flavour, by different clauses: on Windows the shape pre-check settles
+        // it; on Unix "/workspace" is shape-legal, and it is the existence/equality checks that do —
+        // which is why this assertion deliberately does not name a mechanism.
+        result.Verified.Should().BeFalse("a container-internal mount point is not this host's workspace");
         result.Reason.Should().Contain("/workspace");
     }
 
@@ -84,4 +87,29 @@ public sealed class HostWorkspacePathVerifierTests
             dir.Delete(recursive: true);
         }
     }
+
+    // The shape pre-check takes the host flavour as an ARGUMENT rather than reading the running
+    // platform, so both branches are exercised wherever these tests run. That matters twice over: the
+    // rule used to be drive-letters-only regardless of platform, which rejected every legitimate
+    // workspace path on a Linux CI agent, and a platform-sensing rule can only ever be half-tested by
+    // the machine that happens to run it.
+
+    [Theory]
+    [InlineData(@"B:\sandbox-workspaces\leaf", true)]
+    [InlineData("c:/sandbox-workspaces/leaf", true)]
+    [InlineData("/workspace", false)] // the container mount a Docker-backed gateway reports
+    [InlineData(@"sandbox-workspaces\leaf", false)]
+    [InlineData("", false)]
+    public void LooksLikeAHostPath_on_a_Windows_host_admits_only_drive_qualified_paths(string path, bool expected) =>
+        HostWorkspacePathVerifier.LooksLikeAHostPath(path, windowsHost: true).Should().Be(expected);
+
+    [Theory]
+    [InlineData("/srv/sandbox-workspaces/leaf", true)]
+    [InlineData("/workspace", true)] // syntactically indistinguishable here; Verify's existence and
+                                     // equality checks are what reject it on a Unix host
+    [InlineData("sandbox-workspaces/leaf", false)]
+    [InlineData(@"B:\sandbox-workspaces\leaf", false)]
+    [InlineData("", false)]
+    public void LooksLikeAHostPath_on_a_Unix_host_admits_only_slash_rooted_paths(string path, bool expected) =>
+        HostWorkspacePathVerifier.LooksLikeAHostPath(path, windowsHost: false).Should().Be(expected);
 }

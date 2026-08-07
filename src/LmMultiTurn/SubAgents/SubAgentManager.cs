@@ -1463,7 +1463,18 @@ public sealed class SubAgentManager : IAsyncDisposable
             // Cancel and dispose the old CTS to prevent double-monitor bugs:
             // the old monitor's closure captured the old CTS, and both monitors
             // would receive RunCompletedMessage causing double Release/Decrement.
-            await state.Cts.CancelAsync();
+            try
+            {
+                await state.Cts.CancelAsync();
+            }
+            catch (ObjectDisposedException)
+            {
+                // An EARLIER restart attempt that failed past the dispose below left this source
+                // disposed while deliberately keeping the sub-agent registered. It is already cancelled
+                // and about to be replaced, so there is nothing to cancel — but letting this throw would
+                // abort every future restart here, permanently stranding an agent the directory still
+                // advertises as addressable. The failure cleanup below tolerates it for the same reason.
+            }
 
             // Observe the old RunTask to avoid unobserved exceptions
             // (must cancel first so the task receives the cancellation signal)
@@ -1491,8 +1502,12 @@ public sealed class SubAgentManager : IAsyncDisposable
 
             // Rebuild the provider pipeline when the previous run's owned provider was disposed at
             // completion OR its terminal disposal FAILED (poisoned): in both cases the provider must not
-            // be reused — a failed disposal may have left it partially torn down.
-            if (state.HasDisposedOwnedProviderAgent || state.OwnedProviderTerminalDisposeFailed)
+            // be reused — a failed disposal may have left it partially torn down. Also rebuild when a
+            // previous restart attempt failed and disposed the live loop itself, which leaves this state
+            // registered around an agent that can no longer accept a run.
+            if (state.HasDisposedOwnedProviderAgent
+                || state.OwnedProviderTerminalDisposeFailed
+                || state.HasDisposedAgentLoop)
             {
                 var previousAgent = state.Agent;
                 var previousStore = state.Store;
@@ -1673,6 +1688,12 @@ public sealed class SubAgentManager : IAsyncDisposable
                 _logger.LogWarning(ex, "Agent dispose failed during restart cleanup for sub-agent {AgentId}", state.AgentId);
             }
 
+            // The live loop is now dead but this sub-agent deliberately stays registered, so the NEXT
+            // restart must rebuild the pipeline rather than send into it. The owned-provider flags do
+            // not cover this: a sub-agent on a BORROWED provider has no owned provider to mark, and a
+            // dispose that itself threw leaves the provider guard back at Idle.
+            state.MarkAgentLoopDisposed();
+
             try { await state.DisposeOwnedProviderAgentAsync(); }
             catch (Exception ex)
             {
@@ -1829,7 +1850,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             // the SubscribeAsync below is delivered via `replaced` rather than lost.
             var (current, replaced) = state.SnapshotForObservation();
 
-            await foreach (var msg in current.SubscribeAsync(ct))
+            await foreach (var msg in SubscribeUntilDisposedAsync(current, ct))
             {
                 yield return msg;
             }
@@ -1839,15 +1860,19 @@ public sealed class SubAgentManager : IAsyncDisposable
                 yield break;
             }
 
-            // The current instance's stream ended without cancellation. Three causes:
+            // The current instance's stream ended without cancellation. Four causes:
             //  (a) an owned-provider restart disposed it (SignalRestartStarting set the restart flag
             //      BEFORE that dispose, and the swap completes `replaced` with the new instance),
-            //  (b) the manager tore it down (completes `replaced` with null), or
+            //  (b) the manager tore it down (completes `replaced` with null),
             //  (c) a slow-subscriber backpressure DROP removed our subscriber while the instance is
             //      still alive (MultiTurnAgentBase.PublishToSubscriber) — which never fires `replaced`
-            //      and sets no restart flag.
+            //      and sets no restart flag, or
+            //  (d) it was ALREADY disposed when we subscribed — the restart's dispose runs before its
+            //      swap, so the registry hands out the old instance for that window and the admission
+            //      gate rejects the subscribe (see SubscribeUntilDisposedAsync). That is the same
+            //      transition as (a), one step earlier.
             // DecideAfterStreamEnd distinguishes these deterministically, under the same lock the swap and
-            // teardown use, with NO elapsed-time heuristic: a restart/teardown (a)/(b) yields
+            // teardown use, with NO elapsed-time heuristic: a restart/teardown (a)/(b)/(d) yields
             // AwaitReplacement (wait for the definitive signal, however long the dispose+cleanup takes); a
             // drop (c) yields EndStream so the socket closes and the client reconnects + replays.
             if (state.DecideAfterStreamEnd(replaced) == ObservationContinuation.EndStream)
@@ -1872,6 +1897,53 @@ public sealed class SubAgentManager : IAsyncDisposable
             {
                 yield break;
             }
+        }
+    }
+
+    /// <summary>
+    /// Streams one instance's messages for the observation seam above, treating "this instance is
+    /// disposed" as an ordinary END of that instance's stream rather than a failure.
+    /// <para>
+    /// A restart disposes the previous loop BEFORE swapping the replacement in, so for that window the
+    /// registry still hands out the old instance and
+    /// <see cref="MultiTurnAgentBase.SubscribeAsync"/>'s admission gate answers a subscribe with
+    /// <see cref="ObjectDisposedException"/> — surfacing at the first <c>MoveNextAsync</c>, since the
+    /// iterator is lazy. Letting that escape would reach the client as a hard stream failure (the
+    /// WebSocket layer turns any non-cancellation fault into <c>subagent_stream_failed</c> plus an
+    /// abnormal close) for a child that is merely between instances. Ending the stream instead feeds
+    /// the caller's existing <c>DecideAfterStreamEnd</c>/replacement logic, which is already the right
+    /// answer for a stream that ended because the instance went away.
+    /// </para>
+    /// <para>
+    /// Only <see cref="ObjectDisposedException"/> is absorbed: cancellation and every other fault still
+    /// propagate unchanged. The explicit enumerator loop exists because C# forbids <c>yield return</c>
+    /// inside a <c>try</c> that has a <c>catch</c>.
+    /// </para>
+    /// </summary>
+    private static async IAsyncEnumerable<IMessage> SubscribeUntilDisposedAsync(
+        IMultiTurnAgent agent,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        await using var messages = agent.SubscribeAsync(ct).GetAsyncEnumerator(ct);
+
+        while (true)
+        {
+            bool moved;
+            try
+            {
+                moved = await messages.MoveNextAsync();
+            }
+            catch (ObjectDisposedException)
+            {
+                yield break;
+            }
+
+            if (!moved)
+            {
+                yield break;
+            }
+
+            yield return messages.Current;
         }
     }
 
@@ -2948,6 +3020,13 @@ public sealed class SubAgentManager : IAsyncDisposable
 
             if (faulted)
             {
+                // The run is terminally Error, so the collaboration directory must say so too. Left at
+                // "running", every other agent in the hierarchy still sees this child as live: a steer
+                // or a completion barrier addressed to it would wait on a run that can never answer.
+                // Reached only when MarkRunFaulted(runGeneration) accepted THIS generation as the
+                // terminal one, so a newer restart's Running publish is never clobbered.
+                SyncCollaborationStatus(state.AgentId, AgentCollaborationStatuses.Error);
+
                 // Same causal push HandleRunCompletionAsync performs for a graceful terminal: a
                 // background child that never writes metadata again would otherwise leave its
                 // persisted state claiming "running" forever. Skipped when a newer restart already

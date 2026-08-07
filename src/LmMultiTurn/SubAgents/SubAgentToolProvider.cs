@@ -848,14 +848,21 @@ public class SubAgentToolProvider : IFunctionProvider
                 "invalid_msg_type");
         }
 
-        var inResponseTo = GetOptionalString(root, "in_response_to");
+        // Some callers cannot omit an optional string parameter and send "" or whitespace where they
+        // mean "no correlation" instead of a true JSON null. GetOptionalString already collapses an
+        // omitted key or an explicit JSON null to C# null; normalizing here too means every message
+        // type downstream sees exactly two states — a real id, or absent — regardless of how the
+        // absence was spelled. Without this, a blank string survived as a non-null in_response_to all
+        // the way to the ledger, which treated it as an attempted correlation to a message that does
+        // not exist and refused it as unknown_correlation instead of sending the message as a fresh one.
+        var inResponseTo = NormalizeCorrelationId(GetOptionalString(root, "in_response_to"));
 
         // Both reply-shaped types are checked here, not just Response. The ledger refuses either one
         // without a correlation, but doing it at the tool boundary is what turns that refusal into a
         // sentence naming the parameter the model left out.
         if (
             messageType is AgentMessageType.Response or AgentMessageType.TaskUpdate
-            && string.IsNullOrWhiteSpace(inResponseTo)
+            && inResponseTo is null
         )
         {
             return ToolHandlerResult.FromError(
@@ -1455,6 +1462,16 @@ public class SubAgentToolProvider : IFunctionProvider
             ? prop.GetString()
             : null;
     }
+
+    /// <summary>
+    /// Collapses a blank or whitespace-only correlation id to null. Some callers cannot omit an
+    /// optional string parameter and send "" or whitespace where they mean "absent" instead of a true
+    /// JSON null — without this, that value would survive as a non-null <c>in_response_to</c> and be
+    /// treated as an attempted (but unknown) correlation rather than as no correlation at all. A real,
+    /// non-blank id — even one that turns out not to exist — is returned unchanged.
+    /// </summary>
+    private static string? NormalizeCorrelationId(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value;
 
     private static bool? GetOptionalBool(JsonElement root, string propertyName)
     {
