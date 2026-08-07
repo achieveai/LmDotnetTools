@@ -2,7 +2,9 @@ using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence.Models;
+using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Orchestration;
@@ -12,8 +14,37 @@ namespace CodeReviewDaemon.Sample.Tests.Orchestration;
 /// (<c>review-run-{Id}</c>), so repeated calls for the same run reuse one session instead of creating a
 /// new one every stage, and <c>DestroyAsync</c> tears the run's session down at end-of-run.
 /// </summary>
-public class ReviewSessionProvisionerTests
+public class ReviewSessionProvisionerTests : IDisposable
 {
+    /// <summary>
+    /// Temp root for the tests that exercise the REAL host filesystem — the per-run host workspace teardown
+    /// in <c>DestroyAsync</c>. Everything else here runs entirely against the fake session source.
+    /// </summary>
+    private readonly string _tempRoot =
+        Path.Combine(Path.GetTempPath(), "crd-provisioner-" + Guid.NewGuid().ToString("N"));
+
+    public void Dispose()
+    {
+        GC.SuppressFinalize(this);
+        try
+        {
+            // Links first: Directory.Delete's own recursion THROWS on a Windows junction rather than removing
+            // it, so a link-planting test would otherwise leave its whole tree in the temp directory. The
+            // read-only bits these tests plant would block the delete too.
+            DirectoryLink.UnlinkAllUnder(_tempRoot);
+            foreach (var file in Directory.EnumerateFiles(_tempRoot, "*", SearchOption.AllDirectories))
+            {
+                File.SetAttributes(file, File.GetAttributes(file) & ~FileAttributes.ReadOnly);
+            }
+
+            Directory.Delete(_tempRoot, recursive: true);
+        }
+        catch
+        {
+            // Best-effort cleanup only; leaving a stray temp dir must never fail the test.
+        }
+    }
+
     private static ReviewRun Run(long id = 7) =>
         new()
         {
@@ -163,6 +194,165 @@ public class ReviewSessionProvisionerTests
 
         session.Should().NotBeNull();
         fake.LastRef!.DirectoryRelPath.Should().Be("review-run-7");
+    }
+
+    /// <summary>
+    /// The per-run host workspace holds an UNTRUSTED checkout: the review agent writes into it and takes its
+    /// instructions from the reviewed repo's own CLAUDE.md/AGENTS.md as read at the PR head. The teardown's
+    /// read-only clear used <c>SearchOption.AllDirectories</c>, which follows a junction without saying so, so
+    /// a link planted anywhere under the workspace aimed that clear at an arbitrary path on the daemon host
+    /// under the daemon's own account — stripping the last write brake off files outside the workspace.
+    /// <para>
+    /// The visible failure was never the damage. The recursive delete that follows throws on a Windows
+    /// junction, and the whole block was wrapped in a best-effort <c>catch</c> that logged a warning — so the
+    /// strip landed, the delete did not, and the only trace was a line that reads like a transient I/O
+    /// nuisance. This pins the strip, which is the half that succeeded.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task DestroyAsync_does_not_strip_read_only_through_a_link_planted_in_the_host_workspace()
+    {
+        var hostRoot = Path.Combine(_tempRoot, "workspaces");
+        var hostDir = Path.Combine(hostRoot, "review-run-7");
+        var outside = Path.Combine(_tempRoot, "outside");
+        _ = Directory.CreateDirectory(hostDir);
+        _ = Directory.CreateDirectory(outside);
+        var protectedFile = Path.Combine(outside, "protected.txt");
+        await File.WriteAllTextAsync(protectedFile, "not the daemon's to unlock");
+        File.SetAttributes(protectedFile, File.GetAttributes(protectedFile) | FileAttributes.ReadOnly);
+        DirectoryLink.Create(Path.Combine(hostDir, "escape"), outside);
+
+        var fake = new FakeSessionSource();
+        var provisioner = new ReviewSessionProvisioner(
+            fake,
+            new CodeReviewDaemonOptions { WorkspaceHostRoot = hostRoot },
+            NullLoggerFactory.Instance,
+            workspaceBasePath: "/ws",
+            diskSpaceProbe: SufficientDisk);
+
+        await provisioner.DestroyAsync(Run(), default);
+
+        File.Exists(protectedFile).Should().BeTrue(
+            "the wipe unlinks the NAME inside the workspace and never touches what it points at");
+        File.GetAttributes(protectedFile).HasFlag(FileAttributes.ReadOnly).Should().BeTrue(
+            "clearing read-only through a planted link removes a write brake from a file outside the "
+                + "workspace, on the daemon host, under the daemon's own account");
+    }
+
+    /// <summary>
+    /// The positive companion to the test above. Its assertions are about an ABSENCE — a bit that stays set,
+    /// a file that stays put — and an absence is satisfied by a teardown that walked nothing at all. This
+    /// proves the walk is not vacuous: it still reaches, unlocks and deletes a legitimate read-only checkout,
+    /// which is the whole reason the read-only clear exists (a git store is full of read-only pack/object
+    /// files that <c>Directory.Delete</c> otherwise refuses).
+    /// </summary>
+    [Fact]
+    public async Task DestroyAsync_still_clears_read_only_and_deletes_a_legitimate_host_workspace()
+    {
+        var hostRoot = Path.Combine(_tempRoot, "workspaces");
+        var hostDir = Path.Combine(hostRoot, "review-run-7");
+        var nested = Path.Combine(hostDir, "store", ".git", "objects", "pack");
+        _ = Directory.CreateDirectory(nested);
+        var packFile = Path.Combine(nested, "pack-abc.pack");
+        await File.WriteAllTextAsync(packFile, "read-only, exactly as git leaves it");
+        File.SetAttributes(packFile, File.GetAttributes(packFile) | FileAttributes.ReadOnly);
+
+        var fake = new FakeSessionSource();
+        var provisioner = new ReviewSessionProvisioner(
+            fake,
+            new CodeReviewDaemonOptions { WorkspaceHostRoot = hostRoot },
+            NullLoggerFactory.Instance,
+            workspaceBasePath: "/ws",
+            diskSpaceProbe: SufficientDisk);
+
+        await provisioner.DestroyAsync(Run(), default);
+
+        Directory.Exists(hostDir).Should().BeFalse(
+            "a read-only pack file is the ordinary case the clear exists for, and the teardown must still "
+                + "complete over it");
+    }
+
+    /// <summary>
+    /// A refusal must not arrive in the shape of an ordinary I/O error. "Best-effort host-dir cleanup failed"
+    /// is precisely the sentence that would hide a planted link forever — it reads as transient, and an
+    /// operator who skims it never learns there is an address to go and look at. So a containment refusal is
+    /// logged at Error with the offending entry named, and the best-effort warning is NOT also emitted.
+    /// <para>
+    /// It is deliberately not rethrown either: this runs from the run's terminal cleanup, where a throw would
+    /// abandon the remaining teardown, and unlike the pooled preparer's wipe there is no address to retire —
+    /// the next run provisions a fresh <c>review-run-{id}</c> rather than recycling this one. The session
+    /// teardown assertion below is what pins that the refusal did not abort the rest of the method.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task DestroyAsync_logs_a_containment_refusal_as_an_error_and_leaves_the_workspace_standing()
+    {
+        var hostRoot = Path.Combine(_tempRoot, "workspaces");
+        var outside = Path.Combine(_tempRoot, "outside");
+        _ = Directory.CreateDirectory(hostRoot);
+        _ = Directory.CreateDirectory(outside);
+        var protectedFile = Path.Combine(outside, "protected.txt");
+        await File.WriteAllTextAsync(protectedFile, "not the daemon's to delete");
+        // The workspace ROOT itself is the link — the one entry a per-child check can never see, because
+        // everything below is reached THROUGH it.
+        DirectoryLink.Create(Path.Combine(hostRoot, "review-run-7"), outside);
+
+        var fake = new FakeSessionSource();
+        var loggerFactory = new CapturingLoggerFactory();
+        var provisioner = new ReviewSessionProvisioner(
+            fake,
+            new CodeReviewDaemonOptions { WorkspaceHostRoot = hostRoot },
+            loggerFactory,
+            workspaceBasePath: "/ws",
+            diskSpaceProbe: SufficientDisk);
+
+        await provisioner.DestroyAsync(Run(), default);
+
+        loggerFactory.Capturing.CountAtLevel(LogLevel.Error, "REFUSED").Should().Be(1);
+        loggerFactory.Capturing.CountAtLevel(LogLevel.Warning, "Best-effort host-dir cleanup failed")
+            .Should().Be(0, "a security refusal reported as a transient nuisance is how this stays hidden");
+        File.Exists(protectedFile).Should().BeTrue("a refused root is not followed AND not removed");
+        Directory.Exists(Path.Combine(hostRoot, "review-run-7")).Should().BeTrue(
+            "the link is not repaired either — unlinking is a write chosen by whoever planted it");
+        fake.DestroyedWorkspaceIds.Should().Contain(
+            "review-run-7", "the refusal is logged, not thrown, so the rest of the teardown still ran");
+    }
+
+    /// <summary>
+    /// A redirected entry is removed by NAME — never by a recursive delete — and a file symlink is the only
+    /// input that can show the difference. For a junction the two spellings are indistinguishable:
+    /// <see cref="Directory.Delete(string, bool)"/> applied to the reparse point ITSELF does not recurse into
+    /// it, so the target survives either way. (It throws only when the recursion of an ANCESTOR walks onto a
+    /// junction, which is a different call and why the wipe unlinks as it goes.) A file symlink is not a
+    /// directory at all, so a recursive directory delete fails on it, the wipe never completes, and a
+    /// cleanable link becomes a permanent teardown failure.
+    /// </summary>
+    [RequiresFileSymlinkFact("a junction always reads as a directory, so it cannot distinguish the file branch")]
+    public async Task DestroyAsync_unlinks_a_file_symlink_inside_the_workspace_and_still_completes()
+    {
+        var hostRoot = Path.Combine(_tempRoot, "workspaces");
+        var hostDir = Path.Combine(hostRoot, "review-run-7");
+        var outside = Path.Combine(_tempRoot, "outside");
+        _ = Directory.CreateDirectory(hostDir);
+        _ = Directory.CreateDirectory(outside);
+        var victim = Path.Combine(outside, "someone-elses.txt");
+        await File.WriteAllTextAsync(victim, "notes");
+        FileLink.Create(Path.Combine(hostDir, "notes.txt"), victim);
+
+        var fake = new FakeSessionSource();
+        var provisioner = new ReviewSessionProvisioner(
+            fake,
+            new CodeReviewDaemonOptions { WorkspaceHostRoot = hostRoot },
+            NullLoggerFactory.Instance,
+            workspaceBasePath: "/ws",
+            diskSpaceProbe: SufficientDisk);
+
+        await provisioner.DestroyAsync(Run(), default);
+
+        (await File.ReadAllTextAsync(victim)).Should().Be("notes", "nothing may reach through the link");
+        Directory.Exists(hostDir).Should().BeFalse(
+            "removing the link by name is what lets the teardown finish; a recursive directory delete would "
+                + "fail on a file symlink and leave the workspace behind");
     }
 
     /// <summary>
