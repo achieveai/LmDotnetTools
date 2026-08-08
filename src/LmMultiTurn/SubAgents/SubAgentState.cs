@@ -266,6 +266,10 @@ internal class SubAgentState
     // this one) instead. Cleared when a fresh provider is assigned via SetOwnedProviderAgent.
     private volatile bool _ownedProviderTerminalDisposeFailed;
 
+    // Set when the live Agent loop is disposed while this state stays registered (restart-failure
+    // cleanup); cleared when a replacement loop is installed. See HasDisposedAgentLoop.
+    private bool _agentLoopDisposed;
+
     // Monotonic run-instance counter. A restart opens a new generation (BeginRunGeneration) before the
     // restarted loop can report completion; the terminal completion for that run records it in
     // _terminalGeneration. The restart's own "arm Running" publish (TryArmRunning) is guarded by this so
@@ -608,6 +612,19 @@ internal class SubAgentState
     /// </summary>
     public void MarkOwnedProviderTerminalDisposeFailed() => _ownedProviderTerminalDisposeFailed = true;
 
+    /// <summary>
+    /// True once the live <see cref="Agent"/> loop itself has been disposed while this sub-agent stayed
+    /// registered — the restart-failure cleanup's situation, which disposes the loop but deliberately
+    /// keeps the agent in the registry (it is a pre-existing sub-agent whose restart attempt failed, not
+    /// a partially-spawned one to roll back). A later restart MUST rebuild rather than send into the
+    /// dead loop; the owned-provider flags do not cover this, since a sub-agent on a BORROWED provider
+    /// has no owned provider to mark.
+    /// </summary>
+    public bool HasDisposedAgentLoop => Volatile.Read(ref _agentLoopDisposed);
+
+    /// <summary>Records that <see cref="Agent"/> was disposed while this state remained registered.</summary>
+    public void MarkAgentLoopDisposed() => Volatile.Write(ref _agentLoopDisposed, true);
+
     public IConversationStore? Store { get; set; }
 
     /// <summary>
@@ -850,6 +867,8 @@ internal class SubAgentState
         {
             _restartInProgress = false;
             Agent = replacement;
+            // The replacement is live, so whatever disposed the previous loop no longer forces a rebuild.
+            Volatile.Write(ref _agentLoopDisposed, false);
             SignalAgentReplacedLocked(replacement);
         }
     }

@@ -282,6 +282,12 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
                         finalText = accumulated.ToString();
                     }
 
+                    _ = textBuffers.Remove(doneEvent.OutputIndex);
+                    if (string.IsNullOrEmpty(finalText))
+                    {
+                        break;
+                    }
+
                     yield return new TextMessage
                     {
                         Text = finalText,
@@ -290,7 +296,6 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
                         GenerationId = generationId,
                         MessageOrderIdx = doneEvent.OutputIndex,
                     };
-                    _ = textBuffers.Remove(doneEvent.OutputIndex);
                     break;
 
                 case ResponseFunctionCallArgumentsDeltaEvent argsDelta:

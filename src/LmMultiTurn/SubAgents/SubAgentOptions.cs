@@ -29,6 +29,15 @@ public record SubAgentOptions
     public int MaxQueuedSubAgents { get; init; } = 100;
 
     /// <summary>
+    /// Capacity of each spawned sub-agent's per-subscriber output channel — the buffer that absorbs a
+    /// viewer (a focused sub-agent tab) reading slower than the child publishes. A subscriber that
+    /// fills it is dropped and told to resync rather than being allowed to stall the child's run, so
+    /// this is the knob that decides how much lag is tolerated before that happens. Defaults to the
+    /// same 1000 as a top-level loop, so hosts that leave it unset are unaffected.
+    /// </summary>
+    public int OutputChannelCapacity { get; init; } = 1000;
+
+    /// <summary>
     /// Fallback conversation store factory when a template doesn't specify one.
     /// Null = no persistence for sub-agents.
     /// </summary>

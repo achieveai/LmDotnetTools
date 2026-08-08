@@ -176,7 +176,7 @@ try
     _ = builder.Services.AddViteServices(options =>
     {
         options.Base = "/dist/";
-        options.Server.AutoRun = true;
+        options.Server.AutoRun = ResolveViteAutoRun();
         options.Server.PackageDirectory = "ClientApp";
         options.Server.Port = viteDevPort;
     });
@@ -504,15 +504,16 @@ try
     // unreachable callback host).
     _ = builder.Services.AddSingleton<ContextDiscoveryDiagnostics>();
 
-    // Hierarchy-wide agent collaboration (#244). Opt-in and validated HERE so a bad limit or an
-    // unknown transcript mode fails this boot rather than the first spawn of some later conversation.
-    // With the section absent (the default) ToCollaborationOptions() returns null, which is the
-    // library's feature gate: legacy tool schemas, one level of nesting, and no collaboration state.
+    // Hierarchy-wide agent collaboration (#244). Whether it is ON is decided per chat mode at
+    // conversation construction (see CollaborationDefaultsOnForMode). When collaboration resolves ON,
+    // validate its limits here so a bad limit or unknown transcript mode fails this boot rather than the
+    // first spawn of a later conversation. An explicit Enabled: false bypasses those unused limits; they
+    // are validated on the boot where collaboration is enabled.
     var collaborationHostOptions =
         builder.Configuration.GetSection(AgentCollaborationHostOptions.SectionName)
             .Get<AgentCollaborationHostOptions>()
         ?? new AgentCollaborationHostOptions();
-    _ = collaborationHostOptions.ToCollaborationOptions();
+    _ = collaborationHostOptions.ResolveForMode(defaultEnabled: true);
     _ = builder.Services.AddSingleton(collaborationHostOptions);
 
     // Codex MCP server: registered unconditionally but started lazily, so non-codex boots
@@ -665,6 +666,17 @@ try
     // Read LlmQueryMcp config for books/question MCP servers
     var llmQueryMcpBaseUrl = builder.Configuration["LlmQueryMcp:BaseUrl"];
     var llmQueryMcpExamType = builder.Configuration["LlmQueryMcp:ExamType"] ?? "NeetPG";
+
+    // Per-subscriber output-channel capacity for the pooled agents. Unset (the shipped default) keeps
+    // MultiTurnAgentBase's own default of 1000, so production delivery is unchanged; a host may shrink
+    // it to reproduce the slow-consumer drop path deterministically (a browser E2E scenario does
+    // exactly that, since a full channel â€” not a timeout â€” is what evicts a lagging subscriber).
+    const int defaultOutputChannelCapacity = 1000;
+    var outputChannelCapacity =
+        int.TryParse(builder.Configuration["LmStreaming:OutputChannelCapacity"], out var configuredCapacity)
+        && configuredCapacity > 0
+            ? configuredCapacity
+            : defaultOutputChannelCapacity;
 
     // Register the MultiTurnAgentPool with provider- and mode-aware factory
     _ = builder.Services.AddSingleton<IPricingResolver>(sp =>
@@ -1500,19 +1512,12 @@ try
                     // active; otherwise it completes synchronously.
                     IStreamingAgent subAgentFactory() => agentFactory(normalizedProviderId);
 
-                    // Root collaboration for THIS conversation (#244), or null when the host did not opt
-                    // in. The conversation's own threadId is the collaboration id — deliberately reusing
-                    // the identity the store already keys on rather than minting a second one — so a
-                    // resumed conversation rejoins the same logical collaboration. Every descendant
-                    // (ordinary sub-agent, workflow controller, workflow delegate) receives THIS handle by
-                    // reference, so there is exactly one directory and one ledger per conversation.
-                    var rootCollaboration = collaborationHostOptions.ToCollaborationOptions() is { } collabOptions
-                        ? AgentCollaborationSetup.CreateRoot(
-                            collabOptions,
-                            collaborationId: threadId,
-                            agentId: threadId,
-                            name: "conversation")
-                        : null;
+                    // Root collaboration for THIS conversation (#244), or null when it resolves to off
+                    // for this chat mode. Every descendant (ordinary sub-agent, workflow controller,
+                    // workflow delegate) receives THIS handle by reference, so there is exactly one
+                    // directory and one ledger per conversation.
+                    var rootCollaboration =
+                        CreateRootCollaboration(collaborationHostOptions, mode.Id, threadId);
 
                     var characteristicsAgentFactory = new CharacteristicsAgentFactory(
                         providerRegistry,
@@ -1918,6 +1923,7 @@ subAgentFactory,
                         // default: workspace/tool-heavy conversations routinely need more turns before
                         // the run hits its cap.
                         maxTurnsPerRun: 150,
+                        outputChannelCapacity: outputChannelCapacity,
                         store: conversationStore,
                         logger: loggerFactory.CreateLogger<MultiTurnAgentLoop>(),
                         subAgentOptions: subAgentOptions,
@@ -2867,6 +2873,48 @@ public partial class Program
     ) => policy.ApplyDelegated(options);
 
     /// <summary>
+    /// Whether hierarchy-wide collaboration (#244) is on by default for a chat mode, when the host
+    /// configuration leaves <see cref="AgentCollaborationHostOptions.Enabled"/> unset.
+    /// </summary>
+    /// <remarks>
+    /// Only the Workspace Agent defaults on: it is the mode that actually fans work out to sub-agents
+    /// and workflow delegates, so the collaboration surface (<c>CheckAgents</c>/<c>WaitForAgents</c>/
+    /// <c>GetAgents</c>) is what its prompts expect. Workflow Author and the ordinary chat modes keep
+    /// the legacy surface unless a deployment opts them in explicitly, so nothing about their tool
+    /// schemas or nesting depth changes silently.
+    /// </remarks>
+    internal static bool CollaborationDefaultsOnForMode(string modeId) =>
+        string.Equals(modeId, SystemChatModes.WorkspaceAgentModeId, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Builds the root collaboration handle for one conversation, or returns null when collaboration
+    /// resolves to off for its chat mode.
+    /// </summary>
+    /// <remarks>
+    /// Extracted from the conversation factory so the mode default is not merely DECLARED by
+    /// <see cref="CollaborationDefaultsOnForMode"/> but demonstrably REACHES
+    /// <see cref="AgentCollaborationHostOptions.ResolveForMode"/>: a correct predicate wired to a
+    /// hard-coded <c>false</c> would still leave every mode on the legacy surface, and a test of the
+    /// predicate alone cannot tell the two apart. The conversation's own threadId is the collaboration
+    /// id — deliberately reusing the identity the store already keys on rather than minting a second
+    /// one — so a resumed conversation rejoins the same logical collaboration.
+    /// </remarks>
+    internal static AgentCollaborationSetup? CreateRootCollaboration(
+        AgentCollaborationHostOptions hostOptions,
+        string modeId,
+        string threadId
+    ) =>
+        hostOptions.ResolveForMode(defaultEnabled: CollaborationDefaultsOnForMode(modeId))
+            is { } collabOptions
+            ? AgentCollaborationSetup.CreateRoot(
+                collabOptions,
+                collaborationId: threadId,
+                agentId: threadId,
+                name: "conversation"
+            )
+            : null;
+
+    /// <summary>
     /// Attaches one conversation-scoped characteristics factory to every template while preserving
     /// template-specific agents for inherited model routing.
     /// </summary>
@@ -3303,6 +3351,20 @@ public partial class Program
         listener.Stop();
         return assignedPort;
     }
+
+    /// <summary>
+    ///     Decides whether Vite.AspNetCore should spawn/supervise its own "npm run dev" child
+    ///     (AutoRun). Defaults to true (unchanged single-process behavior). An external supervisor
+    ///     (e.g. publish-launch.ps1, which starts and owns the Vite process itself to pair it with a
+    ///     specific backend instance) sets VITE_AUTO_RUN=false to avoid a double-spawn race on the
+    ///     same dev-server port.
+    /// </summary>
+    private static bool ResolveViteAutoRun() =>
+        !string.Equals(
+            Environment.GetEnvironmentVariable("VITE_AUTO_RUN"),
+            "false",
+            StringComparison.OrdinalIgnoreCase
+        );
 
     /// <summary>
     ///     Returns true when recording is explicitly enabled via query string (record=1 or record=true).

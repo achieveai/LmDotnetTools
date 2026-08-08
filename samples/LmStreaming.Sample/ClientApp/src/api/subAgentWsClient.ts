@@ -1,6 +1,7 @@
 import type { Message } from '@/types';
 import { logger } from '@/utils';
 import {
+  type GenerationAbandonedInfo,
   type WebSocketConnection,
   generateConnectionId,
   openWebSocketConnection,
@@ -41,6 +42,13 @@ export interface SubAgentWsCallbacks {
    * (#246). Mirrors {@link WebSocketClientCallbacks.onClientToolResultError}.
    */
   onClientToolResultError?: (toolCallId: string | undefined, code: string, message: string) => void;
+  /**
+   * The child's provider stream was cut mid-reply, the loop threw that generation away, and the SAME
+   * turn is being retried under a fresh generation id on this still-open socket (#278). Mirrors
+   * {@link WebSocketClientCallbacks.onGenerationAbandoned} — without it the focused transcript keeps
+   * the abandoned generation's half-written block and renders the retry beside it.
+   */
+  onGenerationAbandoned?: (info: GenerationAbandonedInfo) => void;
 }
 
 /**

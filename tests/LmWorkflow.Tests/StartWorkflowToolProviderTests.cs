@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -20,11 +21,13 @@ public class StartWorkflowToolProviderTests
     private static WorkflowManager NewManager(
         Func<IStreamingAgent> controllerFactory,
         int maxConcurrentWorkflows = 8,
-        TimeSpan? gateWaitTimeout = null
+        TimeSpan? gateWaitTimeout = null,
+        Func<NotifyMessage, CancellationToken, Task>? completionNotifier = null
     ) =>
         new(
             controllerFactory,
             EmptyControllerOptions(),
+            completionNotifier: completionNotifier,
             maxConcurrentWorkflows: maxConcurrentWorkflows,
             gateWaitTimeout: gateWaitTimeout
         );
@@ -44,7 +47,7 @@ public class StartWorkflowToolProviderTests
         }.ToJsonString();
 
     [Fact]
-    public void ExposesExactlyStartCheckWait()
+    public void ExposesExactlyStartGetCheckWait()
     {
         var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
 
@@ -52,7 +55,149 @@ public class StartWorkflowToolProviderTests
             .GetFunctions()
             .Select(f => f.Contract.Name)
             .Should()
-            .BeEquivalentTo(["StartWorkflowAgent", "CheckWorkflow", "WaitWorkflow"]);
+            .BeEquivalentTo(["StartWorkflowAgent", "GetWorkflows", "CheckWorkflow", "WaitWorkflow"]);
+    }
+
+    [Fact]
+    public void ToolNames_CoverEveryAdvertisedTool()
+    {
+        // Hosts keep this family out of sub-agent inheritance by name; a tool missing from the list would
+        // leak into every child that inherits its parent's tools.
+        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+
+        StartWorkflowToolProvider
+            .ToolNames.Should()
+            .BeEquivalentTo(provider.GetFunctions().Select(f => f.Contract.Name));
+    }
+
+    [Fact]
+    public void GetWorkflows_TakesNoParameters()
+    {
+        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+
+        var contract = Tool(provider, "GetWorkflows").Contract;
+        (contract.Parameters ?? []).Should().BeEmpty("discovery must never fail because an argument was guessed");
+    }
+
+    [Fact]
+    public async Task GetWorkflows_ListsEveryRunItStarted()
+    {
+        // The recovery case this exists for: the agent lost the workflowId (a restart, a compaction, a
+        // relayed hand-off) and Check/Wait are unusable until it can find the id again.
+        //
+        // Both runs are started async and awaited through the manager's completion notifier, because that
+        // is the only completion signal ordered AFTER the run's terminal snapshot is published — and
+        // ListRuns reports a run as terminal only from that snapshot. Neither a sync StartAsync returning
+        // nor WaitWorkflow returning gives that ordering: both can answer from the resolved completion
+        // task while the observer that publishes the snapshot is still in flight, which is exactly how
+        // this test used to see a just-started run as "running".
+        var completions = new ConcurrentDictionary<string, TaskCompletionSource>();
+        TaskCompletionSource Terminal(string workflowId) =>
+            completions.GetOrAdd(
+                workflowId,
+                _ => new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+            );
+
+        var provider = new StartWorkflowToolProvider(
+            NewManager(
+                () => ScriptedController(DriveMinimalToTerminal).Object,
+                completionNotifier: (notify, _) =>
+                {
+                    Terminal(notify.Label!).TrySetResult();
+                    return Task.CompletedTask;
+                }
+            )
+        );
+        var start = Tool(provider, "StartWorkflowAgent");
+
+        _ = await Invoke(start, StartArgs("alpha", WorkflowFixtures.MinimalValid, "async"));
+        _ = await Invoke(start, StartArgs("beta", WorkflowFixtures.MinimalValid, "async"));
+        await Terminal("alpha").Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await Terminal("beta").Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        var result = await Invoke(Tool(provider, "GetWorkflows"), "{}");
+
+        result.Payload.IsError.Should().BeFalse(result.Payload.Text);
+        using var doc = JsonDocument.Parse(result.Payload.Text);
+        var runs = doc.RootElement.GetProperty("workflows").EnumerateArray().ToList();
+        runs.Select(r => r.GetProperty("workflowId").GetString()).Should().BeEquivalentTo(["alpha", "beta"]);
+        runs.Should().OnlyContain(r => r.GetProperty("status").GetString() == "completed");
+        runs.Should().OnlyContain(r => !string.IsNullOrWhiteSpace(r.GetProperty("objective").GetString()));
+    }
+
+    [Fact]
+    public async Task GetWorkflows_WithNothingStarted_ReturnsAnEmptyListRatherThanAnError()
+    {
+        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+
+        var result = await Invoke(Tool(provider, "GetWorkflows"), "{}");
+
+        result.Payload.IsError.Should().BeFalse();
+        using var doc = JsonDocument.Parse(result.Payload.Text);
+        doc.RootElement.GetProperty("workflows").GetArrayLength().Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData("CheckWorkflow")]
+    [InlineData("WaitWorkflow")]
+    public async Task UnknownWorkflowId_NamesTheIdsThatWouldHaveWorked(string toolName)
+    {
+        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+
+        _ = await Invoke(Tool(provider, "StartWorkflowAgent"), StartArgs("known-one", WorkflowFixtures.MinimalValid, "sync"));
+
+        var result = await Invoke(
+            Tool(provider, toolName),
+            new JsonObject { ["workflowId"] = "guessed" }.ToJsonString()
+        );
+
+        result.Payload.IsError.Should().BeTrue();
+        result.Payload.ErrorCode.Should().Be("unknown_workflow");
+        result.Payload.Text.Should().Contain("known-one", "the recovery from a wrong id is the list of right ones");
+        result.Payload.Text.Should().Contain("agent", "an agent_id is the wrong-namespace mistake worth naming");
+    }
+
+    [Fact]
+    public async Task UnknownWorkflowId_WithMoreIdsThanFit_SaysTheListIsPartial()
+    {
+        // A silently truncated list is worse than no list: the agent concludes its id does not exist and
+        // starts a duplicate workflow. Saying "showing N of M" keeps that inference off the table.
+        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        var start = Tool(provider, "StartWorkflowAgent");
+
+        var total = StartWorkflowToolProvider.MaxListedWorkflowIds + 1;
+        for (var i = 0; i < total; i++)
+        {
+            _ = await Invoke(start, StartArgs($"wf-{i:D2}", WorkflowFixtures.MinimalValid, "sync"));
+        }
+
+        var result = await Invoke(
+            Tool(provider, "CheckWorkflow"),
+            new JsonObject { ["workflowId"] = "guessed" }.ToJsonString()
+        );
+
+        result.Payload.Text.Should()
+            .Contain($"showing {StartWorkflowToolProvider.MaxListedWorkflowIds} of {total}");
+        result.Payload.Text.Should()
+            .Contain("wf-00", "the cap keeps the FIRST ids in ordinal order, so the list is predictable");
+    }
+
+    [Theory]
+    [InlineData("StartWorkflowAgent")]
+    [InlineData("CheckWorkflow")]
+    [InlineData("WaitWorkflow")]
+    public void WorkflowIdParam_SeparatesTheWorkflowAndAgentIdNamespaces(string toolName)
+    {
+        // StartWorkflowAgent sits next to the Agent tool in the Workspace surface, and both hand back an
+        // opaque id. Nothing but the parameter text stops one being passed where the other belongs.
+        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+
+        var description = Tool(provider, toolName)
+            .Contract.Parameters!.Single(p => p.Name == "workflowId")
+            .Description;
+
+        description.Should().Contain("StartWorkflowAgent");
+        description.Should().Contain("not an agent_id");
     }
 
     [Fact]

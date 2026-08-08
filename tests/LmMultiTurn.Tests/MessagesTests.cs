@@ -1,4 +1,6 @@
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using FluentAssertions;
 using Xunit;
@@ -220,6 +222,67 @@ public class MessagesTests
         receiptId.Should().Be("receipt-2");
         deconstructedQueuedAt.Should().Be(queuedAt);
         resume.Should().BeNull();
+    }
+
+    #endregion
+
+    #region StreamRecoveryMessage Tests
+
+    [Fact]
+    public void StreamRecoveryReason_SerializesAsSlowConsumer_WithBareProductionOptions()
+    {
+        // Finding #4: StreamRecoveryReason's wire-format converter must be discoverable from the enum
+        // type itself (a [JsonConverter] attribute, mirroring Role's own convention - see Role.cs),
+        // not depend on a caller (e.g. ChatWebSocketManager) remembering to register it on its own
+        // private JsonSerializerOptions. Bare JsonSerializerOptionsFactory.CreateForProduction() - with
+        // NO manual converter added - must already serialize the enum as "slow_consumer".
+        var message = new StreamRecoveryMessage("thread-1", "run-1", "gen-1", StreamRecoveryReason.SlowConsumer);
+
+        var json = JsonSerializer.Serialize(message, JsonSerializerOptionsFactory.CreateForProduction());
+
+        using var doc = JsonDocument.Parse(json);
+        doc.RootElement.GetProperty("reason").GetString().Should().Be("slow_consumer");
+    }
+
+    #endregion
+
+    #region Client wire-contract discriminators
+
+    /// <summary>
+    /// Serializes through the STATIC type and the options the WebSocket pump uses
+    /// (<c>ChatWebSocketManager.PumpMessagesToClientAsync</c> serializes an <see cref="IMessage"/> with
+    /// <see cref="JsonSerializerOptionsFactory.CreateForProduction"/>), so the bytes asserted below are
+    /// the bytes that reach the browser — not what a differently-typed call would produce.
+    /// </summary>
+    private static string SerializeAsProductionFrame(IMessage message) =>
+        JsonSerializer.Serialize(message, JsonSerializerOptionsFactory.CreateForProduction());
+
+    // Both control frames are routed by the chat client on a RAW SUBSTRING match against the serialized
+    // payload (samples/LmStreaming.Sample/ClientApp/src/api/wsClient.ts). Neither type is named in a
+    // [JsonDerivedType] attribute on IMessage — LmCore has no reference to LmMultiTurn, so it cannot
+    // name them — which means the discriminator actually emitted comes from IMessageJsonConverter's
+    // TYPE-NAME fallback (strip "Message", convert to snake_case). Nothing in either type's own source
+    // states the string the client depends on, so a plain rename or a tweak to that fallback is a
+    // SILENT client outage: the frame still ships and still parses, the client simply stops
+    // recognising it — never resyncing after a drop, never discarding an abandoned partial.
+
+    [Fact]
+    public void StreamRecoveryMessage_EmitsTheDiscriminatorTheChatClientMatchesOn()
+    {
+        var json = SerializeAsProductionFrame(
+            new StreamRecoveryMessage("thread-1", "run-1", "gen-1", StreamRecoveryReason.SlowConsumer));
+
+        // Matched by wsClient.ts: data.includes('"$type":"stream_recovery"').
+        json.Should().Contain("\"$type\":\"stream_recovery\"");
+    }
+
+    [Fact]
+    public void GenerationAbandonedMessage_EmitsTheDiscriminatorTheChatClientMatchesOn()
+    {
+        var json = SerializeAsProductionFrame(new GenerationAbandonedMessage("thread-1", "run-1", "gen-1"));
+
+        // Matched by wsClient.ts: data.includes('"$type":"generation_abandoned"').
+        json.Should().Contain("\"$type\":\"generation_abandoned\"");
     }
 
     #endregion

@@ -11,14 +11,13 @@ Companion docs: [`AuthProviderGuide.md`](AuthProviderGuide.md) (who the caller i
 
 ## 1. The feature gate
 
-Collaboration is **opt-in**. In the library the gate is the *absence* of an
-`AgentCollaborationOptions` object; configuration cannot express "absent" as cleanly as
-"present but false", so the host adds an explicit flag
-(`AgentCollaborationHostOptions`, section `AgentCollaboration`):
+In the library the gate is the *absence* of an `AgentCollaborationOptions` object; configuration
+cannot express "absent" as cleanly as "present but false", so the host adds an explicit *nullable*
+flag (`AgentCollaborationHostOptions`, section `AgentCollaboration`):
 
 ```jsonc
 "AgentCollaboration": {
-  "Enabled": true,
+  // Omit "Enabled" (the shipped default) to let the chat mode decide; set true/false to override.
   "MaxDelegationDepth": 1,
   "MaxTotalAgents": 32,
   "MaxInboxMessages": 32,
@@ -29,10 +28,14 @@ Collaboration is **opt-in**. In the library the gate is the *absence* of an
 }
 ```
 
-With the section missing, or `Enabled: false`, the sample behaves exactly as it did before #244:
-legacy tool schemas, one level of ordinary nesting, per-manager limits only, and no collaboration
-state written anywhere. **Every id in §2 marked *(collaboration only)* is simply absent in that
-mode** — it is not emitted as null.
+With `Enabled` unset, the **mode** decides: the **Workspace Agent** runs *with* collaboration, and
+every other mode (Workflow Author, the ordinary chat modes) runs without it. A configured `Enabled`
+wins in both directions and applies to every mode.
+
+Wherever collaboration resolves to off, the sample behaves exactly as it did before #244: legacy
+tool schemas, one level of ordinary nesting, per-manager limits only, and no collaboration state
+written anywhere. **Every id in §2 marked *(collaboration only)* is simply absent in that mode** —
+it is not emitted as null.
 
 ---
 

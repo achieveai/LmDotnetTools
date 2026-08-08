@@ -19,8 +19,21 @@ LM_PROVIDER_MODE=codex dotnet run --project samples/LmStreaming.Sample
 ### Running a second, isolated instance
 
 The default instance binds the app to `:5000` and its Vite dev server to `:5173`. To run another
-instance alongside it without port collisions, override the app URL plus the Vite dev-server port
-(`VITE_DEV_PORT`) and backend origin (`VITE_BACKEND_ORIGIN`):
+instance alongside it without port collisions, use the one-command launcher:
+
+```powershell
+./publish-launch.ps1                             # backend 5050, Vite 5173 (or next free port)
+./publish-launch.ps1 -Port 5060 -VitePort 5183   # a second, explicit instance alongside the first
+```
+
+`publish-launch.ps1` builds, resolves a free backend/Vite port pair, and starts + supervises both
+processes itself. Under the hood it sets the same three env vars documented below, plus
+`VITE_AUTO_RUN=false` (so it — not `Vite.AspNetCore` — owns spawning `npm run dev`). See its
+comment-based help (`Get-Help ./publish-launch.ps1 -Full`) for the full port-resolution rules.
+
+To wire the same env vars up by hand instead (e.g. for a one-off `dotnet run` outside the script),
+override the app URL plus the Vite dev-server port (`VITE_DEV_PORT`) and backend origin
+(`VITE_BACKEND_ORIGIN`):
 
 ```bash
 ASPNETCORE_ENVIRONMENT=Development LM_PROVIDER_MODE=test \

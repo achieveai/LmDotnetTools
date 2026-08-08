@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -19,6 +20,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Recovery;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
@@ -132,6 +134,46 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     private string? _spawnSuppressedRunId;
 
     private const string SpawnSuppressedRunIdProperty = "spawn_suppressed_run_id";
+
+    // Automatic stream recovery is budgeted per LOGICAL INPUT, but a logical input does not always
+    // fit inside one run: a turn that parks on a deferred tool call resumes in a CHILD run, and a
+    // child run's turn counter — recovery budget included — is otherwise born at zero. Without this,
+    // "at most one automatic recovery" silently becomes "one per park/resume hop", so a transport
+    // that fails on every attempt could be retried once per client-tool round trip forever.
+    //
+    // The architecture's own identity for a logical input is the ParentRunId chain, and this walks
+    // it one hop at a time: a parking run records what it has spent under its own id, and the child
+    // that resumes it takes that entry and re-records it under its own. Chains of any depth are
+    // therefore covered without ever resolving a root. Entries are written only when a budget has
+    // actually been spent — the overwhelmingly common zero case stores nothing — and are removed by
+    // the run that inherits them, so this holds at most one entry per parked-and-recovered run.
+    //
+    // This dictionary is the fast path only, and it is keyed on a run id that a restart does not
+    // preserve: a deferred entry rebuilt from history carries no requesting run, so the chain hop
+    // above has nothing to look up. A park can easily outlive the process — the whole point of a
+    // deferred client tool is that its answer may arrive minutes later, from a human — and an
+    // in-memory-only budget is silently REFUNDED by that restart, handing the resumed input a second
+    // automatic recovery and a second provider call for a turn that already ran, once per restart,
+    // forever. So the park also writes a durable single-slot budget (see
+    // PersistRecoveryBudgetMarkerAsync), which the continuation claims when the in-memory chain has
+    // nothing to give. One slot is exact: the loop parks one run at a time, and the continuation that
+    // resumes a park consumes the slot before another park can write it.
+    private readonly object _recoveryBudgetLock = new();
+    private readonly Dictionary<string, int> _recoveryBudgetByRunId = [];
+    private int _restoredParkRecoveryBudget;
+
+    private const string RecoveryBudgetProperty = "recovery_budget_spent";
+
+    /// <summary>
+    /// Framework instruction appended to the request of a turn that is continuing work interrupted
+    /// mid-stream. Fixed and content-free: it describes the situation without quoting any part of the
+    /// conversation, so it neither leaks transcript content nor varies with it.
+    /// </summary>
+    internal const string InterruptedTurnContinuationInstruction =
+        "The previous response was cut off by a connection failure before it finished. "
+        + "Everything already present in this conversation was delivered successfully — including any "
+        + "tool calls and their results. Continue from that point: do not repeat work that is already "
+        + "here, and do not re-issue a tool call that already has a result.";
 
     /// <summary>
     /// Creates a new MultiTurnAgentLoop with FunctionRegistry for tool management.
@@ -909,8 +951,107 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
         using var spawnSuppression = new RunSpawnSuppression(this);
         _ = spawnSuppression.LatchIfContinuing(cause.RequestingRunId);
+
+        // One hop along the ParentRunId chain. This child is the same logical input as the run that
+        // parked, so it inherits that run's spent stream-recovery budget rather than a fresh one.
+        // Only the continuation owner reaches here, so the budget is claimed exactly once however
+        // many siblings resolve.
+        //
+        // Both sources are claimed and the larger wins, because they are two views of the SAME park
+        // and only one is ever populated: in this process the chain entry holds it and the durable
+        // slot was never restored, while after a restart the chain entry is gone — a deferred entry
+        // rebuilt from history carries no requesting run id — and the slot is all that remembers.
+        CarryRecoveryBudgetForward(
+            assignment.RunId,
+            Math.Max(TakeCarriedRecoveryBudget(cause.RequestingRunId), TakeRestoredParkBudget()));
+
+        // The park is over, so the durable slot describing it must go: the child now carries the
+        // budget in memory, and leaving the slot behind would re-arm a continuation that has already
+        // resumed. The child's own park, if it parks again, writes the slot afresh.
+        await PersistRecoveryBudgetMarkerAsync(spent: 0, ct);
+
         await ExecuteAssignedRunAsync(
             assignment, isExplicitFork: false, spawnSuppression, ct);
+    }
+
+    /// <summary>
+    /// Records the recovery budget <paramref name="runId"/> has already spent, so the child run that
+    /// resumes it after a deferral does not start over with a full one.
+    /// </summary>
+    /// <param name="runId">The run that is parking.</param>
+    /// <param name="spent">How many automatic recoveries this logical input has used.</param>
+    private void CarryRecoveryBudgetForward(string runId, int spent)
+    {
+        if (spent == 0)
+        {
+            // Nothing spent is the same state a child run is born in, so storing it would only add
+            // an entry for every parked run in exchange for no behaviour.
+            return;
+        }
+
+        lock (_recoveryBudgetLock)
+        {
+            _recoveryBudgetByRunId[runId] = spent;
+        }
+    }
+
+    /// <summary>
+    /// Takes the recovery budget carried into <paramref name="runId"/>, if any, consuming it.
+    /// </summary>
+    /// <param name="runId">
+    /// The run about to take its turns, or the run it is resuming. <see langword="null" /> — a cause
+    /// with no requesting run — carries nothing, because there is no ancestor to have spent anything.
+    /// </param>
+    /// <returns>The number of automatic recoveries this logical input has already spent.</returns>
+    private int TakeCarriedRecoveryBudget(string? runId)
+    {
+        if (runId is null)
+        {
+            return 0;
+        }
+
+        lock (_recoveryBudgetLock)
+        {
+            return _recoveryBudgetByRunId.Remove(runId, out var spent) ? spent : 0;
+        }
+    }
+
+    /// <summary>
+    /// Ends a run because a generation left tool calls unresolved, preserving the guarantees the run
+    /// has already made so the child run that resumes it inherits them.
+    /// </summary>
+    /// <param name="runId">The run that is parking.</param>
+    /// <param name="spawnSuppression">The run's sub-agent spawn suppression.</param>
+    /// <param name="unresolvedCount">How many of the turn's calls are still outstanding.</param>
+    /// <param name="recoverySpent">How many automatic stream recoveries this logical input has used.</param>
+    /// <param name="ct">Cancels the persist.</param>
+    private async Task ParkOnDeferralsAsync(
+        string runId,
+        RunSpawnSuppression spawnSuppression,
+        int unresolvedCount,
+        int recoverySpent,
+        CancellationToken ct)
+    {
+        var suppressedRunId = spawnSuppression.IsLatched ? runId : null;
+        lock (_spawnSuppressionLock)
+        {
+            _spawnSuppressedRunId = suppressedRunId;
+        }
+
+        // A delayed continuation may run after a host restart. Persist before acknowledging the
+        // pause so a no-spawn guarantee already returned to the caller cannot silently disappear.
+        await PersistSuppressedRunMarkerAsync(suppressedRunId, ct);
+        CarryRecoveryBudgetForward(runId, recoverySpent);
+
+        // Same reasoning as the suppression marker above, for the same restart: a budget that lives
+        // only in this process is refunded by a crash, and the resumed input would buy a second
+        // automatic recovery — a second provider call for a turn that already ran.
+        await PersistRecoveryBudgetMarkerAsync(recoverySpent, ct);
+
+        Logger.LogInformation(
+            "Run {RunId} pausing on {Count} deferred tool call(s); awaiting external resolution",
+            runId,
+            unresolvedCount);
     }
 
     /// <summary>
@@ -931,6 +1072,16 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         // by itself distinguish a genuine cap hit. Only a genuine cap hit — the while-condition going
         // false with the last turn still holding tool calls — needs the synthesizing wrap-up turn.
         var brokeEarly = false;
+
+        // Automatic provider-stream recovery, budgeted for this whole logical input rather than per
+        // turn: an input that can buy a fresh retry with every turn it survives can loop against a
+        // failing transport indefinitely. Seeded from — not reset by — whatever a parked ancestor
+        // run already spent, because a logical input that parks on a deferred client tool resumes
+        // here in a child run and must not be handed a second budget for crossing that boundary.
+        // `pendingResume` is what makes the very next turn a continuation instead of an unrelated
+        // new turn, and it is cleared as soon as that turn consumes it.
+        var recoveryCount = TakeCarriedRecoveryBudget(runId);
+        ResumeSentinel? pendingResume = null;
 
         while (turnCount < MaxTurnsPerRun)
         {
@@ -1018,7 +1169,86 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 turnGenerationId);
 
             BeginTurn(runId, turnGenerationId);
-            var hasToolCalls = await ExecuteTurnAsync(runId, turnGenerationId, turnCount, ct);
+            var turn = await ExecuteTurnAsync(
+                runId,
+                turnGenerationId,
+                turnCount,
+                pendingResume?.InterruptedTurn,
+                ct);
+            pendingResume = null;
+
+            if (turn.RetryableInterruption is { } interruption)
+            {
+                // This generation produced nothing further and never will. Report it as interrupted
+                // rather than completed, then tell subscribers to drop whatever of it is still
+                // unfinalized — canonical messages were delivered whole and stay. Both happen before
+                // the retry decision so a client is never rendering a dead partial next to live output
+                // from its replacement.
+                await CompleteTurnAsync(runId, turnGenerationId, LifecycleTurnOutcomes.Interrupted, ct);
+                await PublishToAllAsync(
+                    new GenerationAbandonedMessage(ThreadId, runId, turnGenerationId),
+                    ct);
+
+                // A deferred tool call outlives the stream that requested it. If this turn left any
+                // unresolved — a question put to the user, a client-side effect still running — then
+                // there is nothing to recover TO: the next request would have to carry a half-filled
+                // set of tool results, which no provider accepts and which the turn precondition
+                // rejects outright. So the run parks exactly as an uninterrupted turn would, and the
+                // continuation happens in the child run the eventual resolution causes.
+                //
+                // The recovery is counted as spent BEFORE parking. The interrupted attempt is being
+                // abandoned and the child run's first turn is what replaces it, so that turn IS this
+                // input's one automatic retry — it simply happens on the far side of the boundary.
+                if (_delayed.TryPark(runId, turnGenerationId, out var interruptedUnresolved))
+                {
+                    Logger.LogWarning(
+                        "Run {RunId} was interrupted with {Count} deferred tool call(s) outstanding from "
+                            + "generation {GenerationId}; parking instead of continuing",
+                        runId,
+                        interruptedUnresolved,
+                        turnGenerationId);
+
+                    await ParkOnDeferralsAsync(
+                        runId, spawnSuppression, interruptedUnresolved, recoveryCount + 1, ct);
+                    brokeEarly = true;
+                    break;
+                }
+
+                if (recoveryCount > 0)
+                {
+                    // The budget is spent. Failing here — rather than retrying again — is what keeps a
+                    // persistently broken transport from consuming turns, tokens, and tool effects
+                    // until the turn cap ends it. The run's error path classifies it for the client.
+                    throw new StreamInterruptedAfterRecoveryException(interruption);
+                }
+
+                recoveryCount++;
+                var interrupted = new InterruptedTurnResume(
+                    runId,
+                    turnGenerationId,
+                    turn.Attempt.HasCanonicalMessages);
+
+                // Built FROM the resume record so the sentinel's ids cannot drift from the ones the
+                // continuation turn actually reads.
+                pendingResume = new ResumeSentinel(
+                    interrupted.InterruptedRunId,
+                    interrupted.InterruptedGenerationId)
+                {
+                    InterruptedTurn = interrupted,
+                };
+
+                Logger.LogWarning(
+                    "Recovering run {RunId} from interrupted generation {GenerationId}: "
+                        + "{Mode} (completed messages: {CompletedCount})",
+                    runId,
+                    turnGenerationId,
+                    interrupted.HadCanonicalOutput ? "continuing after completed output" : "retrying empty attempt",
+                    turn.Attempt.CompletedMessages.Count);
+
+                // Loop round: the next iteration mints a fresh generation id, so the replacement
+                // attempt can never collide with the abandoned one on the client's merge key.
+                continue;
+            }
 
             // Report the turn before deciding what the run does next, so a subscriber sees the turn
             // that produced the deferrals ahead of the run parking on them. A turn that ends any
@@ -1034,25 +1264,13 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             // which is what makes a resolution landing at this exact moment safe either way.
             if (_delayed.TryPark(runId, turnGenerationId, out var unresolvedCount))
             {
-                var suppressedRunId = spawnSuppression.IsLatched ? runId : null;
-                lock (_spawnSuppressionLock)
-                {
-                    _spawnSuppressedRunId = suppressedRunId;
-                }
-
-                // A delayed continuation may run after a host restart. Persist before acknowledging the
-                // pause so a no-spawn guarantee already returned to the caller cannot silently disappear.
-                await PersistSuppressedRunMarkerAsync(suppressedRunId, ct);
-
-                Logger.LogInformation(
-                    "Run {RunId} pausing on {Count} deferred tool call(s); awaiting external resolution",
-                    runId,
-                    unresolvedCount);
+                await ParkOnDeferralsAsync(
+                    runId, spawnSuppression, unresolvedCount, recoveryCount, ct);
                 brokeEarly = true;
                 break;
             }
 
-            if (!hasToolCalls)
+            if (!turn.HasToolCalls)
             {
                 Logger.LogDebug("No tool calls in turn {Turn}, run complete", turnCount);
                 brokeEarly = true;
@@ -1342,10 +1560,136 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             : null;
     }
 
-    private async Task<bool> ExecuteTurnAsync(
+    /// <summary>
+    /// Mirrors the parked run's spent recovery budget into thread metadata, so the resumed input is
+    /// still bound by "at most one automatic recovery" when its answer arrives in a different process.
+    /// <see langword="0"/> clears the slot.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately NOT keyed by run id. A deferred entry rebuilt from persisted history carries no
+    /// requesting run, so a keyed slot could never be matched by the continuation that needs it. A
+    /// bare count is exact anyway: the loop parks one run at a time, so at most one park is
+    /// outstanding, and the continuation consumes the slot before another park can write it. Writing
+    /// on every park — including the zero case, which clears — is what stops the slot from outliving
+    /// the park it describes.
+    /// <para>
+    /// Metadata rather than a schema change: this is the same mechanism, and the same
+    /// single-property shape, as <see cref="PersistSuppressedRunMarkerAsync"/>, so it works unchanged
+    /// across the in-memory, file, and SQLite stores with no migration.
+    /// </para>
+    /// </remarks>
+    private Task PersistRecoveryBudgetMarkerAsync(int spent, CancellationToken ct)
+    {
+        var store = Store;
+        if (store == null)
+        {
+            return Task.CompletedTask;
+        }
+
+        return store.UpdateMetadataAsync(
+            ThreadId,
+            existing =>
+            {
+                var properties = existing?.Properties?.ToBuilder()
+                    ?? ImmutableDictionary.CreateBuilder<string, object>();
+
+                if (spent <= 0)
+                {
+                    _ = properties.Remove(RecoveryBudgetProperty);
+                }
+                else
+                {
+                    // A string for the same reason the suppression marker is one: the value survives
+                    // the JSON round trip of the file and SQLite stores as text either way.
+                    properties[RecoveryBudgetProperty] = spent.ToString(CultureInfo.InvariantCulture);
+                }
+
+                return (existing ?? new ThreadMetadata { ThreadId = ThreadId, LastUpdated = 0 }) with
+                {
+                    LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    Properties = properties.ToImmutable(),
+                };
+            },
+            ct);
+    }
+
+    /// <summary>
+    /// Re-arms the durable park budget from metadata, so a continuation that resumes after a restart
+    /// inherits what its parked ancestor spent instead of a refunded budget.
+    /// </summary>
+    private async Task RestoreRecoveryBudgetAsync(CancellationToken ct)
+    {
+        var store = Store;
+        if (store == null)
+        {
+            return;
+        }
+
+        var metadata = await store.LoadMetadataAsync(ThreadId, ct);
+        if (metadata?.Properties?.TryGetValue(RecoveryBudgetProperty, out var marker) != true)
+        {
+            return;
+        }
+
+        var text = marker?.ToString();
+        if (!int.TryParse(text, CultureInfo.InvariantCulture, out var spent) || spent <= 0)
+        {
+            // A marker we cannot read must not stop the restore — the conversation still has to come
+            // back — so this reports and continues with a fresh budget.
+            Logger.LogWarning(
+                "Ignoring unreadable persisted recovery budget marker {Marker}", text ?? "(null)");
+            return;
+        }
+
+        lock (_recoveryBudgetLock)
+        {
+            _restoredParkRecoveryBudget = spent;
+        }
+
+        Logger.LogInformation(
+            "Restored parked recovery budget: {Spent} automatic recovery/recoveries already spent",
+            spent);
+    }
+
+    /// <summary>
+    /// Claims the durable park budget, if a restart left one, consuming it.
+    /// </summary>
+    /// <remarks>
+    /// Only the delayed continuation may call this. Any other run starting after a restart is a NEW
+    /// logical input and is entitled to its own full budget.
+    /// </remarks>
+    private int TakeRestoredParkBudget()
+    {
+        lock (_recoveryBudgetLock)
+        {
+            var spent = _restoredParkRecoveryBudget;
+            _restoredParkRecoveryBudget = 0;
+            return spent;
+        }
+    }
+
+    /// <summary>
+    /// Runs one provider turn: streams the reply, records it, and dispatches its tool calls.
+    /// </summary>
+    /// <param name="runId">The run this turn belongs to.</param>
+    /// <param name="generationId">The generation this turn streams under.</param>
+    /// <param name="turnNumber">The turn's 1-based position within the run.</param>
+    /// <param name="continuation">
+    /// Set when this turn replaces one whose stream was cut short by a recoverable transport failure.
+    /// It never introduces new user input — it only tells the provider, and only for this request,
+    /// that completed work already exists and must be continued rather than restarted.
+    /// </param>
+    /// <param name="ct">Cancels the request and the streaming enumeration.</param>
+    /// <returns>
+    /// How the turn ended. A recoverable interruption is REPORTED rather than thrown, because the
+    /// decision it feeds — retry, continue, or fail the run — belongs to the run loop, which is the
+    /// only place that knows how much recovery this input has already used.
+    /// </returns>
+    private async Task<TurnExecutionResult> ExecuteTurnAsync(
         string runId,
         string generationId,
         int turnNumber,
+        InterruptedTurnResume? continuation,
         CancellationToken ct)
     {
         // Use defaultOptions as template, override run-specific fields.
@@ -1399,72 +1743,164 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             }
         }
 
+        // Continuing an interrupted turn that already produced completed output: tell the provider to
+        // resume from what survives in the request rather than restart. Ephemeral instruction,
+        // appended to the sent messages only (NOT AddToHistory, never published) — exactly the
+        // discipline ExecuteWrapUpTurnAsync uses, so neither the persisted transcript nor the client
+        // ever shows a synthetic user bubble. A fragment-only interruption gets no instruction at all:
+        // nothing survived, so the correct request is the original one, byte for byte.
+        if (continuation is { HadCanonicalOutput: true })
+        {
+            messagesToSend.Add(new TextMessage
+            {
+                Text = InterruptedTurnContinuationInstruction,
+                Role = Role.User,
+            });
+        }
+
         // Report the discovered context this request carries, read back out of the snapshot that is
         // about to go out. This is the last point at which "what the model will receive" is both
         // knowable and settled — earlier is a guess, later is history.
         await ReportContextLoadedAsync(runId, generationId, messagesToSend, ct);
 
-        var stream = await _agent.GenerateReplyStreamingAsync(messagesToSend, options, ct);
+        var attempt = new TurnAttemptState(generationId);
 
-        var hasToolCalls = false;
-        var pendingToolCalls = new Dictionary<string, Task<ToolCallResultMessage>>();
-
-        await foreach (var msg in stream.WithCancellation(ct))
+        try
         {
-            // Add to history (messages already published by MessagePublishingMiddleware)
-            AddToHistory(msg);
-            ObserveTurnMessage(runId, generationId, msg);
+            var stream = await _agent.GenerateReplyStreamingAsync(messagesToSend, options, ct);
 
-            // Handle tool calls - MessageTransformationMiddleware converts ToolsCallMessage -> ToolCallMessage
-            if (msg is ToolCallMessage toolCall)
+            await foreach (var msg in stream.WithCancellation(ct))
             {
-                if (toolCall.ExecutionTarget != ExecutionTarget.LocalFunction)
+                // Only canonical messages enter history (they are already published by
+                // MessagePublishingMiddleware). Fragments are deltas of a value their canonical
+                // message repeats in full, so keeping them buys nothing on a normal turn — and on an
+                // interrupted one it is the difference between an attempt that left no trace and an
+                // attempt that permanently poisoned the transcript with half a sentence. Lifecycle
+                // observation stays unconditional so per-turn message counts are unchanged.
+                //
+                // Defense in depth, and currently unreachable: the loop-owned MessageUpdateJoiner sits
+                // upstream of this point and absorbs all four fragment types into a builder, so no
+                // fragment reaches here today and removing this gate breaks no test. It is kept because
+                // that is a property of one middleware ORDERING this method does not assert; a new
+                // fragment type the joiner does not accumulate, or a reordering, would otherwise persist
+                // a partial with no other line standing in the way. Observe's own classification is
+                // pinned by TurnAttemptStateTests.
+                if (attempt.Observe(msg))
                 {
-                    // Provider/server tools are executed remotely and should not be routed
-                    // through local tool handlers.
+                    AddToHistory(msg);
+                }
+
+                ObserveTurnMessage(runId, generationId, msg);
+
+                // Handle tool calls - MessageTransformationMiddleware converts ToolsCallMessage -> ToolCallMessage
+                if (msg is ToolCallMessage toolCall)
+                {
+                    if (toolCall.ExecutionTarget != ExecutionTarget.LocalFunction)
+                    {
+                        // Provider/server tools are executed remotely and should not be routed
+                        // through local tool handlers.
+                        Logger.LogDebug(
+                            "Skipping non-local tool call (executed remotely): FunctionName={FunctionName}, ToolCallId={ToolCallId}, ExecutionTarget={ExecutionTarget}",
+                            toolCall.FunctionName,
+                            toolCall.ToolCallId,
+                            toolCall.ExecutionTarget
+                        );
+                        continue;
+                    }
+
+                    // Fail-fast: ToolCallId is required for proper correlation
+                    if (string.IsNullOrEmpty(toolCall.ToolCallId))
+                    {
+                        throw new InvalidOperationException(
+                            $"ToolCallMessage.ToolCallId is required but was null or empty. " +
+                            $"FunctionName: {toolCall.FunctionName ?? "(null)"}");
+                    }
+
                     Logger.LogDebug(
-                        "Skipping non-local tool call (executed remotely): FunctionName={FunctionName}, ToolCallId={ToolCallId}, ExecutionTarget={ExecutionTarget}",
+                        "Tool call received: {FunctionName} (id: {ToolCallId})",
                         toolCall.FunctionName,
-                        toolCall.ToolCallId,
-                        toolCall.ExecutionTarget
-                    );
-                    continue;
+                        toolCall.ToolCallId);
+
+                    // Start execution and publish result immediately when complete
+                    // This runs in parallel with LLM streaming and other tool executions.
+                    // Pass the run's generationId so deferred entries are tagged consistently —
+                    // toolCall.GenerationId is set by the provider/middleware and may be missing.
+                    var executionTask = ExecuteAndPublishToolCallAsync(toolCall, runId, generationId, ct);
+                    attempt.TrackToolTask(toolCall.ToolCallId, executionTask);
                 }
-
-                hasToolCalls = true;
-
-                // Fail-fast: ToolCallId is required for proper correlation
-                if (string.IsNullOrEmpty(toolCall.ToolCallId))
-                {
-                    throw new InvalidOperationException(
-                        $"ToolCallMessage.ToolCallId is required but was null or empty. " +
-                        $"FunctionName: {toolCall.FunctionName ?? "(null)"}");
-                }
-
-                Logger.LogDebug(
-                    "Tool call received: {FunctionName} (id: {ToolCallId})",
-                    toolCall.FunctionName,
-                    toolCall.ToolCallId);
-
-                // Start execution and publish result immediately when complete
-                // This runs in parallel with LLM streaming and other tool executions.
-                // Pass the run's generationId so deferred entries are tagged consistently —
-                // toolCall.GenerationId is set by the provider/middleware and may be missing.
-                var executionTask = ExecuteAndPublishToolCallAsync(toolCall, runId, generationId, ct);
-                pendingToolCalls[toolCall.ToolCallId] = executionTask;
             }
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested && IsRetryableStreamInterruption(ex))
+        {
+            // Terminally account for every tool this attempt dispatched BEFORE handing recovery back
+            // to the run loop: these executions are still running against the same host, and letting
+            // one land while the replacement attempt is streaming is exactly the duplicated-effect
+            // race recovery exists to prevent. A tool that failed on its own is logged and swallowed
+            // here — surfacing it would replace the interruption we can recover from with one we
+            // cannot, and the tool's failure is already published to subscribers either way.
+            try
+            {
+                await attempt.SettleToolTasksAsync();
+            }
+            catch (Exception toolFailure)
+            {
+                Logger.LogWarning(
+                    toolFailure,
+                    "Tool execution dispatched by interrupted generation {GenerationId} of run {RunId} failed while settling",
+                    generationId,
+                    runId);
+            }
+
+            Logger.LogWarning(
+                ex,
+                "Provider stream for run {RunId} generation {GenerationId} was interrupted after "
+                    + "{CompletedCount} completed message(s) and {ToolCount} tool call(s)",
+                runId,
+                generationId,
+                attempt.CompletedMessages.Count,
+                attempt.PendingToolTasks.Count);
+
+            return new TurnExecutionResult(attempt, ex);
         }
 
         // Wait for all tool executions to complete before next turn
         // Results are already published as each tool completes. Deferred handlers complete
         // synchronously with a placeholder, so this never blocks on external resolution.
-        if (pendingToolCalls.Count > 0)
+        if (attempt.PendingToolTasks.Count > 0)
         {
-            Logger.LogDebug("Awaiting {Count} tool call results", pendingToolCalls.Count);
-            _ = await Task.WhenAll(pendingToolCalls.Values);
+            Logger.LogDebug("Awaiting {Count} tool call results", attempt.PendingToolTasks.Count);
+            await attempt.SettleToolTasksAsync();
         }
 
-        return hasToolCalls;
+        return new TurnExecutionResult(attempt);
+    }
+
+    /// <summary>
+    /// Decides whether a failure that ended a provider stream is one an automatic retry can act on.
+    /// </summary>
+    /// <remarks>
+    /// Typed classification only. Matching on exception text would quietly promote arbitrary provider,
+    /// serialization, and tool faults to "retryable" and double their work; only a transport that
+    /// ended the response body early is known to be safe. Cancellation is excluded outright — a user
+    /// who stopped the run must never be answered with a second request.
+    /// </remarks>
+    private static bool IsRetryableStreamInterruption(Exception exception)
+    {
+        for (var candidate = exception; candidate is not null; candidate = candidate.InnerException)
+        {
+            if (candidate is OperationCanceledException)
+            {
+                return false;
+            }
+
+            if (candidate is HttpIOException { HttpRequestError: HttpRequestError.ResponseEnded }
+                or HttpRequestException { HttpRequestError: HttpRequestError.ResponseEnded })
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -2512,6 +2948,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         {
             _spawnSuppressedRunId = suppressedRunId;
         }
+
+        // Alongside the suppression marker, and for the same reason: both are guarantees the parked
+        // run already made that its continuation must keep. Must precede
+        // RecoverOwedContinuationsAsync below, which can run a continuation immediately.
+        await RestoreRecoveryBudgetAsync(ct);
 
         if (restoredCount > 0)
         {

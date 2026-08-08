@@ -14,9 +14,10 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow.Tools;
 /// <summary>
 ///     Exposes the agent-facing workflow launch tools over a <see cref="WorkflowManager"/>:
 ///     <c>StartWorkflowAgent</c> (delegate a bounded unit of work to an isolated agent running a
-///     pre-authored workflow, sync or async), <c>CheckWorkflow</c> (non-blocking status), and
-///     <c>WaitWorkflow</c> (block until terminal or timeout). These are the ONLY workflow tools a
-///     normal agent should ever see — the authoring/mutation tools
+///     pre-authored workflow, sync or async), <c>GetWorkflows</c> (list the runs started here),
+///     <c>CheckWorkflow</c> (non-blocking status), and <c>WaitWorkflow</c> (block until terminal or
+///     timeout). These are the ONLY workflow tools a normal agent should ever see — the
+///     authoring/mutation tools
 ///     (<c>GetWorkflow</c>/<c>SetCurrentNode</c>/<c>SetState</c>/<c>SetNotes</c>, and never
 ///     <c>SetWorkflow</c>) live exclusively inside the controller loop the manager spins up.
 /// </summary>
@@ -24,6 +25,9 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
 {
     /// <summary>The launch tool name.</summary>
     public const string StartWorkflowToolName = "StartWorkflowAgent";
+
+    /// <summary>The run-discovery tool name.</summary>
+    public const string GetWorkflowsToolName = "GetWorkflows";
 
     /// <summary>The non-blocking status tool name.</summary>
     public const string CheckWorkflowToolName = "CheckWorkflow";
@@ -33,7 +37,14 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
 
     /// <summary>Every tool name this provider exposes; a host keeps these out of sub-agent inheritance.</summary>
     public static readonly IReadOnlyList<string> ToolNames =
-        [StartWorkflowToolName, CheckWorkflowToolName, WaitWorkflowToolName];
+        [StartWorkflowToolName, GetWorkflowsToolName, CheckWorkflowToolName, WaitWorkflowToolName];
+
+    /// <summary>
+    ///     How many workflow ids an unknown-id error may list. Bounded so a long-lived conversation with
+    ///     many runs cannot turn one mistyped id into a huge tool result; when the cap bites, the text
+    ///     SAYS the list is partial rather than letting the model conclude its id does not exist.
+    /// </summary>
+    internal const int MaxListedWorkflowIds = 20;
 
     private static readonly JsonSerializerOptions ResultJson = new()
     {
@@ -81,6 +92,7 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
     public IEnumerable<FunctionDescriptor> GetFunctions()
     {
         yield return CreateStartWorkflowDescriptor();
+        yield return CreateGetWorkflowsDescriptor();
         yield return CreateCheckWorkflowDescriptor();
         yield return CreateWaitWorkflowDescriptor();
     }
@@ -112,7 +124,9 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
                     Name = "workflowId",
                     Description =
                         "An opaque, non-user-identifying handle for this workflow. Must be unique; a value "
-                        + "already used is rejected.",
+                        + "already used is rejected. It is the id you pass to GetWorkflows/CheckWorkflow/"
+                        + "WaitWorkflow to follow this StartWorkflowAgent run — a workflow id, not an "
+                        + "agent_id, and unrelated to the ids the Agent tool hands out.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = true,
                 },
@@ -168,6 +182,34 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
         };
     }
 
+    /// <summary>
+    ///     Lists the runs started through this manager. Exists for the recovery case Check/Wait cannot
+    ///     serve: the agent no longer has the workflowId (a restart, a context compaction, a relayed
+    ///     hand-off), and without a way to rediscover it the only "progress" left is launching a
+    ///     duplicate run of work that is already in flight.
+    /// </summary>
+    private FunctionDescriptor CreateGetWorkflowsDescriptor()
+    {
+        var contract = new FunctionContract
+        {
+            Name = GetWorkflowsToolName,
+            Description =
+                "List the workflows started with StartWorkflowAgent in this conversation, with each one's "
+                + "workflowId, objective, status, and current node. Use it when you no longer have a "
+                + "workflowId — to recover it and resume with CheckWorkflow/WaitWorkflow — and BEFORE "
+                + "starting a workflow for an objective that may already be running, so you do not launch a "
+                + "duplicate. Returns immediately; the ids listed are workflow ids, never agent ids.",
+            Parameters = [],
+        };
+
+        return new FunctionDescriptor
+        {
+            Contract = contract,
+            Handler = HandleGetWorkflowsAsync,
+            ProviderName = ProviderName,
+        };
+    }
+
     private FunctionDescriptor CreateCheckWorkflowDescriptor()
     {
         var contract = new FunctionContract
@@ -182,7 +224,10 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
                 new FunctionParameterContract
                 {
                     Name = "workflowId",
-                    Description = "The workflowId returned/used when the workflow was started.",
+                    Description =
+                        "The workflowId you supplied to StartWorkflowAgent (GetWorkflows lists them if you "
+                        + "lost it). This is a workflow id, not an agent_id — ids from the Agent tool do not "
+                        + "resolve here.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = true,
                 },
@@ -216,7 +261,10 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
                 new FunctionParameterContract
                 {
                     Name = "workflowId",
-                    Description = "The workflowId returned/used when the workflow was started.",
+                    Description =
+                        "The workflowId you supplied to StartWorkflowAgent (GetWorkflows lists them if you "
+                        + "lost it). This is a workflow id, not an agent_id — ids from the Agent tool do not "
+                        + "resolve here.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = true,
                 },
@@ -349,6 +397,32 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
         }
     }
 
+    private Task<ToolHandlerResult> HandleGetWorkflowsAsync(
+        string argsJson,
+        ToolCallContext context,
+        CancellationToken cancellationToken
+    )
+    {
+        // Sorted so repeated calls read identically instead of shuffling with dictionary order; no cap,
+        // because this IS the listing (the bounded hint below is the error-path affordance).
+        var workflows = _manager
+            .ListRuns()
+            .OrderBy(r => r.WorkflowId, StringComparer.Ordinal)
+            .Select(r => new
+            {
+                r.WorkflowId,
+                r.Objective,
+                r.Status,
+                r.CurrentNodeId,
+                r.StartedUtc,
+                r.LastActivityUtc,
+            });
+
+        return Task.FromResult<ToolHandlerResult>(
+            ToolHandlerResult.FromText(JsonSerializer.Serialize(new { Workflows = workflows }, ResultJson))
+        );
+    }
+
     private Task<ToolHandlerResult> HandleCheckWorkflowAsync(
         string argsJson,
         ToolCallContext context,
@@ -379,7 +453,7 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
             catch (UnknownWorkflowException ex)
             {
                 return Task.FromResult<ToolHandlerResult>(
-                    ToolHandlerResult.FromError(ex.Message, "unknown_workflow")
+                    ToolHandlerResult.FromError(DescribeUnknownWorkflow(ex), "unknown_workflow")
                 );
             }
         }
@@ -423,9 +497,41 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
             }
             catch (UnknownWorkflowException ex)
             {
-                return ToolHandlerResult.FromError(ex.Message, "unknown_workflow");
+                return ToolHandlerResult.FromError(DescribeUnknownWorkflow(ex), "unknown_workflow");
             }
         }
+    }
+
+    /// <summary>
+    ///     Turns "unknown workflow" into a recoverable instruction: the ids that WOULD have worked, plus
+    ///     the namespace mistake worth naming (an agent_id passed where a workflowId belongs).
+    /// </summary>
+    /// <remarks>
+    ///     Sorted ordinally so repeated failures read identically, and capped at
+    ///     <see cref="MaxListedWorkflowIds"/> with an explicit "showing N of M" — a silently truncated
+    ///     list would invite the model to conclude its run does not exist and start a duplicate.
+    /// </remarks>
+    private string DescribeUnknownWorkflow(UnknownWorkflowException ex)
+    {
+        var ids = _manager.ListRuns()
+            .Select(r => r.WorkflowId)
+            .OrderBy(id => id, StringComparer.Ordinal)
+            .ToArray();
+
+        if (ids.Length == 0)
+        {
+            return $"{ex.Message} No workflows have been started in this conversation — start one with "
+                + "StartWorkflowAgent. Note that a workflowId is not an agent_id: ids from the Agent tool "
+                + "do not resolve here.";
+        }
+
+        var suffix = ids.Length > MaxListedWorkflowIds
+            ? $" (showing {MaxListedWorkflowIds} of {ids.Length})"
+            : string.Empty;
+
+        return $"{ex.Message} Use one of the workflow ids you supplied to StartWorkflowAgent: "
+            + $"{string.Join(", ", ids.Take(MaxListedWorkflowIds))}{suffix}. GetWorkflows lists them all. "
+            + "Note that a workflowId is not an agent_id: ids from the Agent tool do not resolve here.";
     }
 
     private static string Serialize(WorkflowRunResult result) => JsonSerializer.Serialize(result, ResultJson);

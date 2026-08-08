@@ -56,6 +56,19 @@ public sealed class ChatWebSocketManager
     internal TimeSpan InboundAssemblyDeadline { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
+    /// Test seam only (<see langword="null"/> in production, one null check per outbound frame):
+    /// awaited by <see cref="PumpMessagesToClientAsync"/> before each frame is written, so a test can
+    /// hold a consumer still and reproduce the slow-consumer eviction
+    /// (<c>MultiTurnAgentBase.PublishToSubscriber</c>) as a counting argument rather than a race — a
+    /// frozen pump plus a bounded output channel overflows after exactly <c>capacity + 1</c> publishes,
+    /// with no timing sleeps anywhere. Receives the stream's thread id (<c>subagent-{agentId}</c> for
+    /// the focus view) so a test can gate one stream and leave the others running. Because both the
+    /// primary <c>/ws</c> stream and the sub-agent focus view pump through this one method, a gate here
+    /// applies identically to both.
+    /// </summary>
+    internal Func<string, CancellationToken, Task>? OutboundPumpGate { get; set; }
+
+    /// <summary>
     /// <c>$type</c> discriminator for an inbound frame resolving a previously-deferred client-hosted tool
     /// call (issue #246: <c>AskUserQuestion</c>/other client-tool answers). Recognized on BOTH the
     /// primary (<see cref="ProcessClientMessageAsync"/>) and sub-agent (<see cref="RelaySubAgentMessageAsync"/>)
@@ -516,6 +529,15 @@ public sealed class ChatWebSocketManager
         {
             await foreach (var message in source.WithCancellation(ct))
             {
+                // Test-only stall point (no-op in production — see OutboundPumpGate). Placed INSIDE the
+                // loop on purpose: the subscription is an async iterator, so the subscriber only exists
+                // once the first message has been pulled. Gating before the loop would leave the agent
+                // with no subscriber at all, and nothing would ever queue.
+                if (OutboundPumpGate is { } gate)
+                {
+                    await gate(threadId, ct);
+                }
+
                 var messageJson = JsonSerializer.Serialize(message, _jsonOptions);
                 if (!await connection.TrySendTextAsync(messageJson, ct))
                 {
@@ -573,6 +595,30 @@ public sealed class ChatWebSocketManager
                         await recordWriter.WriteLineAsync(doneJson);
                         await recordWriter.FlushAsync();
                     }
+                }
+
+                // A resync signal (see MultiTurnAgentBase.PublishToSubscriber / SubscribeAsync) is NOT a
+                // run completion: the frame above already carried it (content-free - only
+                // $type/reason/thread/run/generationId). Whether it also ENDS the stream is a property of
+                // its reason:
+                //  - SlowConsumer: this subscriber was dropped from fan-out and receives nothing further,
+                //    so close deliberately with a dedicated reason instead of the `done` sentinel.
+                //  - ReplayTruncated: only the run's already-published PREFIX is missing and the live tail
+                //    still follows on this same subscription, so keep pumping. Closing here would make
+                //    every consumer reconnect, land on the same still-truncated buffer, and be advised
+                //    again for the rest of the run.
+                // Applies identically to the primary /ws stream and the sub-agent focus view, since both
+                // call through this shared method. The close uses CancellationToken.None (matching
+                // SendSubAgentStreamFailedErrorAsync's terminal close): a cancellation landing between the
+                // frame's send and this close must not be able to suppress the close (and the
+                // "resync_required" reason it carries) via OperationCanceledException.
+                if (message is StreamRecoveryMessage { Reason: not StreamRecoveryReason.ReplayTruncated })
+                {
+                    await connection.TryCloseAsync(
+                        WebSocketCloseStatus.NormalClosure,
+                        "resync_required",
+                        CancellationToken.None);
+                    break;
                 }
             }
         }

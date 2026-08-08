@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
@@ -38,6 +39,24 @@ public sealed class ReviewAgentTests : LoggingTestBase
 
     private static TextMessage Assistant(string text) =>
         new() { Text = text, Role = Role.Assistant, RunId = RunId };
+
+    [Fact]
+    public async Task CollectProvisionalAsync_fails_when_the_agent_stream_was_severed_mid_answer()
+    {
+        // A severed stream (this consumer was dropped from fan-out) ends the enumeration exactly like
+        // a completed run does. Returning the text gathered so far would hand the daemon a silently
+        // truncated review that reads as a complete one, so the drive must fail instead.
+        var agent = new FakeMultiTurnAgent(
+            RunId,
+            Assistant("## Review\nMust: null check missing in Foo.cs:10"),
+            new StreamRecoveryMessage("thread-1", RunId, "gen-1", StreamRecoveryReason.SlowConsumer));
+        var sut = Create(agent);
+
+        var collect = async () =>
+            await sut.CollectProvisionalAsync("Review this diff", Later, CancellationToken.None);
+
+        _ = await collect.Should().ThrowAsync<InvalidOperationException>();
+    }
 
     [Fact]
     public async Task CollectProvisionalAsync_sends_the_input_as_a_single_user_turn()

@@ -162,6 +162,21 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
         }
     }
 
+    /// <summary>
+    /// The running app's service provider. <see cref="WebApplicationFactory{TEntryPoint}.Services"/> is
+    /// unusable here because it re-enters the base <c>EnsureServer</c>, which cannot cast Kestrel to
+    /// <c>TestServer</c>; this exposes the host we actually started. Use it to reach a registered
+    /// singleton (e.g. to arm a test seam on it) after the app is up.
+    /// </summary>
+    public IServiceProvider AppServices
+    {
+        get
+        {
+            EnsureStarted();
+            return _kestrelHost!.Services;
+        }
+    }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Production");

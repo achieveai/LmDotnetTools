@@ -73,6 +73,19 @@ export const LIVE_BUFFER_MAX = 1000;
 export const MAX_OVERFLOW_RECONCILES = 3;
 
 /**
+ * True for a streaming DELTA frame, as opposed to a finalized message. Shared by the live-handling
+ * path and the abandoned-generation prune so both agree on exactly what "still streaming" means.
+ */
+function isStreamingUpdate(m: Message): boolean {
+  return (
+    isTextUpdateMessage(m) ||
+    isReasoningUpdateMessage(m) ||
+    isToolsCallUpdateMessage(m) ||
+    isToolCallUpdateMessage(m)
+  );
+}
+
+/**
  * Presentation-only sub-agent panel: list a conversation's sub-agents, focus one to view its
  * transcript (persisted history + live stream), and send input to the focused child. Deliberately
  * decoupled from `useChat` — it maintains its OWN per-agent message index, merger, tool-result map
@@ -274,6 +287,55 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
     rebuildFocusedDisplayItems();
   }
 
+  /**
+   * Retire an abandoned generation from the focused child's transcript. The child's provider stream
+   * was cut mid-reply, the loop threw that generation away, and the SAME turn is being retried under a
+   * fresh generation id on this still-open socket. Without this the abandoned generation's half-written
+   * block stays in the child transcript forever and the retry renders as a SECOND block beside it —
+   * the focused panel's copy of what `useChat.handleGenerationAbandoned` fixes for the parent chat.
+   *
+   * Removes exactly the still-streaming (`status === 'active'`) entries of that generation. An entry
+   * that already finalized under it is canonical — the server delivered it whole before the cut — so it
+   * is preserved, as is any rehydrated persisted twin (always inserted 'completed').
+   *
+   * Matching is on the `content.generationId` FIELD, never by parsing the merge-key string: a
+   * generationId may itself contain `-` and the key's trailing segments vary by message kind (tool
+   * calls append a tool_call_id), so substring matching would both over- and under-match.
+   *
+   * A no-op when nothing matches, which is what makes a replayed/duplicated frame idempotent.
+   * Deliberately NOT a `resetFocusState()`: the socket is alive and the run continues.
+   */
+  function dropAbandonedGeneration(abandonedGenerationId: string, runId?: string): void {
+    const dropped = new Set<string>();
+    for (const [mergeKey, entry] of focusedIndex) {
+      if (entry.content.generationId === abandonedGenerationId && entry.status === 'active') {
+        dropped.add(mergeKey);
+      }
+    }
+
+    if (dropped.size > 0) {
+      for (const mergeKey of dropped) {
+        focusedIndex.delete(mergeKey);
+      }
+      // focusedOrder must drop the same keys: rebuildFocusedDisplayItems walks it, so a dangling key
+      // would keep the removed block's slot (and resurrect it on any later upsert under that key).
+      focusedOrder = focusedOrder.filter((key) => !dropped.has(key));
+      rebuildFocusedDisplayItems();
+    }
+
+    // Clear the merger accumulators for this generation (`genId` plus every `genId::t*` turn-scoped
+    // key) so the retry's deltas start from empty instead of concatenating onto the abandoned partial.
+    // Safe unconditionally — clearing an already-cleared generation is itself a no-op, which is the
+    // other half of what keeps a replayed frame idempotent.
+    merger.finalize(abandonedGenerationId);
+
+    log.info('Focused child generation abandoned; dropped its unfinalized blocks', {
+      generationId: abandonedGenerationId,
+      runId,
+      droppedCount: dropped.size,
+    });
+  }
+
   /** Record a tool result and attach it to any matching tool call already in the index. */
   function captureToolResult(result: ToolCallResultMessage): void {
     if (!result.tool_call_id) return;
@@ -368,9 +430,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
       stamped = { ...stamped, runId: childCurrentRunId };
     }
 
-    const isUpdate =
-      isTextUpdateMessage(stamped) || isReasoningUpdateMessage(stamped) ||
-      isToolsCallUpdateMessage(stamped) || isToolCallUpdateMessage(stamped);
+    const isUpdate = isStreamingUpdate(stamped);
     const isComplete =
       isTextMessage(stamped) || isReasoningMessage(stamped) || isToolsCallMessage(stamped) ||
       isToolCallMessage(stamped) || isNotifyMessage(stamped) || isAgentMessage(stamped);
@@ -659,6 +719,28 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
               message,
             });
           }
+        },
+        onGenerationAbandoned: (info) => {
+          // Ignore late frames for a superseded focus.
+          if (focusSeq !== token) return;
+          const abandoned = info.generationId;
+          if (!abandoned) {
+            log.warn('generation_abandoned frame without a generationId; ignoring', {
+              agentId,
+              runId: info.runId,
+            });
+            return;
+          }
+          // Frames still waiting in the live buffer were never applied to the index, so dropping index
+          // entries alone would let the post-history drain RE-CREATE the retired partial. Drop this
+          // generation's unapplied DELTAS here too; its finalized frames stay, matching the
+          // preserve-what-finalized rule dropAbandonedGeneration applies to the index.
+          if (bufferingLive) {
+            liveBuffer = liveBuffer.filter(
+              (m) => m.generationId !== abandoned || !isStreamingUpdate(m)
+            );
+          }
+          dropAbandonedGeneration(abandoned, info.runId);
         },
       });
       openedConnection = connection;

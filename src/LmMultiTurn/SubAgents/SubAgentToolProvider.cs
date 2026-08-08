@@ -10,15 +10,16 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 
 /// <summary>
-/// Provides the Agent, SendMessage, and CheckAgent tool definitions for sub-agent
+/// Provides the Agent, SendMessage, CheckAgent, and WaitAgent tool definitions for sub-agent
 /// orchestration. Registered as an IFunctionProvider so these tools are included in
 /// the parent agent's function registry alongside all other tools.
 /// </summary>
 /// <remarks>
-/// The surface has two shapes. Without a collaboration it is exactly the historical one — Agent,
-/// SendMessage, CheckAgent — and nothing below changes behaviour. With a collaboration the same
-/// delegation tools gain the role/description the directory needs, plural observation replaces the
-/// singular check, and messaging becomes typed and hierarchy-wide rather than parent-to-child only.
+/// The surface has two shapes. Without a collaboration it is the historical one — Agent,
+/// SendMessage, CheckAgent — plus WaitAgent, the singular blocking wait that spares a legacy agent
+/// from polling CheckAgent in a loop. With a collaboration the same delegation tools gain the
+/// role/description the directory needs, plural observation replaces the singular check and wait, and
+/// messaging becomes typed and hierarchy-wide rather than parent-to-child only.
 /// </remarks>
 public class SubAgentToolProvider : IFunctionProvider
 {
@@ -27,6 +28,35 @@ public class SubAgentToolProvider : IFunctionProvider
     /// tool that <see cref="SuppressSpawning"/> gates without duplicating the literal.
     /// </summary>
     public const string SpawnToolName = "Agent";
+
+    /// <summary>
+    /// Name of the singular blocking wait offered only when collaboration is off; under
+    /// collaboration <c>WaitForAgents</c> covers the same need for a whole fan-out.
+    /// </summary>
+    public const string WaitAgentToolName = "WaitAgent";
+
+    /// <summary>
+    /// How many known agent ids an unknown-id error may list. Bounded so a hierarchy with hundreds of
+    /// agents cannot turn one mistyped id into a multi-kilobyte tool result; when it bites, the text
+    /// says so rather than silently presenting a truncated list as the whole set.
+    /// </summary>
+    internal const int MaxListedAgentIds = 20;
+
+    /// <summary>
+    /// The sentence that redirects a workflow id to the tool that accepts it, appended verbatim to
+    /// BOTH wait descriptors.
+    /// </summary>
+    /// <remarks>
+    /// Agent ids and workflow ids are both opaque handles minted by tools that sit side by side in the
+    /// Workspace Agent surface, so nothing about their shape stops one being passed where the other
+    /// belongs. Telling the model it may not pass a workflow id here is only half the correction —
+    /// naming the tool that does take one is the half it can act on. Shared as a constant because the
+    /// two descriptors are edited independently and a redirect that drifts on one of them is worse
+    /// than none: it would send the model to a tool that does not exist.
+    /// </remarks>
+    internal const string WorkflowIdRedirect =
+        " A workflow started with StartWorkflowAgent is followed with CheckWorkflow/WaitWorkflow, "
+        + "never with a wait on agents.";
 
     private readonly SubAgentManager _manager;
     private readonly MutableSubAgentTemplateSource _source;
@@ -79,6 +109,7 @@ public class SubAgentToolProvider : IFunctionProvider
 
             yield return CreateSendMessageDescriptor(collaborationEnabled: false);
             yield return CreateCheckAgentDescriptor();
+            yield return CreateWaitAgentDescriptor();
             yield break;
         }
 
@@ -429,6 +460,60 @@ public class SubAgentToolProvider : IFunctionProvider
     }
 
     /// <summary>
+    /// The singular blocking wait, offered ONLY when collaboration is off. Without it the legacy
+    /// surface's sole way to find out that a background sub-agent finished is to call CheckAgent
+    /// again — which costs a turn per poll and, with nothing else to do, is a spin loop the model pays
+    /// for. Under collaboration <c>WaitForAgents</c> supersedes it, and no alias is kept: two waits in
+    /// one surface would just invite waiting on one child at a time.
+    /// </summary>
+    private FunctionDescriptor CreateWaitAgentDescriptor()
+    {
+        var contract = new FunctionContract
+        {
+            Name = WaitAgentToolName,
+            Description =
+                "Block until a background sub-agent finishes, instead of calling CheckAgent in a "
+                + "loop. Returns the same status/result CheckAgent would, once the agent has reached a "
+                + "terminal state — completed OR failed. Only agents you spawned with "
+                + "run_in_background: true can be waited on; a synchronous Agent call already returned "
+                + "its result.\n\n"
+                + "Pass timeout_seconds so a wedged agent cannot stall you indefinitely: on expiry the "
+                + "call returns status 'timeout', the agent keeps running, and you can wait again. Do "
+                + "not wait while you still have work of your own — do it and wait afterwards.\n\n"
+                + "Use an `agent_id` returned by `Agent`; do not pass workflow IDs." + WorkflowIdRedirect,
+            Parameters =
+            [
+                new FunctionParameterContract
+                {
+                    Name = "agent_id",
+                    Description =
+                        "The id of the sub-agent to wait for (from Agent or SendMessage).",
+                    ParameterType = new JsonSchemaObject { Type = new("string") },
+                    IsRequired = true,
+                },
+                new FunctionParameterContract
+                {
+                    Name = "timeout_seconds",
+                    Description =
+                        "Optional cap on the wait. On expiry the call returns with status "
+                        + "'timeout' and the agent keeps running — nothing is cancelled. "
+                        + "Must be a positive whole number of seconds; omit it entirely to wait "
+                        + "without a cap.",
+                    ParameterType = new JsonSchemaObject { Type = new("integer") },
+                    IsRequired = false,
+                },
+            ],
+        };
+
+        return new FunctionDescriptor
+        {
+            Contract = contract,
+            Handler = HandleWaitAgentToolAsync,
+            ProviderName = ProviderName,
+        };
+    }
+
+    /// <summary>
     /// The plural replacement for CheckAgent under collaboration. Fanning out and then polling one id
     /// per tool call costs a turn per child; one call covering the whole fan-out is what makes parallel
     /// delegation practical.
@@ -486,7 +571,9 @@ public class SubAgentToolProvider : IFunctionProvider
                 + "The wait ends early if another agent asks YOU a question, so you are never the "
                 + "reason someone else is stuck: answer it with SendMessage, then wait again. Each "
                 + "question ends at most one wait, so a question you have chosen not to answer will "
-                + "not keep interrupting.",
+                + "not keep interrupting.\n\n"
+                + "Use `agent_ids` returned by `Agent` (or the names you gave them); do not pass "
+                + "workflow IDs." + WorkflowIdRedirect,
             Parameters =
             [
                 new FunctionParameterContract
@@ -511,7 +598,9 @@ public class SubAgentToolProvider : IFunctionProvider
                     Name = "timeout_seconds",
                     Description =
                         "Optional cap on the wait. On expiry the call returns with status "
-                        + "'timeout' and the agents keep running — nothing is cancelled.",
+                        + "'timeout' and the agents keep running — nothing is cancelled. "
+                        + "Must be a positive whole number of seconds; omit it entirely to wait "
+                        + "without a cap.",
                     ParameterType = new JsonSchemaObject { Type = new("integer") },
                     IsRequired = false,
                 },
@@ -763,14 +852,21 @@ public class SubAgentToolProvider : IFunctionProvider
                 "invalid_msg_type");
         }
 
-        var inResponseTo = GetOptionalString(root, "in_response_to");
+        // Some callers cannot omit an optional string parameter and send "" or whitespace where they
+        // mean "no correlation" instead of a true JSON null. GetOptionalString already collapses an
+        // omitted key or an explicit JSON null to C# null; normalizing here too means every message
+        // type downstream sees exactly two states — a real id, or absent — regardless of how the
+        // absence was spelled. Without this, a blank string survived as a non-null in_response_to all
+        // the way to the ledger, which treated it as an attempted correlation to a message that does
+        // not exist and refused it as unknown_correlation instead of sending the message as a fresh one.
+        var inResponseTo = NormalizeCorrelationId(GetOptionalString(root, "in_response_to"));
 
         // Both reply-shaped types are checked here, not just Response. The ledger refuses either one
         // without a correlation, but doing it at the tool boundary is what turns that refusal into a
         // sentence naming the parameter the model left out.
         if (
             messageType is AgentMessageType.Response or AgentMessageType.TaskUpdate
-            && string.IsNullOrWhiteSpace(inResponseTo)
+            && inResponseTo is null
         )
         {
             return ToolHandlerResult.FromError(
@@ -1045,7 +1141,11 @@ public class SubAgentToolProvider : IFunctionProvider
                 "unknown_agent");
         }
 
-        var timeoutSeconds = GetOptionalInt(root, "timeout_seconds");
+        if (!TryReadTimeoutSeconds(root, out var timeoutSeconds, out var timeoutError))
+        {
+            return ToolHandlerResult.FromError(timeoutError!, "invalid_args");
+        }
+
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         // Every racer must complete rather than fault when the race is torn down: none of them is
@@ -1057,8 +1157,8 @@ public class SubAgentToolProvider : IFunctionProvider
 
         var completion = mode == "any" ? Task.WhenAny(waits) : Task.WhenAll(waits);
         var question = WatchForQuestionAsync(linked.Token);
-        var timeout = timeoutSeconds is > 0
-            ? DelayQuietlyAsync(TimeSpan.FromSeconds(timeoutSeconds.Value), linked.Token)
+        var timeout = timeoutSeconds is { } cap
+            ? DelayQuietlyAsync(TimeSpan.FromSeconds(cap), linked.Token)
             : null;
 
         Task[] races = timeout is null
@@ -1100,10 +1200,17 @@ public class SubAgentToolProvider : IFunctionProvider
     }
 
     /// <summary>
-    /// Reduces one completion wait to "it finished, somehow". The result text is fetched afresh from
-    /// CheckAgents when the wait ends, and a child that failed or was abandoned still ends the wait —
-    /// so propagating either the value or the fault here would only produce an unobserved exception.
+    /// Reduces one completion wait to "the wait is over, somehow". The outcome is read back from the
+    /// manager afterwards, never from this task.
     /// </summary>
+    /// <remarks>
+    /// The fault is deliberately NOT propagated and deliberately NOT treated as a verdict. It is not a
+    /// reliable one: a run that FAILED faults this task and is a perfectly good terminal state (see
+    /// <c>WaitAgent_ReportsATerminalFailureInsteadOfBlockingForever</c>), while a queued spawn whose
+    /// start throws faults it identically and leaves nothing behind at all. What separates the two is
+    /// whether the agent is still tracked when the wait ends, which is what the callers check.
+    /// Propagating the fault here would only produce an unobserved task exception on the losing racer.
+    /// </remarks>
     private static async Task AwaitQuietlyAsync(Task<string> wait)
     {
         try
@@ -1112,7 +1219,7 @@ public class SubAgentToolProvider : IFunctionProvider
         }
         catch (Exception)
         {
-            // Intentionally swallowed: the outcome is reported through the observation batch.
+            // Intentionally swallowed: the outcome is reported from a fresh observation.
         }
     }
 
@@ -1248,16 +1355,115 @@ public class SubAgentToolProvider : IFunctionProvider
         // as an "Error executing tool call" and derail the loop.
         if (!_manager.TryPeek(agentId, out var status))
         {
-            var known = _manager.KnownAgentIds();
-            var hint = known.Count > 0
-                ? $"No sub-agent with id '{agentId}'. Poll one of the ids the Agent tool returned: "
-                    + $"{string.Join(", ", known)}."
-                : $"No sub-agent with id '{agentId}'. No sub-agents are currently tracked — a synchronous Agent "
-                    + "call returns its result inline (CheckAgent is unnecessary), and any background agents have completed.";
-            return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromError(hint, "unknown_agent"));
+            return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromError(
+                DescribeUnknownAgent(agentId, "CheckAgent"), "unknown_agent"));
         }
 
         return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(status));
+    }
+
+    /// <summary>
+    /// Blocks on ONE sub-agent's terminal state, then reports exactly what CheckAgent would have.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately built on the same completion latch as <c>WaitForAgents</c>
+    /// (<see cref="SubAgentManager.ObserveTargetCompletionAsync"/>) rather than a second polling loop:
+    /// the latch is set for a failed or abandoned run too, which is what stops the outcome the caller
+    /// most needs to hear about from being the one that hangs it. The wait is non-destructive —
+    /// timing out or being cancelled abandons the observation only, never the agent.
+    /// </remarks>
+    private async Task<ToolHandlerResult> HandleWaitAgentToolAsync(
+        string argsJson,
+        ToolCallContext context,
+        CancellationToken cancellationToken)
+    {
+        using var doc = JsonDocument.Parse(argsJson);
+        var root = doc.RootElement;
+
+        var agentId = GetOptionalString(root, "agent_id")
+            ?? throw new ArgumentException("The 'agent_id' parameter is required.");
+
+        // Resolve BEFORE waiting: a mistyped id would otherwise block until the timeout and then report
+        // a "still running" agent that never existed.
+        if (!_manager.TryPeek(agentId, out _))
+        {
+            return ToolHandlerResult.FromError(
+                DescribeUnknownAgent(agentId, WaitAgentToolName), "unknown_agent");
+        }
+
+        if (!TryReadTimeoutSeconds(root, out var timeoutSeconds, out var timeoutError))
+        {
+            return ToolHandlerResult.FromError(timeoutError!, "invalid_args");
+        }
+
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        // Quiet racer: the loser is never awaited, so a cancellation fault would surface as an
+        // unobserved task exception long after this tool call is gone.
+        var completion = AwaitQuietlyAsync(
+            _manager.ObserveTargetCompletionAsync(agentId, linked.Token));
+        var timeout = timeoutSeconds is { } cap
+            ? DelayQuietlyAsync(TimeSpan.FromSeconds(cap), linked.Token)
+            : null;
+
+        var winner = timeout is null
+            ? await Task.WhenAny(completion)
+            : await Task.WhenAny(completion, timeout);
+
+        await linked.CancelAsync();
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Re-read rather than reuse the pre-wait snapshot: the whole point of the wait is the status and
+        // result the agent reached while it was blocked. A MISS here is not a mistyped id — that was
+        // rejected before the wait began — it means the agent stopped being tracked WHILE we waited: a
+        // queued spawn whose start threw, or a disposed manager cancelling it with the MANAGER's token.
+        // Both end the wait without ending the agent, and TryPeek's out value on a miss is the EMPTY
+        // STRING, which is not parseable JSON — deserializing it unconditionally threw out of the tool
+        // call, and calling it "completed" told the model its child had succeeded.
+        var agent = _manager.TryPeek(agentId, out var observed)
+            ? JsonSerializer.Deserialize<JsonElement>(observed)
+            : (JsonElement?)null;
+
+        return ToolHandlerResult.FromText(JsonSerializer.Serialize(new
+        {
+            status = agent is null ? "unavailable"
+                : winner == completion ? "completed"
+                : "timeout",
+            detail = agent is not null
+                ? null
+                : $"The wait on '{agentId}' ended without the agent reaching a terminal state: it stopped "
+                    + "being tracked before it could produce a result — its start failed, or the sub-agent "
+                    + "system shut down. There is nothing to collect. Spawn it again if you still need the work.",
+            agent,
+        }));
+    }
+
+    /// <summary>
+    /// Explains an unknown agent id to the model, naming the ids that would have worked.
+    /// </summary>
+    /// <remarks>
+    /// Shared by CheckAgent and WaitAgent so both mistakes are corrected the same way. The listing is
+    /// sorted (ordinal) so repeated failures read identically instead of shuffling, and capped at
+    /// <see cref="MaxListedAgentIds"/> — a cap that ANNOUNCES itself, because a silently truncated list
+    /// is worse than no list: it invites the model to conclude the id it wanted does not exist.
+    /// </remarks>
+    private string DescribeUnknownAgent(string agentId, string toolName)
+    {
+        var known = _manager.KnownAgentIds();
+        if (known.Count == 0)
+        {
+            return $"No sub-agent with id '{agentId}'. No sub-agents are currently tracked — a synchronous Agent "
+                + $"call returns its result inline ({toolName} is unnecessary), and any background agents have completed.";
+        }
+
+        var sorted = known.OrderBy(id => id, StringComparer.Ordinal).ToArray();
+        var listed = sorted.Take(MaxListedAgentIds);
+        var suffix = sorted.Length > MaxListedAgentIds
+            ? $" (showing {MaxListedAgentIds} of {sorted.Length})"
+            : string.Empty;
+
+        return $"No sub-agent with id '{agentId}'. Use one of the ids the Agent tool returned: "
+            + $"{string.Join(", ", listed)}{suffix}.";
     }
 
     private static string? GetOptionalString(
@@ -1268,6 +1474,16 @@ public class SubAgentToolProvider : IFunctionProvider
             ? prop.GetString()
             : null;
     }
+
+    /// <summary>
+    /// Collapses a blank or whitespace-only correlation id to null. Some callers cannot omit an
+    /// optional string parameter and send "" or whitespace where they mean "absent" instead of a true
+    /// JSON null — without this, that value would survive as a non-null <c>in_response_to</c> and be
+    /// treated as an attempted (but unknown) correlation rather than as no correlation at all. A real,
+    /// non-blank id — even one that turns out not to exist — is returned unchanged.
+    /// </summary>
+    private static string? NormalizeCorrelationId(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value;
 
     private static bool? GetOptionalBool(JsonElement root, string propertyName)
     {
@@ -1284,6 +1500,57 @@ public class SubAgentToolProvider : IFunctionProvider
             JsonValueKind.String when bool.TryParse(prop.GetString(), out var parsed) => parsed,
             _ => null,
         };
+    }
+
+    /// <summary>
+    /// Reads the optional <c>timeout_seconds</c> cap shared by <c>WaitAgent</c> and
+    /// <c>WaitForAgents</c>, separating ABSENT from PRESENT-BUT-UNUSABLE.
+    /// <para>
+    /// Both tools tell the model to pass this "so a wedged agent cannot stall you indefinitely".
+    /// Parsing it with <see cref="GetOptionalInt"/> collapsed every unusable value — a malformed
+    /// string, 0, a negative — onto the same <c>null</c> as an omitted parameter, and the
+    /// <c>is &gt; 0</c> gate then turned all of them into the unbounded wait the model passed the
+    /// argument to avoid, with nothing said about it. A cap the caller asked for and did not get is
+    /// an error, not a default: reject it so the model can correct the call.
+    /// </para>
+    /// </summary>
+    /// <param name="root">The tool call's parsed arguments.</param>
+    /// <param name="seconds">The requested cap, or <c>null</c> for "no cap" (absent or explicit null).</param>
+    /// <param name="error">The rejection message when the value is present but unusable.</param>
+    /// <returns><c>true</c> when the argument is usable (including when it is absent).</returns>
+    private static bool TryReadTimeoutSeconds(JsonElement root, out int? seconds, out string? error)
+    {
+        seconds = null;
+        error = null;
+
+        // Omitted keeps the established contract: an optional cap that was not requested means the
+        // wait is bounded only by the caller's own cancellation. An explicit null is the same
+        // statement — models routinely emit one for a parameter they chose not to set.
+        if (!root.TryGetProperty("timeout_seconds", out var prop) || prop.ValueKind == JsonValueKind.Null)
+        {
+            return true;
+        }
+
+        int? requested = prop.ValueKind switch
+        {
+            JsonValueKind.Number when prop.TryGetInt32(out var number) => number,
+            // Some models emit integers as strings ("30").
+            JsonValueKind.String when int.TryParse(prop.GetString(), out var fromText) => fromText,
+            _ => null,
+        };
+
+        // One rejection for every unusable shape: unparseable, zero, and negative alike. Zero and
+        // negative are rejected rather than read as "expire immediately", because a wait that
+        // returns "timeout" before observing anything is indistinguishable from a wedged agent.
+        if (requested is not > 0)
+        {
+            error = "The 'timeout_seconds' parameter must be a positive whole number of seconds. "
+                + "Omit it entirely to wait without a cap.";
+            return false;
+        }
+
+        seconds = requested;
+        return true;
     }
 
     private static int? GetOptionalInt(JsonElement root, string propertyName)

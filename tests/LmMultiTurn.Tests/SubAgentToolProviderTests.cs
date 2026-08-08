@@ -91,15 +91,15 @@ public class SubAgentToolProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public void GetFunctions_ReturnsThreeFunctions()
+    public void GetFunctions_ReturnsTheLegacyFour()
     {
         // Act
         var functions = _provider!.GetFunctions().ToList();
 
         // Assert
-        functions.Should().HaveCount(3);
+        functions.Should().HaveCount(4);
         functions.Select(f => f.Contract.Name)
-            .Should().BeEquivalentTo(["Agent", "SendMessage", "CheckAgent"]);
+            .Should().BeEquivalentTo(["Agent", "SendMessage", "CheckAgent", "WaitAgent"]);
     }
 
     [Fact]
@@ -514,12 +514,12 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         using (provider.SuppressSpawning())
         {
             provider.GetFunctions().Select(f => f.Contract.Name)
-                .Should().BeEquivalentTo(["SendMessage", "CheckAgent"]);
+                .Should().BeEquivalentTo(["SendMessage", "CheckAgent", "WaitAgent"]);
         }
 
         // Suppression is scoped: the very next contract build advertises spawning again.
         provider.GetFunctions().Select(f => f.Contract.Name)
-            .Should().BeEquivalentTo(["Agent", "SendMessage", "CheckAgent"]);
+            .Should().BeEquivalentTo(["Agent", "SendMessage", "CheckAgent", "WaitAgent"]);
     }
 
     [Fact]

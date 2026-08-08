@@ -68,5 +68,8 @@ worktrees/
 # Local proxy rebuild/build scratch dir (multi-GB; never track)
 /.run/
 
+# publish-launch.ps1 run-state side-car files (samples/LmStreaming.Sample/.run/instance-<port>.json)
+samples/LmStreaming.Sample/.run/
+
 # Ad-hoc debug screenshots dropped at the repo root (doc screenshots under docs/ stay tracked)
 /*.png

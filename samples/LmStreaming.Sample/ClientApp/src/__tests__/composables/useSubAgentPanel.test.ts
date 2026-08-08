@@ -54,6 +54,7 @@ interface Captured {
     onClose?: (info: { wasClean: boolean; code: number; reason: string }) => void;
     onClientToolResultAck?: (toolCallId: string, duplicate: boolean) => void;
     onClientToolResultError?: (toolCallId: string | undefined, code: string, message: string) => void;
+    onGenerationAbandoned?: (info: { threadId?: string; runId?: string; generationId?: string }) => void;
   };
   connection: { socket: { readyState: number }; connectionId: string; threadId: string; isConnected: boolean };
 }
@@ -1532,3 +1533,162 @@ describe('useSubAgentPanel — submitToFocusedChild settles on ws error/close be
   });
 });
 
+// `generation_abandoned` on the FOCUSED CHILD's stream: the child's provider stream was cut
+// mid-reply, its loop threw that generation away, and it is retrying the SAME turn under a NEW
+// generation id on the SAME, still-open socket (this is NOT a disconnect; the child's run never
+// stopped). The parent chat handles this (`useChat.handleGenerationAbandoned`); until this was wired
+// the focused panel — which keeps its OWN index and merger — silently swallowed the frame, so the
+// abandoned generation's half-written block stayed in the child transcript forever and the retry
+// rendered as a SECOND block beside it.
+//
+// The contract is narrow on purpose: drop exactly the abandoned generation's UNFINALIZED blocks.
+// Anything already delivered whole is canonical and stays, whichever generation produced it.
+describe("useSubAgentPanel — generation_abandoned retires the focused child's abandoned partial", () => {
+  const CHILD_RUN = 'run-child-1';
+
+  const textUpdateFor = (gen: string, text: string, moi = 0) => ({
+    $type: MessageType.TextUpdate, text, role: 'assistant',
+    runId: CHILD_RUN, generationId: gen, messageOrderIdx: moi,
+  });
+  const finalTextFor = (gen: string, text: string, moi = 0) => ({
+    $type: MessageType.Text, text, role: 'assistant',
+    runId: CHILD_RUN, generationId: gen, messageOrderIdx: moi,
+  });
+
+  const textsOf = (panel: ReturnType<typeof useSubAgentPanel>) =>
+    panel.focusedDisplayItems.value
+      .filter((i) => i.type === 'assistant-message')
+      .map((i) => (i as { content: { text?: string } }).content.text ?? '');
+
+  async function focusOne() {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1')]);
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await panel.refreshChildren();
+    await panel.focusChild('a1');
+    expect(captured).toHaveLength(1);
+    return panel;
+  }
+
+  // The user-visible symptom in one shot, with NO intermediate assertions to short-circuit it.
+  // Unwired, this reports the truncated gen-A partial AND the gen-B retry side by side.
+  it('renders the retried answer as ONE assistant block, not two', async () => {
+    const panel = await focusOne();
+    const cb = captured[0].callbacks;
+
+    cb.onMessage(textUpdateFor('gen-A', 'The retried '));
+    cb.onMessage(textUpdateFor('gen-A', 'answer is cut o'));
+    cb.onGenerationAbandoned?.({ threadId: 'subagent-a1', runId: CHILD_RUN, generationId: 'gen-A' });
+    cb.onMessage(finalTextFor('gen-B', 'The retried answer is cut off no longer.'));
+
+    expect(textsOf(panel), 'the abandoned partial must not survive beside its retry').toEqual([
+      'The retried answer is cut off no longer.',
+    ]);
+  });
+
+  it('removes the abandoned partial, keeps finalized blocks, and stays idempotent on a repeat', async () => {
+    const panel = await focusOne();
+    const cb = captured[0].callbacks;
+
+    // An EARLIER generation of this same child run already produced a whole, finalized answer.
+    cb.onMessage(finalTextFor('gen-EARLIER', 'Earlier finished answer.', 0));
+
+    // Generation A then streams a reply that is about to be cut off mid-sentence.
+    cb.onMessage(textUpdateFor('gen-A', 'The retried ', 1));
+    cb.onMessage(textUpdateFor('gen-A', 'answer is cut o', 1));
+    expect(textsOf(panel), 'the in-flight partial renders while gen-A is alive').toEqual([
+      'Earlier finished answer.',
+      'The retried answer is cut o',
+    ]);
+
+    // Optional-call on purpose: an unwired callback makes this a silent no-op, and the assertions
+    // below are what catch it.
+    cb.onGenerationAbandoned?.({ threadId: 'subagent-a1', runId: CHILD_RUN, generationId: 'gen-A' });
+
+    expect(textsOf(panel), 'the abandoned partial is gone; the finalized block stays').toEqual([
+      'Earlier finished answer.',
+    ]);
+
+    cb.onMessage(finalTextFor('gen-B', 'The retried answer is cut off no longer.', 1));
+    expect(
+      textsOf(panel),
+      'exactly ONE block for the retried content, beside the preserved finalized one',
+    ).toEqual(['Earlier finished answer.', 'The retried answer is cut off no longer.']);
+
+    // Replay/duplicate delivery of the same control frame must change nothing.
+    const before = textsOf(panel);
+    cb.onGenerationAbandoned?.({ threadId: 'subagent-a1', runId: CHILD_RUN, generationId: 'gen-A' });
+    expect(textsOf(panel), 'a replayed abandon frame is idempotent').toEqual(before);
+  });
+
+  // Pins the `status === 'active'` half of the predicate SEPARATELY from the generationId half.
+  // Dropping EVERY block of the abandoned generation would delete content the server already
+  // delivered whole under that same generation — e.g. text finalized before the cut.
+  it('keeps a FINALIZED block of the abandoned generation itself', async () => {
+    const panel = await focusOne();
+    const cb = captured[0].callbacks;
+
+    cb.onMessage(finalTextFor('gen-A', 'Finalized under gen-A.', 0));
+    cb.onMessage(textUpdateFor('gen-A', 'Unfinished under gen-A', 1));
+    expect(textsOf(panel)).toEqual(['Finalized under gen-A.', 'Unfinished under gen-A']);
+
+    cb.onGenerationAbandoned?.({ threadId: 'subagent-a1', runId: CHILD_RUN, generationId: 'gen-A' });
+
+    expect(
+      textsOf(panel),
+      'only the unfinalized block of gen-A is dropped; its finalized block is canonical',
+    ).toEqual(['Finalized under gen-A.']);
+  });
+
+  // Pins `merger.finalize(generationId)` — the panel's accumulators are keyed `${genId}::t${turnSeq}`,
+  // so clearing them requires passing the abandoned id. Omitting the call (or calling the no-arg
+  // `finalize()`, which clears only the 'default' key) leaves gen-A's accumulated prefix alive, and a
+  // stray in-flight delta that lands after the abandon resurrects the whole truncated answer.
+  it('clears the merger accumulator for the abandoned generation', async () => {
+    const panel = await focusOne();
+    const cb = captured[0].callbacks;
+
+    cb.onMessage(textUpdateFor('gen-A', 'stale prefix that must not come back: '));
+    cb.onGenerationAbandoned?.({ threadId: 'subagent-a1', runId: CHILD_RUN, generationId: 'gen-A' });
+    expect(textsOf(panel), 'partial dropped').toEqual([]);
+
+    // A delta already in flight when the abandon was published still arrives.
+    cb.onMessage(textUpdateFor('gen-A', 'stray'));
+
+    expect(
+      textsOf(panel),
+      'the stray delta starts a fresh accumulation instead of re-growing the retired prefix',
+    ).toEqual(['stray']);
+  });
+
+  // Unique to the focused panel (the parent chat has no such window): frames arriving while history
+  // is loading are BUFFERED, unapplied. Retiring only the index would let the post-history drain
+  // re-create the partial the abandon just threw away.
+  it("invalidates the abandoned generation's deltas still waiting in the pre-history live buffer", async () => {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1')]);
+    let resolveHistory: (() => void) | undefined;
+    convMocks.loadConversationMessages.mockImplementation(
+      () => new Promise((r) => { resolveHistory = () => r([]); })
+    );
+
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await panel.refreshChildren();
+
+    // Focus parks mid history-load; the socket is already open (connect-first handoff), so live
+    // frames land in the buffer rather than the index.
+    const p = panel.focusChild('a1');
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(captured).toHaveLength(1);
+    const cb = captured[0].callbacks;
+
+    cb.onMessage(textUpdateFor('gen-A', 'buffered partial that was thrown away'));
+    cb.onGenerationAbandoned?.({ threadId: 'subagent-a1', runId: CHILD_RUN, generationId: 'gen-A' });
+    cb.onMessage(finalTextFor('gen-B', 'The retried answer.'));
+
+    resolveHistory!();
+    await p;
+
+    expect(textsOf(panel), 'the buffer drain must not resurrect the retired partial').toEqual([
+      'The retried answer.',
+    ]);
+  });
+});

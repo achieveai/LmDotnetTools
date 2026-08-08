@@ -481,6 +481,28 @@ public static class WorkflowSession
         {
             await foreach (var message in loop.ExecuteRunAsync(objectiveInput, ct).ConfigureAwait(false))
             {
+                // Whether a recovery frame ends the stream is a property of its REASON, not of its type.
+                // `ReplayTruncated` only says the run's already-published prefix was withheld from this
+                // subscription; the live tail still follows on it, so the drive loop keeps consuming —
+                // and skips the frame, which is a control signal about the subscription rather than
+                // workflow content the runtime should observe. Any other reason means this consumer was
+                // dropped and receives nothing further: draining out of the loop from there would signal
+                // completion and report a truncated workflow as a successful one, so fail it explicitly.
+                if (message is StreamRecoveryMessage recovery)
+                {
+                    if (recovery.Reason == StreamRecoveryReason.ReplayTruncated)
+                    {
+                        continue;
+                    }
+
+                    runtime.SignalFailure(
+                        new InvalidOperationException(
+                            $"The workflow controller's message stream was severed ({recovery.Reason}) before the run completed."
+                        )
+                    );
+                    return;
+                }
+
                 // Before a schema'd sub-agent result is recorded, give a cheap LLM one chance to rewrite an
                 // invalid reply into schema-valid JSON (auto-on only when the cheap tier is wired). This is the
                 // only genuinely async, lock-free point upstream of the runtime's synchronous, Monitor-locked

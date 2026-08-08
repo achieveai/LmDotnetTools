@@ -6,6 +6,38 @@ import { logger } from '@/utils';
 const log = logger.forComponent('WebSocketClient');
 
 /**
+ * Payload of a server `stream_recovery` frame: this stream has a hole in it and the client must
+ * resynchronize from REST rather than wait for frames that will never come. Whether the socket also
+ * ENDS here is a property of `reason`:
+ * - `slow_consumer` — the server deliberately dropped this socket; the frame is immediately followed
+ *   by a CLEAN close with reason `resync_required` and NO `done`.
+ * - `replay_truncated` — only the run's already-published PREFIX is missing; the socket stays open
+ *   and goes on to deliver the live tail, so the client refetches history in place.
+ */
+export interface StreamRecoveryInfo {
+  reason: string;
+  threadId?: string;
+  runId?: string;
+  generationId?: string;
+}
+
+/**
+ * Identifiers carried by a `generation_abandoned` control frame. The server publishes this when a
+ * provider stream is cut mid-reply and the agent loop abandons that generation, retrying the same
+ * turn under a NEW generation id. Content-free by contract (see `GenerationAbandonedMessage` on the
+ * server) — ids only, never prompt/tool/transcript text — so it is safe to log verbatim.
+ *
+ * NOT a terminal signal: the socket stays open and the run continues. That is what separates it from
+ * {@link StreamRecoveryInfo}, whose frame IS terminal for the socket and demands a REST resync;
+ * conflating the two would tear down every client's connection on a transient provider blip.
+ */
+export interface GenerationAbandonedInfo {
+  threadId?: string;
+  runId?: string;
+  generationId?: string;
+}
+
+/**
  * Callbacks for WebSocket stream events
  */
 export interface WebSocketClientCallbacks {
@@ -35,6 +67,12 @@ export interface WebSocketClientCallbacks {
    */
   onClose?: (info: { wasClean: boolean; code: number; reason: string }) => void;
   /**
+   * The server announced that it is dropping this stream and the client must resynchronize
+   * (see {@link StreamRecoveryInfo}). Delivered BEFORE the close that follows it, so a caller can
+   * start recovery without waiting on close semantics.
+   */
+  onStreamRecovery?: (info: StreamRecoveryInfo) => void;
+  /**
    * Ack for a `client_tool_result` frame the browser sent to resolve a deferred client tool
    * (#246, e.g. `AskUserQuestion`). Wire shape carries `status: 'resolved' | 'duplicate'`; this
    * callback receives it pre-normalized to a `duplicate` boolean (true when this exact
@@ -49,6 +87,13 @@ export interface WebSocketClientCallbacks {
    * the inbound frame itself was malformed enough that the server couldn't identify the call.
    */
   onClientToolResultError?: (toolCallId: string | undefined, code: string, message: string) => void;
+  /**
+   * A generation was abandoned mid-stream after a recoverable provider-transport failure; its
+   * replacement arrives under a NEW generation id on this same, still-open connection. Callers must
+   * drop the abandoned generation's unfinalized blocks (canonical blocks already delivered whole
+   * under it stay) or the orphaned partial renders forever beside the retry.
+   */
+  onGenerationAbandoned?: (info: GenerationAbandonedInfo) => void;
 }
 
 /**
@@ -218,8 +263,10 @@ export function openWebSocketConnection(
     onAuthEvent,
     onSandboxSessionRefresh,
     onClose,
+    onStreamRecovery,
     onClientToolResultAck,
     onClientToolResultError,
+    onGenerationAbandoned,
   } = callbacks;
 
   return new Promise((resolve, reject) => {
@@ -260,6 +307,21 @@ export function openWebSocketConnection(
           return;
         }
 
+        // The server is telling this stream to resynchronize from REST. Sniffed before `done` because
+        // a `slow_consumer` socket will NEVER receive one — that frame is followed by a clean close
+        // with reason `resync_required`, which on its own looks like a normal shutdown. (A
+        // `replay_truncated` frame is NOT a drop: the socket stays open and carries the live tail.)
+        if (data.includes('"$type":"stream_recovery"')) {
+          const recovery = JSON.parse(data) as StreamRecoveryInfo;
+          log.warn('Received stream_recovery; this stream must resynchronize from history', {
+            reason: recovery.reason,
+            connectionId,
+            threadId: effectiveThreadId,
+          });
+          onStreamRecovery?.(recovery);
+          return;
+        }
+
         // Check for done signal
         if (data === '{"$type":"done"}' || data.includes('"$type":"done"')) {
           log.debug('Received done signal');
@@ -282,6 +344,23 @@ export function openWebSocketConnection(
           const errData = JSON.parse(data);
           log.warn('Received client_tool_result_error', { toolCallId: errData.toolCallId, code: errData.code });
           onClientToolResultError?.(errData.toolCallId, errData.code, errData.message || 'Unknown error');
+          return;
+        }
+
+        // A generation was abandoned mid-stream and is being retried under a new generation id on
+        // THIS still-open connection. Handled here, alongside the other control frames and ahead of
+        // the generic message fallback below, because it is a protocol control — not chat content —
+        // and must never reach `onMessage` (it carries no renderable message). Log ids only: the
+        // frame is content-free by contract and this handler is shared with the sub-agent transcript
+        // stream, so nothing here may widen into payload text.
+        if (data.includes('"$type":"generation_abandoned"')) {
+          const info = JSON.parse(data) as GenerationAbandonedInfo;
+          log.debug('Received generation_abandoned', {
+            threadId: info.threadId,
+            runId: info.runId,
+            generationId: info.generationId,
+          });
+          onGenerationAbandoned?.(info);
           return;
         }
 
@@ -345,7 +424,7 @@ export function openWebSocketConnection(
 export function createWebSocketConnection(
   options: WebSocketClientOptions
 ): Promise<WebSocketConnection> {
-  const { threadId, onMessage, onDone, onError, onAuthEvent, onSandboxSessionRefresh, onClose, onClientToolResultAck, onClientToolResultError } = options;
+  const { threadId, onMessage, onDone, onError, onAuthEvent, onSandboxSessionRefresh, onClose, onStreamRecovery, onClientToolResultAck, onClientToolResultError, onGenerationAbandoned } = options;
   const connectionId = generateConnectionId();
   const effectiveThreadId = threadId || generateThreadId();
   const wsUrl = buildChatWebSocketUrl(options, effectiveThreadId, connectionId);
@@ -356,8 +435,10 @@ export function createWebSocketConnection(
     onAuthEvent,
     onSandboxSessionRefresh,
     onClose,
+    onStreamRecovery,
     onClientToolResultAck,
     onClientToolResultError,
+    onGenerationAbandoned,
   });
 }
 

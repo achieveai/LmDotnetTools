@@ -7,6 +7,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using FluentAssertions;
 using Moq;
@@ -350,6 +351,35 @@ public class SubAgentManagerTests : IAsyncLifetime
 
         await act.Should().ThrowAsync<SubAgentQueueFullException>();
         release.SetResult(true);
+    }
+
+    /// <summary>
+    /// A non-positive <see cref="SubAgentOptions.OutputChannelCapacity"/> is rejected where the host
+    /// hands its options over, not where a child loop finally uses them.
+    /// </summary>
+    /// <remarks>
+    /// The value is only read when a spawned child builds a bounded output channel, so without this
+    /// guard a misconfigured host fails as an <see cref="ArgumentOutOfRangeException"/> thrown from
+    /// deep inside a live stream — surfacing as a broken sub-agent run rather than as bad configuration.
+    /// Mirrors the existing <c>MaxConcurrentSubAgents</c>/<c>MaxQueuedSubAgents</c> checks.
+    /// </remarks>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Constructor_RejectsNonPositiveOutputChannelCapacity(int capacity)
+    {
+        var options = CreateOptions() with { OutputChannelCapacity = capacity };
+
+        var act = () => new SubAgentManager(
+            _parentMock.Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            new MutableSubAgentTemplateSource(options.Templates));
+
+        act.Should()
+            .Throw<ArgumentOutOfRangeException>()
+            .WithMessage("*OutputChannelCapacity*");
     }
 
     [Fact]
@@ -1434,6 +1464,62 @@ public class SubAgentManagerTests : IAsyncLifetime
         peekDoc.RootElement.GetProperty("status").GetString().Should().Be("completed");
     }
 
+    [Fact]
+    public async Task ARestartThatFailed_LeavesTheSubAgentRestartable_RatherThanWiredToItsDeadLoop()
+    {
+        // A failed restart deliberately keeps this sub-agent REGISTERED — it is a pre-existing agent whose
+        // restart attempt failed, not a partially-spawned one to roll back. But that cleanup disposes both
+        // the epoch CTS and the live loop, so unless each is re-armed the agent is registered and
+        // advertised while being permanently unable to accept another message: the next restart cancels a
+        // disposed CTS, and past that sends into a disposed loop. Both throw.
+        SetupSubAgentResponse([new TextMessage { Text = "done", Role = Role.Assistant }]);
+
+        var store = new RecoveryFaultingConversationStore();
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["test-agent"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "You are a test agent.",
+                    AgentFactory = () => _subAgentMock.Object,
+                    // ONE store instance across rebuilds: a restart only disposes the previous store when
+                    // the replacement is a different instance, so this keeps the fault switch observable.
+                    ConversationStoreFactory = _ => store,
+                },
+            },
+            MaxConcurrentSubAgents = 5,
+        };
+        _manager = new SubAgentManager(
+            parentAgent: _parentMock.Object,
+            parentContracts: [],
+            parentHandlers: new Dictionary<string, ToolHandler>(),
+            options: options,
+            source: new MutableSubAgentTemplateSource(options.Templates));
+
+        var spawnJson = await _manager.SpawnAsync("test-agent", "first task", runInBackground: true);
+        using var spawnDoc = JsonDocument.Parse(spawnJson);
+        var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
+        _ = await _manager.ObserveCompletionAsync(agentId, CancellationToken.None);
+
+        // Fail a restart at history recovery — the first step that runs AFTER the epoch CTS was disposed
+        // and BEFORE the replacement run is armed, and the realistic way a real restart fails there.
+        store.FailRecovery = true;
+        var failing = () => _manager.SendMessageAsync(agentId, "second task", runInBackground: true);
+        (await failing.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should().Be(RecoveryFaultingConversationStore.FaultMessage);
+
+        // The next restart must rebuild the pipeline and run it, not drive the corpse of the last one.
+        store.FailRecovery = false;
+        var resumeJson = await _manager.SendMessageAsync(agentId, "third task", runInBackground: true);
+        using var resumeDoc = JsonDocument.Parse(resumeJson);
+        resumeDoc.RootElement.GetProperty("status").GetString().Should().Be("resumed");
+
+        await WaitForConditionAsync(
+            () => _manager!.Peek(agentId).Contains("\"completed\""),
+            TimeSpan.FromSeconds(10));
+    }
+
     #region Helpers
     private static async Task WaitForConditionAsync(
         Func<bool> condition,
@@ -1631,6 +1717,58 @@ public class SubAgentManagerTests : IAsyncLifetime
             yield return msg;
             await Task.Yield();
         }
+    }
+
+    /// <summary>
+    /// An in-memory store whose history load can be armed to fail, standing in for a store/IO fault
+    /// during a restart's <c>RecoverAsync</c>. Everything else forwards to a real in-memory store so the
+    /// sub-agent's own runs behave normally either side of the injected failure.
+    /// </summary>
+    private sealed class RecoveryFaultingConversationStore : IConversationStore
+    {
+        public const string FaultMessage = "store unavailable during recovery";
+
+        private readonly InMemoryConversationStore _inner = new();
+
+        /// <summary>While true, <see cref="LoadMetadataAsync"/> throws instead of reading.</summary>
+        public bool FailRecovery { get; set; }
+
+        public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
+            FailRecovery
+                ? Task.FromException<ThreadMetadata?>(new InvalidOperationException(FaultMessage))
+                : _inner.LoadMetadataAsync(threadId, ct);
+
+        public Task AppendMessagesAsync(
+            string threadId,
+            IReadOnlyList<PersistedMessage> messages,
+            CancellationToken ct = default) => _inner.AppendMessagesAsync(threadId, messages, ct);
+
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
+            string threadId,
+            CancellationToken ct = default) => _inner.LoadMessagesAsync(threadId, ct);
+
+        public Task ReplaceMessageAsync(
+            string threadId,
+            PersistedMessage replacement,
+            CancellationToken ct = default) => _inner.ReplaceMessageAsync(threadId, replacement, ct);
+
+        public Task SaveMetadataAsync(
+            string threadId,
+            ThreadMetadata metadata,
+            CancellationToken ct = default) => _inner.SaveMetadataAsync(threadId, metadata, ct);
+
+        public Task UpdateMetadataAsync(
+            string threadId,
+            Func<ThreadMetadata?, ThreadMetadata> update,
+            CancellationToken ct = default) => _inner.UpdateMetadataAsync(threadId, update, ct);
+
+        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
+            _inner.DeleteThreadAsync(threadId, ct);
+
+        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+            int limit = 50,
+            int offset = 0,
+            CancellationToken ct = default) => _inner.ListThreadsAsync(limit, offset, ct);
     }
 
     #endregion

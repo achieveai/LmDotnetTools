@@ -61,6 +61,74 @@ public sealed class ProgramSubAgentCompositionTests
         subAgentOptions.Templates["explicit"].DefaultOptions!.MaxToken.Should().Be(7_000);
     }
 
+    /// <summary>
+    /// Only the Workspace Agent gets collaboration by default: its work is genuinely multi-agent, whereas
+    /// the Workflow Author and ordinary chat modes must keep the pre-#244 surface unless a deployment opts
+    /// in explicitly. This mapping is what <c>ResolveForMode</c> is handed at root-collaboration construction.
+    /// </summary>
+    [Theory]
+    [InlineData(SystemChatModes.WorkspaceAgentModeId, true)]
+    [InlineData(SystemChatModes.WorkflowAuthorModeId, false)]
+    [InlineData(SystemChatModes.MedicalKnowledgeModeId, false)]
+    [InlineData(SystemChatModes.DefaultModeId, false)]
+    public void CollaborationDefaultsOnForMode_IsWorkspaceAgentOnly(string modeId, bool expected)
+    {
+        global::Program.CollaborationDefaultsOnForMode(modeId).Should().Be(expected);
+    }
+
+    /// <summary>
+    /// Non-vacuity proof for the mode default. That <c>CollaborationDefaultsOnForMode</c> returns the
+    /// right booleans says nothing about whether the composition root HANDS that boolean to
+    /// <c>ResolveForMode</c> — pinning the mapping alone leaves the wiring line free to pass a
+    /// constant. This drives the real composition helper through to the observable consequence, the
+    /// tool surface, so replacing the mode default at the call site with <c>false</c> drops the
+    /// Workspace case back to the legacy surface and fails here.
+    /// </summary>
+    [Theory]
+    [InlineData(SystemChatModes.WorkspaceAgentModeId, true)]
+    [InlineData(SystemChatModes.WorkflowAuthorModeId, false)]
+    [InlineData(SystemChatModes.DefaultModeId, false)]
+    public async Task CreateRootCollaboration_WithUnspecifiedConfig_GivesOnlyWorkspaceTheCollaborationSurface(
+        string modeId,
+        bool expectCollaboration)
+    {
+        // The shipped appsettings shape: limits configured, Enabled left unset so the mode decides.
+        var hostOptions = new AgentCollaborationHostOptions();
+        hostOptions.Enabled.Should()
+            .BeNull("this proves nothing if the configuration already made the decision");
+
+        var setup = global::Program.CreateRootCollaboration(hostOptions, modeId, "thread-1");
+
+        var templates = new Dictionary<string, SubAgentTemplate>
+        {
+            ["worker"] = Template("worker", () => Mock.Of<IStreamingAgent>()),
+        };
+        var source = new MutableSubAgentTemplateSource(templates);
+        await using var manager = new SubAgentManager(
+            parentAgent: Mock.Of<IMultiTurnAgent>(),
+            parentContracts: [],
+            parentHandlers: new Dictionary<string, ToolHandler>(),
+            options: new SubAgentOptions { Templates = templates },
+            source: source,
+            collaboration: setup);
+
+        var toolNames = new SubAgentToolProvider(manager, source)
+            .GetFunctions()
+            .Select(f => f.Contract.Name)
+            .ToArray();
+
+        if (expectCollaboration)
+        {
+            setup.Should().NotBeNull();
+            toolNames.Should().Contain("WaitForAgents").And.NotContain("WaitAgent");
+        }
+        else
+        {
+            setup.Should().BeNull();
+            toolNames.Should().Contain("WaitAgent").And.NotContain("WaitForAgents");
+        }
+    }
+
     [Fact]
     public void ApplyCharacteristicsAgentFactory_InheritedModelPreservesTemplateAgentAndRequestProperties()
     {

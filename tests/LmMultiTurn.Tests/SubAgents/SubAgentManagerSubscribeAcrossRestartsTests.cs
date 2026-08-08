@@ -583,6 +583,179 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
             "the observer followed the slow restart via the signal, not via cancellation");
     }
 
+    [Fact]
+    public async Task SubscribeAcrossRestarts_WhenCurrentInstanceIsAlreadyDisposed_FollowsReplacement()
+    {
+        // A restart's dispose runs BEFORE the swap, so between the two the registry still hands out the
+        // OLD, already-disposed instance. An observer that starts (or re-resolves) inside that window
+        // subscribes to it and MultiTurnAgentBase's admission gate throws ObjectDisposedException — at
+        // the first MoveNextAsync, because the iterator is lazy. That is an ordinary restart transition,
+        // not a failure: escaping it would reach the client as `subagent_stream_failed` plus an abnormal
+        // socket close (ChatWebSocketManager turns any non-cancellation fault into exactly that) for a
+        // child that is about to stream its next run perfectly well.
+        //
+        // The same gate holds the window open deterministically: DisposeEnteredTask completes once the
+        // dispose has ended open subscriptions (so the instance reads as disposed) but before the swap.
+        const string firstText = "first-run-answer";
+        const string secondText = "second-run-answer";
+
+        var createdAgents = new List<ObservableFakeAgent>();
+        var agentCallCount = 0;
+        var disposeGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var manager = CreateManager(new Dictionary<string, SubAgentTemplate>
+        {
+            ["owned"] = DummyTemplate("owned"),
+        });
+
+        manager.TestAgentFactoryOverride = (agentId, _) =>
+        {
+            var idx = Interlocked.Increment(ref agentCallCount);
+            var agent = new ObservableFakeAgent
+            {
+                ThreadId = $"subagent-{agentId}",
+                RunMessages = idx == 1
+                    ?
+                    [
+                        new TextMessage { Text = firstText, Role = Role.Assistant },
+                        new RunCompletedMessage { CompletedRunId = "run-1" },
+                    ]
+                    :
+                    [
+                        new TextMessage { Text = secondText, Role = Role.Assistant },
+                        new RunCompletedMessage { CompletedRunId = "run-2" },
+                    ],
+                DisposeGate = idx == 1 ? disposeGate : null,
+            };
+            lock (createdAgents)
+            {
+                createdAgents.Add(agent);
+            }
+
+            return agent;
+        };
+
+        manager.TestOwnedProviderOverride = (_, _) => new Mock<IStreamingAgent>().Object;
+
+        var spawnJson = await manager.SpawnAsync("owned", "task", runInBackground: true);
+        var agentId = ParseAgentId(spawnJson);
+
+        await WaitForConditionAsync(
+            () =>
+            {
+                try { return manager.Peek(agentId).Contains("\"completed\"", StringComparison.Ordinal); }
+                catch { return false; }
+            },
+            TimeSpan.FromSeconds(10));
+
+        // Drive the restart off the test thread: it blocks inside the gated dispose.
+        var sendTask = Task.Run(() => manager.SendMessageAsync(agentId, "continue", runInBackground: true));
+
+        ObservableFakeAgent firstAgent;
+        await WaitForConditionAsync(
+            () => { lock (createdAgents) { return createdAgents.Count >= 1; } },
+            TimeSpan.FromSeconds(10));
+        lock (createdAgents)
+        {
+            firstAgent = createdAgents[0];
+        }
+
+        await firstAgent.DisposeEnteredTask.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // Only NOW attach: the registered live instance is the disposed one. The enumerator is driven
+        // ON THE TEST THREAD rather than from a Task.Run observer, because the ordering IS the test —
+        // a backgrounded observer can lose the race to the swap and attach to the replacement instead,
+        // which passes whether or not the transition is handled.
+        using var observeCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        await using var observer = manager
+            .SubscribeToAgentAcrossRestartsAsync(agentId, observeCts.Token)
+            .GetAsyncEnumerator(observeCts.Token);
+
+        // Nothing between the subscribe and the replacement wait awaits anything incomplete, so this
+        // first step runs to the `await` on the replacement signal and stays PENDING — unless the
+        // disposed instance's ObjectDisposedException escapes, which completes it synchronously as a
+        // fault. Capture that tell before releasing the restart, but release it unconditionally: an
+        // assertion that threw first would leave the restart wedged inside a dispose that never
+        // returns, hanging the fixture's teardown instead of reporting the failure.
+        var attach = observer.MoveNextAsync();
+        var attachCompletedSynchronously = attach.IsCompleted;
+
+        disposeGate.SetResult();
+
+        attachCompletedSynchronously.Should().BeFalse(
+            "a subscribe onto a registered-but-disposed instance is an ordinary restart transition: it "
+            + "must park on the replacement signal, not fault the stream");
+
+        var seen = new List<string>();
+        for (var more = await attach; more; more = await observer.MoveNextAsync())
+        {
+            if (observer.Current is TextMessage tm)
+            {
+                seen.Add(tm.Text);
+                if (tm.Text == secondText)
+                {
+                    break;
+                }
+            }
+        }
+
+        await sendTask.WaitAsync(TimeSpan.FromSeconds(10));
+
+        seen.Should().Equal(
+            [secondText],
+            "the observer followed the swap onto the replacement and streamed its run — and received "
+            + "nothing from the disposed instance it attached to");
+        observeCts.IsCancellationRequested.Should().BeFalse(
+            "the transition was handled as a stream end, not by cancelling the observer");
+    }
+
+    [Theory]
+    [InlineData(typeof(InvalidOperationException))]
+    [InlineData(typeof(OperationCanceledException))]
+    public async Task SubscribeAcrossRestarts_WhenInstanceStreamFaults_PropagatesTheFault(Type faultType)
+    {
+        // The counterpart to the test above: only ObjectDisposedException means "this instance is gone,
+        // look for its replacement". Everything else — a genuine agent fault, and cancellation, which is
+        // how the caller ends the observation — must still reach the caller unchanged. Absorbing them
+        // would send the observer to await a replacement that is never coming, turning a fast, visible
+        // failure into a stream that hangs until the connection dies.
+        const string attachedSentinel = "attached-sentinel";
+
+        var manager = CreateManager(new Dictionary<string, SubAgentTemplate>
+        {
+            ["owned"] = DummyTemplate("owned"),
+        });
+
+        manager.TestAgentFactoryOverride = (agentId, _) => new ObservableFakeAgent
+        {
+            ThreadId = $"subagent-{agentId}",
+            // One sentinel proves the observer is really streaming this instance before it faults.
+            RunMessages = [new TextMessage { Text = attachedSentinel, Role = Role.Assistant }],
+            SubscribeFault = (Exception)Activator.CreateInstance(faultType)!,
+        };
+
+        var spawnJson = await manager.SpawnAsync("owned", "task", runInBackground: true);
+        var agentId = ParseAgentId(spawnJson);
+
+        // Bounded so a regression that swallows the fault fails on the assertion rather than hanging.
+        using var observeCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var seen = new List<string>();
+
+        var observe = async () =>
+        {
+            await foreach (var msg in manager.SubscribeToAgentAcrossRestartsAsync(agentId, observeCts.Token))
+            {
+                if (msg is TextMessage tm)
+                {
+                    seen.Add(tm.Text);
+                }
+            }
+        };
+
+        (await observe.Should().ThrowAsync<Exception>()).And.Should().BeOfType(faultType);
+        seen.Should().Equal([attachedSentinel], "the fault came from the stream the observer was reading");
+    }
+
     #region Helpers
 
     private static ObservableFakeAgent ObservableAgent() => new() { RunMessages = [] };
@@ -693,6 +866,12 @@ internal sealed class ObservableFakeAgent : IMultiTurnAgent
     /// </summary>
     public TaskCompletionSource? DisposeGate { get; init; }
 
+    /// <summary>
+    /// Optional fault raised once <see cref="RunMessages"/> have been yielded, so a test can prove which
+    /// stream faults the observation seam absorbs and which it lets through.
+    /// </summary>
+    public Exception? SubscribeFault { get; init; }
+
     /// <summary>Completes once <see cref="DisposeAsync"/> has ended open subscriptions and is about to
     /// await <see cref="DisposeGate"/>.</summary>
     public Task DisposeEnteredTask => _disposeEntered.Task;
@@ -733,11 +912,24 @@ internal sealed class ObservableFakeAgent : IMultiTurnAgent
     public async IAsyncEnumerable<IMessage> SubscribeAsync(
         [EnumeratorCancellation] CancellationToken ct = default)
     {
+        // Faithful to MultiTurnAgentBase.SubscribeAsync's admission gate: subscribing to an instance
+        // that is ALREADY disposed throws. Because the iterator is lazy this surfaces at the caller's
+        // first MoveNextAsync, exactly as it does in production. A subscription established BEFORE the
+        // dispose is unaffected — it still ends normally (see the wait below).
+        ObjectDisposedException.ThrowIf(_disposed.Task.IsCompleted, this);
+
         foreach (var msg in RunMessages)
         {
             ct.ThrowIfCancellationRequested();
             yield return msg;
             await Task.Yield();
+        }
+
+        // A configured fault stands in for a stream that dies for any reason OTHER than this instance
+        // being disposed.
+        if (SubscribeFault is not null)
+        {
+            throw SubscribeFault;
         }
 
         // Keep the subscription open until this instance is disposed (a restart disposes the previous

@@ -235,7 +235,22 @@ public static class UiHelpers
     /// </summary>
     public static ILocator ToolCallPillByName(this IPage page, string toolName)
     {
-        return page.Locator($"[data-testid=\"tool-call-pill\"][data-tool-name=\"{toolName}\"]");
+        return page.Locator(ToolCallPillSelector(toolName));
+    }
+
+    /// <summary>
+    /// The same pill, scoped to <paramref name="within"/> — use it when a view's own pills must be
+    /// told apart from another's (the sub-agent focus transcript vs the parent conversation, say),
+    /// since the page-wide overload matches both and so cannot prove where content rendered.
+    /// </summary>
+    public static ILocator ToolCallPillByName(this ILocator within, string toolName)
+    {
+        return within.Locator(ToolCallPillSelector(toolName));
+    }
+
+    private static string ToolCallPillSelector(string toolName)
+    {
+        return $"[data-testid=\"tool-call-pill\"][data-tool-name=\"{toolName}\"]";
     }
 
     /// <summary>The AskUserQuestion rich body root (only meaningful once its pill is expanded).</summary>
