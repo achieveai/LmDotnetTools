@@ -33,6 +33,14 @@ public static class SystemPromptAugmenter
     /// instructions", which is the behavior every existing conversation depends on; an agent build is not
     /// worth failing over a prompt addendum.
     /// </para>
+    /// <para>
+    /// The value is extracted with <see cref="ThreadPropertyValue.AsString"/> and NOT with a bare
+    /// <c>raw is string</c> test. The production store round-trips the property bag through JSON, so a
+    /// string written at provision is read back as a <c>JsonElement</c>; a plain type test therefore
+    /// returns null for every value that has actually been persisted. This method shipped with that bug
+    /// and was inert in production while every unit test passed, because the test stores are in-memory
+    /// and hand back the original reference. See <see cref="ThreadPropertyValue"/>.
+    /// </para>
     /// </summary>
     public static async Task<string?> ReadAppendixAsync(
         IConversationStore store,
@@ -53,7 +61,7 @@ public static class SystemPromptAugmenter
             return null;
         }
 
-        return raw is string appendix && !string.IsNullOrWhiteSpace(appendix) ? appendix : null;
+        return ThreadPropertyValue.AsString(raw);
     }
 
     /// <summary>

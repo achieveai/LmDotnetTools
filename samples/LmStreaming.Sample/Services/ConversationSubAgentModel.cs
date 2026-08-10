@@ -51,8 +51,6 @@ public static class ConversationSubAgentModel
             return null;
         }
 
-        return raw as string is { Length: > 0 } modelId && !string.IsNullOrWhiteSpace(modelId)
-            ? modelId
-            : null;
+        return ThreadPropertyValue.AsString(raw);
     }
 }
