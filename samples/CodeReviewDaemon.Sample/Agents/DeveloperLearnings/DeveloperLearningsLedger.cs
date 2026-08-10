@@ -142,12 +142,7 @@ internal static class DeveloperLearningsLedger
         ArgumentNullException.ThrowIfNull(thresholds);
         ArgumentNullException.ThrowIfNull(suppressedDimensions);
 
-        // Chronological, because "since the last hit" and "the last N exposed PRs" are both positional and a
-        // ledger assembled from a directory listing arrives in whatever order the filesystem chose.
-        var ordered = observations
-            .OrderBy(o => ParseObservedAt(o.ObservedAtUtc))
-            .ThenBy(o => o.SourcePr, StringComparer.Ordinal)
-            .ToArray();
+        var ordered = Chronological(observations);
 
         var standings = new List<PatternStanding>();
         foreach (var (patternId, dimension) in patternDimensions.OrderBy(p => p.Key, StringComparer.Ordinal))
@@ -352,4 +347,41 @@ internal static class DeveloperLearningsLedger
             value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed)
             ? parsed
             : DateTimeOffset.MinValue;
+
+    /// <summary>
+    /// The one chronological order in this system: observation time, then source PR to break ties.
+    /// <para>
+    /// Public because the view projection needs the same order and a second implementation of it would be a
+    /// second chance to get it wrong. Everything positional in this system — "since the last hit", "the last
+    /// N exposed PRs", "the prior N" — is computed against this sequence, so two orderings that disagreed
+    /// would produce two different clean streaks for one ledger and neither would look wrong on its own.
+    /// </para>
+    /// <para>
+    /// A ledger assembled from a directory listing arrives in whatever order the filesystem chose, which is
+    /// why sorting happens here rather than being assumed of the caller.
+    /// </para>
+    /// </summary>
+    /// <param name="observations">The developer's observation files, in any order.</param>
+    public static IReadOnlyList<DeveloperObservation> Chronological(
+        IReadOnlyList<DeveloperObservation> observations)
+    {
+        ArgumentNullException.ThrowIfNull(observations);
+        return
+        [
+            .. observations
+                .OrderBy(o => ParseObservedAt(o.ObservedAtUtc))
+                .ThenBy(o => o.SourcePr, StringComparer.Ordinal),
+        ];
+    }
+
+    /// <summary>
+    /// Parses an observation timestamp, or <see cref="DateTimeOffset.MinValue"/> when it cannot be read.
+    /// <para>
+    /// Unparseable sorts oldest rather than throwing: an observation file is immutable, so a bad timestamp
+    /// cannot be repaired in place, and refusing to render the whole developer because one historical file is
+    /// malformed would lose every other fact about them.
+    /// </para>
+    /// </summary>
+    /// <param name="value">An ISO-8601 round-trip timestamp as written into the observation file.</param>
+    public static DateTimeOffset ParseTimestamp(string value) => ParseObservedAt(value);
 }
