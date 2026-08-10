@@ -1,3 +1,4 @@
+using System.Globalization;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Orchestration;
@@ -70,7 +71,7 @@ public sealed class ReviewNotesArtifactBuilderTests
     private static ReviewAgentTranscriptEntry Entry(string messageType, string body, string role = "assistant") =>
         new(messageType, role, FromAgent: null, TimestampUtc: null, Body: body);
 
-    private static ReviewRun NewRun() =>
+    private static ReviewRun NewRun(string? promptTemplateHash = null) =>
         new()
         {
             RepoId = 1,
@@ -84,6 +85,7 @@ public sealed class ReviewNotesArtifactBuilderTests
             Stage = ReviewStage.Reviewed,
             WorkflowStatus = WorkflowStatus.Running,
             PrLifecycleState = PrLifecycleState.Open,
+            PromptTemplateHash = promptTemplateHash,
         };
 
     private static RepoIdentity NewRepo() =>
@@ -1509,5 +1511,69 @@ public sealed class ReviewNotesArtifactBuilderTests
         built.Findings.ParsedCount.Should().Be(3, "five of the eight structural lines carry no severity");
         built.Findings.RecordedCount.Should().Be(3);
         built.Findings.Findings.Select(f => f.Title).Should().NotContain(t => t.Contains("Summary"));
+    }
+
+    [Fact]
+    public async Task The_record_and_the_rendered_table_come_off_one_reconcile_of_one_list()
+    {
+        // The load-bearing property, asserted rather than commented. The markdown and the artifact are two
+        // serialisations of a single `reconciled` local, produced on a single call. Two reconcile passes
+        // would eventually disagree, and the disagreement would be SILENT — a query and a human reading the
+        // same PR would both be confident and only one of them right. A refactor that splits them fails
+        // here instead of drifting.
+        var builder = NewBuilder(new FakeTranscripts([Entry("TextMessage", ThreeFindings)]));
+
+        var built = await BuildFullAsync(
+            builder,
+            NewContext(Node("agent-1", "architecture"), Node("agent-2", "tests")),
+            shippedReviewBody: ThreeShipped);
+
+        var table = Reconciliation(built.Files).Content;
+
+        // Same population: one numbered data row per record, no more and no fewer.
+        var dataRows = table
+            .Split('\n')
+            .Count(l => l.StartsWith("| ", StringComparison.Ordinal)
+                && char.IsDigit(l.AsSpan(2)[0]));
+        dataRows.Should().Be(built.Findings.RecordedCount);
+
+        // Same content: every record's location, reviewer and outcome spelling is on the table it was
+        // rendered beside. A second reconcile over different inputs breaks at least one of the three.
+        foreach (var row in built.Findings.Findings)
+        {
+            table.Should().Contain(row.Location);
+            table.Should().Contain(row.Source);
+            table.Should().Contain($"`{row.Outcome}`");
+        }
+    }
+
+    [Fact]
+    public async Task The_record_carries_the_provenance_a_later_query_needs_to_be_windowed()
+    {
+        // This artifact kind did not exist before it started being written, so its absence on older runs
+        // says nothing about those reviews. Without a first-write timestamp ON THE ROW, a query six months
+        // from now reads the pre-write period as "zero findings" — the one conclusion the data cannot
+        // support. The prompt hash is the other half: a finding-count change across a prompt change is a
+        // different event from one within a single prompt.
+        var builder = NewBuilder(new FakeTranscripts([Entry("TextMessage", ThreeFindings)]));
+
+        // A non-null hash on the run, so this assertion can fail. With the fixture's default null it would
+        // pass against a Build() that hardcoded null and never read the run at all.
+        var built = await builder.BuildAsync(
+            NewRun("tpl-sha256-abc123"), NewRepo(), "PRs/lmdotnettools-250",
+            NewContext(Node("agent-1", "architecture")), CancellationToken.None,
+            postedComment: false, ThreeShipped);
+
+        var captured = DateTimeOffset.Parse(
+            built.Findings.CapturedAtUtc,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.RoundtripKind);
+        captured.Should().BeCloseTo(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(5));
+        built.Findings.PromptTemplateHash.Should().Be("tpl-sha256-abc123");
+
+        // And which text these rows correspond to, recorded rather than left to be inferred later — the
+        // answer stops being obvious the day the infra-narration filter splits the posted comment from the
+        // stored prose.
+        built.Findings.DerivedFrom.Should().Be("reviewer-transcripts-via-reconciler");
     }
 }

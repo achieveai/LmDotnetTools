@@ -392,7 +392,8 @@ internal sealed class ReviewNotesArtifactBuilder
         // The same reconciled list, serialised a second way. The markdown above is what an author reads; this
         // is what a query counts. Both come off the one `reconciled` variable, so the artifact cannot report a
         // finding the table omits or vice versa.
-        var payload = ReviewFindingsArtifactPayload.Build(context.ReviewRound, sources, reconciled, comparable);
+        var payload = ReviewFindingsArtifactPayload.Build(
+            context.ReviewRound, sources, reconciled, comparable, run.PromptTemplateHash);
 
         // A row that was extracted and then failed to reach the record is the one failure this whole artifact
         // cannot tolerate, because it makes the count silently low and a low count reads exactly like a quiet

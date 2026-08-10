@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace CodeReviewDaemon.Sample.Orchestration;
 
 /// <summary>One specialist finding, as a row a query can count and group rather than a line a human reads.</summary>
@@ -51,6 +53,19 @@ internal sealed record ReviewFindingSourceTotal(string Label, string Template, i
 /// </para>
 /// </summary>
 /// <param name="Round">The review round this covers.</param>
+/// <param name="CapturedAtUtc">
+/// When this record was written, ISO-8601 round-trip. Present so that every future query is windowed BY
+/// CONSTRUCTION: this artifact kind did not exist before it started being written, so its absence on older
+/// runs is a fact about the daemon and not about those reviews. Without a first-write timestamp on the row
+/// itself, someone querying in six months reads the pre-write period as "zero findings", which is the one
+/// conclusion the data cannot support.
+/// </param>
+/// <param name="PromptTemplateHash">
+/// The review prompt template the run was dispatched under, copied from <c>review_run</c>. This is what
+/// makes a before/after comparison legitimate — a change in finding counts across a prompt change is a
+/// different event from a change within one. Null means the run has no recorded hash, which is itself the
+/// honest answer and not a zero.
+/// </param>
 /// <param name="Compared">
 /// Whether a shipped review body was available to reconcile against. When false there is nothing to compare
 /// each finding to, and <see cref="Findings"/> is empty BY CONSTRUCTION rather than by loss — which is why
@@ -65,12 +80,29 @@ internal sealed record ReviewFindingSourceTotal(string Label, string Template, i
 /// <param name="Findings">One row per specialist finding.</param>
 internal sealed record ReviewFindingsArtifactPayload(
     int Round,
+    string CapturedAtUtc,
+    string? PromptTemplateHash,
     bool Compared,
     int ParsedCount,
     int RecordedCount,
     IReadOnlyList<ReviewFindingSourceTotal> Sources,
     IReadOnlyList<ReviewFindingRecord> Findings)
 {
+    /// <summary>
+    /// Where these rows came from, recorded as a stable token because the answer is about to become
+    /// ambiguous and the ambiguity is permanent.
+    /// <para>
+    /// These findings are read out of <see cref="ReviewFindingReconciler"/>'s typed list — the reviewers'
+    /// own transcript text — and NOT out of any stored review prose. That distinction is load-bearing from
+    /// the moment the infra-narration filter (#113) lands: from then on the review an author reads and the
+    /// review text this daemon persists are different documents, because the filter runs on the posted
+    /// comment only and every stored artifact keeps the unfiltered text. Anyone querying stored prose in
+    /// six months is querying PRE-FILTER text and needs to know it. This record is unaffected either way,
+    /// and this field is how a future reader establishes that rather than inferring it.
+    /// </para>
+    /// </summary>
+    public string DerivedFrom => "reviewer-transcripts-via-reconciler";
+
     /// <summary>
     /// Findings extracted but not recorded. Zero is the only healthy value on a compared round; on an
     /// uncompared one it equals <see cref="ParsedCount"/> and means the comparison never ran.
@@ -86,7 +118,8 @@ internal sealed record ReviewFindingsArtifactPayload(
         int round,
         IReadOnlyList<ReviewFindingSource> sources,
         IReadOnlyList<ReconciledFinding> reconciled,
-        bool compared)
+        bool compared,
+        string? promptTemplateHash)
     {
         ArgumentNullException.ThrowIfNull(sources);
         ArgumentNullException.ThrowIfNull(reconciled);
@@ -120,6 +153,8 @@ internal sealed record ReviewFindingsArtifactPayload(
 
         return new ReviewFindingsArtifactPayload(
             round,
+            DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+            promptTemplateHash,
             compared,
             parsed.Sum(p => p.Parsed),
             rows.Length,
