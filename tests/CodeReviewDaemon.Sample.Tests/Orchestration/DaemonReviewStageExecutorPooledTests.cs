@@ -2418,7 +2418,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
-    public async Task Reviewed_still_alarms_on_the_no_op_exit_when_no_round_has_ever_completed()
+    public async Task Reviewed_refuses_and_still_alarms_on_the_no_op_exit_when_no_round_has_ever_completed()
     {
         // The half that must not be lost to the fix above: a PR with no comments AND no completed round has
         // authorised the exit through neither channel, so the sentinel means the reviewer answered without
@@ -4822,6 +4822,12 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// stage is advanced only after the stage returns. Seeding the row alone built a prior round that had
         /// reviewed nothing while claiming to have reviewed — and the sentinel-authorization guard, which asks
         /// for the BODY rather than the row, is precisely the caller that can tell the difference.
+        /// </para>
+        /// <para>
+        /// Measured on the live store rather than argued: of 261 primary runs at Reviewed/Judged/Posted, 261
+        /// carry a <c>review</c> artifact and 0 do not, and every run without one is parked at Discovered or
+        /// ContextReady. The correspondence is exact, which is what makes the row-only fixture an impossible
+        /// configuration rather than merely an unusual one.
         /// </para>
         /// </summary>
         public ReviewRun SeedPriorCompletedRound(

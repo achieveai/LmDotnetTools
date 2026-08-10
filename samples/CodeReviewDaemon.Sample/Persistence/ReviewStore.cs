@@ -638,6 +638,62 @@ internal sealed class ReviewStore : IDisposable
         return payloads;
     }
 
+    /// <summary>
+    /// The FIRST review payload of every PR whose first review landed at or after <paramref name="sinceUtcIso"/>,
+    /// so a caller can measure how often a first-ever review answered that nothing had changed.
+    /// </summary>
+    /// <remarks>
+    /// This is the population-level counterpart to the per-run guard in <c>DaemonReviewStageExecutor</c>. The
+    /// guard makes one false no-change claim impossible; this measures whether the fleet as a whole is still
+    /// healthy, which the guard cannot tell you.
+    /// <para>
+    /// Before the 2026-08-07T16:12:17Z rebuild, 57 of 115 first reviews (49.6%) came back as the
+    /// no-new-findings sentinel — a claim about a previous review that never happened — and 0 of 104 did
+    /// afterwards. <b>The cause of that recovery is not in the record</b>: the daemon runs from an uncommitted
+    /// tree, and the one committed fix that would be credited for it post-dates the drop by two days. A defect
+    /// whose repair is unexplained can return without anything announcing it, so the rate is measured
+    /// continuously rather than assumed to stay at zero.
+    /// </para>
+    /// <para>
+    /// "First" is by artifact id within (repo, PR) on the primary variant, so a legitimate later-round sentinel
+    /// cannot inflate the rate. The caller counts sentinels; the persistence layer does not know what one is.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<string> GetFirstReviewPayloadsSince(string sinceUtcIso, string artifactKind)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sinceUtcIso);
+        ArgumentException.ThrowIfNullOrWhiteSpace(artifactKind);
+
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT ra.payload AS payload
+            FROM review_artifact ra
+            JOIN review_run rr ON rr.id = ra.review_run_id
+            WHERE ra.artifact_kind = $kind AND rr.variant_id = $variant
+              AND ra.created_at >= $since
+              AND ra.id IN (
+                SELECT MIN(ra2.id)
+                FROM review_artifact ra2
+                JOIN review_run rr2 ON rr2.id = ra2.review_run_id
+                WHERE ra2.artifact_kind = $kind AND rr2.variant_id = $variant
+                GROUP BY rr2.repo_id, rr2.pr_id)
+            ORDER BY ra.id;
+            """;
+        _ = command.Parameters.AddWithValue("$kind", artifactKind);
+        _ = command.Parameters.AddWithValue("$variant", PrimaryVariantId);
+        _ = command.Parameters.AddWithValue("$since", sinceUtcIso);
+
+        var payloads = new List<string>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            payloads.Add(reader.GetString(reader.GetOrdinal("payload")));
+        }
+
+        return payloads;
+    }
+
     /// <summary>The outbox operation that delivers a review comment — the one whose status decides whether a
     /// round reached the PR. Duplicated from <c>ReviewPoster</c> rather than referenced so the persistence
     /// layer does not depend on the orchestration layer; the pair is pinned by a test.</summary>

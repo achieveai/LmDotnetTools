@@ -962,7 +962,13 @@ builder.Services.AddHostedService(sp => new PrPollingService(
     sp.GetServices<IPrProvider>(),
     sp.GetRequiredService<ReviewStore>(),
     sp.GetRequiredService<PrOrchestrator>(),
-    sp.GetRequiredService<ILogger<PrPollingService>>()));
+    sp.GetRequiredService<ILogger<PrPollingService>>(),
+    // Trailing defaults left alone; the reporter is passed so the startup no-change-on-a-first-review rate
+    // reaches the console, which is filtered to Warning for every category except this one.
+    pollInterval: null,
+    timeProvider: null,
+    maxReviewsPerTargetPerCycle: null,
+    progress: sp.GetRequiredService<ReviewProgressReporter>()));
 
 // Maintenance, on its OWN cadence — one hosted service per sweep, never chained onto the poll loop. The
 // PR-lifecycle sweep is registered by the pooled path and the deep-link retention sweep by the S2S path when

@@ -220,6 +220,78 @@ public sealed class SentinelAuthorizationTests
             }
         );
 
+    /// <summary>
+    /// The standing regression detector, tested rather than assumed. An untested detector is the same shape of
+    /// mistake as the warning this guard replaced — present, plausible, and never once exercised.
+    /// </summary>
+    [Fact]
+    public void The_standing_check_counts_a_first_review_that_claimed_nothing_changed()
+    {
+        using var db = new TempSqliteDatabase();
+        var store = new ReviewStore(db.ConnectionString);
+        _ = SeedPriorRound(store, EnsureRepo(store), ReviewStage.Posted, Sentinel);
+
+        var payloads = store.GetFirstReviewPayloadsSince(
+            EpochStart,
+            DaemonReviewStageExecutor.ReviewArtifactKind
+        );
+
+        payloads.Should().ContainSingle();
+        DaemonReviewStageExecutor
+            .IsNoNewFindingsSentinel(ReviewTextOf(payloads[0]))
+            .Should()
+            .BeTrue();
+    }
+
+    /// <summary>
+    /// A later round's sentinel is legitimate and must not inflate the rate: only each PR's FIRST review is
+    /// counted, so healthy re-review traffic cannot read as a regression.
+    /// </summary>
+    [Fact]
+    public void The_standing_check_ignores_a_later_rounds_sentinel()
+    {
+        using var db = new TempSqliteDatabase();
+        var store = new ReviewStore(db.ConnectionString);
+        var repoId = EnsureRepo(store);
+        _ = SeedPriorRound(store, repoId, ReviewStage.Posted, RealFindings);
+
+        var later = store.CreateOrGetReviewRun(
+            RunSeed(repoId, "head-sha", "wm-1", ReviewStage.Posted)
+        );
+        _ = store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = later.Id,
+                ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
+                ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
+                Provider = "github",
+                Payload = JsonSerializer.Serialize(
+                    new ReviewArtifactPayload(Sentinel, "later-run", "primary")
+                ),
+            }
+        );
+
+        var payloads = store.GetFirstReviewPayloadsSince(
+            EpochStart,
+            DaemonReviewStageExecutor.ReviewArtifactKind
+        );
+
+        payloads.Should().ContainSingle("only the PR's first review counts");
+        DaemonReviewStageExecutor
+            .IsNoNewFindingsSentinel(ReviewTextOf(payloads[0]))
+            .Should()
+            .BeFalse();
+    }
+
+    /// <summary>A cutoff old enough to include every seeded artifact, so these two pin the FIRST-review rule
+    /// rather than the time window.</summary>
+    private const string EpochStart = "2000-01-01T00:00:00.0000000+00:00";
+
+    private static string? ReviewTextOf(string payload) =>
+        JsonSerializer
+            .Deserialize<ReviewArtifactPayload>(payload, DaemonReviewStageExecutor.PayloadOptions)
+            ?.ReviewText;
+
     private static ReviewRun SeedRun(ReviewStore store) =>
         store.CreateOrGetReviewRun(
             RunSeed(EnsureRepo(store), "head-sha", "wm-1", ReviewStage.Discovered)
