@@ -5468,7 +5468,23 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             // noise the sentinel exists to stop.
             if (!IsNoNewFindingsSentinel(reviewText) || carried.Rounds > 0)
             {
-                postedComment = BuildPostedCommentBody(carried.Body, deepLink);
+                // Structural, output-composition-time filter (#113): strips/relocates daemon-infrastructure
+                // narration (sandbox tooling gaps, provider/HTTP failures, posting-state noise) that measured
+                // 0/48 under a severity-tagged finding heading in the live store — none of it is a review
+                // finding, and the PR author has no channel to act on it. Runs on `carried.Body`, never on
+                // `reviewText` itself, so it sits strictly downstream of both the #82 sentinel checks above
+                // (which classify the unfiltered text) and cannot change either one's outcome. review.md keeps
+                // the raw, unfiltered `reviewBody`/`reviewText` as the full audit trail; only the posted/retained
+                // comment is filtered.
+                var (filteredBody, movedNotes) = InfraNarrationFilter.Filter(carried.Body);
+                foreach (var note in movedNotes)
+                {
+                    _logger.LogInformation(
+                        "Run {RunId}: held back {SubTag} infra narration from the posted comment "
+                            + "(heading {Heading}): {Text}",
+                        run.Id, note.SubTag, note.Heading ?? "(none)", note.Text);
+                }
+                postedComment = BuildPostedCommentBody(filteredBody, deepLink);
                 postOutcome = await PostReviewCommentHostSideAsync(
                         run, repo, provider, postedComment, !string.IsNullOrWhiteSpace(deepLink), cancellationToken)
                     .ConfigureAwait(false);
