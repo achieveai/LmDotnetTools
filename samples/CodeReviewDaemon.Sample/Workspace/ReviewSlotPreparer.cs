@@ -17,6 +17,13 @@ namespace CodeReviewDaemon.Sample.Workspace;
 /// fail, as "these commits can never be compared" would silently stop reviewing pull requests that a
 /// one-line config change or a retry would have covered.
 /// </para>
+/// <para>
+/// <see cref="Indeterminate"/> is that same rule applied one level down, to the probes the search is built
+/// out of. A probe has three answers, not two — yes, no, and "it never answered" — and every one of them
+/// here runs through a host runner whose watchdog kills a silent command and reports exit 124. Collapsing
+/// that into the same arm as git's own "no" is how OUR timeout ends up in a pull request as a fact about
+/// SOMEONE ELSE'S branch.
+/// </para>
 /// </summary>
 internal enum MergeBaseOutcome
 {
@@ -37,6 +44,14 @@ internal enum MergeBaseOutcome
     /// <summary>A deepening fetch failed outright (network, auth, a remote refusing the depth). Says nothing
     /// about whether the commits are related, so it is indeterminate and must be retried.</summary>
     DeepenFailed,
+
+    /// <summary>
+    /// A probe the search depends on never produced an answer — killed by the host runner's watchdog, its
+    /// output capture abandoned, or failed on its own account. Distinct from <see cref="DeepenFailed"/> only
+    /// in which step broke; identical in what it licenses, which is nothing. Nothing was learned about the
+    /// commits, so the run must retry rather than report a verdict.
+    /// </summary>
+    Indeterminate,
 }
 
 /// <summary>
@@ -571,16 +586,32 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
     private async Task<MergeBaseOutcome> EnsureMergeBaseAsync(
         string repoRoot, ReviewRun run, CancellationToken cancellationToken)
     {
-        if (await HasMergeBaseAsync(repoRoot, run, cancellationToken).ConfigureAwait(false))
+        var mergeBase = await MergeBaseAnswerAsync(repoRoot, run, cancellationToken).ConfigureAwait(false);
+        if (mergeBase == GitAnswer.Yes)
         {
             return MergeBaseOutcome.Resolved;
         }
 
-        var shallow = await _git
-            .RunAsync(["-C", repoRoot, "rev-parse", "--is-shallow-repository"], repoRoot, cancellationToken)
-            .ConfigureAwait(false);
-        if (!shallow.Succeeded
-            || !shallow.Stdout.Trim().Equals("true", StringComparison.OrdinalIgnoreCase))
+        if (mergeBase == GitAnswer.Unknown)
+        {
+            // The probe that decides this whole method never answered, so there is nothing to build on. It
+            // stops here rather than climbing anyway: every remaining step is a deepening fetch measured in
+            // gigabytes on the live store, spent to answer a question we could not even ask, through the same
+            // runner that just failed to ask it. A retry re-runs the PR-commit fetch first, which is the fix
+            // for the one benign cause (an object this checkout does not hold, exit 128).
+            return MergeBaseOutcome.Indeterminate;
+        }
+
+        var shallow = await IsShallowAnswerAsync(repoRoot, run, cancellationToken).ConfigureAwait(false);
+        if (shallow == GitAnswer.Unknown)
+        {
+            // Not "therefore not shallow". This branch used to be reached by `!shallow.Succeeded`, which read
+            // a probe that never ran as a confirmed full clone and returned UnrelatedHistories from it — a
+            // killed `rev-parse` presented to an author as proof their branch descends from nothing.
+            return MergeBaseOutcome.Indeterminate;
+        }
+
+        if (shallow == GitAnswer.No)
         {
             // Full history already, and still unrelated: the two commits genuinely do not share an ancestor
             // (a force-pushed rebase, or a base from before a history rewrite). Deepening cannot invent one.
@@ -614,21 +645,43 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         {
             var targets = new List<string>();
             var grew = false;
+            var unmeasured = false;
             foreach (var sha in new[] { run.BaseSha, run.HeadSha })
             {
                 var reach = await ReachableCountAsync(repoRoot, sha, cancellationToken).ConfigureAwait(false);
-                if (lastReach.TryGetValue(sha, out var before) && reach > before)
+
+                // Growth is only readable when BOTH ends of the comparison are real counts. A round that
+                // could not take one of them did not observe "this bought nothing" — it observed nothing at
+                // all — and the arm below is the one that speaks to a pull-request author. A missing count
+                // used to arrive here as 0, which is never greater than the previous reading and so read as
+                // a flat history every time.
+                if (reach is null || !lastReach.TryGetValue(sha, out var before))
+                {
+                    unmeasured = true;
+                }
+                else if (reach > before)
                 {
                     grew = true;
                 }
 
-                lastReach[sha] = reach;
+                // Only real counts are remembered. A later round comparing against the last count that WAS
+                // taken still supports the claim honestly — equal across two fetches means neither bought
+                // anything — whereas remembering a failed probe as 0 would manufacture growth on the round
+                // that recovers.
+                if (reach is not null)
+                {
+                    lastReach[sha] = reach.Value;
+                }
 
                 // Name a commit only while its reachable history is still shorter than the depth being asked
                 // for. `--depth` is documented to "deepen or shorten", and it shortens exactly the refs the
                 // fetch names — so naming a commit that already reaches further would slice away the very
                 // history the merge base is hiding in.
-                if (reach < depth)
+                //
+                // An unmeasured commit is named, which is what the 0 default achieved and the one thing it
+                // got right: the realistic cause of a lost count is an object this checkout does not hold,
+                // and a fetch is precisely the fix. Nothing an author sees rests on this decision.
+                if (reach is null || reach < depth)
                 {
                     targets.Add(sha);
                 }
@@ -636,6 +689,21 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
 
             if (everFetched && !grew)
             {
+                if (unmeasured)
+                {
+                    _logger.LogWarning(
+                        "Run {RunId}: '{Repo}' could not be measured after deepening — `rev-list --count` "
+                            + "did not answer for {Base} or {Head} — so whether that fetch bought any "
+                            + "history is UNKNOWN. Giving up indeterminate rather than reading an "
+                            + "unmeasured round as an exhausted history, which would report our own failed "
+                            + "probe as a permanent fact about the pull request's commits.",
+                        run.Id,
+                        repoRoot,
+                        run.BaseSha,
+                        run.HeadSha);
+                    return MergeBaseOutcome.Indeterminate;
+                }
+
                 _logger.LogWarning(
                     "Run {RunId}: '{Repo}' deepening no longer extends either commit, so both walks have "
                         + "reached real roots: {Base} and {Head} are on unrelated histories and no depth can "
@@ -681,7 +749,15 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
             // on the live NOVA store that meant four packs of 7.2-7.7 GB coexisting.
             await CompactObjectStoreAsync(repoRoot, run, depth, cancellationToken).ConfigureAwait(false);
 
-            if (await HasMergeBaseAsync(repoRoot, run, cancellationToken).ConfigureAwait(false))
+            var answer = await MergeBaseAnswerAsync(repoRoot, run, cancellationToken).ConfigureAwait(false);
+            if (answer == GitAnswer.Unknown)
+            {
+                // Same reasoning as the probe that opened the method, and it matters more here: the next
+                // round's exhaustion test reads counts taken through the runner that just stopped answering.
+                return MergeBaseOutcome.Indeterminate;
+            }
+
+            if (answer == GitAnswer.Yes)
             {
                 _logger.LogInformation(
                     "Run {RunId}: re-fetched shallow checkout '{Repo}' at depth {Depth} to reach the merge "
@@ -710,33 +786,143 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
     }
 
     /// <summary>
+    /// The answer to a yes/no question put to git — plus the third state, for when git never answered it.
+    /// </summary>
+    /// <remarks>
+    /// The third state is the entire reason this is not a <c>bool</c>. Every probe below runs through
+    /// <see cref="HostGitCommandRunner"/>, which returns exit 124 for a command its watchdog killed and 125
+    /// for one whose output it could not finish draining — and neither is hypothetical on this runner, whose
+    /// idle timeout has already been observed killing healthy multi-gigabyte git operations. A bool has
+    /// nowhere to put them, so they land in the same arm as git's own "no", and that arm ends in a sentence
+    /// shown to a pull-request author telling them to re-target or rebase their branch.
+    /// </remarks>
+    private enum GitAnswer
+    {
+        /// <summary>git ran and said yes.</summary>
+        Yes,
+
+        /// <summary>git ran and said no. An ANSWER, not merely the absence of a yes.</summary>
+        No,
+
+        /// <summary>git did not answer: killed, timed out, or failed on its own account.</summary>
+        Unknown,
+    }
+
+    /// <summary>
+    /// The exit code <c>git merge-base</c> uses for "these commits share no ancestor", and the only non-zero
+    /// exit from it this daemon may read as an answer.
+    /// </summary>
+    /// <remarks>
+    /// Named rather than inlined because the whole distinction lives in this one number. 124 is a watchdog
+    /// kill, 125 an abandoned capture, 128 an object the checkout does not hold, 137 a SIGKILL from outside
+    /// — all of which used to arrive at the same place as 1 does, and all of which mean the opposite thing.
+    /// </remarks>
+    private const int GitNoMergeBaseExitCode = 1;
+
+    /// <summary>
     /// How many commits are reachable from <paramref name="sha"/> right now — its history as git can currently
     /// see it, which in a shallow checkout stops at the graft boundary rather than at the repository root.
     /// </summary>
     /// <remarks>
-    /// Reports 0 when the count cannot be taken, which is the safe answer for the one caller: 0 is below every
-    /// depth step, so the commit is treated as truncated and gets named in the fetch. The realistic reason for
-    /// failure is that the object is not here at all, and a fetch is precisely the fix for that.
+    /// Null when the count could not be taken, and null is not zero. Its two readers want opposite things
+    /// from a missing count and used to get the same 0 for both. Naming the commit in the next fetch is the
+    /// right answer — the realistic cause is an object this checkout does not hold, and a fetch is precisely
+    /// the fix — but reading it as "this round bought no history" is how a killed <c>rev-list</c> turns into
+    /// a pull-request comment telling the author to rebase.
     /// </remarks>
-    private async Task<int> ReachableCountAsync(
+    private async Task<int?> ReachableCountAsync(
         string repoRoot, string sha, CancellationToken cancellationToken)
     {
         var result = await _git
             .RunAsync(["-C", repoRoot, "rev-list", "--count", sha], repoRoot, cancellationToken)
             .ConfigureAwait(false);
-        return result.Succeeded && int.TryParse(result.Stdout.Trim(), out var count) ? count : 0;
+        return result.Succeeded && int.TryParse(result.Stdout.Trim(), out var count) ? count : null;
     }
 
-    private async Task<bool> HasMergeBaseAsync(
+    /// <summary>
+    /// Whether the PR's base and head share a merge base in this checkout as it currently stands.
+    /// </summary>
+    /// <remarks>
+    /// <c>merge-base</c> exits 1 with no output when the commits are unrelated, and that exit is the answer
+    /// — but it is the ONLY non-zero exit that is. See <see cref="GitNoMergeBaseExitCode"/>: everything else
+    /// is a command that did not get to answer, including the 128 a missing commit produces, which is
+    /// "cannot diff these YET" and is fixed by the fetch a retry re-runs.
+    /// <para>
+    /// A zero exit with empty stdout is Unknown too. Git does not do that, so something between us and git
+    /// did — a truncated capture is exactly what exit 125 exists to flag — and guessing on its behalf is the
+    /// habit being removed.
+    /// </para>
+    /// </remarks>
+    private async Task<GitAnswer> MergeBaseAnswerAsync(
         string repoRoot, ReviewRun run, CancellationToken cancellationToken)
     {
-        // `merge-base` exits 1 with NO output when the commits are unrelated, so the exit code alone is the
-        // answer; a missing commit exits 128 instead and is equally "cannot diff these yet".
         var result = await _git
             .RunAsync(
                 ["-C", repoRoot, "merge-base", run.BaseSha, run.HeadSha], repoRoot, cancellationToken)
             .ConfigureAwait(false);
-        return result.Succeeded && !string.IsNullOrWhiteSpace(result.Stdout);
+        if (result.Succeeded && !string.IsNullOrWhiteSpace(result.Stdout))
+        {
+            return GitAnswer.Yes;
+        }
+
+        if (result.ExitCode == GitNoMergeBaseExitCode)
+        {
+            return GitAnswer.No;
+        }
+
+        _logger.LogWarning(
+            "Run {RunId}: `git merge-base {Base} {Head}` in '{Repo}' neither found a merge base nor reported "
+                + "the exit 1 that means there is none (exit {Exit}): {Stderr}. Whether the two commits "
+                + "share an ancestor is UNKNOWN — a probe that was killed or failed is not a finding about "
+                + "someone's branch, and this run will retry rather than say it was.",
+            run.Id,
+            run.BaseSha,
+            run.HeadSha,
+            repoRoot,
+            result.ExitCode,
+            result.Stderr);
+        return GitAnswer.Unknown;
+    }
+
+    /// <summary>
+    /// Whether this checkout is shallow, which is what decides whether deepening can help at all.
+    /// </summary>
+    /// <remarks>
+    /// <c>rev-parse --is-shallow-repository</c> prints exactly <c>true</c> or <c>false</c> on success, so
+    /// anything else — a non-zero exit, or a word neither of those — is a probe that did not answer. The
+    /// caller's "not shallow" branch is the one that concludes the histories are genuinely unrelated, and it
+    /// must be reachable only by git actually saying <c>false</c>.
+    /// </remarks>
+    private async Task<GitAnswer> IsShallowAnswerAsync(
+        string repoRoot, ReviewRun run, CancellationToken cancellationToken)
+    {
+        var result = await _git
+            .RunAsync(["-C", repoRoot, "rev-parse", "--is-shallow-repository"], repoRoot, cancellationToken)
+            .ConfigureAwait(false);
+        if (result.Succeeded)
+        {
+            var answer = result.Stdout.Trim();
+            if (answer.Equals("true", StringComparison.OrdinalIgnoreCase))
+            {
+                return GitAnswer.Yes;
+            }
+
+            if (answer.Equals("false", StringComparison.OrdinalIgnoreCase))
+            {
+                return GitAnswer.No;
+            }
+        }
+
+        _logger.LogWarning(
+            "Run {RunId}: `git rev-parse --is-shallow-repository` in '{Repo}' answered neither true nor "
+                + "false (exit {Exit}): {Stderr}. Whether the checkout is shallow is UNKNOWN, and an "
+                + "unanswered probe must not be read as a confirmed full clone — that reading is what would "
+                + "turn this into a permanent 'unrelated histories' verdict on the pull request.",
+            run.Id,
+            repoRoot,
+            result.ExitCode,
+            result.Stderr);
+        return GitAnswer.Unknown;
     }
 
     /// <summary>
