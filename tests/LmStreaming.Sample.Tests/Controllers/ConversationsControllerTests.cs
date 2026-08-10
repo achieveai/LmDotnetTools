@@ -812,6 +812,57 @@ public class ConversationsControllerTests
     }
 
     [Fact]
+    public async Task ComposedPrompt_PutsTheCallerInstructionsAfterEveryHostBuiltSection()
+    {
+        // Ordering is a property here, not a detail. The caller's instructions must come LAST — after the
+        // mode prompt, the workspace-path suffix and the discovered CLAUDE.md/AGENTS.md block — because
+        // recency is what gives a headless caller's task its pull against a generic mode prompt that is
+        // trying to be a chat agent. An ordering claim nobody asserts is how the previous one of these went
+        // wrong, so this pins the sequence rather than just the presence.
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var workspaceStore = new Mock<IWorkspaceStore>();
+        workspaceStore.Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TestWorkspace("ws-1"));
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal();
+
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            workspaceStore: workspaceStore.Object,
+            providerRegistry: registry);
+
+        var result = await controller.Provision(
+            new ProvisionConversationRequest
+            {
+                WorkspaceId = "ws-1",
+                ProviderId = "test",
+                ModeId = SystemChatModes.DefaultModeId,
+                SystemPromptAppendix = "CALLER-INSTRUCTIONS",
+            },
+            CancellationToken.None);
+
+        var threadId = Assert
+            .IsType<ProvisionConversationResponse>(Assert.IsType<OkObjectResult>(result).Value)
+            .ThreadId;
+
+        // The prompt as the host has it by the time the loop is built: mode, then workspace suffix, then
+        // the discovered-context block. ComposeAsync receives exactly this and may only append.
+        const string HostBuilt = "MODE-PROMPT\n\nWORKSPACE-SUFFIX\n\nDISCOVERED-CONTEXT";
+        var composed = await SystemPromptAugmenter.ComposeAsync(
+            store, threadId, HostBuilt, CancellationToken.None);
+
+        composed.Should().StartWith(HostBuilt, "the host-built prompt must survive intact, not be replaced");
+        composed.Should().EndWith("CALLER-INSTRUCTIONS", "the caller's task has to be the last thing read");
+        composed.IndexOf("CALLER-INSTRUCTIONS", StringComparison.Ordinal)
+            .Should()
+            .BeGreaterThan(
+                composed.IndexOf("DISCOVERED-CONTEXT", StringComparison.Ordinal),
+                "the appendix goes after the discovered CLAUDE.md/AGENTS.md block, not before it");
+    }
+
+    [Fact]
     public async Task Provision_WithoutCallerInstructions_LeavesTheModePromptAlone()
     {
         var store = new InMemoryConversationStore();

@@ -72,10 +72,26 @@ public static class SystemPromptAugmenter
         IConversationStore store,
         string threadId,
         string? systemPrompt,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        ILogger? logger = null)
     {
         var appendix = await ReadAppendixAsync(store, threadId, ct).ConfigureAwait(false);
-        return AppendCallerInstructions(systemPrompt, appendix);
+        var composed = AppendCallerInstructions(systemPrompt, appendix);
+
+        // Logged HERE, at composition, and deliberately NOT at provision. Provision already records what
+        // was SENT, and "we sent it" versus "it was applied" are the two claims that were conflated for the
+        // entire life of this bug — a fleet where the appendix is silently dropped again would look
+        // identical in the provision log. AppendixChars is the discriminator: 0 means this agent is running
+        // on the mode prompt alone.
+        logger?.LogInformation(
+            "Thread {ThreadId}: composed system prompt {ComposedChars} chars "
+                + "(mode+workspace {BaseChars}, caller appendix {AppendixChars}).",
+            threadId,
+            composed.Length,
+            systemPrompt?.Length ?? 0,
+            appendix?.Length ?? 0);
+
+        return composed;
     }
 
     /// <summary>

@@ -1921,7 +1921,11 @@ subAgentFactory,
                         // `mode`, so anything folded in earlier is silently dropped on exactly the runs that
                         // are already going wrong.
                         systemPrompt: SystemPromptAugmenter
-                            .ComposeAsync(conversationStore, threadId, effectiveMode.SystemPrompt)
+                            .ComposeAsync(
+                                conversationStore,
+                                threadId,
+                                effectiveMode.SystemPrompt,
+                                logger: loggerFactory.CreateLogger("LmStreaming.Sample.SystemPromptCompose"))
                             .GetAwaiter()
                             .GetResult(),
                         defaultOptions: outputTokenPolicy.ApplyPrimary(
