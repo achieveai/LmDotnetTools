@@ -17,15 +17,18 @@ internal sealed class PolicyEnforcedHttpClientFactory
     private readonly CodeReviewDaemonOptions _options;
     private readonly ILogger<OperationPolicyHandler> _logger;
     private readonly ILogger<RetryHandler> _retryLogger;
+    private readonly IPolicyRefusalRecorder? _refusals;
 
     public PolicyEnforcedHttpClientFactory(
         CodeReviewDaemonOptions options,
         ILogger<OperationPolicyHandler> logger,
-        ILogger<RetryHandler> retryLogger)
+        ILogger<RetryHandler> retryLogger,
+        IPolicyRefusalRecorder? refusals = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _retryLogger = retryLogger ?? throw new ArgumentNullException(nameof(retryLogger));
+        _refusals = refusals;
     }
 
     /// <summary>
@@ -33,21 +36,45 @@ internal sealed class PolicyEnforcedHttpClientFactory
     /// scoped to that provider's allow-listed repos. The returned client owns its handler chain:
     /// <see cref="RetryHandler"/> (transient-failure resilience, PR #121 M7) → <see cref="OperationPolicyHandler"/>
     /// (route-scoped egress + credential enforcement) → the socket handler.
+    /// <para>
+    /// The write capability of every policy this builds follows
+    /// <see cref="CodeReviewDaemonOptions.EnableCommentPosting"/>. On a COLLECT-ONLY run that is what makes
+    /// "the daemon does not post" a property of the client rather than of the call sites: the publishers are
+    /// handed a client that structurally cannot POST/PATCH/PUT/DELETE to the provider API, so a code path
+    /// that reached one anyway — a new caller, a resumed stage, a mis-evaluated <c>shouldPost</c> — is
+    /// refused at the seam instead of succeeding. It stays exactly as capable as before when posting IS
+    /// enabled: this narrows the collect-only case only, it does not remove the feature.
+    /// </para>
     /// </summary>
     public HttpClient Create(string provider)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(provider);
 
-        var policies = AllowedReposForProvider(provider)
-            .Select(repo => DaemonOperationPolicy.BuildForRun(repo, _options.ReviewBotRepoUrl))
-            .ToList();
-
-        var policyHandler = new OperationPolicyHandler(policies, provider, _logger)
+        var policyHandler = new OperationPolicyHandler(BuildPolicies(provider), provider, _logger, _refusals)
         {
             InnerHandler = new HttpClientHandler(),
         };
 
         return new HttpClient(new RetryHandler(_retryLogger) { InnerHandler = policyHandler });
+    }
+
+    /// <summary>
+    /// The policies <see cref="Create"/> enforces, one per allow-listed repo for <paramref name="provider"/>.
+    /// Exposed separately from the client because the client's inner handler is a real socket: the write
+    /// capability these carry is a decision, and a decision has to be assertable without a network.
+    /// </summary>
+    public IReadOnlyList<OperationPolicy> BuildPolicies(string provider)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(provider);
+
+        return
+        [
+            .. AllowedReposForProvider(provider)
+                .Select(repo => DaemonOperationPolicy.BuildForRun(
+                    repo,
+                    _options.ReviewBotRepoUrl,
+                    allowWriteOperations: _options.EnableCommentPosting)),
+        ];
     }
 
     /// <summary>

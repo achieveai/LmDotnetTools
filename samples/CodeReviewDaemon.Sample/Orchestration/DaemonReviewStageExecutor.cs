@@ -304,6 +304,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private readonly IReviewAgentTranscriptSource? _transcriptSource;
     private readonly AdoCiStatusReader? _ciStatusReader;
     private readonly AdoWorkItemContextReader? _workItemContextReader;
+    private readonly IPolicyRefusalRecorder? _refusals;
 
     /// <summary>
     /// Per-run notes-artifact context (run id → what the settled barrier knew), captured in
@@ -334,7 +335,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         IReviewSubAgentCompletionSource? completionSource = null,
         IReviewAgentTranscriptSource? transcriptSource = null,
         AdoCiStatusReader? ciStatusReader = null,
-        AdoWorkItemContextReader? workItemContextReader = null)
+        AdoWorkItemContextReader? workItemContextReader = null,
+        IPolicyRefusalRecorder? refusals = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _loopFactory = loopFactory ?? throw new ArgumentNullException(nameof(loopFactory));
@@ -364,6 +366,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // line. "This PR has no work item" and "nobody could read this PR's work items" are different facts
         // about the pull request, and only one of them licenses reviewing against the description alone.
         _workItemContextReader = workItemContextReader;
+
+        // Where the spawn gate writes its refusals. Optional: without it the gate still refuses and still
+        // names the template in the log, it just leaves no durable row.
+        _refusals = refusals;
         _comparisonVariant = new ReviewVariant(
             VariantId: "b",
             ModelId: _options.VariantModelId,
@@ -4815,6 +4821,22 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         {
             return new ReviewSubAgentTreeSnapshot([]);
         }
+
+        // The spawn gate rides the barrier's polling path, which is the earliest the daemon sees a child at
+        // all. On a collect-only run a posting-capable template is refused here — named in the log and
+        // written to the refusal ledger — instead of running unremarked, which is the state eleven observed
+        // `ado:ado-devops-assistant` dispatches were found in. With EnableCommentPosting on it refuses
+        // nothing, so this narrows the collect-only case only.
+        //
+        // It does not stop the spawn: on S2S the review host owns spawning, and no host call refuses one
+        // template while permitting another. See SpawnGatedSubAgentCompletionSource for why the snapshot is
+        // forwarded unchanged rather than filtered.
+        source = new SpawnGatedSubAgentCompletionSource(
+            source,
+            new ReviewSpawnGate(
+                _options.EnableCommentPosting,
+                _loggerFactory.CreateLogger<ReviewSpawnGate>(),
+                _refusals));
 
         var barrier = new ReviewSubAgentCompletionBarrier(
             source,
