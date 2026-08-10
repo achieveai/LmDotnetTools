@@ -2378,7 +2378,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // output and in the persisted artifacts. The inventory is logged once, below.
         var baseChars = reviewInput.Length;
         reviewInput = await PrependPriorKnowledgeAsync(
-                reviewInput, run.Id, context.StoreRoot, repo, context.Diff, context.ChangedPaths, cancellationToken)
+                reviewInput, run.Id, context.StoreRoot, repo, context.Diff, context.ChangedPaths,
+                run.PrTitle, run.PrDescription, cancellationToken)
             .ConfigureAwait(false);
         var knowledgeChars = reviewInput.Length - baseChars;
 
@@ -2714,6 +2715,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         RepoIdentity repo,
         string? diff,
         string? changedPaths,
+        string? prTitle,
+        string? prDescription,
         CancellationToken cancellationToken)
     {
         // A pooled review reads KnowledgeBase/_toc.md HOST-side from its leased slot's store checkout — the same
@@ -2767,7 +2770,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // rendered path resolves through it). On the pooled S2S path these genuinely differ.
         var digest = await BuildKnowledgeDigestAsync(
                 index.Content, agentKnowledgeBaseDir, knowledgeBaseDir, fileSystem,
-                repo, diff, changedPaths, cancellationToken)
+                diff, changedPaths, prTitle, prDescription, cancellationToken)
             .ConfigureAwait(false);
         if (digest.Length > 0)
         {
@@ -2928,9 +2931,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// read against this and only this.</param>
     /// <param name="index">Raw <c>_index.jsonl</c> content, or null when it could not be read.</param>
     /// <param name="fileSystem">Reads entry bodies, host-side.</param>
-    /// <param name="repo">Scopes the ranking to this repository's entries.</param>
     /// <param name="diff">Fallback ranking signal for artifacts written before changed paths were persisted.</param>
     /// <param name="changedPaths">The lossless changed-path listing the ranking prefers.</param>
+    /// <param name="prTitle">The PR's title — half of the prose side of the retrieval key. Sibling PRs on one
+    /// architectural pattern often share no changed-path token at all, and this is usually where the pattern
+    /// is actually named.</param>
+    /// <param name="prDescription">The PR's description, scored with <paramref name="prTitle"/> and clamped:
+    /// unbounded author prose can demote a correct entry as well as promote one.</param>
     /// <param name="cancellationToken">Cancels the body reads.</param>
     /// <remarks>
     /// The two roots above were, until this method took both, a single parameter named
@@ -2946,9 +2953,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         string agentKnowledgeBaseDir,
         string hostKnowledgeBaseDir,
         ISandboxFileSystem fileSystem,
-        RepoIdentity repo,
         string? diff,
         string? changedPaths,
+        string? prTitle,
+        string? prDescription,
         CancellationToken cancellationToken)
     {
         var entries = KnowledgeIndex.ParseIndex(index, KnowledgeIndex.MaxIndexRecords, out var indexTruncated);
@@ -3034,8 +3042,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // consecutive slots. A doubled index fills every slot with half the store while the log below reports
         // a full digest.
         var deduplicated = KnowledgeDigest.Deduplicate(sanitized.Entries, agentKnowledgeBaseDir);
+        // Keyed on what the PR TOUCHES and what it SAYS. Paths alone could not connect sibling PRs on one
+        // architectural pattern — different files, same mistake, no shared path token — which is how the same
+        // defect came to be blocked on one PR and declined as out of scope on its sibling. The repo name used
+        // to be passed here as a scope bonus; it is gone, because no Knowledge Base entry has ever been scoped
+        // to a repository (see KnowledgeDigest's weights for the measurement).
         var selected = KnowledgeDigest.SelectRelevant(
-            deduplicated.Entries, ranked, repo.RepoName, MaxKnowledgeEntries);
+            deduplicated.Entries, ranked, prTitle, prDescription, MaxKnowledgeEntries);
 
         // The lessons themselves, read HOST-side, keyed exactly as Render will look them up.
         //
@@ -3103,13 +3116,18 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _logger.LogInformation(
             "Prior knowledge: surfaced {SurfacedCount} Knowledge Base entries, {InlinedCount} of them carrying "
                 + "the lesson inline ({DigestLength} chars) from {ParsedRecordCount} _index.jsonl records, "
-                + "ranked against {ChangedPathCount} changed paths for scope '{RepoScope}': {SurfacedEntries}",
+                + "ranked against {ChangedPathCount} changed paths plus {ProseChars} chars of PR "
+                + "title/description: {SurfacedEntries}",
             digest.Rendered.Count,
             digest.Inlined.Count,
             digest.Text.Length,
             entries.Count,
             ranked.Count,
-            repo.RepoName,
+            // The second half of the retrieval key, reported because its absence is otherwise invisible: a PR
+            // with an empty title and description ranks on paths alone, which is the configuration this whole
+            // change exists to stop being the only one. This line used to name the repo scope instead — a
+            // scope that, it turns out, never once matched anything.
+            (prTitle?.Length ?? 0) + (prDescription?.Length ?? 0),
             KnowledgeDigest.DescribePaths(
                 digest.Rendered.Select(entry => entry.File), MaxKnowledgeLogChars));
 
