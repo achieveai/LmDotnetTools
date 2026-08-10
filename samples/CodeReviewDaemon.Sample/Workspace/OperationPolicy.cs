@@ -119,14 +119,47 @@ internal sealed record ReviewScope(
     /// produced said nothing about it and cited the PR's own commit message for build health instead.
     /// </para>
     /// <para>
-    /// Each entry is a route ROOT, not the project's <c>_apis</c> surface: a work-item query or another repo's
-    /// blobs are still out of scope. Scoped to exactly one project (the run's) and honoured only for the
-    /// read-only <see cref="SandboxOperation.ReadProviderMetadata"/>, on the same terms as
+    /// Each entry is a route ROOT, not the project's <c>_apis</c> surface: another repo's blobs are still out
+    /// of scope. Scoped to exactly one project (the run's) and honoured only for the read-only
+    /// <see cref="SandboxOperation.ReadProviderMetadata"/>, on the same terms as
     /// <see cref="ApiProjectMetadataPath"/> — widening the method or the project would hand back exactly what
     /// the repo confinement protects.
     /// </para>
+    /// <para>
+    /// This paragraph used to name a work-item query as an example of what stays out of scope. That stopped
+    /// being true when <see cref="ApiWorkItemPaths"/> was added, and the sentence was corrected rather than
+    /// left standing: a comment that misdescribes a security boundary is worse than no comment, because it is
+    /// what the next reader checks INSTEAD of the code.
+    /// </para>
     /// </summary>
     public IReadOnlyList<string> ApiCiStatusPaths { get; init; } = [];
+
+    /// <summary>
+    /// The provider-API route roots outside <see cref="ApiRepoPathPrefix"/> this run may READ to establish
+    /// what its PR was ASKED to do (ADO: the work-item batch route, walked up the
+    /// <c>System.LinkTypes.Hierarchy-Reverse</c> chain to the Epic). Empty for GitHub, whose linked issues
+    /// hang off the repo route already in scope.
+    /// <para>
+    /// One root, and deliberately only one. The PR's own list of linked items
+    /// (<c>_apis/git/repositories/{repo}/pullRequests/{id}/workitems</c>) already sits UNDER
+    /// <see cref="ApiRepoPathPrefix"/> and needed nothing added; only the work items THEMSELVES
+    /// (<c>_apis/wit/workitems</c>) are project-scoped and unreachable from a per-repo prefix, exactly as
+    /// build results are.
+    /// </para>
+    /// <para>
+    /// Without it the reviewer cannot judge whether a diff does what was asked, and the gap was structural
+    /// rather than a model choice: the capability was offered to the reviewer in its PROMPT, which told it to
+    /// dispatch a context gatherer, while across 644 observed review sub-agent spawns ZERO carried any tool
+    /// that could reach ADO. It was dispatched once in 698 spawns, and that one had nothing to do the job with.
+    /// </para>
+    /// <para>
+    /// Scoped to exactly one project (the run's) and honoured only for the read-only
+    /// <see cref="SandboxOperation.ReadProviderMetadata"/>, on the same terms as the two above. READ only: no
+    /// work item can be created, updated, commented on or linked through this, because the write arm never
+    /// passes the flag that makes these roots reachable at all.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<string> ApiWorkItemPaths { get; init; } = [];
 }
 
 /// <summary>
@@ -277,11 +310,11 @@ internal sealed class OperationPolicy
     }
 
     /// <summary>
-    /// Evaluates a provider-API request. <paramref name="allowReadOnlyProjectRoutes"/> lets the two
-    /// project-scoped exceptions — <see cref="ReviewScope.ApiProjectMetadataPath"/> and
-    /// <see cref="ReviewScope.ApiCiStatusPaths"/> — count as in-scope routes alongside the repo prefix; it is
-    /// passed only by the read-only <see cref="SandboxOperation.ReadProviderMetadata"/> arm, so no write can
-    /// ever reach them.
+    /// Evaluates a provider-API request. <paramref name="allowReadOnlyProjectRoutes"/> lets the three
+    /// project-scoped exceptions — <see cref="ReviewScope.ApiProjectMetadataPath"/>,
+    /// <see cref="ReviewScope.ApiCiStatusPaths"/> and <see cref="ReviewScope.ApiWorkItemPaths"/> — count as
+    /// in-scope routes alongside the repo prefix; it is passed only by the read-only
+    /// <see cref="SandboxOperation.ReadProviderMetadata"/> arm, so no write can ever reach them.
     /// </summary>
     private PolicyDecision DecideApi(
         OperationRequest request,
@@ -303,10 +336,11 @@ internal sealed class OperationPolicy
 
         // When the concrete repo route is known (per-run policy, PR #121 H2), the request path must fall
         // under it — host + method alone are not enough, or a review could hit a sibling repo's API. The
-        // run's OWN project-scoped read routes are the only exceptions (see ApiProjectMetadataPath and
-        // ApiCiStatusPaths): ADO publishes project visibility and build/test results nowhere else, and both
-        // are things the review is wrong without — a closed cross-repo gate in the first case, a reviewer
-        // that cannot see a failing pipeline in the second.
+        // run's OWN project-scoped read routes are the only exceptions (see ApiProjectMetadataPath,
+        // ApiCiStatusPaths and ApiWorkItemPaths): ADO publishes project visibility, build/test results and
+        // work items nowhere else, and all three are things the review is wrong without — a closed cross-repo
+        // gate in the first case, a reviewer that cannot see a failing pipeline in the second, and one that
+        // cannot tell whether the diff does what was asked in the third.
         if (_scope.ApiRepoPathPrefix is { } prefix
             && !PathUnderApiPrefix(request.Path, prefix)
             && !IsReadOnlyProjectRoute(request.Path, allowReadOnlyProjectRoutes))
@@ -339,6 +373,14 @@ internal sealed class OperationPolicy
         foreach (var ciRoute in _scope.ApiCiStatusPaths)
         {
             if (PathUnderApiPrefix(requestPath, ciRoute))
+            {
+                return true;
+            }
+        }
+
+        foreach (var workItemRoute in _scope.ApiWorkItemPaths)
+        {
+            if (PathUnderApiPrefix(requestPath, workItemRoute))
             {
                 return true;
             }

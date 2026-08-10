@@ -436,6 +436,17 @@ if (daemonOptions.EnableAdoProvider)
         sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("ado"),
         sp.GetRequiredService<AdoOAuthProvider>(),
         sp.GetRequiredService<ILogger<AdoCiStatusReader>>()));
+
+    // What the PR was ASKED to do — its linked work items, walked up to the Epic. Registered beside the CI
+    // reader because it closes the same shape of gap from the other side: CI says whether the change builds,
+    // this says whether it is the change that was wanted. The reviewer had no route to it, and not by
+    // accident of model behaviour — the capability was offered in the PROMPT while across 644 observed review
+    // sub-agent spawns ZERO carried a tool that could reach ADO. Doing it here, in code, is what makes it
+    // happen at all. Same concrete AdoOAuthProvider as above, for the same reason.
+    builder.Services.AddSingleton(sp => new AdoWorkItemContextReader(
+        sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("ado"),
+        sp.GetRequiredService<AdoOAuthProvider>(),
+        sp.GetRequiredService<ILogger<AdoWorkItemContextReader>>()));
 }
 
 // Host-side git authenticates to every OAuth provider the daemon is signed in to — GitHub for github.com

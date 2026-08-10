@@ -169,9 +169,17 @@ public sealed class DaemonOperationPolicyTests
     }
 
     /// <summary>
-    /// The exception names three route roots, not the project's whole <c>_apis</c> surface. A read the CI
-    /// reader does not make — a work-item query, another repo's blobs — is still outside the run's route,
-    /// so widening the reader later is a deliberate edit here rather than something already granted.
+    /// The exception names specific route roots, not the project's whole <c>_apis</c> surface. A read no
+    /// reader makes — another repo's blobs, a saved query, the work-item TYPE metadata — is still outside the
+    /// run's route, so widening a reader later stays a deliberate edit here rather than something already
+    /// granted.
+    /// <para>
+    /// This test used to assert that <c>_apis/wit/workitems</c> ITSELF was denied. That was true until the
+    /// work-item reader was added and is now false by design (see
+    /// <see cref="Ado_run_policy_allows_reading_the_runs_own_work_item_routes"/>). The assertion was moved to
+    /// its neighbours rather than deleted: the guarantee being tested is "a root, not the surface", and the
+    /// <c>wit</c> siblings are exactly where that guarantee would next be lost.
+    /// </para>
     /// </summary>
     [Fact]
     public void Ado_run_policy_does_not_open_the_projects_whole_api_surface()
@@ -180,10 +188,79 @@ public sealed class DaemonOperationPolicyTests
             AdoRepo, reviewBotRepoUrl: "https://dev.azure.com/contoso/Platform/_git/reviewbot");
 
         Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
-                "/contoso/Platform/_apis/wit/workitems?ids=1&api-version=7.1")
-            .IsAllowed.Should().BeFalse();
+                "/contoso/Platform/_apis/wit/wiql?api-version=7.1")
+            .IsAllowed.Should().BeFalse("a WIQL query is arbitrary search, not this PR's own items");
+        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
+                "/contoso/Platform/_apis/wit/workitemtypes?api-version=7.1")
+            .IsAllowed.Should().BeFalse(
+                "a sibling whose name merely starts with the granted root is outside it");
         Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
                 "/contoso/Platform/_apis/git/repositories/other/items?path=/secrets.txt")
+            .IsAllowed.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The work-item routes <c>AdoWorkItemContextReader</c> needs are reachable read-only. Only ONE root had
+    /// to be added: ADO keys work items to a PROJECT, so <c>_apis/wit/workitems</c> cannot sit under the
+    /// repository route, while the PR's own list of linked items already does and needed no widening at all.
+    /// <para>
+    /// Before this the reviewer could not judge whether a diff did what was asked, and the cause was
+    /// structural rather than a model choice: the capability was offered in the PROMPT while across 644
+    /// observed review sub-agent spawns ZERO carried a tool that could reach ADO.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void Ado_run_policy_allows_reading_the_runs_own_work_item_routes()
+    {
+        var policy = DaemonOperationPolicy.BuildForRun(
+            AdoRepo, reviewBotRepoUrl: "https://dev.azure.com/contoso/Platform/_git/reviewbot");
+
+        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
+                "/contoso/Platform/_apis/wit/workitems?ids=1234&$expand=relations&api-version=7.1")
+            .IsAllowed.Should().BeTrue("the batch read is what walks the chain up to the Epic");
+        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
+                "/contoso/Platform/_apis/git/repositories/core/pullRequests/5505458/workitems?api-version=7.1")
+            .IsAllowed.Should().BeTrue("the PR's own links were already under the run's repo route");
+        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
+                "/contoso/Platform/_apis/git/repositories/other/pullRequests/1/workitems?api-version=7.1")
+            .IsAllowed.Should().BeFalse(
+                "and being already in scope does not mean unscoped — a sibling repo's links stay denied");
+    }
+
+    /// <summary>
+    /// The work-item exception is honoured for exactly one operation and exactly one project — the terms the
+    /// owner approved and no wider. Both halves matter: the confinement exists so untrusted PR code cannot
+    /// steer the daemon somewhere else carrying the bot credential, and a route that widened either the
+    /// method or the project would hand that back.
+    /// </summary>
+    [Fact]
+    public void Ado_run_policy_denies_the_work_item_routes_to_writes_and_to_other_projects()
+    {
+        var policy = DaemonOperationPolicy.BuildForRun(
+            AdoRepo, reviewBotRepoUrl: "https://dev.azure.com/contoso/Platform/_git/reviewbot");
+
+        Api(policy, SandboxOperation.PostReviewComment, "dev.azure.com", "POST",
+                "/contoso/Platform/_apis/wit/workitems/1234")
+            .IsAllowed.Should().BeFalse(
+                "the work-item routes are readable, never writable — no item can be created, updated or "
+                    + "commented on through this");
+        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
+                "/contoso/OtherProject/_apis/wit/workitems?ids=1234&api-version=7.1")
+            .IsAllowed.Should().BeFalse("only the run's own project is in scope");
+        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
+                "/contoso/Platform-Secrets/_apis/wit/workitems?ids=1&api-version=7.1")
+            .IsAllowed.Should().BeFalse("a project whose name merely starts with the run's is not the run's");
+    }
+
+    [Fact]
+    public void GitHub_run_policy_has_no_work_item_routes()
+    {
+        // The work-item routes are an ADO shape. GitHub's linked issues hang off the repo route the policy
+        // already scopes, so there is nothing to except and nothing is excepted.
+        var policy = DaemonOperationPolicy.BuildForRun(
+            GitHubRepo, reviewBotRepoUrl: "https://github.com/acme/reviewbot.git");
+
+        Api(policy, SandboxOperation.ReadProviderMetadata, "api.github.com", "GET", "/_apis/wit/workitems?ids=1")
             .IsAllowed.Should().BeFalse();
     }
 

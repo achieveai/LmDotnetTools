@@ -303,6 +303,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// </summary>
     private readonly IReviewAgentTranscriptSource? _transcriptSource;
     private readonly AdoCiStatusReader? _ciStatusReader;
+    private readonly AdoWorkItemContextReader? _workItemContextReader;
 
     /// <summary>
     /// Per-run notes-artifact context (run id → what the settled barrier knew), captured in
@@ -332,7 +333,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         IGatewaySkillProbe? skillProbe = null,
         IReviewSubAgentCompletionSource? completionSource = null,
         IReviewAgentTranscriptSource? transcriptSource = null,
-        AdoCiStatusReader? ciStatusReader = null)
+        AdoCiStatusReader? ciStatusReader = null,
+        AdoWorkItemContextReader? workItemContextReader = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _loopFactory = loopFactory ?? throw new ArgumentNullException(nameof(loopFactory));
@@ -356,6 +358,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // Null on a GitHub-only daemon, and on any run where the ADO provider was never registered. The brief
         // simply omits the pipeline block in that case rather than announcing its own absence.
         _ciStatusReader = ciStatusReader;
+
+        // Null on a GitHub-only daemon, exactly as above. Note the ASYMMETRY with CI once a reader IS wired:
+        // a CI read that fails renders nothing, while a work-item read that fails renders an explicit failure
+        // line. "This PR has no work item" and "nobody could read this PR's work items" are different facts
+        // about the pull request, and only one of them licenses reviewing against the description alone.
+        _workItemContextReader = workItemContextReader;
         _comparisonVariant = new ReviewVariant(
             VariantId: "b",
             ModelId: _options.VariantModelId,
@@ -1981,6 +1989,164 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         return sb.ToString();
     }
 
+    /// <summary>
+    /// Prepends what this pull request was ASKED to do — its linked work items and their chain up to the Epic.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Returns the count alongside the text because the brief inventory has to be able to tell a review that
+    /// saw three work items from one that saw none, and the char delta alone cannot: the "none linked" and
+    /// "lookup failed" blocks are both non-empty, so a non-zero delta proves only that SOMETHING was said.
+    /// </para>
+    /// <para>
+    /// Unlike <see cref="PrependCiStatusAsync"/>, a failed read still contributes a block. That is the whole
+    /// point of the reader's <see cref="AdoWorkItemLookup.Failed"/> arm: the alternative is a silent gap that
+    /// the reviewer reads as "this PR has no work item", which is a claim about the pull request that nobody
+    /// established. Only <see cref="AdoWorkItemLookup.Unavailable"/> — nobody asked anything — stays silent.
+    /// </para>
+    /// </remarks>
+    private async Task<(string ReviewInput, int WorkItemCount)> PrependWorkItemContextAsync(
+        string reviewInput, ReviewRun run, RepoIdentity repo, CancellationToken cancellationToken)
+    {
+        if (_workItemContextReader is null)
+        {
+            return (reviewInput, 0);
+        }
+
+        var context = await _workItemContextReader
+            .ReadAsync(repo, run.PrId, cancellationToken)
+            .ConfigureAwait(false);
+
+        var body = DescribeWorkItemContext(context);
+        if (body is null)
+        {
+            _logger.LogInformation(
+                "Run {RunId}: work-item context for PR {PrId} is {Outcome}, so no work-item block was added to "
+                    + "the brief — nothing was asked of the provider, so there is no outcome to report.",
+                run.Id, run.PrId, context.Outcome);
+            return (reviewInput, 0);
+        }
+
+        // Outcome, counts and ids only — never titles. A work item title is the author's words, held to the
+        // same rule as the PR title and description below.
+        _logger.LogInformation(
+            "Run {RunId}: work-item context for PR {PrId} — outcome={Outcome}, {ItemCount} item(s) "
+                + "({OmittedItems} over the cap, depth cap reached: {DepthCapReached}). ids={WorkItemIds}",
+            run.Id, run.PrId, context.Outcome, context.Items.Count,
+            context.OmittedItems, context.DepthCapReached,
+            string.Join(",", context.Items.Select(static i => i.Id.ToString(CultureInfo.InvariantCulture))));
+
+        return (body + "\n\n" + reviewInput, context.Items.Count);
+    }
+
+    /// <summary>Test seam for <see cref="DescribeWorkItemContext"/>, on the same reasoning as
+    /// <see cref="DescribeCiStatusForTests"/>: the renderer is pure, and the rule it enforces — that the three
+    /// outcomes never render alike — is exactly the kind that would go quietly wrong behind a full stage
+    /// run.</summary>
+    internal static string? DescribeWorkItemContextForTests(AdoWorkItemContext context) =>
+        DescribeWorkItemContext(context);
+
+    /// <summary>
+    /// Renders the work-item block, or null when nobody asked and there is therefore nothing to report.
+    /// <para>
+    /// THREE outcomes, three visibly different blocks, and never a bare empty one. "This PR links no work
+    /// item" is a fact about the pull request; "the lookup failed" is a fact about the daemon; and rendering
+    /// them the same way turns the second into the first, which is the reviewer concluding a change had no
+    /// stated intent when in truth nobody could read it.
+    /// </para>
+    /// </summary>
+    private static string? DescribeWorkItemContext(AdoWorkItemContext context)
+    {
+        if (context.Outcome is AdoWorkItemLookup.Unavailable)
+        {
+            return null;
+        }
+
+        var sb = new StringBuilder("## Work items linked to this pull request\n\n");
+
+        switch (context.Outcome)
+        {
+            case AdoWorkItemLookup.Failed:
+                _ = sb.Append(
+                    "The work-item lookup FAILED. The daemon asked Azure DevOps for this pull request's linked "
+                        + "work items and could not read the answer, so what this change was asked to do is "
+                        + "UNKNOWN.\n\n"
+                        + "This is NOT the same as the pull request having no work items — nobody established "
+                        + "either way. Do not conclude the change has no stated intent, and do not infer that "
+                        + "intent from the diff and present it as context. Review against the PR's own title "
+                        + "and description, and say in your review that the work-item lookup failed.\n");
+                return sb.ToString();
+
+            case AdoWorkItemLookup.NoneLinked:
+                _ = sb.Append(
+                    "This pull request links NO work items. The lookup succeeded — this is what Azure DevOps "
+                        + "returned, not a failure to read it.\n\n"
+                        + "So there is no stated requirement to judge the change against. Review it against "
+                        + "its own title and description, and do not treat the absence as something to report "
+                        + "as a finding on its own.\n");
+                return sb.ToString();
+
+            case AdoWorkItemLookup.Unavailable:
+            case AdoWorkItemLookup.Linked:
+            default:
+                break;
+        }
+
+        _ = sb.Append(
+            "This is what the pull request was ASKED to do. You cannot query the work-item tracker yourself — "
+                + "your sandbox has no network — so what follows is the only statement of intent available. "
+                + "Judge whether the diff actually accomplishes it, and CITE these items when you do. A change "
+                + "that is one task of several is not an incomplete change; check the chain before calling "
+                + "anything missing.\n\n");
+
+        // Rendered as chains from each directly-linked item upward, so the Epic reads as the top of a path
+        // rather than as another entry in a flat list. The visited set is belt-and-braces: the reader already
+        // fetches an id at most once, but a ParentId can still point back into the set (A→B→A), and a
+        // renderer that assumed a tree would hang on exactly the input the reader is careful to survive.
+        var byId = context.Items.ToDictionary(static i => i.Id);
+        foreach (var root in context.Items.Where(static i => i.Depth == 0))
+        {
+            var visited = new HashSet<int>();
+            var indent = string.Empty;
+            for (var current = root; current is not null && visited.Add(current.Id);)
+            {
+                _ = sb.Append(indent)
+                    .Append("- ")
+                    .Append(indent.Length == 0 ? string.Empty : "parent ")
+                    .Append("**")
+                    .Append(current.WorkItemType ?? "Work item")
+                    .Append(' ')
+                    .Append(current.Id.ToString(CultureInfo.InvariantCulture))
+                    .Append("**")
+                    .Append(string.IsNullOrWhiteSpace(current.State) ? string.Empty : $" ({current.State})")
+                    .Append(": ")
+                    .Append(string.IsNullOrWhiteSpace(current.Title) ? "(no title)" : current.Title)
+                    .Append('\n');
+
+                indent += "  ";
+                current = current.ParentId is { } parentId && byId.TryGetValue(parentId, out var parent)
+                    ? parent
+                    : null;
+            }
+        }
+
+        if (context.DepthCapReached)
+        {
+            _ = sb.Append(
+                $"\n(The parent walk stopped at {AdoWorkItemContextReader.MaxAncestorDepth} level(s) above the "
+                    + "linked item(s); the chain above may continue past what is shown.)\n");
+        }
+
+        if (context.OmittedItems > 0)
+        {
+            _ = sb.Append(
+                $"\n({context.OmittedItems} further work item(s) omitted — this pull request's hierarchy holds "
+                    + "more than are worth inlining here.)\n");
+        }
+
+        return sb.ToString();
+    }
+
     /// <summary>How many records a newline-joined listing holds — the number reported beside every persisted
     /// context artifact, so an operator reading the log can tell a PR the daemon saw as empty apart from one it
     /// never listed.</summary>
@@ -2224,6 +2390,15 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             .ConfigureAwait(false);
         var commentsChars = reviewInput.Length - beforeComments;
 
+        // Second-to-last, so it lands just under the CI block at the top of the brief. Same reasoning as CI,
+        // for the other half of the question: CI says whether the change is CORRECT, this says whether it is
+        // the change that was WANTED. The reviewer cannot establish it either — the work-item tracker is as
+        // unreachable from its sandbox as the build agents are.
+        var beforeWorkItems = reviewInput.Length;
+        (reviewInput, var workItemCount) =
+            await PrependWorkItemContextAsync(reviewInput, run, repo, cancellationToken).ConfigureAwait(false);
+        var workItemChars = reviewInput.Length - beforeWorkItems;
+
         // Last, so it lands FIRST in the assembled brief. The reviewer cannot establish any of this for itself:
         // its sandbox has no dotnet, no network and a 2 GB cap, so it cannot build the repo, let alone run
         // 45,051 tests. Absent this it does what run 22 did and reports what the PR's own commit message
@@ -2269,6 +2444,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 + "[base={BaseChars}, changed-paths={ChangedPathChars} chars naming {ListedPathCount} of "
                 + "them, prior-knowledge={KnowledgeChars}, developer-feedback={FeedbackChars}, "
                 + "repo-guidance={GuidanceChars}, existing-comments={CommentsChars}, ci-status={CiChars}, "
+                + "work-items={WorkItemChars} chars naming {WorkItemCount} item(s), "
                 + "siblings={SiblingCount} repo(s) named inside base]. Stated intent: "
                 + "title={TitleChars} chars, description={DescriptionChars} chars, into={TargetBranchKnown}. "
                 + "The {DiffChars}-char diff is NOT inlined by design — the reviewer reads it from {CheckoutRoot}.",
@@ -2283,6 +2459,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             guidanceChars,
             commentsChars,
             ciChars,
+            workItemChars,
+            workItemCount,
             context.SiblingRepos?.Count ?? 0,
             run.PrTitle?.Length ?? 0,
             run.PrDescription?.Length ?? 0,
@@ -3934,8 +4112,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // same agent. A prefix or equality match would report a false absence the day the host changes how it
         // qualifies a name — reporting "never dispatched" when it in fact was is the one error this line
         // cannot afford, because that is indistinguishable from the real defect it exists to watch.
+        // The `subAgentCount > 0` gate this condition used to carry is GONE, deliberately. It excluded exactly
+        // the reviews the line exists to see: a review that dispatched nothing at all is the strongest case of
+        // "judged the PR without fetching what it was for", and it was the one shape that never got logged.
+        // With the roster empty the answer is a certain false rather than an unknown, so there is no reason to
+        // stay quiet about it.
         const string ContextGathererTemplate = "pr-context-gatherer";
-        if (hasNotesContext && subAgentCount > 0)
+        if (hasNotesContext)
         {
             var gathererDispatched = notesContext!.Roster.Nodes.Any(
                 static n => n.Template.Contains(ContextGathererTemplate, StringComparison.OrdinalIgnoreCase));
