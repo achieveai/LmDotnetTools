@@ -123,66 +123,58 @@ public sealed class DaemonAgentFactoryTests
     }
 
     [Fact]
-    public void ReviewProfile_Prompt_dispatches_the_context_gatherer_for_a_linked_work_item()
+    public void ReviewProfile_Prompt_no_longer_asks_the_reviewer_to_gather_work_item_context_itself()
     {
-        // The brief carries the PR's title and description (its own words) but nothing they REFER to, so
-        // "does this change do what it was asked to do" — and "is this PR incomplete, or one task of
-        // several?" — are both unanswerable from it. code-reviewer:pr-context-gatherer exists to walk that
-        // chain and was never named in the prompt, so it was never dispatched on any run.
+        // This REPLACES two tests that pinned the opposite: that the prompt named
+        // code-reviewer:pr-context-gatherer and made the reviewer report which of three outcomes befell its
+        // lookup. Both are obsolete, and not because the goal changed — because the mechanism did. The
+        // capability was offered to the model in the prompt and the environment could not execute it: across
+        // 644 observed review sub-agent spawns ZERO carried a tool that could reach ADO, and the one dispatch
+        // in 698 spawns had nothing to do the job with. The daemon now performs the lookup itself
+        // (AdoWorkItemContextReader) and hands the reviewer the answer.
+        //
+        // So the instruction has to GO, rather than sit there unexecutable: a prompt that tells the model to
+        // dispatch a gatherer makes it narrate a step the daemon already performed, which is the same defect
+        // family as reviews narrating our infrastructure to PR authors.
         var prompt = DaemonAgentFactory.CreateReviewProfile(
             new Dictionary<string, object> { ["bot_name"] = "Revobot" }).SystemPrompt;
 
-        prompt.Should().Contain("code-reviewer:pr-context-gatherer");
-        // The lookup leaves the sandbox, and on NOVA the egress proxy has refused provider calls
-        // (policy_evaluation_failed). A failed lookup that goes unmentioned is the worst outcome: the review
-        // reads as though the work item was consulted.
-        var index = prompt.IndexOf("pr-context-gatherer", StringComparison.Ordinal);
-        prompt[index..].Should().MatchRegex(
-            "(?i)(SAY SO|say so)",
-            "a lookup that failed has to be visible in the review, not silently absent from it");
-        prompt[index..].Should().MatchRegex(
-            "(?i)never infer",
-            "and the gap must not be filled by guessing the work item from the diff");
-    }
+        prompt.Should().NotContain(
+            "pr-context-gatherer",
+            "the daemon fetches the work items in code; asking the reviewer to dispatch an agent for it "
+                + "makes it narrate work that already happened");
 
-    [Fact]
-    public void ReviewProfile_Prompt_requires_the_gatherer_line_even_when_the_lookup_was_never_attempted()
-    {
-        // The escape hatch fired 0 times in 158 reviews, and the construction explains why: it was worded
-        // "If that lookup FAILS ... SAY SO", and failure requires an attempt. An agent that declines to
-        // dispatch the gatherer never fails, so it never says so, and the daemon receives no signal at all —
-        // a review that silently skipped the step is indistinguishable from a review of a PR with no work
-        // item. The duty therefore has to be keyed on the OUTCOME (gathered / tried and failed / did not
-        // try), not on a failure that only exists once something was tried.
-        var prompt = DaemonAgentFactory.CreateReviewProfile(
-            new Dictionary<string, object> { ["bot_name"] = "Revobot" }).SystemPrompt;
-
-        var index = prompt.IndexOf("pr-context-gatherer", StringComparison.Ordinal);
-        index.Should().BeGreaterThan(-1);
-        prompt[index..].Should().MatchRegex(
-            "(?i)did NOT attempt",
-            "not attempting the lookup has to be reportable, or the only observable case is the one that ran");
-        prompt[index..].Should().MatchRegex(
-            "(?i)you did not try",
-            "the three outcomes must be named, so 'nothing said' can never mean 'nothing to say'");
+        // The negative above is only worth having beside the positive: the reviewer must still be TOLD the
+        // context exists, or the block lands in a brief nobody was pointed at. A bare NotContain would stay
+        // green if the block were never mentioned at all, which is the failure this pairs against.
+        prompt.Should().Contain(
+            "## Work items linked to this pull request",
+            "the reviewer has to be told the block exists and what it is");
+        prompt.Should().MatchRegex(
+            "(?i)lookup FAILED",
+            "the three outcomes are now distinguished IN the block, so the reviewer must be told to read "
+                + "them apart rather than to report on its own attempt");
     }
 
     [Fact]
     public void ReviewProfile_Prompt_does_not_let_the_no_network_clause_excuse_the_work_item_lookup()
     {
-        // Step 2 mandates dispatching a sub-agent whose entire job is a provider-API lookup; step 5, ~30 lines
-        // later, states as flat fact that the sandbox "has no toolchain and no network". A reviewer that
-        // believes it has no network has no reason to dispatch a network-only sub-agent, so the two
-        // instructions contradict each other and the cheaper one wins. The clause is correct about WHY CI is
-        // the only build evidence — it must not generalise into a reason to skip anything else.
+        // Step 5 states as flat fact that the sandbox "has no toolchain and no network". That clause is
+        // correct about WHY CI is the only build evidence — it must not generalise into a blanket claim that
+        // nothing outside the sandbox is reachable, because the daemon reaches plenty on the reviewer's
+        // behalf and hands the results over in the brief.
         var prompt = DaemonAgentFactory.CreateReviewProfile(
             new Dictionary<string, object> { ["bot_name"] = "Revobot" }).SystemPrompt;
 
         var index = prompt.IndexOf("no toolchain and no network", StringComparison.Ordinal);
         index.Should().BeGreaterThan(-1);
         prompt[index..].Should().MatchRegex(
-            "(?i)not a licence to skip",
+            "(?i)not a general statement",
             "the build-evidence clause must be scoped, or it reads as a blanket unreachability claim");
+        prompt[index..].Should().MatchRegex(
+            "(?i)no lookup for\\s+you to attempt",
+            "and the scoping must say what replaced the lookup, or a reviewer told the network is dead has "
+                + "no reason to trust a block that could only have come over it");
     }
 
     [Fact]

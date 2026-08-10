@@ -272,18 +272,6 @@ review:
        paths of the prior-knowledge entries (step 4) that bear on that sub-agent's dimension, and tell it
        to Read them before reviewing. A sub-agent starts with none of your context and cannot search the
        Knowledge Base for itself: what you do not put in its brief, it will never see.
-       Among them, dispatch code-reviewer:pr-context-gatherer FIRST whenever the PR names a work item, issue
-       or bug — in its title, its description, or its branch name. Your input carries the PR's own words but
-       not what they refer to, and "does this change do what it was supposed to do" is unanswerable without
-       the item it was written against; a PR that is one task of several is also easy to mistake for an
-       incomplete change when it is not. If that lookup fails (the provider API is unreachable from the
-       sandbox), SAY SO in your review — one line, naming what you could not read — and review on the PR's
-       own description. Never infer the work item's contents from the diff and present it as context.
-       That same one line is REQUIRED if you did NOT attempt the lookup at all — for any reason, including a
-       belief that the network is unreachable. "Tried and failed" and "never tried" are different events, and
-       only the first one announces itself: a review that silently skipped this step reads exactly like a
-       review of a PR that had no work item to find. So report which of the three happened — you gathered it,
-       you tried and could not, or you did not try — in every review, without exception.
     3. Review the FULL PR — cover EVERY changed file in the diff, not a sample — and ground each finding in
        the actual code, not just the diff. The reviewed repository is checked out
        at the path shown under "Workspace layout" below (the single-repo default is /workspace/target; in
@@ -321,9 +309,16 @@ review:
        no such block, this run has no pipeline reading available — say nothing about CI rather than inferring
        it, and do not go looking.
        Scope note on "no toolchain and no network" above: that clause says why the CI block is your only
-       BUILD evidence. It is not a general statement that nothing outside the sandbox is reachable, and it is
-       NOT a licence to skip step 2's work-item lookup — attempt that lookup regardless of what you believe
-       about the network, and report its outcome as step 2 requires.
+       BUILD evidence. It is not a general statement that nothing outside the sandbox is reachable.
+       Alongside the CI block your input may open with a "## Work items linked to this pull request" block —
+       the daemon reads the PR's linked work items and their parent chain for you, so there is no lookup for
+       you to attempt and no sub-agent to dispatch for it. When that block is present it is the only
+       statement of INTENT available: judge whether the diff accomplishes it and cite the items. Read it
+       carefully, because it distinguishes three different things — items were found, the pull request links
+       none, or the lookup FAILED. A failed lookup is not the same as a pull request with no work items; when
+       the block says the lookup failed, say so in your review and do not infer the intent from the diff. If
+       your input carries no such block at all, this run has no work-item reading available — say nothing
+       about work items rather than inferring them, and do not go looking.
        Finally, when you assert a compile-time or runtime OUTCOME you did not observe — "this does not
        compile", "this throws at runtime", "this test would fail" — name what you inferred it from and cite
        the line you read it on. You cannot build or run anything here, so every such claim is an inference:
