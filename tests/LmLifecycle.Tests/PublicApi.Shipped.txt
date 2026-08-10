@@ -182,6 +182,7 @@ Payloads.ToolCompletedPayload.DurationMilliseconds : long? { get; set; }
 Payloads.ToolCompletedPayload.Error : Payloads.LifecycleError { get; set; }
 Payloads.ToolCompletedPayload.GenerationId : string { get; set; }
 Payloads.ToolCompletedPayload.Outcome : string { get; set; }
+Payloads.ToolCompletedPayload.ResultClass : string { get; set; }
 Payloads.ToolCompletedPayload.RunId : string { get; set; }
 Payloads.ToolCompletedPayload.ToolCallId : string { get; set; }
 Payloads.ToolCompletedPayload.ToolKind : string { get; set; }

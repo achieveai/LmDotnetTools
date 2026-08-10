@@ -1088,6 +1088,8 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
     /// Submodule state is excluded from the cleanliness check for the reason
     /// <see cref="SlotHygiene.EnsureCleanAsync"/> excludes it on the store: a moved gitlink is the review's
     /// own to re-establish, not leftover content, and gating on it would fail every submodule-bearing repo.
+    /// So is a path whose bytes on disk already equal the blob recorded at the head, which git can still
+    /// report as modified — see <see cref="PartitionLeftoversAsync"/>.
     /// </para>
     /// </remarks>
     private async Task EnsureReviewedTreeAsync(
@@ -1126,7 +1128,7 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
 
         var status = await _git
             .RunAsync(
-                ["-C", targetDir, "status", "--porcelain", "--ignore-submodules=all"],
+                ["-C", targetDir, "status", "--porcelain", "-z", "--ignore-submodules=all"],
                 targetDir,
                 cancellationToken)
             .ConfigureAwait(false);
@@ -1139,12 +1141,26 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
             return;
         }
 
-        var leftovers = status.Stdout?.Trim() ?? string.Empty;
-        if (leftovers.Length > 0)
+        var (leftovers, normalized) = await PartitionLeftoversAsync(
+                ParsePorcelainZ(status.Stdout ?? string.Empty), targetDir, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (normalized.Count > 0)
+        {
+            _logger.LogInformation(
+                "Run {RunId}: {Count} path(s) under '{TargetDir}' report as modified while holding bytes "
+                    + "identical to the blob recorded at {HeadSha}. That is the repository's own eol/filter "
+                    + "attributes disagreeing with what was committed, not leftover content, so the tree is "
+                    + "still the pull request's: {Paths}",
+                run.Id, normalized.Count, targetDir, run.HeadSha,
+                Truncate(string.Join(", ", normalized)));
+        }
+
+        if (leftovers.Count > 0)
         {
             throw new InvalidOperationException(
                 $"Run {run.Id}: the reviewed checkout '{targetDir}' is still dirty after cleaning, so it is "
-                + $"not the pull request's tree: {Truncate(leftovers)}");
+                + $"not the pull request's tree: {Truncate(string.Join("\n", leftovers))}");
         }
 
         _logger.LogInformation(
@@ -1155,6 +1171,124 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
     /// <summary>Bounds a git status listing so a wholly-unexpected tree cannot produce an unbounded message.</summary>
     private static string Truncate(string text) =>
         text.Length <= 512 ? text : string.Concat(text.AsSpan(0, 512), "… (truncated)");
+
+    /// <summary>
+    /// Above this many dirty paths the tree is wrong in bulk, not normalized oddly, so it is refused without
+    /// spending a pair of git invocations per path to say so.
+    /// </summary>
+    private const int MaxClassifiedLeftovers = 25;
+
+    /// <summary>
+    /// Splits the surviving dirty paths into ones that are genuinely not the pull request's content and ones
+    /// whose worktree bytes already ARE the recorded blob.
+    /// </summary>
+    /// <remarks>
+    /// A repository can commit a blob whose line endings contradict its own <c>.gitattributes</c> — a
+    /// <c>text eol=crlf</c> path whose stored blob already holds CRLF is the common shape. Git then runs the
+    /// clean filter over the worktree copy on every comparison, converts CRLF to LF, and finds it unequal to
+    /// the CRLF blob, so the path reports modified on a checkout nothing has touched. Measured here on
+    /// WeveNova: one <c>ServiceConfig.ini</c>, all 91 of its 91 lines "changed", surviving
+    /// <c>checkout --force</c>, <c>reset --hard</c> and <c>clean -ffdx</c> alike, because no operation that
+    /// writes the worktree can produce bytes the clean filter maps back onto that blob. Gating on it refuses
+    /// every review of that repository forever.
+    /// <para>
+    /// The discriminator is the blob identity of the RAW bytes: <c>hash-object --no-filters</c> bypasses the
+    /// clean filter, so it answers "what does this file actually contain" rather than "what would git store
+    /// for it". Equal to the index blob means the file on disk is byte-for-byte the content recorded at the
+    /// PR head, whatever <c>status</c> says about it. A real edit changes those bytes and so changes that
+    /// hash — the check cannot be talked into passing content the PR does not have, which is the whole point
+    /// of the guard. Everything else (untracked, deleted, staged, renamed, unmerged) stays a leftover, and any
+    /// probe that fails to run leaves the path a leftover too.
+    /// </para>
+    /// </remarks>
+    private async Task<(IReadOnlyList<string> Leftovers, IReadOnlyList<string> Normalized)>
+        PartitionLeftoversAsync(
+            IReadOnlyList<(string Code, string Path)> entries,
+            string targetDir,
+            CancellationToken cancellationToken)
+    {
+        var leftovers = new List<string>();
+        var normalized = new List<string>();
+        var worthClassifying = entries.Count <= MaxClassifiedLeftovers;
+
+        foreach (var (code, path) in entries)
+        {
+            if (worthClassifying
+                && string.Equals(code, " M", StringComparison.Ordinal)
+                && await HoldsRecordedBytesAsync(targetDir, path, cancellationToken).ConfigureAwait(false))
+            {
+                normalized.Add(path);
+                continue;
+            }
+
+            leftovers.Add($"{code} {path}");
+        }
+
+        return (leftovers, normalized);
+    }
+
+    /// <summary>
+    /// True when <paramref name="path"/>'s bytes on disk are exactly the blob the index records for it, so the
+    /// only thing making it report modified is a filter git applies during comparison.
+    /// </summary>
+    private async Task<bool> HoldsRecordedBytesAsync(
+        string targetDir, string path, CancellationToken cancellationToken)
+    {
+        var recorded = await _git
+            .RunAsync(["-C", targetDir, "rev-parse", $":{path}"], targetDir, cancellationToken)
+            .ConfigureAwait(false);
+        if (!recorded.Succeeded)
+        {
+            return false;
+        }
+
+        var onDisk = await _git
+            .RunAsync(
+                ["-C", targetDir, "hash-object", "--no-filters", "--", path],
+                targetDir,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (!onDisk.Succeeded)
+        {
+            return false;
+        }
+
+        var recordedBlob = recorded.Stdout?.Trim() ?? string.Empty;
+        return recordedBlob.Length > 0
+            && string.Equals(recordedBlob, onDisk.Stdout?.Trim() ?? string.Empty, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Parses <c>status --porcelain -z</c> into (two-letter code, path) pairs.
+    /// </summary>
+    /// <remarks>
+    /// The NUL-delimited form is used rather than the newline one because porcelain v1 QUOTES any path with a
+    /// space, quote or non-ASCII byte in it, and a path that arrives quoted would never match the index entry
+    /// the classifier below looks up. Rename and copy records carry a second path field, which is consumed
+    /// with the record it belongs to so it is not mistaken for an entry of its own.
+    /// </remarks>
+    internal static IReadOnlyList<(string Code, string Path)> ParsePorcelainZ(string stdout)
+    {
+        var entries = new List<(string, string)>();
+        var fields = stdout.Split('\0');
+        for (var i = 0; i < fields.Length; i++)
+        {
+            // "XY path" — anything shorter is the empty tail after the final delimiter.
+            if (fields[i].Length < 4)
+            {
+                continue;
+            }
+
+            var code = fields[i][..2];
+            entries.Add((code, fields[i][3..]));
+            if (code[0] is 'R' or 'C')
+            {
+                i++;
+            }
+        }
+
+        return entries;
+    }
 
     private async Task ClearScratchAsync(string scratchRoot, ReviewRun run, CancellationToken cancellationToken)
     {

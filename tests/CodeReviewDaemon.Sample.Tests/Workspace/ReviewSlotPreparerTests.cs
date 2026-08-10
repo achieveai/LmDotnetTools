@@ -789,7 +789,14 @@ public sealed class ReviewSlotPreparerTests : IDisposable
                 new SandboxCommandResult(0, run.HeadSha + "\n", string.Empty))
             .OnArgvContains(
                 $"-C {slot.TargetPath} status --porcelain",
-                new SandboxCommandResult(0, " M src/Leftover.cs\n", string.Empty));
+                new SandboxCommandResult(0, " M src/Leftover.cs\0", string.Empty))
+            // A genuine edit: the bytes on disk are not the blob the index records for the path.
+            .OnArgvContains(
+                "rev-parse :src/Leftover.cs",
+                new SandboxCommandResult(0, "1111111111111111111111111111111111111111\n", string.Empty))
+            .OnArgvContains(
+                "hash-object --no-filters -- src/Leftover.cs",
+                new SandboxCommandResult(0, "2222222222222222222222222222222222222222\n", string.Empty));
         var preparer = new ReviewSlotPreparer(
             new GitRunner(runner), SeedGitmodules(slot.SharedStorePath), "github", NullLoggerFactory.Instance);
 
@@ -801,8 +808,158 @@ public sealed class ReviewSlotPreparerTests : IDisposable
             .Which.Message.Should().Contain("src/Leftover.cs");
         runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().Contain(
             command => command.EndsWith(
-                $"-C {slot.TargetPath} status --porcelain --ignore-submodules=all", StringComparison.Ordinal),
+                $"-C {slot.TargetPath} status --porcelain -z --ignore-submodules=all", StringComparison.Ordinal),
             "a moved gitlink is not leftover content, and gating on it would fail every submodule-bearing repo");
+    }
+
+    /// <summary>
+    /// The production failure this check exists to survive. WeveNova declares
+    /// <c>sources/dev/WeveNova/services/app/ServiceConfig.ini</c> as <c>text eol=crlf</c> while the blob
+    /// committed for it already holds CRLF, so git's clean filter maps the worktree copy to LF, compares it
+    /// against a CRLF blob, and reports all 91 of 91 lines modified on a checkout nothing has touched. No
+    /// <c>checkout --force</c>, <c>reset --hard</c> or <c>clean -ffdx</c> can settle it — measured — so
+    /// gating on <c>status</c> alone refused 100% of that repository's reviews, permanently.
+    /// </summary>
+    [Fact]
+    public async Task PrepareAsync_SharedStore_AcceptsAPathWhoseBytesAreAlreadyTheBlobRecordedAtTheHead()
+    {
+        const string NormalizedPath = "sources/dev/WeveNova/services/app/ServiceConfig.ini";
+        const string RecordedBlob = "4c38366b709654d4e876cb887e5ace15dd67bbeb";
+        var slot = CreateSharedSlot();
+        var run = CreateRun();
+        var runner = new FakeSandboxCommandRunner()
+            .OnArgvContains(
+                $"rev-parse --verify origin/{Branch}",
+                new SandboxCommandResult(1, string.Empty, "unknown revision"))
+            .OnArgvContains(
+                $"-C {slot.TargetPath} rev-parse HEAD",
+                new SandboxCommandResult(0, run.HeadSha + "\n", string.Empty))
+            .OnArgvContains(
+                $"-C {slot.TargetPath} status --porcelain",
+                new SandboxCommandResult(0, $" M {NormalizedPath}\0", string.Empty))
+            .OnArgvContains(
+                $"rev-parse :{NormalizedPath}",
+                new SandboxCommandResult(0, RecordedBlob + "\n", string.Empty))
+            .OnArgvContains(
+                $"hash-object --no-filters -- {NormalizedPath}",
+                new SandboxCommandResult(0, RecordedBlob + "\n", string.Empty));
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.SharedStorePath), "github", NullLoggerFactory.Instance);
+
+        var prepared = await preparer.PrepareAsync(
+            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
+            CancellationToken.None);
+
+        prepared.TargetDir.Should().Be(slot.TargetPath);
+    }
+
+    /// <summary>
+    /// The tolerance is keyed on blob identity, not on the status code, so it cannot be widened into "ignore
+    /// modified files". An untracked leftover is contamination whatever bytes it happens to hold, and its
+    /// blob is never even consulted.
+    /// </summary>
+    [Fact]
+    public async Task PrepareAsync_SharedStore_RefusesAnUntrackedLeftoverWithoutConsultingBlobIdentity()
+    {
+        var slot = CreateSharedSlot();
+        var run = CreateRun();
+        var runner = new FakeSandboxCommandRunner()
+            .OnArgvContains(
+                $"rev-parse --verify origin/{Branch}",
+                new SandboxCommandResult(1, string.Empty, "unknown revision"))
+            .OnArgvContains(
+                $"-C {slot.TargetPath} rev-parse HEAD",
+                new SandboxCommandResult(0, run.HeadSha + "\n", string.Empty))
+            .OnArgvContains(
+                $"-C {slot.TargetPath} status --porcelain",
+                new SandboxCommandResult(0, "?? artifacts/agent-scratch.log\0", string.Empty));
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.SharedStorePath), "github", NullLoggerFactory.Instance);
+
+        var act = async () => await preparer.PrepareAsync(
+            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
+            CancellationToken.None);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should().Contain("artifacts/agent-scratch.log");
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
+            // `rev-parse :<path>` is the FIRST of the two probes, so asserting only on `hash-object` would
+            // still pass while an untracked path was being classified — the index lookup fails for it and
+            // short-circuits before the second probe is ever reached.
+            command => command.Contains("hash-object", StringComparison.Ordinal)
+                || command.Contains("rev-parse :", StringComparison.Ordinal),
+            "blob identity is only ever asked about a tracked modification");
+    }
+
+    /// <summary>
+    /// The normalization check fails CLOSED. A probe that cannot run leaves the path's identity unknown, and
+    /// an unknown path stays a leftover — the opposite of the head probe's fail-open, because here the
+    /// unanswered question is "is this the PR's content", not "which commit is this".
+    /// </summary>
+    [Fact]
+    public async Task PrepareAsync_SharedStore_RefusesADirtyPathWhenTheBlobProbeCannotRun()
+    {
+        var slot = CreateSharedSlot();
+        var run = CreateRun();
+        var runner = new FakeSandboxCommandRunner()
+            .OnArgvContains(
+                $"rev-parse --verify origin/{Branch}",
+                new SandboxCommandResult(1, string.Empty, "unknown revision"))
+            .OnArgvContains(
+                $"-C {slot.TargetPath} rev-parse HEAD",
+                new SandboxCommandResult(0, run.HeadSha + "\n", string.Empty))
+            .OnArgvContains(
+                $"-C {slot.TargetPath} status --porcelain",
+                new SandboxCommandResult(0, " M src/Unreadable.cs\0", string.Empty))
+            .OnArgvContains(
+                "rev-parse :src/Unreadable.cs",
+                new SandboxCommandResult(128, string.Empty, "fatal: path does not exist in the index"));
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.SharedStorePath), "github", NullLoggerFactory.Instance);
+
+        var act = async () => await preparer.PrepareAsync(
+            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
+            CancellationToken.None);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should().Contain("src/Unreadable.cs");
+    }
+
+    /// <summary>
+    /// Porcelain v1 QUOTES any path containing a space, a quote or a non-ASCII byte, and a quoted path would
+    /// never match the index entry the blob lookup asks about — so the NUL-delimited form is parsed instead.
+    /// </summary>
+    [Fact]
+    public void ParsePorcelainZ_ReadsPathsThatTheNewlineFormWouldHaveQuoted()
+    {
+        var entries = ReviewSlotPreparer.ParsePorcelainZ(" M src/My Documents/Ünïcode.cs\0?? build/out.log\0");
+
+        entries.Should().HaveCount(2);
+        entries[0].Should().Be((" M", "src/My Documents/Ünïcode.cs"));
+        entries[1].Should().Be(("??", "build/out.log"));
+    }
+
+    /// <summary>
+    /// A rename or copy record carries a SECOND path field. Read as an entry of its own it would be a path
+    /// with no status code, and the two-character slice would eat its first characters — so it is consumed
+    /// with the record it belongs to.
+    /// </summary>
+    [Fact]
+    public void ParsePorcelainZ_ConsumesTheSecondPathFieldOfARenameWithItsRecord()
+    {
+        var entries = ReviewSlotPreparer.ParsePorcelainZ("R  src/New.cs\0src/Old.cs\0 M src/Edited.cs\0");
+
+        entries.Should().HaveCount(2);
+        entries[0].Should().Be(("R ", "src/New.cs"));
+        entries[1].Should().Be((" M", "src/Edited.cs"));
+    }
+
+    /// <summary>A clean tree produces no entries — the empty tail after the final delimiter is not one.</summary>
+    [Fact]
+    public void ParsePorcelainZ_ReadsACleanTreeAsNoEntries()
+    {
+        ReviewSlotPreparer.ParsePorcelainZ(string.Empty).Should().BeEmpty();
+        ReviewSlotPreparer.ParsePorcelainZ("\0").Should().BeEmpty();
     }
 
     /// <summary>

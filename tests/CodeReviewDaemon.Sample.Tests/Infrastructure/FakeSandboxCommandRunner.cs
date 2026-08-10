@@ -198,6 +198,38 @@ internal sealed class FakeSandboxCommandRunner : ISandboxCommandRunner
             return true;
         }
 
+        // The blob-identity pair behind the reviewed tree's normalization check. Both print a sha on
+        // success, so an empty success would silently answer "these bytes are not the recorded blob" —
+        // the exact shape #104 warns about, and the one that decides whether a review is refused.
+        if (Contains(argv, "hash-object") || IsIndexBlobLookup(argv))
+        {
+            result = new SandboxCommandResult(
+                128,
+                string.Empty,
+                "fatal: this fake was not told what blob to report. Script the `hash-object` / `rev-parse "
+                    + ":<path>` pair if this test means to reach the normalization check.");
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>True for <c>rev-parse :&lt;path&gt;</c>, which reads the blob the index records for a path.</summary>
+    private static bool IsIndexBlobLookup(IReadOnlyList<string> argv)
+    {
+        if (!Contains(argv, "rev-parse"))
+        {
+            return false;
+        }
+
+        for (var i = 0; i < argv.Count; i++)
+        {
+            if (argv[i].Length > 1 && argv[i][0] == ':')
+            {
+                return true;
+            }
+        }
+
         return false;
     }
 
