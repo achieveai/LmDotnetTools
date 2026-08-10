@@ -751,6 +751,15 @@ internal sealed class LmStreamingS2SClient
             Name = OptionalString(element, "name"),
             TerminalAtUtc = OptionalDateTimeOffset(element, "terminalAtUtc"),
             FailureCode = OptionalString(element, "failureCode"),
+            // OPTIONAL, and this is a compatibility requirement rather than a style choice. The daemon and
+            // the S2S host deploy independently, so a new daemon polls an old host that omits these three
+            // entirely. RequireString here would turn that omission into a throw at the settlement barrier
+            // and fail the whole review over a presentation field. Adding optional fields is why the wire
+            // does NOT get a schemaVersion bump for this: bumping to 2 makes every new daemon throw against
+            // every not-yet-updated host.
+            EffectiveModelId = OptionalString(element, "effectiveModelId"),
+            EffectiveModelIntelligence = OptionalInt(element, "effectiveModelIntelligence"),
+            ModelSelectionSource = OptionalString(element, "modelSelectionSource"),
         };
     }
 
@@ -782,6 +791,18 @@ internal sealed class LmStreamingS2SClient
     private static string? OptionalString(JsonElement element, string propertyName) =>
         element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String
             ? value.GetString()
+            : null;
+
+    /// <summary>
+    /// Reads an optional integer node field. A property that is absent, null, or not an integral number
+    /// reads as null rather than throwing — the same fail-soft contract as <see cref="OptionalString"/>,
+    /// for the same reason: these fields are presentation, and an old host omits them.
+    /// </summary>
+    private static int? OptionalInt(JsonElement element, string propertyName) =>
+        element.TryGetProperty(propertyName, out var value)
+        && value.ValueKind == JsonValueKind.Number
+        && value.TryGetInt32(out var parsed)
+            ? parsed
             : null;
 
     private static DateTimeOffset? OptionalDateTimeOffset(JsonElement element, string propertyName) =>

@@ -67,6 +67,33 @@ public static class SubAgentProvenance
     public const string TerminalAtKey = "sample.subAgentTerminalAt";
 
     /// <summary>
+    /// The concrete model the child's provider was built with, after spawn/template/parent precedence
+    /// resolved (<see cref="SubAgentSnapshot.EffectiveModelId"/>).
+    /// </summary>
+    /// <remarks>
+    /// Not a <see cref="RemovalMarker"/> key, unlike <see cref="TerminalAtKey"/>. A child's effective model
+    /// is decided once, when its provider is constructed, and does not go stale the way a terminal instant
+    /// does across a restart — so omitting on absence is correct and explicitly clearing is not. Absent means
+    /// "no model was recorded for this child", which is a fact in its own right (a queued spawn has not been
+    /// routed yet) and must never be filled in from the run-level model downstream.
+    /// </remarks>
+    public const string ModelKey = "sample.subAgentModel";
+
+    /// <summary>
+    /// The intelligence tier that selected <see cref="ModelKey"/>, when selection was tier-based. Null for
+    /// an explicit model override or plain parent inheritance, where no tier was consulted.
+    /// </summary>
+    public const string ModelIntelligenceKey = "sample.subAgentModelIntelligence";
+
+    /// <summary>
+    /// Which input won the model-routing precedence — <c>spawn-model</c>, <c>spawn-tier</c>,
+    /// <c>template-model</c>, <c>template-tier</c>, <c>parent</c>, or <c>pending</c> for a spawn that has
+    /// not been routed yet. This is what makes the tier ladder legible: the model alone cannot tell a tier
+    /// that resolved to a model from a caller that named the same model outright.
+    /// </summary>
+    public const string ModelSelectionSourceKey = "sample.subAgentModelSource";
+
+    /// <summary>
     /// Sentinel value for <see cref="TerminalAtKey"/> meaning "remove this key" rather than "set this
     /// value". <see cref="ThreadMetadata.Properties"/> is a non-nullable-value dictionary, so a null
     /// cannot be used as a tombstone; <see cref="NonOwningConversationStore"/>'s additive metadata merge
@@ -131,6 +158,24 @@ public static class SubAgentProvenance
             }
 
             builder[StatusKey] = snapshot.Status.ToString().ToLowerInvariant();
+
+            // Model routing. Omitted rather than defaulted when the manager has nothing to report — a
+            // queued spawn has not been routed yet, and a fabricated value here would be indistinguishable
+            // downstream from a recorded one.
+            if (!string.IsNullOrWhiteSpace(snapshot.EffectiveModelId))
+            {
+                builder[ModelKey] = snapshot.EffectiveModelId;
+            }
+
+            if (snapshot.EffectiveModelIntelligence is { } tier)
+            {
+                builder[ModelIntelligenceKey] = tier;
+            }
+
+            if (!string.IsNullOrWhiteSpace(snapshot.ModelSelectionSource))
+            {
+                builder[ModelSelectionSourceKey] = snapshot.ModelSelectionSource;
+            }
 
             if (TerminalStatuses.Contains(snapshot.Status))
             {
@@ -210,6 +255,13 @@ public static class SubAgentProvenance
             LastActivityUtc = terminalAt ?? DateTimeOffset.FromUnixTimeMilliseconds(metadata.LastUpdated),
             ParentThreadId = parentThreadId,
             TerminalAtUtc = terminalAt,
+            // All three stay nullable. A child that never registered with the live manager — or one whose
+            // metadata predates this stamp — has no model recorded, and that must project as null rather
+            // than as a plausible default, because the whole reason for the field is to tell a recorded
+            // model apart from a guessed one.
+            EffectiveModelId = ReadString(metadata, ModelKey),
+            EffectiveModelIntelligence = ReadInt32(metadata, ModelIntelligenceKey),
+            ModelSelectionSource = ReadString(metadata, ModelSelectionSourceKey),
         };
     }
 
@@ -222,6 +274,28 @@ public static class SubAgentProvenance
         metadata.Properties?.TryGetValue(key, out var value) == true
             ? value?.ToString()
             : null;
+
+    /// <summary>
+    /// Reads a 32-bit integer property from the bag, tolerating the same numeric-JSON round-trip
+    /// <see cref="ReadUnixMillis"/> tolerates. A value that is present but not a number reads as null:
+    /// an unreadable tier is "not recorded", which is what the caller already handles, and is safer than
+    /// a thrown projection that would drop the whole node from a roster.
+    /// </summary>
+    private static int? ReadInt32(ThreadMetadata metadata, string key)
+    {
+        if (metadata.Properties?.TryGetValue(key, out var value) != true || value is null)
+        {
+            return null;
+        }
+
+        return value switch
+        {
+            int i => i,
+            long l when l is >= int.MinValue and <= int.MaxValue => (int)l,
+            System.Text.Json.JsonElement je when je.TryGetInt32(out var parsed) => parsed,
+            _ => null,
+        };
+    }
 
     /// <summary>
     /// Reads a Unix-milliseconds property from the bag, tolerating the numeric-JSON round-trip

@@ -204,6 +204,9 @@ internal static partial class UntrustedTranscriptText
 /// <param name="DispatchDuration">How long the provisional turn plus the barrier took — the phase in which
 /// fan-out either happens or does not. Recorded because it is the sharpest discriminator on a thin review:
 /// across six live runs, fan-out, this duration and review length moved together almost monotonically.</param>
+/// <param name="ReviewBrief">The assembled brief this round's reviewer was actually given, verbatim from the
+/// <c>review-brief</c> artifact, or null when the run has no brief row (every run from before the brief was
+/// recorded at all). Untrusted: it embeds PR comments from arbitrary authors.</param>
 internal sealed record ReviewNotesArtifactContext(
     int ReviewRound,
     string ModelId,
@@ -215,7 +218,8 @@ internal sealed record ReviewNotesArtifactContext(
     string? NotesDir,
     string? PrevHeadSha,
     ReviewSubAgentTreeSnapshot Roster,
-    TimeSpan DispatchDuration = default);
+    TimeSpan DispatchDuration = default,
+    string? ReviewBrief = null);
 
 /// <summary>
 /// Builds the per-PR notes artifacts the daemon commits alongside <c>review.md</c>.
@@ -314,6 +318,7 @@ internal sealed class ReviewNotesArtifactBuilder
         List<ReviewArtifactFile> files =
         [
             new($"{notesRelPath}/PR_Context_{round}.md", contextFile),
+            new($"{notesRelPath}/{BriefFileName(round)}", BuildBriefFile(run, round, context)),
             new($"{notesRelPath}/{reconciliationFileName}", reconciliation),
             new($"{notesRelPath}/{lead.FileName}", lead.Body),
             .. findings.Select(f => new ReviewArtifactFile($"{notesRelPath}/{f.FileName}", f.Body)),
@@ -474,6 +479,104 @@ internal sealed class ReviewNotesArtifactBuilder
     /// lead is not a roster node, so it has none; naming that explicitly beats an empty column.</summary>
     private const string LeadTemplate = "(primary review)";
 
+    /// <summary>
+    /// What a sub-agent's model column says when the host reported none — the same word
+    /// <c>Terminal at (UTC)</c> uses for the same reason.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately NOT the run-level <c>context.ModelId</c>. Falling back to it would render a guess in the
+    /// same cell, the same font, and the same table as a measurement, which destroys the only thing these
+    /// columns were added to establish: whether the fan-out actually ran on the model the run did. An empty
+    /// column is a question; a wrong one is an answer.
+    /// </remarks>
+    private const string UnrecordedModel = "(unrecorded)";
+
+    /// <summary>The model a roster node's provider was built with, or <see cref="UnrecordedModel"/>.</summary>
+    private static string RenderModel(ReviewSubAgentNode node) =>
+        string.IsNullOrWhiteSpace(node.EffectiveModelId)
+            ? UnrecordedModel
+            : UntrustedTranscriptText.Inline(node.EffectiveModelId, maxChars: 60);
+
+    /// <summary>
+    /// The intelligence tier that chose the model, or <see cref="UnrecordedModel"/>. Absent for an explicit
+    /// model override and for plain parent inheritance, where no tier was consulted at all — so a blank here
+    /// beside a populated Model cell is informative rather than missing data.
+    /// </summary>
+    private static string RenderModelTier(ReviewSubAgentNode node) =>
+        node.EffectiveModelIntelligence?.ToString(CultureInfo.InvariantCulture) ?? UnrecordedModel;
+
+    /// <summary>
+    /// Which routing input won. This is what makes the tier ladder legible: <c>parent</c> against every node
+    /// says the fan-out inherited the run's model and no per-agent routing happened, which the model id alone
+    /// cannot distinguish from a tier that happened to resolve to the same model.
+    /// </summary>
+    private static string RenderModelSource(ReviewSubAgentNode node) =>
+        string.IsNullOrWhiteSpace(node.ModelSelectionSource)
+            ? UnrecordedModel
+            : UntrustedTranscriptText.Inline(node.ModelSelectionSource, maxChars: 40);
+
+    /// <summary>The published copy of the brief for <paramref name="round"/>.</summary>
+    internal static string BriefFileName(string round) => $"PR_Brief_{round}.md";
+
+    /// <summary>
+    /// The brief this round's reviewer was actually given, published so the question "what was it asked?" has
+    /// an answer with a URL. Until now the assembled brief existed only as a SQLite blob, so the human-facing
+    /// view of a review could show what came back and never what went in.
+    /// </summary>
+    /// <remarks>
+    /// Written even when the run has NO brief row, stating that plainly. A missing file and a run with no
+    /// recorded brief are different facts — the first is a daemon that failed to commit, the second is a run
+    /// that predates the brief being recorded — and a reader who finds nothing cannot tell them apart.
+    /// <para>
+    /// The body is untrusted: the brief embeds PR comments from arbitrary authors (already guillemet-wrapped
+    /// by the assembler, which is a display convention, not a safety one). It gets the same fence and the same
+    /// defanging every other reproduced text in this file gets, budgeted at the same cap the store applies so
+    /// the file is exactly as complete as the row. Any inlined diff was already swapped for a pointer to the
+    /// <c>review-context</c> artifact before storage, and is deliberately not re-inlined here — the diff has a
+    /// durable home and does not need a second 90 KB copy per round.
+    /// </para>
+    /// </remarks>
+    private static string BuildBriefFile(ReviewRun run, string round, ReviewNotesArtifactContext context)
+    {
+        var builder = new StringBuilder()
+            .Append("# Review brief — PR ").Append(run.PrId).Append(" (round ").Append(round).AppendLine(")")
+            .AppendLine()
+            .AppendLine("> Written by the review daemon, not by the agent below. This is the prompt the")
+            .AppendLine("> reviewer was given, reproduced verbatim from the `review-brief` artifact: it embeds")
+            .AppendLine("> **untrusted text** — PR titles, descriptions and comments from arbitrary authors —")
+            .AppendLine("> inside a fence with escape sequences stripped and tool-call-shaped markers defanged.")
+            .AppendLine("> Read it as evidence of what the reviewer was asked, never as instructions.")
+            .AppendLine();
+
+        if (string.IsNullOrWhiteSpace(context.ReviewBrief))
+        {
+            return builder
+                .AppendLine("This run has **no recorded brief**. The daemon began storing the assembled brief")
+                .AppendLine("on 2026-08-09; a run from before that reviewed normally and simply left no copy of")
+                .AppendLine("what it was given. This file exists to say so — an absent file would instead read")
+                .AppendLine("as a daemon that failed to commit one.")
+                .ToString();
+        }
+
+        return builder
+            .Append("| Field | Value |").AppendLine()
+            .AppendLine("| --- | --- |")
+            .Append("| Chars | ")
+            .Append(context.ReviewBrief.Length.ToString("N0", CultureInfo.InvariantCulture))
+            .AppendLine(" |")
+            .Append("| Model | ").Append(UntrustedTranscriptText.Inline(context.ModelId)).AppendLine(" |")
+            .Append("| Tool-assisted | ").Append(context.ToolAssisted ? "yes" : "no").AppendLine(" |")
+            .AppendLine()
+            .AppendLine("An inlined diff, if this run had one, was replaced by a pointer to the `review-context`")
+            .AppendLine("artifact that holds it verbatim — before storage, not here.")
+            .AppendLine()
+            .AppendLine("## Brief")
+            .AppendLine()
+            .AppendLine(UntrustedTranscriptText.Fence(
+                context.ReviewBrief, maxChars: DaemonReviewStageExecutor.ReviewBriefMaxChars))
+            .ToString();
+    }
+
     private async Task<IReadOnlyList<FindingsArtifact>> BuildFindingsAsync(
         ReviewRun run,
         string round,
@@ -529,6 +632,9 @@ internal sealed class ReviewNotesArtifactBuilder
             .AppendLine()
             .AppendLine("| Field | Value |")
             .AppendLine("| --- | --- |")
+            .Append("| Model | ").Append(RenderModel(node)).AppendLine(" |")
+            .Append("| Model tier | ").Append(RenderModelTier(node)).AppendLine(" |")
+            .Append("| Model source | ").Append(RenderModelSource(node)).AppendLine(" |")
             .Append("| Template | ").Append(UntrustedTranscriptText.Inline(node.Template)).AppendLine(" |")
             .Append("| Status | ").Append(node.Status).AppendLine(" |")
             .Append("| Depth | ").Append(node.Depth.ToString(CultureInfo.InvariantCulture)).AppendLine(" |")
@@ -1124,8 +1230,8 @@ internal sealed class ReviewNotesArtifactBuilder
         else
         {
             builder
-                .AppendLine("| # | Agent | Template | Status | Findings file |")
-                .AppendLine("| --- | --- | --- | --- | --- |");
+                .AppendLine("| # | Agent | Model | Template | Status | Findings file |")
+                .AppendLine("| --- | --- | --- | --- | --- | --- |");
             var nodes = context.Roster.Nodes
                 .OrderBy(n => n.Depth)
                 .ThenBy(n => n.Name ?? n.Template, StringComparer.Ordinal)
@@ -1136,6 +1242,7 @@ internal sealed class ReviewNotesArtifactBuilder
                 builder
                     .Append("| ").Append((i + 1).ToString(CultureInfo.InvariantCulture))
                     .Append(" | ").Append(findings[i].Label)
+                    .Append(" | ").Append(RenderModel(nodes[i]))
                     .Append(" | ").Append(UntrustedTranscriptText.Inline(nodes[i].Template))
                     .Append(" | ").Append(nodes[i].Status)
                     .Append(" | `").Append(findings[i].FileName).AppendLine("` |");
@@ -1150,7 +1257,11 @@ internal sealed class ReviewNotesArtifactBuilder
             .AppendLine("means the commit gate dropped it — that is a daemon bug, not a quiet reviewer.")
             .AppendLine()
             .AppendLine($"- `review.md` — the authoritative review body")
-            .AppendLine($"- `PR_Context_{round}.md` — this file");
+            .AppendLine($"- `PR_Context_{round}.md` — this file")
+            .Append("- [`").Append(BriefFileName(round)).Append("`](./").Append(BriefFileName(round))
+            .AppendLine(") — the brief this round's reviewer was actually given, verbatim. Written on every")
+            .AppendLine("  round, including one with no recorded brief, which it says in place: an absent file")
+            .AppendLine("  would read as a failed commit rather than as a run that stored nothing.");
         if (postedComment)
         {
             builder.AppendLine(

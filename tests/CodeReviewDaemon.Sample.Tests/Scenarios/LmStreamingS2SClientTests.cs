@@ -387,6 +387,79 @@ public sealed class LmStreamingS2SClientTests
     }
 
     [Fact]
+    public async Task GetSubAgentTreeAsync_ReadsTheModelRoutingFieldsWhenTheHostReportsThem()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "subagents",
+                "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"threadId\":\"thread-a1\","
+                    + "\"parentThreadId\":\"thread-root\",\"depth\":1,\"template\":\"reviewer\","
+                    + "\"status\":\"completed\",\"effectiveModelId\":\"gpt-5.6-sol\","
+                    + "\"effectiveModelIntelligence\":3,\"modelSelectionSource\":\"template-tier\"}]}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var snapshot = await client.GetSubAgentTreeAsync("thread-root", CancellationToken.None);
+
+        var node = snapshot.Nodes.Should().ContainSingle().Subject;
+        node.EffectiveModelId.Should().Be("gpt-5.6-sol");
+        node.EffectiveModelIntelligence.Should().Be(3);
+        node.ModelSelectionSource.Should().Be("template-tier");
+    }
+
+    [Fact]
+    public async Task GetSubAgentTreeAsync_ParsesANodeFromAHostThatPredatesTheModelFields()
+    {
+        // The compatibility case, and the reason those three are read with OptionalString/OptionalInt rather
+        // than the Require* helpers beside them. The daemon and the S2S host deploy independently, so a new
+        // daemon polls an old host that omits all three. Reading them as required would turn that omission
+        // into a throw at the settlement barrier and fail the whole review over presentation fields — and
+        // bumping schemaVersion instead would fail EVERY review against EVERY not-yet-updated host.
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "subagents",
+                "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"threadId\":\"thread-a1\","
+                    + "\"parentThreadId\":\"thread-root\",\"depth\":1,\"template\":\"reviewer\","
+                    + "\"status\":\"completed\"}]}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var snapshot = await client.GetSubAgentTreeAsync("thread-root", CancellationToken.None);
+
+        var node = snapshot.Nodes.Should().ContainSingle().Subject;
+        node.AgentId.Should().Be("a1", "the node still parses in full — nothing else degrades");
+        node.Status.Should().Be(ReviewSubAgentStatus.Completed);
+        node.EffectiveModelId.Should().BeNull("absent is not a model, and must not become one downstream");
+        node.EffectiveModelIntelligence.Should().BeNull();
+        node.ModelSelectionSource.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetSubAgentTreeAsync_TreatsAnUnreadableModelTierAsAbsentRatherThanFailingTheNode()
+    {
+        // A tier that arrives as a string (or anything non-integral) is a host that changed its mind about
+        // the shape. Losing the roster over it would cost the review; losing the tier costs a table cell.
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "subagents",
+                "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"threadId\":\"thread-a1\","
+                    + "\"parentThreadId\":\"thread-root\",\"depth\":1,\"template\":\"reviewer\","
+                    + "\"status\":\"completed\",\"effectiveModelId\":\"gpt-5.6-luna\","
+                    + "\"effectiveModelIntelligence\":\"three\"}]}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var snapshot = await client.GetSubAgentTreeAsync("thread-root", CancellationToken.None);
+
+        var node = snapshot.Nodes.Should().ContainSingle().Subject;
+        node.EffectiveModelId.Should().Be("gpt-5.6-luna", "the readable half is still evidence");
+        node.EffectiveModelIntelligence.Should().BeNull();
+    }
+
+    [Fact]
     public async Task GetSubAgentTreeAsync_FailsClosed_OnTheOldFlatPreVersionedArrayShape()
     {
         // The non-recursive (pre-Task-2) endpoint returns a bare SubAgentSummary[] with no envelope at

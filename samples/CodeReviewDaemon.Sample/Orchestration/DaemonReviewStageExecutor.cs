@@ -117,8 +117,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// truncates with the marker rather than silently. Once <see cref="ChangedPathsMaxChars"/> bounds the
     /// listing the tail collapses to roughly 20 KB and this becomes ordinary headroom again.
     /// </para>
+    /// <para>
+    /// Also the budget <see cref="ReviewNotesArtifactBuilder"/> fences the published <c>PR_Brief_NN.md</c>
+    /// at, so the file a reader opens is exactly as complete as the row the daemon kept. Internal for that
+    /// reason: a second constant would let the file quietly become a shorter thing than the record.
+    /// </para>
     /// </summary>
-    private const int ReviewBriefMaxChars = 64 * 1024;
+    internal const int ReviewBriefMaxChars = 64 * 1024;
 
     /// <summary>
     /// Cap on the changed-path listing reproduced in the reviewer's prompt. Unlike
@@ -4591,7 +4596,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             NotesDir: notesDir,
             PrevHeadSha: prevHeadSha,
             Roster: settledRoster,
-            DispatchDuration: DateTimeOffset.UtcNow - dispatchStartedUtc);
+            DispatchDuration: DateTimeOffset.UtcNow - dispatchStartedUtc,
+            // The LATEST brief row, not "the" brief row: PersistReviewBriefArtifact appends whenever the
+            // assembled text differs, and it routinely does across a re-entered stage because the brief
+            // embeds a sibling-repo section that churns from reviews of OTHER PRs. Read here, at the same
+            // moment the rest of this context is stashed, so the published brief is the one THIS attempt was
+            // given — the stash is last-attempt-wins for exactly that reason.
+            ReviewBrief: _store.TryGetLatestArtifact(run.Id, ReviewBriefArtifactKind)?.Payload);
         // 3. Synthesis: same agent, same thread, children's results now all delivered. THIS is the review, and
         //    the only turn carrying the posting contract. Arm it first: a restart mid-synthesis then rejoins
         //    the accepted input rather than queueing a second synthesis on the same conversation, and a send

@@ -38,6 +38,20 @@ internal sealed record ReviewSubAgentNode
     public required string Template { get; init; }
     public DateTimeOffset? TerminalAtUtc { get; init; }
     public string? FailureCode { get; init; }
+
+    /// <summary>
+    /// The concrete model this sub-agent's provider was built with, or null when the host did not report
+    /// one — either because it predates the field or because the child was never routed. Null is a fact and
+    /// must be rendered as such; it is NOT an invitation to substitute the run-level model, which would
+    /// present a guess and a measurement identically.
+    /// </summary>
+    public string? EffectiveModelId { get; init; }
+
+    /// <summary>The intelligence tier that selected <see cref="EffectiveModelId"/>, when tier-based.</summary>
+    public int? EffectiveModelIntelligence { get; init; }
+
+    /// <summary>Which routing input won — spawn-model, spawn-tier, template-model, template-tier, parent.</summary>
+    public string? ModelSelectionSource { get; init; }
 }
 
 /// <summary>
