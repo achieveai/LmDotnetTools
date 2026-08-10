@@ -3747,6 +3747,26 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             "Run {RunId}: review input {Chars} chars (~{Tokens} tokens est), tool-assisted={ToolAssisted}, model={Model}.",
             run.Id, reviewInput.Length, reviewInput.Length / 4, toolContext is not null, run.ModelId ?? "(default)");
 
+        // Provenance, recorded HERE — the moment the review is dispatched — and deliberately not at creation.
+        // prompt_template_hash and model_provider have existed since v1 of the schema and neither has ever been
+        // written: 283 of 283 rows in the live store carry NULL for both, so no prompt change the daemon has
+        // ever shipped can be attributed to the reviews it changed. Creation cannot supply them. The INSERT
+        // runs in the POLLER at discovery, before any prompt is rendered or provider chosen, and on an identity
+        // match CreateOrGetReviewRun returns the existing row untouched — so a run discovered under one prompt
+        // and dispatched under another after a deploy (the ordinary fate of everything sitting in RetryPending)
+        // would be filed under a prompt it never ran. The dispatch is the event worth recording, and this is it.
+        //
+        // model_provider rather than model_id, and both are not the same claim. On the S2S path — the only one
+        // Program.cs will start — S2SReviewAgentLoopFactory does not forward modelId at all; provision carries
+        // {WorkspaceId, ProviderId, ModeId} and the model is whatever LmStreamingProviderId resolves on the
+        // host. So model_id, already written at discovery from the poll target, describes an intent, while this
+        // names the thing that actually served the review. Empty off the S2S path, where nothing establishes
+        // it — and absence stays absence rather than being fabricated.
+        _store.RecordRunProvenance(
+            run.Id,
+            DaemonAgentFactory.ReviewPromptTemplateHash,
+            string.IsNullOrWhiteSpace(_options.LmStreamingProviderId) ? null : _options.LmStreamingProviderId);
+
         ReviewAgentResult result;
         // ONE absolute budget for the whole stage, resumed from the checkpoint of an interrupted lifecycle or
         // started fresh. It is computed once HERE rather than per attempt: the escalation ladder below can run

@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using AchieveAi.LmDotnetTools.LmAgentInfra;
 using AchieveAi.LmDotnetTools.LmCore.Prompts;
 using Scriban;
@@ -35,6 +37,39 @@ internal static class DaemonAgentFactory
 
     private static readonly IPromptReader Prompts = new PromptReader(
         typeof(DaemonAgentFactory).Assembly, "CodeReviewDaemon.Sample.Prompts.daemon-prompts.yaml");
+
+    /// <summary>
+    /// Identifies the prompt TEMPLATES this build reviews with — a digest over the <c>review</c> and
+    /// <c>synthesis</c> texts taken together, because a review is the pair: the provisional turn poses the
+    /// question and the synthesis turn writes and delivers the answer, so an edit to either changes what the
+    /// model was actually asked.
+    /// <para>
+    /// UNRENDERED on purpose. Hashing what a run was handed would fold in that run's PR number, shas, round
+    /// number and container paths, giving every run a value of its own — and a column that cannot group two
+    /// runs cannot attribute a prompt change to the reviews it altered, which is the only job it has. This
+    /// value is therefore constant for a build and changes exactly when <c>daemon-prompts.yaml</c> does.
+    /// </para>
+    /// <para>
+    /// Sixteen hex characters (64 bits), matching the short-digest idiom used elsewhere in the daemon. It is
+    /// a provenance label compared for equality against other rows of the same store, not a security
+    /// boundary, and a full digest buys nothing at that job.
+    /// </para>
+    /// </summary>
+    public static string ReviewPromptTemplateHash { get; } = ComputeReviewPromptTemplateHash();
+
+    private static string ComputeReviewPromptTemplateHash()
+    {
+        // Length-prefixed and unit-separated, so two templates cannot be concatenated into a third that
+        // hashes the same — the same construction BuildLifecycleIdentity uses for its own composite subject.
+        var subject = new StringBuilder();
+        foreach (var template in new[] { Prompts.GetPrompt("review").Value, Prompts.GetPrompt("synthesis").Value })
+        {
+            _ = subject.Append(template.Length).Append(':').Append(template).Append('');
+        }
+
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(subject.ToString())))
+            .ToLowerInvariant()[..16];
+    }
 
     /// <summary>
     /// Builds the review-agent profile with no run-specific workspace variables — the templated
