@@ -1772,7 +1772,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// Every other outcome keeps throwing, and the asymmetry is the entire point.
     /// <see cref="MergeBaseOutcome.DepthCeilingReached"/> is recoverable by widening a bound this code picked;
     /// <see cref="MergeBaseOutcome.DeepenFailed"/> means a fetch broke, so NOTHING was learned about the
-    /// commits; <see cref="MergeBaseOutcome.Resolved"/> means a merge base was found, which makes a diff
+    /// commits; <see cref="MergeBaseOutcome.Indeterminate"/> means a probe the search depends on was killed
+    /// or failed, which is the same "nothing was learned" arriving one step earlier;
+    /// <see cref="MergeBaseOutcome.Resolved"/> means a merge base was found, which makes a diff
     /// failure an ordinary transient git error. Converting any of those into "these commits cannot be
     /// compared" would take our own configuration limit or a network blip and hand it to a PR author as a fact
     /// about their branch — and would stop the run retrying, which is precisely what would have fixed it. A

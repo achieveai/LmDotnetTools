@@ -294,6 +294,48 @@ public sealed class DaemonReviewStageExecutorPooledTests
     public Task ContextReady_still_fails_when_the_diff_fails_and_a_deepening_fetch_broke() =>
         AssertDiffFailureStillFails(MergeBaseOutcome.DeepenFailed);
 
+    /// <summary>
+    /// The fourth, and the one the other three did not cover: a probe the merge-base search depends on was
+    /// killed or failed, so the search never established anything. Its arrival here is what closes the loop
+    /// on the preparer's three-state probes — a watchdog kill inside <c>ReviewSlotPreparer</c> reaches this
+    /// method as <see cref="MergeBaseOutcome.Indeterminate"/>, and this is the assertion that it can never
+    /// become the author-facing "re-target or rebase" sentence.
+    /// </summary>
+    [Fact]
+    public Task ContextReady_still_fails_when_the_diff_fails_and_a_merge_base_probe_never_answered() =>
+        AssertDiffFailureStillFails(MergeBaseOutcome.Indeterminate);
+
+    /// <summary>
+    /// The negative stated at the level the author reads. <see cref="AssertDiffFailureStillFails"/> proves no
+    /// artifact is written at all, which already implies this — but it implies it by an argument, and the
+    /// claim being defended is about a specific sentence, so the sentence itself is what gets asserted. If a
+    /// later change gives Indeterminate a verdict of its own, that verdict has to be checked here rather than
+    /// silently inheriting the wording that blames the branch.
+    /// </summary>
+    [Fact]
+    public async Task ContextReady_never_tells_an_author_to_rebase_when_our_own_probe_was_the_thing_that_failed()
+    {
+        using var fixture = Fixture.CreateS2S();
+        fixture.Preparer.MergeBase = MergeBaseOutcome.Indeterminate;
+        _ = fixture.DiffRunner.OnArgvContainsFirst(
+            "diff",
+            new SandboxCommandResult(
+                124, string.Empty, "git diff produced no output for 300s (idle timeout) and was killed"));
+        var run = fixture.SeedRun();
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<InvalidOperationException>();
+        var written = string.Join('\n', fixture.Store.GetArtifacts(run.Id).Select(a => a.Payload));
+        written.Should().NotContain(
+            "re-targeted or rebased",
+            "that sentence is a statement about the author's branch, and nothing about their branch was "
+                + "established — our own git command was killed");
+        written.Should().NotContain(
+            "share no common ancestor",
+            "the same claim in the wording ContextReady records; an indeterminate probe may assert neither");
+    }
+
     private static async Task AssertDiffFailureStillFails(MergeBaseOutcome outcome)
     {
         using var fixture = Fixture.CreateS2S();
