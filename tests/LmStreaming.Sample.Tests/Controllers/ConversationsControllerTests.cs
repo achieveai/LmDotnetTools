@@ -763,6 +763,92 @@ public class ConversationsControllerTests
     }
 
     [Fact]
+    public async Task Provision_PersistsTheCallerInstructions_AndTheAgentBuildReadsThemBack()
+    {
+        // The link that did not exist. The daemon's whole review methodology, output contract and
+        // sub-agent-dispatch protocol ride this one property, and for the entire life of the field it was
+        // stored at provision and read by nothing — so every S2S review ran under the bare mode prompt.
+        // The assertion deliberately goes through ReadAppendixAsync, the same call the agent build makes,
+        // because asserting only that the property was STORED is what passed all along.
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var workspaceStore = new Mock<IWorkspaceStore>();
+        workspaceStore.Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TestWorkspace("ws-1"));
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal();
+
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            workspaceStore: workspaceStore.Object,
+            providerRegistry: registry);
+
+        var result = await controller.Provision(
+            new ProvisionConversationRequest
+            {
+                WorkspaceId = "ws-1",
+                ProviderId = "test",
+                ModeId = SystemChatModes.DefaultModeId,
+                SystemPromptAppendix = "REVIEW METHODOLOGY",
+            },
+            CancellationToken.None);
+
+        var threadId = Assert
+            .IsType<ProvisionConversationResponse>(Assert.IsType<OkObjectResult>(result).Value)
+            .ThreadId;
+
+        var readBack = await SystemPromptAugmenter.ReadAppendixAsync(store, threadId, CancellationToken.None);
+        readBack.Should().Be("REVIEW METHODOLOGY");
+
+        // And it must land LAST, after the mode prompt — recency is the whole reason the augmenter appends
+        // rather than prepends, and a caller's task instructions losing to the generic mode prompt is the
+        // failure this is guarding. Asserted through ComposeAsync because that is the single call the agent
+        // factory makes; testing read and append separately would leave the join untested, and the join is
+        // what was missing.
+        var composed = await SystemPromptAugmenter.ComposeAsync(
+            store, threadId, "MODE PROMPT", CancellationToken.None);
+        composed.Should().Be("MODE PROMPT\n\nREVIEW METHODOLOGY");
+    }
+
+    [Fact]
+    public async Task Provision_WithoutCallerInstructions_LeavesTheModePromptAlone()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var workspaceStore = new Mock<IWorkspaceStore>();
+        workspaceStore.Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TestWorkspace("ws-1"));
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal();
+
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            workspaceStore: workspaceStore.Object,
+            providerRegistry: registry);
+
+        var result = await controller.Provision(
+            new ProvisionConversationRequest
+            {
+                WorkspaceId = "ws-1",
+                ProviderId = "test",
+                ModeId = SystemChatModes.DefaultModeId,
+            },
+            CancellationToken.None);
+
+        var threadId = Assert
+            .IsType<ProvisionConversationResponse>(Assert.IsType<OkObjectResult>(result).Value)
+            .ThreadId;
+
+        var readBack = await SystemPromptAugmenter.ReadAppendixAsync(store, threadId, CancellationToken.None);
+        readBack.Should().BeNull("every UI-created chat provisions without instructions");
+        var composed = await SystemPromptAugmenter.ComposeAsync(
+            store, threadId, "MODE PROMPT", CancellationToken.None);
+        composed.Should().Be("MODE PROMPT");
+    }
+
+    [Fact]
     public async Task Provision_PersistsTheSubAgentModel_AndTheAgentBuildReadsItBack()
     {
         // The round trip is the point. Asserting only that the property was STORED would pass even if

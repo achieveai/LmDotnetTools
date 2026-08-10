@@ -100,16 +100,18 @@ internal sealed class LmStreamingS2SClient
     /// Provisions a new conversation thread and returns its server-minted thread id.
     /// <paramref name="systemPromptAppendix"/> is the review profile's system prompt: provision carries no
     /// per-turn model or tool overrides, so it is the only channel by which the daemon's review methodology,
-    /// output contract and sub-agent-dispatch instructions COULD reach the hosted agent.
+    /// output contract and sub-agent-dispatch instructions reach the hosted agent. The host records it in
+    /// thread metadata and composes it into the prompt at agent build via
+    /// <c>SystemPromptAugmenter.ComposeAsync</c>, last — after the mode prompt, the workspace suffix and the
+    /// discovered CLAUDE.md/AGENTS.md block.
     /// <para>
-    /// <b>Today they do not.</b> The host stores this value in thread metadata under
-    /// <c>sample.systemPromptAppendix</c> and never reads it back:
-    /// <c>SystemPromptAugmenter.AppendCallerInstructions</c> — the only function that can apply an appendix
-    /// to a prompt — has zero production callers, and the host composes its prompt from the mode alone. So
-    /// the review runs under the generic workspace-agent prompt, which is precisely the state
-    /// <c>S2SReviewAgentLoopFactory</c>'s own ArgumentException was written to prevent. Do not restate the
-    /// old claim that "the host appends it to the mode's prompt (additive, not a replacement)" until there
-    /// is a reader; that sentence stood here while nothing read the value. Tracked as #49.
+    /// That was NOT true until #49. The value was sent, stored, and read by nothing: the only function that
+    /// could apply an appendix had zero production callers, so every S2S review ran under the bare
+    /// workspace-agent prompt — precisely the state <c>S2SReviewAgentLoopFactory</c>'s own
+    /// ArgumentException was written to prevent. Sending it here is still only half the contract; a test
+    /// that asserts this call carries the field proves delivery to the host, not application to the model.
+    /// The link that proves application is
+    /// <c>ConversationsControllerTests.Provision_PersistsTheCallerInstructions_...</c>.
     /// </para>
     /// A null/blank value is sent as <c>null</c>, which the host treats the same as absent.
     /// <para>

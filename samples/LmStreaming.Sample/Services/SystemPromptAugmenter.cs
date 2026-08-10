@@ -1,3 +1,5 @@
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+
 namespace LmStreaming.Sample.Services;
 
 /// <summary>
@@ -8,10 +10,73 @@ public static class SystemPromptAugmenter
     /// <summary>
     /// Property key in a thread's <c>ThreadMetadata.Properties</c> holding the caller-supplied system
     /// prompt appendix from <c>ProvisionConversationRequest.SystemPromptAppendix</c>. Written once at
-    /// provision and read back on every agent (re)creation for that thread, so the instructions survive a
-    /// process restart and a mode/provider switch exactly like the thread's workspace binding does.
+    /// provision and read back on every agent (re)creation for that thread by
+    /// <see cref="ReadAppendixAsync"/>, so the instructions survive a process restart and a mode/provider
+    /// switch exactly like the thread's workspace binding does.
+    /// <para>
+    /// That sentence was false for the whole life of this field before the reader existed: the value was
+    /// stored here and read by nothing, so a headless caller's methodology, output contract and sub-agent
+    /// dispatch instructions never reached the model, and every S2S review ran under the bare mode prompt.
+    /// The doc-comment asserting the mechanism lived in the same file as the key nothing read, which is
+    /// why nobody checked. If you are about to add another provisioned property, add its reader in the
+    /// same change and name the reader here — prose is not a wire.
+    /// </para>
     /// </summary>
     public const string AppendixPropertyKey = "sample.systemPromptAppendix";
+
+    /// <summary>
+    /// Reads the caller instructions recorded for a thread at provision, or <c>null</c> when there are
+    /// none (every conversation the UI creates, and every conversation provisioned before this field was
+    /// honoured).
+    /// <para>
+    /// Never throws. A missing thread, a missing property or a non-string value all mean "no caller
+    /// instructions", which is the behavior every existing conversation depends on; an agent build is not
+    /// worth failing over a prompt addendum.
+    /// </para>
+    /// </summary>
+    public static async Task<string?> ReadAppendixAsync(
+        IConversationStore store,
+        string threadId,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+
+        if (string.IsNullOrWhiteSpace(threadId))
+        {
+            return null;
+        }
+
+        var metadata = await store.LoadMetadataAsync(threadId, ct).ConfigureAwait(false);
+        if (metadata?.Properties is not { } properties
+            || !properties.TryGetValue(AppendixPropertyKey, out var raw))
+        {
+            return null;
+        }
+
+        return raw is string appendix && !string.IsNullOrWhiteSpace(appendix) ? appendix : null;
+    }
+
+    /// <summary>
+    /// The system prompt a thread's agent actually runs with: the prompt built so far, plus whatever
+    /// instructions the caller recorded at provision, appended last.
+    /// <para>
+    /// This exists as one named call rather than a read-then-append pair at the call site on purpose. The
+    /// agent factory in <c>Program.cs</c> is a single long inline lambda with no test seam, so whatever is
+    /// written there cannot be covered — dropping the appendix from it leaves the entire suite green, which
+    /// is precisely how this field shipped inert. Collapsing read + append into one tested unit shrinks the
+    /// uncoverable surface to a single call, which is the most that can be done without restructuring the
+    /// factory. It is not the same as covering it; see the note on <see cref="AppendixPropertyKey"/>.
+    /// </para>
+    /// </summary>
+    public static async Task<string> ComposeAsync(
+        IConversationStore store,
+        string threadId,
+        string? systemPrompt,
+        CancellationToken ct = default)
+    {
+        var appendix = await ReadAppendixAsync(store, threadId, ct).ConfigureAwait(false);
+        return AppendCallerInstructions(systemPrompt, appendix);
+    }
 
     /// <summary>
     /// Appends a headless caller's own instructions to the mode's system prompt. <b>Additive by design:</b>

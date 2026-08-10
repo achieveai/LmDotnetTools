@@ -98,6 +98,19 @@ public sealed class DaemonAgentFactoryTests
         // dedup brief (FirstReviewExistingCommentsGuidance) was necessary but not sufficient: runs 131/132
         // were first runs, ran against the fixed brief, and still took the exit — the prompt offered it on
         // its own. So the exit and its delta framing must be reachable ONLY when is_rereview is true.
+        //
+        // THIS TEST WAS VACUOUS FOR ITS WHOLE LIFE BEFORE THE APPENDIX HAD A READER. It asserts a property
+        // of profile.SystemPrompt, and profile.SystemPrompt reached the hosted agent through exactly one
+        // channel — ProvisionAsync's systemPromptAppendix — which the host stored and never read. So no
+        // model ever saw the prompt this constrains, which is why the sentinel kept appearing on first
+        // reviews no matter what the prompt said, and why only the code-side guard fixed it. It is
+        // load-bearing again only because every link is now pinned:
+        //   1. this test                                      profile prompt withholds/keeps the exit
+        //   2. S2SReviewAgentTests:118                        profile prompt -> provision systemPromptAppendix
+        //   3. ConversationsControllerTests
+        //      Provision_PersistsTheCallerInstructions_...    provision -> thread property -> composed prompt
+        // Break any one and this assertion goes quiet again without going red. If you delete a link, delete
+        // this test with it rather than leaving it green.
         const string NoOpExit = "No new findings since the last review.";
         const string Split = "New comments since your last review";
 

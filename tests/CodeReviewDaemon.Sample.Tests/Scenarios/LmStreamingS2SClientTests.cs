@@ -49,11 +49,12 @@ public sealed class LmStreamingS2SClientTests
         recorded.Body.Should().Contain("\"workspaceId\":\"ws-1\"")
             .And.Contain("\"providerId\":\"openai\"")
             .And.Contain("\"modeId\":\"workspace-agent\"")
-            // The review profile's system prompt is the only channel that COULD carry the daemon's
-            // methodology, sub-agent dispatch instruction and output contract — provision carries no
-            // per-turn model or tool overrides. This asserts the daemon SENDS it. It does not assert the
-            // host applies it, and today the host does not: the value is stored in thread metadata and
-            // never read back (#49). Do not read a green here as "the methodology reached the agent".
+            // The review profile's system prompt is the only channel carrying the daemon's methodology,
+            // sub-agent dispatch instruction and output contract — provision carries no per-turn model or
+            // tool overrides. This asserts the daemon SENDS it; it does not assert the host APPLIES it.
+            // That second half is ConversationsControllerTests.Provision_PersistsTheCallerInstructions_...
+            // and it did not exist before #49, which is how the field shipped inert. If that test is ever
+            // deleted, delete this assertion's claim to meaning with it rather than leaving it green.
             .And.Contain("\"systemPromptAppendix\":\"REVIEW METHODOLOGY\"")
             // The configured sub-agent model rides the same call. Provision is the only moment it can be
             // set: the host builds a thread's sub-agent options once, when it creates the agent.
