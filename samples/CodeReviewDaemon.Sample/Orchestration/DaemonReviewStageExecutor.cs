@@ -4375,6 +4375,28 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             }
         }
 
+        // ENFORCED, not merely reported. The warning above has named this exact condition since the check was
+        // added, and 57 live runs emitted the sentence anyway — a log line is not a control. The question that
+        // decides it is not which channel briefed this run: both channels are beliefs formed earlier, and the
+        // comment-authorship one was wrong in every one of those 57. It is whether a prior review BODY exists
+        // to have had findings since, asked of the store, here, at the point of use.
+        //
+        // LAST, so that every diagnostic above — the framing line, the near-miss line, and above all the
+        // fan-out reconciliation — is already in the log when the run fails. Those lines are what tell an
+        // operator whether a full roster of specialists reported back and was discarded, which is the
+        // difference between a reviewer that answered without looking and one that had nothing to look at.
+        // Still BEFORE the artifact write below, which is the property that matters: a guard that throws
+        // after persisting has already shipped the false claim to everything that reads the artifact later.
+        if (isSentinel && !PriorReviewBodyExists(run))
+        {
+            throw new InvalidOperationException(
+                $"Run {run.Id} (PR {run.PrId}): the review came back as the no-new-findings sentinel "
+                    + $"({reviewChars} chars), but no earlier primary round on this PR persisted a review body. "
+                    + "There is no last review for findings to be new since, so this claim is false and will not "
+                    + "be retained. The run fails and will retry rather than deliver a silent non-review."
+            );
+        }
+
         _ = _store.AddArtifact(new ReviewArtifact
         {
             ReviewRunId = run.Id,
@@ -5270,6 +5292,52 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// </summary>
     internal static bool IsNoNewFindingsSentinel(string? reviewText) =>
         reviewText is not null && NoNewFindingsBodies.Contains(NormalizeNoNewFindingsCandidate(reviewText));
+
+    /// <summary>
+    /// Whether an EARLIER primary round on this PR left a review body that actually reviewed something —
+    /// non-blank, and not the sentinel itself.
+    /// </summary>
+    /// <remarks>
+    /// A prior SENTINEL does not count. "No new findings since the last review" is only meaningful if some
+    /// earlier round reported findings for these to be new since; a chain of sentinels asserts it against a
+    /// round that asserted it too, and bottoms out nowhere. This is not theoretical — the live store already
+    /// holds 58 such bodies, so counting them would let the exact runs this guard exists for re-authorize
+    /// themselves on their next round. Same predicate <see cref="AppendUndeliveredPriorRounds"/> applies to a
+    /// prior round's text, for the same reason.
+    /// </remarks>
+    private bool PriorReviewBodyExists(ReviewRun run)
+    {
+        foreach (
+            var payload in _store.GetPriorReviewPayloads(
+                run.RepoId,
+                run.PrId,
+                run.Id,
+                ReviewArtifactKind
+            )
+        )
+        {
+            string? text;
+            try
+            {
+                text = JsonSerializer
+                    .Deserialize<ReviewArtifactPayload>(payload, PayloadOptions)
+                    ?.ReviewText;
+            }
+            catch (JsonException)
+            {
+                // An unreadable prior payload is not evidence of a prior review. Fail toward refusing the
+                // sentinel, which costs a retry; the other direction costs a silent non-review.
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(text) && !IsNoNewFindingsSentinel(text))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     /// <summary>
     /// Reduces a review body to the form <see cref="NoNewFindingsBodies"/> is written in: whitespace runs

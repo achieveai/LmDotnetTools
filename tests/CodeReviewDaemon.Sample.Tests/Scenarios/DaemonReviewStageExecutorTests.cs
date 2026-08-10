@@ -2077,6 +2077,10 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // publish it as a PR comment) — otherwise the post-nothing contract is violated and re-review noise
         // reappears via the host path even when the agent correctly posted nothing.
         using var fixture = Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { UseS2SReviewAgent = true, EnableCommentPosting = true, EnableHostSummaryFallback = true });
+        // A DELIVERED earlier round, because the sentinel is only a sentence this run is entitled to say when
+        // one exists — the Reviewed stage refuses it otherwise. Delivered, so nothing is carried forward and
+        // the body that reaches the host fallback is the sentinel alone, which is this test's subject.
+        _ = fixture.SeedPriorRound("[BLOCKER] round 01 found this", delivered: true);
         fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] = "No new findings since the last review.";
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
@@ -2383,6 +2387,12 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     /// carries. Live run nova-5500188 settled a full roster of specialists and wrote a 38-byte review.md —
     /// the sentinel, exactly. Nothing logged the discrepancy, so a review that threw away every specialist's
     /// work is indistinguishable in the record from one that had nothing to throw away.
+    /// <para>
+    /// That run is also refused outright now: it had no prior review for its findings to be new since. The
+    /// two belong in one test because the ORDER between them is a property. The reconciliation line has to be
+    /// in the log by the time the refusal lands, or the failure an operator sees says only "the sentinel was
+    /// not authorized" and omits the part that says four specialists reported back and were discarded.
+    /// </para>
     /// </summary>
     [Fact]
     public async Task Reviewed_reconciles_a_settled_fan_out_against_a_review_body_that_reports_nothing()
@@ -2397,12 +2407,15 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
-        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<InvalidOperationException>(
+            "nothing precedes this run on the PR, so the sentinel is not a claim it can make");
 
         var line = logs.Capturing.MessagesAtLevel(LogLevel.Warning)
             .Where(m => m.Contains($"Run {run.Id}:", StringComparison.Ordinal)
                 && m.Contains("sub-agent(s) completed", StringComparison.Ordinal))
-            .Should().ContainSingle("the discrepancy is reported once, as its own line")
+            .Should().ContainSingle("the discrepancy is reported once, as its own line, and before the refusal")
             .Subject;
 
         line.Should().Contain(
@@ -2646,6 +2659,9 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             ? Fixture.Ado(LoggerFactory, options)
             : Fixture.GitHub(LoggerFactory, options);
         var publisher = provider == "azure-devops" ? fixture.AdoPublisher! : fixture.GitHubPublisher;
+        // See the host-fallback case above: the sentinel is a claim about an earlier round, so this run needs
+        // one to be entitled to it. Delivered, so this round genuinely owes the PR nothing.
+        _ = fixture.SeedPriorRound("[BLOCKER] round 01 found this", delivered: true);
         fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] = "No new findings since the last review.";
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z", mode: "post");
 

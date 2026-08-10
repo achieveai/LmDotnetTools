@@ -2423,18 +2423,30 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // The half that must not be lost to the fix above: a PR with no comments AND no completed round has
         // authorised the exit through neither channel, so the sentinel means the reviewer answered without
         // reviewing. This is the 38-byte review that took 51 of 104 PRs in the NOVA fleet, and runs 131/132
-        // showed the prompt can produce it unprompted — the alarm is the only thing that makes it visible.
+        // showed the prompt can produce it unprompted.
+        //
+        // The alarm is no longer the only thing that makes it visible — the run is now REFUSED, because 57
+        // live runs walked past this exact warning and were filed as completed reviews. Both are asserted
+        // here, and the order between them is the point: the warning must already be in the log when the
+        // refusal lands, or an operator reading the failure has nothing to tell "answered without looking"
+        // apart from "had nothing to look at".
         using var fixture = Fixture.CreateS2S();
         var run = fixture.SeedRun();
         fixture.Factory.DefaultText = "No new findings since the last review.";
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
-        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>(
+            "a claim about a last review that does not exist is false, and is not retained"))
+            .WithMessage("*no earlier primary round*");
 
         fixture.Logs.Capturing.MessagesAtLevel(LogLevel.Warning)
             .Where(m => m.Contains($"Run {run.Id}:", StringComparison.Ordinal)
                 && m.Contains("the PR was NOT reviewed", StringComparison.Ordinal))
             .Should().ContainSingle("neither the comment block nor the store gave this run a prior round");
+        fixture.Store.TryGetLatestArtifact(run.Id, DaemonReviewStageExecutor.ReviewArtifactKind)
+            .Should().BeNull("the refusal has to land before the body is persisted, or it has shipped anyway");
     }
 
     [Fact]
@@ -4804,9 +4816,20 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// <c>ReviewStore.GetPriorReviewSummary</c> counts. This is the daemon's own memory of having reviewed
         /// the PR, and it is independent of whether anything was ever POSTED there — which is the whole point
         /// on a collect-only deployment, where it is the only surviving record of the round.
+        /// <para>
+        /// The review artifact comes with it, because a run at <see cref="ReviewStage.Reviewed"/> that holds no
+        /// review body is a state the daemon cannot produce: the artifact is written inside the stage and the
+        /// stage is advanced only after the stage returns. Seeding the row alone built a prior round that had
+        /// reviewed nothing while claiming to have reviewed — and the sentinel-authorization guard, which asks
+        /// for the BODY rather than the row, is precisely the caller that can tell the difference.
+        /// </para>
         /// </summary>
-        public ReviewRun SeedPriorCompletedRound(string prId = "118", string headSha = "head-sha-round-1") =>
-            Store.CreateOrGetReviewRun(new ReviewRun
+        public ReviewRun SeedPriorCompletedRound(
+            string prId = "118",
+            string headSha = "head-sha-round-1",
+            string reviewText = "## Review\nMust: null check missing in Foo.cs:10.")
+        {
+            var prior = Store.CreateOrGetReviewRun(new ReviewRun
             {
                 RepoId = EnsureRepo(),
                 PrId = prId,
@@ -4820,6 +4843,17 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 WorkflowStatus = WorkflowStatus.Running,
                 PrLifecycleState = PrLifecycleState.Open,
             });
+            _ = Store.AddArtifact(new ReviewArtifact
+            {
+                ReviewRunId = prior.Id,
+                ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
+                ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
+                Provider = _ado ? "ado" : "github",
+                Payload = JsonSerializer.Serialize(
+                    new ReviewArtifactPayload(reviewText, "prior-run", "primary")),
+            });
+            return prior;
+        }
 
         /// <summary>
         /// Gives <paramref name="prior"/> the review artifact it produced and the outbox row that says the

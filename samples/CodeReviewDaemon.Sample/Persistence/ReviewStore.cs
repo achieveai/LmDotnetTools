@@ -578,6 +578,66 @@ internal sealed class ReviewStore : IDisposable
         return results;
     }
 
+    /// <summary>
+    /// The persisted review payload of every EARLIER primary round on this PR, oldest first, so a caller can
+    /// answer the only question that authorizes the "no new findings since the last review" exit: did an
+    /// earlier round actually produce a review to have had findings since?
+    /// </summary>
+    /// <remarks>
+    /// Deliberately NOT "does a prior RUN exist". A run that was discovered and then died before reviewing
+    /// anything leaves a <c>review_run</c> row and no review, and that is not a hypothetical shape: of the 57
+    /// live runs that emitted the sentinel with no earlier review, 6 had one or two prior runs, all of them
+    /// parked at Discovered or ContextReady. Counting those rows as a prior review authorizes the precise
+    /// claim this query exists to refuse.
+    /// <para>
+    /// The stage filter is the one <see cref="GetPriorReviewSummary"/> applies, for the same reasons, but it is
+    /// NOT sufficient alone — a run can reach a review-producing stage and still persist no body, or persist
+    /// the sentinel — so this returns the payloads and lets the caller test what is inside them. The
+    /// persistence layer does not know what a sentinel is and must not learn.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<string> GetPriorReviewPayloads(
+        long repoId,
+        string prId,
+        long excludeRunId,
+        string artifactKind
+    )
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(prId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(artifactKind);
+
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        // The run's LATEST artifact of the kind — the same "latest wins" rule TryGetLatestArtifact defines —
+        // because a run that retried its review stage holds more than one.
+        command.CommandText = """
+            SELECT ra.payload AS payload
+            FROM review_run rr
+            JOIN review_artifact ra ON ra.id = (
+                SELECT id FROM review_artifact
+                WHERE review_run_id = rr.id AND artifact_kind = $kind
+                ORDER BY id DESC LIMIT 1)
+            WHERE rr.repo_id = $repoId AND rr.pr_id = $prId AND rr.variant_id = $variant
+              AND rr.id != $excludeRunId
+              AND rr.stage IN ('Reviewed', 'Judged', 'Posted')
+            ORDER BY rr.id;
+            """;
+        _ = command.Parameters.AddWithValue("$repoId", repoId);
+        _ = command.Parameters.AddWithValue("$prId", prId);
+        _ = command.Parameters.AddWithValue("$variant", PrimaryVariantId);
+        _ = command.Parameters.AddWithValue("$excludeRunId", excludeRunId);
+        _ = command.Parameters.AddWithValue("$kind", artifactKind);
+
+        var payloads = new List<string>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            payloads.Add(reader.GetString(reader.GetOrdinal("payload")));
+        }
+
+        return payloads;
+    }
+
     /// <summary>The outbox operation that delivers a review comment — the one whose status decides whether a
     /// round reached the PR. Duplicated from <c>ReviewPoster</c> rather than referenced so the persistence
     /// layer does not depend on the orchestration layer; the pair is pinned by a test.</summary>
