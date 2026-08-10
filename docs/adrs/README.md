@@ -73,3 +73,11 @@ together with their slugs.
 * [0009 — Scope agent collaboration to a root-owned directory, and leave delivery with the owner](0009-hierarchy-wide-agent-collaboration.md)
 * [0010 — An ADR's identity is its slug, and colliding numbers are left standing](0010-adr-identity-is-the-slug.md)
 * [0011 — Mirror each conversation's transcript into its own workspace, readable by anyone who can reach the workspace](0011-workspace-transcript-files.md)
+* [0012 — The model classifies, the daemon counts](0012-model-classifies-daemon-counts.md)
+* [0013 — Developer learnings are an append-only per-PR ledger with regenerated views](0013-developer-learnings-append-only-ledger.md)
+* [0014 — Infer resolution from absence over exposed PRs, and guard it against cohort drift](0014-resolution-from-absence-over-exposed-prs.md)
+* [0015 — Route improvement feedback to the producer, never to the judge](0015-feedback-to-producer-not-judge.md)
+
+Records 0012–0015 are the first ADRs covering `samples/CodeReviewDaemon.Sample`'s own architecture.
+Earlier records name that component only where it consumes a host or gateway decision (0001, 0002,
+0005).
