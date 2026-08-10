@@ -164,24 +164,255 @@ public class KnowledgeDigestTests
         };
 
         var ranked = KnowledgeDigest.SelectRelevant(
-            entries, ["src/LmCore/Streaming/CallbackPump.cs"], repoScope: null, maxEntries: 10);
+            entries, ["src/LmCore/Streaming/CallbackPump.cs"], prTitle: null, prDescription: null, maxEntries: 10);
 
         ranked[0].File.Should().Be("system/matching.md");
     }
 
+    // DELETED (#116): SelectRelevant_EntryScopedToTheReviewedRepoOutranksEquallyMatchingSystemEntry.
+    //
+    // It asserted the ScopeBonus term — at weight 3, the LARGEST single weight in Score — by seeding an entry
+    // with scope "MyRepo" and passing repoScope "MyRepo". That configuration does not exist. The scope field
+    // is a TOPIC label written by the knowledge-extraction agent: 13 controlled values across the whole
+    // 34-entry Knowledge Base (testing, schema, system, deployment, telemetry, …) and NONE of them equal to
+    // any of the five reviewed repository names. The term could therefore never fire on any real review, and
+    // the heaviest weight in the scorer contributed nothing to any ranking ever produced.
+    //
+    // This test is why nobody noticed. It is green, it is named for the behaviour, and it constructs the one
+    // input shape under which the behaviour exists — so the suite reported coverage of a term that was dead
+    // in production. A fixture that can only produce the passing configuration is not evidence.
+    //
+    // Deleted rather than re-pointed, and the distinction matters: re-pointing it at some other comparison
+    // would invent a scoring rule nobody has measured and hand it the heaviest weight in the function, which
+    // is how the original went wrong. Scope now earns its keep where its vocabulary is genuinely an asset —
+    // as the key for the breadth reserve — and that has its own tests below.
+
+    // ---- Ranking on the PR's own prose (#116) --------------------------------------------------
+
+    /// <summary>
+    /// The defect this exists for. Sibling PRs applying one architectural pattern frequently touch entirely
+    /// different files, so keyed on changed paths alone the relevant lesson scores ZERO on one of them and
+    /// the reviewer never sees it — which is how a leftover feature-flag entry was blocked on one PR and
+    /// declined as out of scope on its sibling, 5 blocks against 6 declines inside one 11.3-hour window.
+    /// The pattern is named in the title, and the title was in scope at the call site and never passed in.
+    /// </summary>
     [Fact]
-    public void SelectRelevant_EntryScopedToTheReviewedRepoOutranksEquallyMatchingSystemEntry()
+    public void SelectRelevant_PrTitleRetrievesTheLessonWhenNoChangedPathSharesAToken()
     {
         var entries = new[]
         {
-            Entry("system/shared.md", "Streaming contract", ["streaming"]),
-            Entry("MyRepo/local.md", "Streaming contract", ["streaming"], scope: "MyRepo"),
+            Entry("system/aaa-unrelated.md", "Filter excluded rows before pagination", ["pagination", "sql"]),
+            Entry("system/zzz-flags.md", "Remove generated featureflag entries with the runtime flag", ["featureflag"]),
+        };
+
+        // The changed path shares NO token with either entry — this is the sibling PR whose files differ.
+        // Both therefore score zero and the deterministic file-ordinal tie-break decides, which is precisely
+        // the failure: the entry that arrives first is the one whose name sorts first, not the one that knows
+        // anything about this change.
+        var pathsOnly = KnowledgeDigest.SelectRelevant(
+            entries, ["deploy/ecs/task-definition.json"], prTitle: null, prDescription: null, maxEntries: 10);
+        pathsOnly[0].File.Should().Be(
+            "system/aaa-unrelated.md",
+            "the premise: on paths alone the right entry does NOT come first, so this test can fail");
+
+        var withTitle = KnowledgeDigest.SelectRelevant(
+            entries,
+            ["deploy/ecs/task-definition.json"],
+            prTitle: "Remove the stale featureflag entry",
+            prDescription: null,
+            maxEntries: 10);
+
+        withTitle[0].File.Should().Be(
+            "system/zzz-flags.md",
+            "the pattern is named in the title even when no changed path names it");
+    }
+
+    /// <summary>
+    /// The other half, and the half that is easy to leave untested. Prose is NOT free: on a real run whose
+    /// title named no pattern, adding prose at full strength pushed the CORRECT entry from rank 15 to 18 —
+    /// its own score stayed 0 while unrelated entries absorbed the generic vocabulary and overtook it.
+    /// <para>
+    /// So the bound is asserted directly: a HARD hit (the PR touches this file) must outrank a SOFT hit (the
+    /// PR merely mentions the word). At equal weight the mention ties and wins on tie-break, and the demotion
+    /// is unbounded; at half weight it cannot. A test that only shows a good entry rising is half a test.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void SelectRelevant_AProseMentionDoesNotOutrankAnEqualChangedPathMatch()
+    {
+        var entries = new[]
+        {
+            Entry("system/touched.md", "Callback lesson", ["callbacks"]),
+            Entry("system/mentioned.md", "Pagination lesson", ["pagination"]),
         };
 
         var ranked = KnowledgeDigest.SelectRelevant(
-            entries, ["src/Streaming/Pump.cs"], repoScope: "MyRepo", maxEntries: 10);
+            entries,
+            ["src/Streaming/Callbacks.cs"],
+            prTitle: "Rework pagination",
+            prDescription: null,
+            maxEntries: 10);
 
-        ranked[0].File.Should().Be("MyRepo/local.md");
+        ranked[0].File.Should().Be(
+            "system/touched.md",
+            "one tag hit on a CHANGED PATH beats one tag hit on the author's prose; equal weighting would "
+                + "let a generic title demote the entry that actually matched the diff");
+    }
+
+    /// <summary>
+    /// The weights were scaled by 2 to make room for a half-strength prose tier, so a query carrying no prose
+    /// must rank exactly as it did before prose existed. Pinned because "I only added a term" is the easiest
+    /// possible thing to be wrong about: a rescale that changed relative order would silently re-rank every
+    /// review whose PR has no description, and nothing else in the suite would notice.
+    /// </summary>
+    [Fact]
+    public void SelectRelevant_WithoutProseRanksExactlyAsPathOnlyScoringDid()
+    {
+        var entries = new[]
+        {
+            Entry("system/two-tags.md", "Nothing in common", ["runner", "callbacks"]),
+            Entry("system/one-tag.md", "Nothing in common", ["runner"]),
+            Entry("system/title-only.md", "Runner lesson", ["zzz"]),
+            Entry("system/nothing.md", "Nothing in common", ["zzz"]),
+        };
+
+        var ranked = KnowledgeDigest.SelectRelevant(
+            entries,
+            ["src/Runner.cs", "src/Callbacks.cs"],
+            prTitle: null,
+            prDescription: null,
+            maxEntries: 10);
+
+        // 2 tag hits > 1 tag hit > 1 title hit > nothing — the historical 2/1 ordering, unchanged.
+        ranked.Select(e => e.File).Should().Equal(
+            "system/two-tags.md", "system/one-tag.md", "system/title-only.md", "system/nothing.md");
+    }
+
+    // ---- Scope breadth reserve (#116) ----------------------------------------------------------
+
+    /// <summary>
+    /// Retrieval is SATURATED — 35 of 35 measured briefs rendered 23-24 entries against a 24-entry cap, on
+    /// all five repositories — so the tail is always being cut and one dominant topic can hold every slot.
+    /// The reserve spends a minority of the budget guaranteeing the best entry of each distinct scope a
+    /// place, so the single lesson from elsewhere that would have settled the question still arrives.
+    /// </summary>
+    [Fact]
+    public void SelectRelevant_ReservesSlotsSoADominantScopeCannotTakeThemAll()
+    {
+        // Twelve strongly-matching entries in one scope, one weak entry in another. Pure score gives the
+        // dominant scope every slot.
+        var entries = Enumerable.Range(0, 12)
+            .Select(i => Entry($"system/e{i}.md", $"Runner lesson {i}", ["runner"]))
+            .Append(Entry("deployment/rare.md", "Nothing in common", ["zzz"], scope: "deployment"))
+            .ToArray();
+
+        var ranked = KnowledgeDigest.SelectRelevant(
+            entries, ["src/Runner.cs"], prTitle: null, prDescription: null, maxEntries: 6);
+
+        ranked.Should().HaveCount(6);
+        ranked.Select(e => e.File).Should().Contain(
+            "deployment/rare.md",
+            "being best in an unpopular topic beats being seventh-best in a popular one; on pure score this "
+                + "entry is rank 13 of 13 and never arrives");
+        ranked.Select(e => e.Scope).Distinct().Should().HaveCount(
+            2, "the reserve buys breadth, it does not empty the ranking");
+    }
+
+    /// <summary>
+    /// The reserve is keyed on <c>scope</c> and not on tags, and that is what makes it work: the tag
+    /// vocabulary is free-form — 105 distinct tags over 34 entries, 80 of them used exactly once — so there
+    /// is no stable bucket set to reserve against, while scope is a controlled 13-value vocabulary.
+    /// <para>
+    /// The degenerate case is a Knowledge Base with no scopes at all. Every entry must then share ONE bucket,
+    /// or the reserve degrades into round-robin over 24 buckets of one and stops being a minority share.
+    /// The blank forms below DIFFER — "" against " " — because that is the only fixture under which the
+    /// normalization is load-bearing: written with one shared blank form, this test passed whether or not the
+    /// code normalized at all, since a single distinct string buckets identically either way.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void SelectRelevant_TreatsEveryBlankScopeAsOneBucketRatherThanOnePerEntry()
+    {
+        var entries = Enumerable.Range(0, 12)
+            .Select(i => Entry($"e{i}.md", $"Runner lesson {i}", ["runner"], scope: string.Empty))
+            .Append(Entry("zz-unmatched.md", "Nothing in common", ["zzz"], scope: " "))
+            .ToArray();
+
+        var ranked = KnowledgeDigest.SelectRelevant(
+            entries, ["src/Runner.cs"], prTitle: null, prDescription: null, maxEntries: 6);
+
+        ranked.Select(e => e.File).Should().NotContain(
+            "zz-unmatched.md",
+            "every blank scope is ONE bucket, so the reserve is satisfied by a single entry and the rest of "
+                + "the slots go to the ranking; treating \"\" and \" \" as two topics would hand a reserved "
+                + "slot to the worst-ranked entry in the index");
+    }
+
+    /// <summary>
+    /// A token the PR both TOUCHES and TALKS ABOUT is paid once, at the path rate. Leaving it in both token
+    /// sets pays 1.5x for the strongest evidence there is, which quietly re-tunes every weight in the
+    /// function.
+    /// <para>
+    /// The echoed entry deliberately LOSES the tie-break. Written the other way round this test was blind:
+    /// double-paying only inflated the entry that was already coming first, so the order was identical with
+    /// and without the guard and the mutation killed nothing. A fixture has to be able to move for the
+    /// assertion to mean anything.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void SelectRelevant_DoesNotPayTwiceForATokenInBothThePathsAndTheProse()
+    {
+        var entries = new[]
+        {
+            Entry("system/aaa-quiet.md", "Nothing in common", ["callbacks"]),
+            Entry("system/zzz-echoed.md", "Nothing in common", ["runner"]),
+        };
+
+        // Both entries have exactly ONE path tag hit, so they must tie and fall to the file-ordinal
+        // tie-break, which the echoed entry loses. "runner" is additionally echoed in the PR title: paid
+        // twice it scores 6 against 4 and jumps the tie, which is precisely what must not happen.
+        var ranked = KnowledgeDigest.SelectRelevant(
+            entries,
+            ["src/Runner.cs", "src/Callbacks.cs"],
+            prTitle: "Runner cleanup",
+            prDescription: null,
+            maxEntries: 10);
+
+        ranked.Select(e => e.File).Should().Equal(
+            "system/aaa-quiet.md",
+            "system/zzz-echoed.md");
+    }
+
+    /// <summary>
+    /// Prose is clamped, because description text is unbounded author prose and every token it adds is
+    /// another chance for an unrelated entry to overtake a relevant one. Asserted from the outside: a token
+    /// past the clamp must not score, with a positive control proving the word itself is matchable.
+    /// </summary>
+    [Fact]
+    public void SelectRelevant_IgnoresProseBeyondTheScoredPrefix()
+    {
+        var entries = new[]
+        {
+            Entry("system/aaa-late.md", "Nothing in common", ["telemetry"], updated: "2026-01-01"),
+            Entry("system/bbb-other.md", "Nothing in common", ["zzz"], updated: "2026-09-09"),
+        };
+
+        // Positive control FIRST: inside the prefix, "telemetry" outranks a newer non-matching entry.
+        KnowledgeDigest.SelectRelevant(
+                entries, [], prTitle: null, prDescription: "telemetry", maxEntries: 10)[0]
+            .File.Should().Be("system/aaa-late.md", "the word is matchable when it is inside the prefix");
+
+        // Past the clamp the same word scores nothing, so the newer entry wins on the tie-break instead.
+        KnowledgeDigest.SelectRelevant(
+                entries,
+                [],
+                prTitle: null,
+                prDescription: new string('x', 2100) + " telemetry",
+                maxEntries: 10)[0]
+            .File.Should().Be(
+                "system/bbb-other.md",
+                "prose past the scored prefix contributes nothing, so the entries tie at zero and the "
+                    + "deterministic newest-first tie-break decides");
     }
 
     [Fact]
@@ -195,7 +426,7 @@ public class KnowledgeDigestTests
             Entry("system/b.md", "Beta", ["yyy"]),
         };
 
-        KnowledgeDigest.SelectRelevant(entries, ["totally/unrelated.txt"], null, maxEntries: 10)
+        KnowledgeDigest.SelectRelevant(entries, ["totally/unrelated.txt"], null, null, maxEntries: 10)
             .Should().HaveCount(2);
     }
 
@@ -206,7 +437,7 @@ public class KnowledgeDigestTests
             .Select(i => Entry($"system/e{i}.md", $"Entry {i}", ["t"]))
             .ToArray();
 
-        KnowledgeDigest.SelectRelevant(entries, [], null, maxEntries: 5).Should().HaveCount(5);
+        KnowledgeDigest.SelectRelevant(entries, [], null, null, maxEntries: 5).Should().HaveCount(5);
     }
 
     [Fact]
@@ -219,7 +450,7 @@ public class KnowledgeDigestTests
             Entry("system/c.md", "C", ["t"], updated: "2026-09-09"),
         };
 
-        var ranked = KnowledgeDigest.SelectRelevant(entries, [], null, maxEntries: 10);
+        var ranked = KnowledgeDigest.SelectRelevant(entries, [], null, null, maxEntries: 10);
 
         // Newest first, then file ordinal — same input in any order yields the same list.
         ranked.Select(e => e.File).Should().Equal("system/c.md", "system/a.md", "system/b.md");
@@ -1271,7 +1502,7 @@ public class KnowledgeDigestTests
 
         var partition = KnowledgeDigest.PartitionByContainment(entries, KbRoot);
         var selected = KnowledgeDigest.SelectRelevant(
-            partition.Usable, ["src/Runner.cs"], "LmDotnetTools", maxEntries: 24);
+            partition.Usable, ["src/Runner.cs"], prTitle: null, prDescription: null, maxEntries: 24);
         var digest = KnowledgeDigest.Render(
             selected, KbRoot, charBudget: 10_000, omitted: partition.Usable.Count - selected.Count);
 
@@ -1308,7 +1539,7 @@ public class KnowledgeDigestTests
         var sanitized = KnowledgeDigest.SanitizeMetadata(partition.Usable, KbRoot);
         var deduplicated = KnowledgeDigest.Deduplicate(sanitized.Entries, KbRoot);
         var selected = KnowledgeDigest.SelectRelevant(
-            deduplicated.Entries, ["src/Runner.cs"], "LmDotnetTools", maxEntries: 24);
+            deduplicated.Entries, ["src/Runner.cs"], prTitle: null, prDescription: null, maxEntries: 24);
 
         // Assert what SHOULD be there: every distinct entry survives, including the tail the duplicates ate.
         selected.Select(entry => entry.File).Should().OnlyHaveUniqueItems();
@@ -1483,7 +1714,7 @@ public class KnowledgeDigestTests
         var partition = KnowledgeDigest.PartitionByContainment(entries, KbRoot);
         var sanitized = KnowledgeDigest.SanitizeMetadata(partition.Usable, KbRoot);
         var selected = KnowledgeDigest.SelectRelevant(
-            sanitized.Entries, ["src/Runner.cs"], "LmDotnetTools", maxEntries: 24);
+            sanitized.Entries, ["src/Runner.cs"], prTitle: null, prDescription: null, maxEntries: 24);
         var digest = KnowledgeDigest.Render(
             selected, KbRoot, charBudget: 100_000, omitted: sanitized.Entries.Count - selected.Count);
 
@@ -1537,7 +1768,7 @@ public class KnowledgeDigestTests
         var partition = KnowledgeDigest.PartitionByContainment(entries, KbRoot);
         var sanitized = KnowledgeDigest.SanitizeMetadata(partition.Usable, KbRoot);
         var selected = KnowledgeDigest.SelectRelevant(
-            sanitized.Entries, ["src/Runner.cs"], "LmDotnetTools", maxEntries: 24);
+            sanitized.Entries, ["src/Runner.cs"], prTitle: null, prDescription: null, maxEntries: 24);
 
         selected
             .Should()
@@ -1565,7 +1796,7 @@ public class KnowledgeDigestTests
         };
 
         var selected = KnowledgeDigest.SelectRelevant(
-            entries, ["src/Blank.cs"], "LmDotnetTools", maxEntries: 1);
+            entries, ["src/Blank.cs"], prTitle: null, prDescription: null, maxEntries: 1);
 
         selected
             .Should()
@@ -1588,7 +1819,7 @@ public class KnowledgeDigestTests
         };
 
         var selected = KnowledgeDigest.SelectRelevant(
-            entries, ["src/Blank.cs"], "LmDotnetTools", maxEntries: 1);
+            entries, ["src/Blank.cs"], prTitle: null, prDescription: null, maxEntries: 1);
 
         selected
             .Should()
