@@ -285,6 +285,78 @@ internal sealed class ReviewStore : IDisposable
     }
 
     /// <summary>
+    /// Re-writes what the PR SAYS IT DOES — author, title, description, target branch — from the freshest
+    /// poll. Needed for exactly the reason <see cref="UpdateTrustSignal"/> is: all four are written by
+    /// <see cref="CreateOrGetReviewRun"/>'s INSERT and nothing has ever touched them again, so a run's
+    /// "Stated intent" block quotes whatever the PR claimed at the moment it was DISCOVERED — measured on the
+    /// live store, median 9.6 minutes and p90 155.8 before the review of record exists, worst case 34.9 h.
+    /// <para>
+    /// A plain overwrite, deliberately. Deciding what "this poll carried nothing" means belongs to the
+    /// caller (<see cref="Orchestration.PrOrchestrator"/>), which is the only layer holding both the poll's
+    /// value and the captured one it would be destroying. Two places deciding that is how a
+    /// non-destructive rule quietly stops being one — so this method stores exactly what it is passed.
+    /// </para>
+    /// </summary>
+    public void UpdatePrMetadata(
+        long id, string? prAuthor, string? prTitle, string? prDescription, string? prTargetBranch)
+    {
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            UPDATE review_run
+            SET pr_author = $author,
+                pr_title = $title,
+                pr_description = $description,
+                pr_target_branch = $targetBranch,
+                updated_at = $now
+            WHERE id = $id;
+            """;
+        _ = command.Parameters.AddWithValue("$author", (object?)prAuthor ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue("$title", (object?)prTitle ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue("$description", (object?)prDescription ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue("$targetBranch", (object?)prTargetBranch ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue("$now", UtcNow());
+        _ = command.Parameters.AddWithValue("$id", id);
+        _ = command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Records what the review was actually DISPATCHED under: the hash of the prompt templates this build
+    /// reviews with, and the provider that resolved the model. Both columns have existed since v1 of the
+    /// schema and neither has ever been written — every row in the live store carries NULL.
+    /// <para>
+    /// Written here rather than at creation because creation is the wrong moment for it. The INSERT runs in
+    /// the POLLER, at discovery, before any prompt is rendered or model chosen; and on an identity match
+    /// <see cref="CreateOrGetReviewRun"/> returns the existing row untouched, so a run created under one
+    /// prompt and resumed under another — the ordinary fate of everything sitting in
+    /// <see cref="WorkflowStatus.RetryPending"/> across a deploy — would keep the first one's hash and
+    /// misattribute the review to a prompt it never saw. Last dispatch wins, because the last dispatch is
+    /// what produced the review of record.
+    /// </para>
+    /// <para>
+    /// A null argument leaves that column alone (COALESCE on the parameter), so a caller that can establish
+    /// one and not the other says so by passing null rather than by erasing what a previous dispatch knew.
+    /// </para>
+    /// </summary>
+    public void RecordRunProvenance(long id, string? promptTemplateHash, string? modelProvider)
+    {
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            UPDATE review_run
+            SET prompt_template_hash = COALESCE($promptHash, prompt_template_hash),
+                model_provider = COALESCE($modelProvider, model_provider),
+                updated_at = $now
+            WHERE id = $id;
+            """;
+        _ = command.Parameters.AddWithValue("$promptHash", (object?)promptTemplateHash ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue("$modelProvider", (object?)modelProvider ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue("$now", UtcNow());
+        _ = command.Parameters.AddWithValue("$id", id);
+        _ = command.ExecuteNonQuery();
+    }
+
+    /// <summary>
     /// Records that <paramref name="instanceId"/> is working on this run right now. Written when a process
     /// starts executing a run's stages, so <see cref="WorkflowStatus.Running"/> stops being an unfalsifiable
     /// claim: without an owner there is no way to tell a run some other daemon is mid-review from one whose

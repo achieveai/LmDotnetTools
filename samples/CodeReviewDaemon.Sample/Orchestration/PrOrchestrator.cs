@@ -71,6 +71,69 @@ internal sealed class PrOrchestrator
                 run = run with { IsForkPr = seed.IsForkPr, IsTargetRepoPublic = seed.IsTargetRepoPublic };
             }
 
+            // And the seed carries the freshest of WHAT THE PR SAYS IT DOES, which nothing reconciled either.
+            // Author, title, description and target branch are written by the INSERT and never again, so the
+            // brief's "Stated intent" block quotes the claim as it stood at DISCOVERY, however long ago that
+            // was. Two facts, measured on .run/nova-review.db over 2026-08-06 → 2026-08-10:
+            //   • PR titles do get rewritten mid-life. PR 5505154 was captured as "[WIP] Remove all references
+            //     to the enableEmployeeDescriptiveAsPH flight…" by run 154 and, 2.5 h later, as the non-WIP
+            //     "Remove EnableEmployeeDescriptiveAsPH flight references…" by run 169.
+            //   • The freeze window is wide. Across the 251 runs that produced a review of record, creation to
+            //     review ran median 9.6 min, mean 61.2, p90 155.8, max 2,095 (34.9 h).
+            // What the store CANNOT show is a run that actually reviewed a superseded claim — because the
+            // column was frozen, a row that went stale mid-run recorded nothing about it. The absence of that
+            // evidence is a property of the defect, not of its rarity, and removing the freeze is what makes
+            // the question answerable at all. "Does the diff do what it claims?" is the reviewer's first
+            // question, and it should be asked about the claim the PR is currently making.
+            //
+            // The one place this must NOT copy the trust-signal refresh above: an absent value from the poll
+            // never overwrites a captured one. The trust signals can be adopted unconditionally because
+            // PrPollingService already collapsed "the provider could not tell" into a fail-closed bool, so the
+            // seed always carries a decision. These four have no such collapse to lean on — a payload that
+            // omitted the description arrives here as null, indistinguishable from an author who deleted it —
+            // and of the two readings only one is recoverable. Keeping a stale description costs the reviewer
+            // some freshness; erasing a captured one costs it the intent entirely, with nothing left to
+            // re-read it from once the PR has closed.
+
+            var freshAuthor = PreferFresh(seed.PrAuthor, run.PrAuthor);
+            var freshTitle = PreferFresh(seed.PrTitle, run.PrTitle);
+            var freshDescription = PreferFresh(seed.PrDescription, run.PrDescription);
+            var freshTargetBranch = PreferFresh(seed.PrTargetBranch, run.PrTargetBranch);
+            if (!string.Equals(freshAuthor, run.PrAuthor, StringComparison.Ordinal)
+                || !string.Equals(freshTitle, run.PrTitle, StringComparison.Ordinal)
+                || !string.Equals(freshDescription, run.PrDescription, StringComparison.Ordinal)
+                || !string.Equals(freshTargetBranch, run.PrTargetBranch, StringComparison.Ordinal))
+            {
+                // Lengths only, and never the text: the title and description are the author's own words and
+                // are EUII — the same rule the review-brief inventory line in DaemonReviewStageExecutor keeps.
+                // Logged because a review read against a superseded intent is otherwise indistinguishable, in
+                // every artifact the run leaves behind, from one read against the current one.
+                if (!string.Equals(freshTitle, run.PrTitle, StringComparison.Ordinal)
+                    || !string.Equals(freshDescription, run.PrDescription, StringComparison.Ordinal))
+                {
+                    _logger.LogInformation(
+                        "Review run {RunId}: PR {PrId}'s stated intent moved since it was captured — title "
+                            + "{PriorTitleChars}→{TitleChars} chars, description "
+                            + "{PriorDescriptionChars}→{DescriptionChars} chars. The review is judged against "
+                            + "the fresh one.",
+                        run.Id,
+                        run.PrId,
+                        run.PrTitle?.Length ?? 0,
+                        freshTitle?.Length ?? 0,
+                        run.PrDescription?.Length ?? 0,
+                        freshDescription?.Length ?? 0);
+                }
+
+                _store.UpdatePrMetadata(run.Id, freshAuthor, freshTitle, freshDescription, freshTargetBranch);
+                run = run with
+                {
+                    PrAuthor = freshAuthor,
+                    PrTitle = freshTitle,
+                    PrDescription = freshDescription,
+                    PrTargetBranch = freshTargetBranch,
+                };
+            }
+
             if (StageMachine.IsComplete(run.Stage))
             {
                 return run;
@@ -222,6 +285,21 @@ internal sealed class PrOrchestrator
 
     private static bool IsGovernedStage(ReviewStage stage) =>
         stage is ReviewStage.ContextReady or ReviewStage.Reviewed;
+
+    /// <summary>
+    /// Which value of a stated-intent field the run should carry: the poll's, when the poll actually carried
+    /// one, and otherwise whatever was already captured. Whitespace counts as nothing carried — an empty
+    /// string on the run row renders as a present-but-blank intent, and "the author wrote no description" is
+    /// precisely the thing these fields have to stay distinguishable from.
+    /// <para>
+    /// This is a one-way ratchet on presence, not on content: a poll that carries a value always wins, so a
+    /// genuine edit is adopted immediately; only ABSENCE is refused. The cost is that an author who clears a
+    /// description leaves the run holding the previous one. That is the deliberate side to be wrong on —
+    /// nothing later can re-fetch a description off a PR that has closed.
+    /// </para>
+    /// </summary>
+    private static string? PreferFresh(string? fromPoll, string? captured) =>
+        string.IsNullOrWhiteSpace(fromPoll) ? captured : fromPoll;
 
     /// <summary>
     /// Whether <paramref name="ex"/> is a failure the governor should charge against the run's budget. Any
