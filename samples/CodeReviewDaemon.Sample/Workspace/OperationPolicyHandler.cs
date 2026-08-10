@@ -61,9 +61,14 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
     private readonly IReadOnlyList<OperationPolicy> _policies;
     private readonly string _provider;
     private readonly ILogger<OperationPolicyHandler> _logger;
+    private readonly IPolicyRefusalRecorder? _refusals;
 
-    public OperationPolicyHandler(OperationPolicy policy, string provider, ILogger<OperationPolicyHandler> logger)
-        : this([policy ?? throw new ArgumentNullException(nameof(policy))], provider, logger)
+    public OperationPolicyHandler(
+        OperationPolicy policy,
+        string provider,
+        ILogger<OperationPolicyHandler> logger,
+        IPolicyRefusalRecorder? refusals = null)
+        : this([policy ?? throw new ArgumentNullException(nameof(policy))], provider, logger, refusals)
     {
     }
 
@@ -72,14 +77,28 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
     /// permits it (the request matches one allow-listed repo's route), and denied only when every policy
     /// denies it. An empty set denies everything (a daemon with no allow-listed repos issues no calls).
     /// </summary>
+    /// <param name="policies">One policy per allow-listed repo for this provider.</param>
+    /// <param name="provider">Provider key (<c>github</c>/<c>ado</c>) stamped onto each classified request.</param>
+    /// <param name="logger">Where denials are logged.</param>
+    /// <param name="refusals">
+    /// Where denials are recorded. Optional, and the enforcement never depends on it: a handler wired
+    /// without a recorder still blocks and still strips the credential, it just leaves no durable trace.
+    /// Production wiring always supplies one, because a refusal nothing recorded cannot be told apart from
+    /// an attempt nobody made — which is precisely how a collect-only posture came to look honoured for
+    /// three days on the strength of an outage.
+    /// </param>
     public OperationPolicyHandler(
-        IReadOnlyList<OperationPolicy> policies, string provider, ILogger<OperationPolicyHandler> logger)
+        IReadOnlyList<OperationPolicy> policies,
+        string provider,
+        ILogger<OperationPolicyHandler> logger,
+        IPolicyRefusalRecorder? refusals = null)
     {
         ArgumentNullException.ThrowIfNull(policies);
         _policies = [.. policies];
         ArgumentException.ThrowIfNullOrWhiteSpace(provider);
         _provider = provider;
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _refusals = refusals;
     }
 
     protected override Task<HttpResponseMessage> SendAsync(
@@ -97,6 +116,10 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
                 "Blocked an untagged {Method} request to {Uri}: no SandboxOperation classification.",
                 request.Method,
                 request.RequestUri);
+            RecordRefusal(
+                "(untagged)",
+                request,
+                "request was not classified with a SandboxOperation");
             throw new OperationDeniedException(
                 SandboxOperation.ReadProviderMetadata,
                 "request was not classified with a SandboxOperation");
@@ -134,6 +157,32 @@ internal sealed class OperationPolicyHandler : DelegatingHandler
             request.Method,
             request.RequestUri,
             reason);
+        RecordRefusal(operation.Value.ToString(), request, reason);
         throw new OperationDeniedException(operation.Value, reason);
+    }
+
+    /// <summary>
+    /// Records a denial, classifying it by the request's METHOD rather than by its operation tag. That is
+    /// the point: the tag is what the caller claimed, the method is what the request would have DONE, and
+    /// only the second answers "did anything try to write on a collect-only run?".
+    /// </summary>
+    private void RecordRefusal(string subject, HttpRequestMessage request, string reason)
+    {
+        if (_refusals is null)
+        {
+            return;
+        }
+
+        var method = request.Method.Method;
+        _refusals.Record(new PolicyRefusalRecord(
+            DateTimeOffset.UtcNow,
+            OperationPolicy.IsMutatingMethod(method)
+                ? PolicyRefusalKind.ProviderWrite
+                : PolicyRefusalKind.ProviderRead,
+            _provider,
+            subject,
+            method,
+            request.RequestUri?.ToString() ?? "(no uri)",
+            reason));
     }
 }
