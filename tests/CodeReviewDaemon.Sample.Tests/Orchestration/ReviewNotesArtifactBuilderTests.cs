@@ -1,7 +1,9 @@
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Workspace.Git;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Orchestration;
@@ -257,5 +259,259 @@ public sealed class ReviewNotesArtifactBuilderTests
             30_000,
             "the whole notes directory is concatenated into the next round's prompt and the extractor's");
         findings.Content.Should().Contain("budget reached");
+    }
+
+    // ── The lead's own conclusions must outrank everything it was handed ──────────────────────────────
+    //
+    // Live shape of a lead-reviewer transcript, in the order the host persists it:
+    //
+    //     [User TextMessage]  the review brief the daemon itself composed  (~14 KB before truncation)
+    //     [User NotifyMessage] × N   one per delegate that finished
+    //     [Assistant TextMessage]    the provisional answer
+    //     [User TextMessage]         the synthesis prompt
+    //     [Assistant TextMessage]    THE REVIEW
+    //
+    // The agent's own answers are structurally LAST, so a single chronological walk that stops at the first
+    // over-budget entry cut exactly them. Measured over 42 live artifacts before this changed: 6 held no
+    // assistant message at all, 5 more held one of two — 11/42 = 26%.
+
+    // ── Sizing these entries is the whole test, and the obvious sizing proves nothing ────────────────
+    //
+    // The first version of this test used context entries WELL OVER MaxEntryChars, on the assumption that
+    // huge context is what crowds out the agent's turns. It isn't, and that version passed even against a
+    // build with the tiering removed. Oversized context is truncated to the cap and then, if the truncated
+    // block still doesn't fit the remaining budget, SKIPPED — and skip-and-continue moves on to the next
+    // entry, so the small assistant turns behind it sail into the leftover space no matter which order the
+    // walk uses. Tiered and chronological give the same answer, and the test says nothing.
+    //
+    // What separates the two algorithms is context that FITS AND FILLS: entries under the per-entry cap
+    // that together consume nearly the whole artifact budget, leaving a remainder too small for the turns
+    // that come after them. Only then does a chronological walk actually starve the agent's own answers.
+    //
+    // Hence 5,800-char context bodies (under the 6,000 cap, so nothing is truncated or skipped) and
+    // 600-char turns. Two context entries take ~11,700 of the 12,000 budget; ~300 is left, and a turn needs
+    // ~650. The margins hold for any per-entry rendering overhead between 0 and 100 chars, so this does not
+    // silently decay if the header format changes.
+
+    /// <summary>Context that fits under the per-entry cap and nearly fills the artifact budget — the only
+    /// shape that can starve the turns behind it. The daemon's real brief alone took 51% of the budget.</summary>
+    private static ReviewAgentTranscriptEntry Brief() =>
+        Entry("TextMessage", "REVIEW BRIEF: " + new string('b', 5_800), role: "user");
+
+    private static ReviewAgentTranscriptEntry Notice(string delegateName, string finding) =>
+        Entry(
+            "NotifyMessage",
+            $"<notification kind=\"subagent-completion\" label=\"{delegateName}\">{finding}"
+                + new string('n', 5_800) + "</notification>",
+            role: "user");
+
+    /// <summary>An assistant turn large enough that it cannot slip into the crumbs a filled budget leaves.</summary>
+    private static ReviewAgentTranscriptEntry Turn(string headline) =>
+        Entry("TextMessage", headline + " " + new string('t', 600));
+
+    [Fact]
+    public async Task The_leads_own_conclusions_survive_a_brief_and_notices_that_would_have_filled_the_budget()
+    {
+        var builder = NewBuilder(new FakeTranscripts(
+            descendant: [Entry("TextMessage", "specialist says")],
+            root:
+            [
+                Brief(),
+                Notice("code-reviewer:schema-compatibility-review", "SCHEMA NOTICE. "),
+                Turn("PROVISIONAL: two blockers so far, children still running."),
+                Entry("TextMessage", "SYNTHESIS PROMPT", role: "user"),
+                Turn("VERDICT: request changes — BLOCKER 1 schema, BLOCKER 2 rollout."),
+            ]));
+
+        var files = await BuildAsync(builder, NewContext(Node("agent-1", "architecture")));
+        var lead = files.Single(f => f.RelativePath.EndsWith("_00_lead-reviewer.md", StringComparison.Ordinal));
+
+        // The whole point. Both of the lead's own turns are present, in full.
+        lead.Content.Should().Contain("PROVISIONAL: two blockers so far");
+        lead.Content.Should().Contain("VERDICT: request changes — BLOCKER 1 schema, BLOCKER 2 rollout.");
+
+        // What gave way instead: context the daemon can reproduce. It is named, counted, and the reader is
+        // told where the full copy lives, so this can never read as a reviewer that had nothing to say.
+        lead.Content.Should().Contain("further context message(s) omitted");
+        lead.Content.Should().Contain("findings file carries its result in full");
+
+        // Selection is tiered; presentation is not. A reader needs the conversation in the order it happened.
+        lead.Content.IndexOf("PROVISIONAL:", StringComparison.Ordinal)
+            .Should().BeLessThan(
+                lead.Content.IndexOf("VERDICT:", StringComparison.Ordinal),
+                "entries are still rendered chronologically — only the selection is tiered");
+    }
+
+    [Fact]
+    public async Task Delegate_completion_notices_are_still_kept_when_the_budget_allows()
+    {
+        // The fix must NOT be "skip every User-role entry". Delegate completion notices carry that role, and
+        // on a small review they are the only in-thread record that a delegate reported at all. Verified
+        // against the live store before deprioritising them: across 43 PRs the per-delegate PR_Findings_*
+        // files were always a superset of these notices (77 files vs 41 notices, zero PRs the other way),
+        // and 90-96% of a notice's substantive lines appear verbatim in its own delegate's file. That makes
+        // them safe to RANK BELOW the lead's own turns — not safe to discard.
+        var builder = NewBuilder(new FakeTranscripts(
+            descendant: [Entry("TextMessage", "specialist says")],
+            root:
+            [
+                Entry("TextMessage", "brief", role: "user"),
+                Entry("NotifyMessage", "DELEGATE REPORTED: missing null check", role: "user"),
+                Entry("TextMessage", "VERDICT: approve with comments."),
+            ]));
+
+        var files = await BuildAsync(builder, NewContext(Node("agent-1", "architecture")));
+        var lead = files.Single(f => f.RelativePath.EndsWith("_00_lead-reviewer.md", StringComparison.Ordinal));
+
+        lead.Content.Should().Contain("DELEGATE REPORTED: missing null check");
+        lead.Content.Should().Contain("brief");
+        lead.Content.Should().Contain("VERDICT: approve with comments.");
+        lead.Content.Should().NotContain("context message(s) omitted");
+    }
+
+    [Fact]
+    public async Task Dropping_one_of_the_agents_own_turns_is_a_warning_not_just_a_line_in_a_file()
+    {
+        // The operator signal. Before this, the only trace of a dropped conclusion was a marker inside a file
+        // nobody opens, while the daemon's summary line reported the artifact count as a success — 138 times.
+        var logs = new CapturingLogger<object>();
+        var builder = new ReviewNotesArtifactBuilder(
+            new FakeTranscripts(
+                descendant: [],
+                root:
+                [
+                    Entry("TextMessage", "ANSWER ONE: " + new string('a', 5_000)),
+                    Entry("TextMessage", "ANSWER TWO: " + new string('b', 5_000)),
+                    Entry("TextMessage", "ANSWER THREE: " + new string('c', 5_000)),
+                ]),
+            logs);
+
+        var files = await BuildAsync(builder, NewContext());
+        var lead = files.Single(f => f.RelativePath.EndsWith("_00_lead-reviewer.md", StringComparison.Ordinal));
+
+        // The file says which kind of loss this was — the agent's own words, not surrounding context.
+        lead.Content.Should().Contain("of this agent's OWN");
+        lead.Content.Should().Contain("only partly recorded");
+
+        // And so does the log, at Warning, naming the agent.
+        logs.MessagesAtLevel(LogLevel.Warning).Should().ContainSingle()
+            .Which.Should().Contain("own turn(s) did not fit").And.Contain("lead reviewer (primary)");
+    }
+
+    [Fact]
+    public async Task An_oversized_own_turn_is_truncated_in_place_never_dropped_whole()
+    {
+        // A findings file whose entire body is the prompt that produced it is worse than one that overran its
+        // budget. What makes that impossible is the relationship between the two constants, pinned below: one
+        // entry can never cost the whole artifact budget, so the first own turn always fits.
+        UntrustedTranscriptText.MaxEntryChars.Should().BeLessThan(
+            UntrustedTranscriptText.MaxArtifactChars,
+            "the first own turn is admitted against the whole artifact budget, so a single entry must never "
+                + "be able to exhaust it — otherwise a lead file could come out holding the prompt and no answer");
+
+        var builder = NewBuilder(new FakeTranscripts(
+            descendant: [],
+            root: [Entry("TextMessage", "SOLE VERDICT: " + new string('v', 40_000))]));
+
+        var files = await BuildAsync(builder, NewContext());
+        var lead = files.Single(f => f.RelativePath.EndsWith("_00_lead-reviewer.md", StringComparison.Ordinal));
+
+        lead.Content.Should().Contain("SOLE VERDICT:");
+        // Bounded, and the reader is told by exactly how much — never a quiet clip.
+        lead.Content.Should().Contain("daemon: truncated");
+        lead.Content.Should().NotContain("of this agent's OWN");
+    }
+
+    [Fact]
+    public void A_failed_read_that_the_tool_layer_called_a_success_is_still_counted()
+    {
+        // THE case this counter exists for. A sandbox Read of a missing path returns a SUCCESSFUL tool
+        // result whose text says the file is not there; the agent is handed that text and moves on, and
+        // nothing between the tool and the review body notices. 167 of these for one reference document
+        // across 82 live review threads went unreported by every one of those reviews.
+        var counted = ReviewNotesArtifactBuilder.CountFailedToolResults(
+        [
+            Entry(
+                "ToolsCallResultMessage",
+                """{"tool_call_results":[{"result":"File does not exist yet: /marketplaces/gb/x.md"}]}""",
+                role: "user"),
+            Entry(
+                "ToolsCallResultMessage",
+                """{"tool_call_results":[{"result":"{\"body\":\"\",\"status\":\"upstream_error\"}"}]}""",
+                role: "user"),
+            Entry(
+                "ToolsCallResultMessage",
+                """{"tool_call_results":[{"result":"/bin/sh: 1: dotnet: not found  [Exit code: 127]"}]}""",
+                role: "user"),
+        ]);
+
+        counted.NotFound.Should().Be(1);
+        counted.Denied.Should().Be(1);
+        counted.Error.Should().Be(1);
+        counted.Total.Should().Be(3);
+    }
+
+    [Fact]
+    public void A_timeout_and_a_transcript_refusal_are_counted_in_their_own_buckets()
+    {
+        // Both families were found by running the classifier over 22,564 live tool results rather than by
+        // reasoning about it, and both were being counted as ordinary content: 302 timeouts and 223 transcript
+        // refusals. Together that is more failures than the not-found population this counter was built for.
+        var counted = ReviewNotesArtifactBuilder.CountFailedToolResults(
+        [
+            Entry(
+                "ToolsCallResultMessage",
+                """{"tool_call_results":[{"result":"Error: Error: Command timed out after 30 seconds"}]}""",
+                role: "user"),
+            Entry(
+                "ToolsCallResultMessage",
+                """{"tool_call_results":[{"result":"You cannot read that agent's transcript."}]}""",
+                role: "user"),
+        ]);
+
+        counted.Timeout.Should().Be(1);
+        counted.Denied.Should().Be(1);
+        counted.Total.Should().Be(2);
+    }
+
+    [Fact]
+    public void Only_tool_traffic_is_counted_so_a_reviewer_discussing_a_failure_is_not_one()
+    {
+        // The counter's entire value is that it is INDEPENDENT of the reviewer's account. Counting an
+        // assistant turn would fold the agent's own words back into the measurement, and a review that
+        // correctly reported a missing file would then read as a review with more failures than one that
+        // stayed silent — inverting the signal.
+        var counted = ReviewNotesArtifactBuilder.CountFailedToolResults(
+        [
+            Entry("TextMessage", "I could not read the reference: File does not exist yet: /x.md"),
+            Entry("UsageMessage", "File does not exist yet: /x.md", role: "user"),
+            Entry("ToolsCallResultMessage", "   ", role: "user"),
+        ]);
+
+        counted.Total.Should().Be(0);
+    }
+
+    [Fact]
+    public void A_tool_result_that_succeeded_is_not_counted_however_much_it_returned()
+    {
+        // The false-positive side, which matters more than the false-negative side here: this number is
+        // read as "how much broke", so a count that grows with how much code the review OPENED would be
+        // worse than no count at all. Both shapes below are ordinary successful reads.
+        var counted = ReviewNotesArtifactBuilder.CountFailedToolResults(
+        [
+            // A source file that happens to discuss missing paths, well past the marker window.
+            Entry(
+                "ToolsCallResultMessage",
+                """{"tool_call_results":[{"result":" """ + new string('/', 400)
+                    + """ // throws when the configured path does not exist"}]}""",
+                role: "user"),
+            // A command that ran and succeeded — the marker is present and its value is zero.
+            Entry(
+                "ToolsCallResultMessage",
+                """{"tool_call_results":[{"result":"16 passed\n\n[Exit code: 0]"}]}""",
+                role: "user"),
+        ]);
+
+        counted.Total.Should().Be(0);
     }
 }

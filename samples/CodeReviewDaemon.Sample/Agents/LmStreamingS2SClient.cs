@@ -67,12 +67,20 @@ internal sealed class LmStreamingS2SClient
     /// checkout, with <paramref name="marketplaces"/> attached so the gateway surfaces the
     /// <c>code-reviewer:*</c> sub-agents. Returns the server's stored workspace (its sanitized
     /// <c>DirectoryRelPath</c> + minted <c>Id</c>).
+    /// <para>
+    /// <paramref name="homeRelPath"/> names a directory INSIDE that mount to start the agent in (the
+    /// gateway's <c>home</c>: it is created if missing, exported as <c>SANDBOX_HOME</c>, and becomes the
+    /// agent's working directory). Null keeps the historical behaviour of starting at the mount root. It is
+    /// what lets several reviews share ONE mount — the per-repo worktree pool — and still each open on
+    /// their own PR's working copy.
+    /// </para>
     /// </summary>
     public async Task<S2SWorkspace> CreateWorkspaceAsync(
         string name,
         string directoryRelPath,
         IReadOnlyList<string> marketplaces,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? homeRelPath = null)
     {
         var body = await SendReadAsync(
             HttpMethod.Post,
@@ -82,6 +90,7 @@ internal sealed class LmStreamingS2SClient
                 Name = name,
                 DirectoryRelPath = directoryRelPath,
                 Marketplaces = marketplaces,
+                HomeRelPath = homeRelPath,
             },
             ct);
         return Deserialize<S2SWorkspace>(body);
@@ -229,6 +238,151 @@ internal sealed class LmStreamingS2SClient
     }
 
     /// <summary>
+    /// Verifies the review host runs with <c>AgentCollaboration__Enabled=true</c>, which is what makes
+    /// <c>GET api/conversations/{id}/agents/{agentId}/transcript</c> answer at all.
+    /// <para>
+    /// With it off — and OFF is the LmStreaming sample's shipped default, so this is the easy mistake — that
+    /// route 404s and <c>ReviewNotesArtifactBuilder</c> writes each delegate's note as a ~750-byte stub
+    /// saying the daemon could not read the transcript. Nothing fails: the review completes, the notes are
+    /// committed, and only the sub-agents' reasoning is missing. Measured on PRs 5501480 and 5501629, where
+    /// the lead-reviewer note was full (the daemon owns that conversation directly) and all five delegate
+    /// notes were stubs. Nor is it retroactive — the hierarchy rows a collaboration-off host persisted carry
+    /// no node record, so those PRs stay stubbed for good. That is why this is a startup assertion and not a
+    /// line in a launch script: a script can be bypassed, run from the wrong directory, or replaced, and the
+    /// daemon checking its own precondition is the half that cannot silently regress.
+    /// </para>
+    /// <para>
+    /// The capability endpoint cannot answer this. Probed against a live host with collaboration ON it
+    /// returns only <c>schemaVersion</c>/<c>messageIdempotency</c>/<c>spawnSuppression</c> and says nothing
+    /// about collaboration, so <see cref="EnsureHostContractAsync"/> could not be extended to cover it. The
+    /// transcript route itself is the probe, and the error CODE discriminates the two 404s:
+    /// <c>collaboration_unavailable</c> means the feature is off, while <c>unknown_thread</c> means the route
+    /// is live and simply does not know this conversation. No real conversation or agent is needed, which is
+    /// what makes the check viable before any review exists.
+    /// </para>
+    /// <para>
+    /// Fails ONLY on that exact code. A 500, a timeout, an empty body or an unrecognised envelope prove
+    /// nothing about the setting, and a startup assertion that trips on an unrelated blip is worse than none:
+    /// it converts a transient hiccup into a daemon that will not boot, and an alarm that cries wolf gets
+    /// removed. Ambiguity passes.
+    /// </para>
+    /// </summary>
+    public async Task EnsureAgentCollaborationAsync(CancellationToken ct)
+    {
+        // BOUNDED, and this is not optional. The check runs inside host startup, so an unreachable or slow
+        // host would otherwise hold the daemon at the HttpClient's 100-second default before concluding
+        // nothing — turning a precondition check into a startup stall. Measured: unbounded, this took the
+        // daemon's own host-startup tests from 15 seconds to over ten minutes. A probe that cannot answer
+        // quickly has not established that collaboration is off, which is the fail-open case anyway.
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        bounded.CancelAfter(CollaborationProbeTimeout);
+
+        HttpResponseMessage response;
+        string body;
+        try
+        {
+            response = await ExecuteAsync(
+                HttpMethod.Get,
+                $"api/conversations/{CollaborationProbeThreadId}/agents/{CollaborationProbeAgentId}/transcript",
+                body: null,
+                bounded.Token);
+            body = await response.Content.ReadAsStringAsync(bounded.Token);
+            response.Dispose();
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // The probe timed out, not the daemon shutting down. Says nothing about the setting.
+            //
+            // The discriminator is the TOKEN, never the exception type, and getting that backwards here is a
+            // genuinely easy mistake with a bad blast radius. HttpClient surfaces its own timeout as
+            // TaskCanceledException, which derives from OperationCanceledException — so the natural-reading
+            // filter `when (ex is not OperationCanceledException)` on the catch below does the exact OPPOSITE
+            // of what it looks like it does on a timeout: it declines to handle it, and the timeout escapes.
+            // Escaping from inside IHostedService.StartAsync does not degrade anything; it aborts host
+            // startup outright. Asking the token instead is what separates the two cases that actually differ
+            // — "we ran out of patience" (pass, we learned nothing) from "the daemon is shutting down"
+            // (propagate, the caller asked us to stop) — and it stays correct no matter which exception type
+            // the transport chooses. This ordering is load-bearing: this catch must precede the general one.
+            return;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Transport failure says nothing about the setting either. The host being unreachable is a real
+            // problem, but it is not THIS problem and it already has its own diagnosis elsewhere.
+            return;
+        }
+
+        if (!string.Equals(TryReadErrorCode(body), CollaborationUnavailableCode, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        throw new ReviewHostContractException(
+            BuildCollaborationDisabledMessage(
+                "This is checked at startup rather than discovered later, because nothing downstream "
+                    + "reports it as a failure."));
+    }
+
+    /// <summary>
+    /// The single actionable statement of what a <c>collaboration_unavailable</c> answer means, shared by the
+    /// startup assertion and the live transcript read so the two sites cannot drift into describing the same
+    /// misconfiguration differently. The route is written elided rather than with the caller's real thread and
+    /// agent ids: those vary per review and say nothing about the setting, and the whole point of the message
+    /// is that the reader can check the claim against the host without reading this source.
+    /// </summary>
+    private string BuildCollaborationDisabledMessage(string closingClause) =>
+        $"The LmStreaming review host at {_baseUrl} is running with agent collaboration DISABLED "
+            + $"(GET api/conversations/.../agents/.../transcript returned '{CollaborationUnavailableCode}'). "
+            + "Restart the review host with AgentCollaboration__Enabled=true. Without it this daemon "
+            + "cannot read any sub-agent's transcript, so every delegate reviewer's note is committed as "
+            + "a placeholder stub instead of its reasoning — the reviews still complete and nothing else "
+            + "reports a problem. It is not retroactive either: PRs reviewed against a collaboration-off "
+            + $"host stay stubbed. {closingClause}";
+
+    /// <summary>A thread id that cannot exist, so the collaboration probe needs no real conversation and has
+    /// no side effect. Its whole job is to make the host choose between two 404 codes.</summary>
+    private const string CollaborationProbeThreadId = "thread-daemon-collaboration-probe";
+
+    /// <summary>Likewise for the agent segment — never resolved, because the thread never matches first.</summary>
+    private const string CollaborationProbeAgentId = "agent-daemon-collaboration-probe";
+
+    /// <summary>The one error code that proves collaboration is off. Anything else passes.</summary>
+    private const string CollaborationUnavailableCode = "collaboration_unavailable";
+
+    /// <summary>How long the startup probe may take before it gives up and passes. Short on purpose: this
+    /// runs inside host startup, and the answer it is looking for comes back in milliseconds from a host
+    /// that is up.</summary>
+    private static readonly TimeSpan CollaborationProbeTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// The <c>code</c> field of an error envelope, or <c>null</c> when the body is not one. Deliberately
+    /// non-throwing, unlike <see cref="ReadStringProperty"/>: this is read to decide whether to REFUSE TO
+    /// START, so a body that is empty, not JSON, or shaped differently must reach the fail-open path rather
+    /// than surfacing as a parse exception that looks like the very failure it cannot establish.
+    /// </summary>
+    private static string? TryReadErrorCode(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            return doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("code", out var code)
+                && code.ValueKind == JsonValueKind.String
+                    ? code.GetString()
+                    : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Queues a user message onto the thread and returns the input id to poll status by.
     /// <para>
     /// <paramref name="suppressSubAgentSpawning"/> asks the host to run THIS turn with no ability to start
@@ -358,12 +512,35 @@ internal sealed class LmStreamingS2SClient
         string agentId,
         CancellationToken ct)
     {
-        var body = await SendReadAsync(
+        using var response = await ExecuteAsync(
             HttpMethod.Get,
             $"api/conversations/{Uri.EscapeDataString(rootThreadId)}"
                 + $"/agents/{Uri.EscapeDataString(agentId)}/transcript",
             body: null,
             ct);
+        var body = await response.Content.ReadAsStringAsync(ct);
+
+        // The second detection point for a collaboration-off host, and the one that runs when the host is
+        // demonstrably up. EnsureAgentCollaborationAsync fails OPEN on purpose — ten seconds, then it passes
+        // on anything it could not establish — so a daemon started beside a host that is still booting, or
+        // running when the host is restarted, has never verified the setting at all. Reading it here closes
+        // both windows.
+        //
+        // It has to be read off the body: EnsureSuccessStatusCode below reports `404 (Not Found)` and throws
+        // the body away, so before this the ONLY trace of the cause was an opaque stub in the notes artifact
+        // saying the daemon could not read the transcript. ReviewNotesArtifactBuilder already logs whatever
+        // this throws and fences it into the findings file, so naming the setting here is enough to make the
+        // stub self-explaining.
+        if (!response.IsSuccessStatusCode
+            && string.Equals(TryReadErrorCode(body), CollaborationUnavailableCode, StringComparison.Ordinal))
+        {
+            throw new ReviewHostContractException(
+                BuildCollaborationDisabledMessage(
+                    "The startup check passed, so the host either came up after the daemon did or was "
+                        + "restarted since — re-running the daemon alone will not re-establish it."));
+        }
+
+        _ = response.EnsureSuccessStatusCode();
         return ParseAgentTranscript(body);
     }
 
@@ -701,12 +878,15 @@ internal sealed class LmStreamingS2SClient
     }
 }
 
-/// <summary>A workspace as returned by the review host's <c>api/workspaces</c> list/create endpoints.</summary>
+/// <summary>A workspace as returned by the review host's <c>api/workspaces</c> list/create endpoints.
+/// <paramref name="HomeRelPath"/> is null both when the workspace starts at its mount root and when the
+/// host predates the field, which are the same thing to every caller here.</summary>
 internal sealed record S2SWorkspace(
     string Id,
     string Name,
     string DirectoryRelPath,
-    IReadOnlyList<string> Marketplaces);
+    IReadOnlyList<string> Marketplaces,
+    string? HomeRelPath = null);
 
 /// <summary>
 /// A polled run status: the top-level <c>Status</c> string (one of <c>NotStarted</c>/<c>InProgress</c>/

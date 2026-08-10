@@ -15,6 +15,27 @@ namespace CodeReviewDaemon.Sample.Tests.Orchestration;
 /// is on, and through the injected (boot-lifetime) runner/fs otherwise — the diff-only path must stay
 /// exactly as it was before this change.
 /// </summary>
+/// <remarks>
+/// <para>
+/// Both cases now set <c>UseS2SReviewAgent: true</c> (#102). They previously ran the default, <c>false</c>,
+/// which <c>Program.cs:278</c> throws on at startup — so they were asserting against a configuration that
+/// cannot boot. Both pass unchanged after the flip.
+/// </para>
+/// <para>
+/// <b>Read carefully what the flip does NOT establish.</b> These still pass on S2S only because this fixture
+/// injects no <c>S2SReviewWorkspacePreparer</c>. With the preparer null, <c>FetchContextAsync</c> skips its
+/// two fail-closed guards and reaches <c>ResolveSandboxAsync</c> — the one provisioner call site that is NOT
+/// gated on modality. In production that combination does not exist: <c>Program.cs</c> refuses to start
+/// unless S2S has an <c>LmStreamingBaseUrl</c> and a workspace base, and those are exactly what wire the
+/// preparer. So <c>UseS2SReviewAgent: true</c> with a null preparer is its own unbootable configuration.
+/// </para>
+/// <para>
+/// The flip therefore removed the "throws at startup" objection without making the fixture
+/// production-shaped, and that is the honest statement of its value: it is a necessary correction, not a
+/// sufficient one. The path these two cover is the subject of #103, which decides whether the daemon-side
+/// provisioner survives at all. If it does not, these go with it.
+/// </para>
+/// </remarks>
 public sealed class DaemonReviewStageExecutorSessionTests
 {
     [Fact]
@@ -23,7 +44,7 @@ public sealed class DaemonReviewStageExecutorSessionTests
         using var db = new TempSqliteDatabase();
         var store = new ReviewStore(db.ConnectionString);
         var provisioner = new RecordingProvisioner();
-        var executor = BuildExecutor(store, new CodeReviewDaemonOptions { EnableToolAssistedReview = true }, provisioner);
+        var executor = BuildExecutor(store, new CodeReviewDaemonOptions { EnableToolAssistedReview = true, UseS2SReviewAgent = true }, provisioner);
         var run = SeedRun(store);
 
         await executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -37,7 +58,7 @@ public sealed class DaemonReviewStageExecutorSessionTests
         using var db = new TempSqliteDatabase();
         var store = new ReviewStore(db.ConnectionString);
         var provisioner = new RecordingProvisioner();
-        var executor = BuildExecutor(store, new CodeReviewDaemonOptions { EnableToolAssistedReview = false }, provisioner);
+        var executor = BuildExecutor(store, new CodeReviewDaemonOptions { EnableToolAssistedReview = false, UseS2SReviewAgent = true }, provisioner);
         var run = SeedRun(store);
 
         await executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);

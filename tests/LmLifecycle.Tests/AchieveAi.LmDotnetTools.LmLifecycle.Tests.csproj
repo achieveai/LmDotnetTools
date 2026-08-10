@@ -1,5 +1,17 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <!--
+      DELIBERATE dual-target — do NOT collapse to net9.0. AchieveAi.LmDotnetTools.LmLifecycle is a
+      SHIPPED package (it carries a PackageId) targeting net8.0;net9.0, so this project is the only
+      thing that executes its net8 build. See the fuller note in
+      tests/Sandbox.Tests/AchieveAi.LmDotnetTools.Sandbox.Tests.csproj — net8 is enforced in CI
+      (ci.yml installs 8.0.x), and the multi-target was added on purpose in 23151f5b, moving
+      net9.0 -> net8.0;net9.0.
+
+      A net8 abort locally ("You must install or update .NET to run this application") means no net8
+      runtime on your machine, not a defect here. Install it or use `dotnet test -f net9.0`. The run
+      exits 1 while its last readable line still says "Passed! ... (net9.0)", so trust the exit code.
+    -->
     <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>

@@ -113,4 +113,48 @@ internal sealed record PullRequestDescriptor
     /// </para>
     /// </summary>
     public string? Author { get; init; }
+
+    /// <summary>
+    /// The PR's title (GitHub <c>title</c>, ADO <c>title</c>) — the change's stated intent in one line.
+    /// Null when the provider payload omits it.
+    /// </summary>
+    public string? Title { get; init; }
+
+    /// <summary>
+    /// The PR's description body (GitHub <c>body</c>, ADO <c>description</c>), as written by its author.
+    /// <para>
+    /// Author-controlled prose, so it is UNTRUSTED DATA wherever it reaches an agent prompt and must be
+    /// framed as quoted content there, never as instructions. Null when the payload omits it.
+    /// </para>
+    /// </summary>
+    public string? Description { get; init; }
+
+    /// <summary>
+    /// The branch the PR merges INTO, in short form (GitHub <c>base.ref</c>; ADO <c>targetRefName</c>
+    /// with its <c>refs/heads/</c> prefix stripped). Null when the provider payload omits it.
+    /// </summary>
+    public string? TargetBranch { get; init; }
+
+    // ── Confidentiality trust signal (design §6 Risk B) ──────────────────────────────────────────
+    /// <summary>
+    /// Whether the PR's head comes from a FORK of the target repo (GitHub: <c>head.repo.full_name</c> differs
+    /// from <c>base.repo.full_name</c>; ADO: the payload carries a <c>forkSource</c>). <c>null</c> means the
+    /// provider could not determine it from the payload it received.
+    /// <para>
+    /// Deliberately nullable, and deliberately NOT defaulted here. This is one half of the gate that decides
+    /// whether a private sibling repo may be co-located beside an untrusted diff, so "the provider says no"
+    /// and "the provider could not tell" must stay distinguishable all the way to the run. <c>PrPollingService</c>
+    /// is the single place that collapses <c>null</c> to the fail-closed <c>true</c> — see
+    /// <see cref="Persistence.Models.ReviewRun.IsForkPr"/>.
+    /// </para>
+    /// </summary>
+    public bool? IsForkPr { get; init; }
+
+    /// <summary>
+    /// Whether the repo the PR targets is publicly visible (GitHub: <c>base.repo.private</c> inverted; ADO:
+    /// <c>repository.project.visibility == "public"</c>). <c>null</c> when the payload does not say.
+    /// Collapsed to the fail-closed <c>true</c> by <c>PrPollingService</c>, exactly like
+    /// <see cref="IsForkPr"/>.
+    /// </summary>
+    public bool? IsTargetRepoPublic { get; init; }
 }

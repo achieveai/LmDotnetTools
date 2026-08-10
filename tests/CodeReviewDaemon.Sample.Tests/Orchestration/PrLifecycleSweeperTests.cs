@@ -60,6 +60,60 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
 
     private static ReviewedPr Pr(string prId, string branch) => new(TargetRepo, "github", prId, branch);
 
+    /// <summary>
+    /// The sweep must report what it saw, because it is the ONLY place at-close knowledge extraction can run
+    /// from — extraction hangs off the Merged path and nowhere else.
+    /// <para>
+    /// This exists because of a diagnosis that could not be completed. Every review brief on the NOVA store
+    /// logged <c>prior-knowledge=0</c> and every knowledge-digest call reported <c>"Listed":0</c>, 120 times
+    /// across two days. The sweep was the prime suspect and could be neither convicted nor cleared, because
+    /// <c>SweepAsync</c> logged NOTHING unless an individual PR threw: "the Knowledge Base is empty because
+    /// no reviewed PR has merged yet" and "…because extraction is broken" produce byte-identical logs. The
+    /// merged tally is what separates them, and the extraction-wired flag is what rules out the third
+    /// possibility — that the agent was never composed in at all.
+    /// </para>
+    /// <para>
+    /// The failing PR is in the fixture deliberately: a lifecycle lookup that throws must be counted, not
+    /// swallowed into the "open" bucket, or the tally would understate the merged population it exists to
+    /// measure.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Sweep_reports_the_lifecycle_tally_of_everything_it_swept()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        var capturing = new CapturingLoggerFactory();
+        var lifecycles = new Dictionary<string, PrLifecycle>(StringComparer.Ordinal)
+        {
+            ["open-pr"] = PrLifecycle.Open,
+            ["merged-pr"] = PrLifecycle.Merged,
+            ["abandoned-pr"] = PrLifecycle.Abandoned,
+        };
+        var sweeper = new PrLifecycleSweeper(
+            _ => Task.FromResult<IReadOnlyList<ReviewedPr>>(
+                [Pr("1", "open-pr"), Pr("2", "merged-pr"), Pr("3", "abandoned-pr"), Pr("4", "unreachable-pr")]),
+            (pr, _) => lifecycles.TryGetValue(pr.Branch, out var lifecycle)
+                ? Task.FromResult(lifecycle)
+                : throw new InvalidOperationException("lifecycle lookup failed"),
+            CreateBranchManager(runner),
+            RepoRoot,
+            DefaultBranch,
+            mergeNotesBranchOnClose: true,
+            capturing.CreateLogger<PrLifecycleSweeper>(),
+            (_, _) => Task.FromResult(KnowledgeExtractionOutcome.Declined));
+
+        await sweeper.SweepAsync(CancellationToken.None);
+
+        capturing.Capturing.CountAtLevel(
+                LogLevel.Information,
+                "1 open, 1 merged, 1 abandoned, 0 already resolved, 1 failed")
+            .Should()
+            .Be(1, "the tally is the whole point — a merged count of 0 is what would explain an empty KB");
+        capturing.Capturing.CountAtLevel(LogLevel.Information, "knowledge extraction is wired")
+            .Should()
+            .Be(1, "an unwired extraction seam is a third, separately-actionable cause of an empty KB");
+    }
+
     [Fact]
     public async Task Sweep_merges_the_notes_branch_of_a_merged_PR_when_merge_on_close_is_enabled()
     {

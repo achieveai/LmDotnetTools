@@ -2,6 +2,20 @@
 # This avoids Windows/Linux/Docker churn and keeps scripts portable.
 * text=auto eol=lf
 
+# C# sources are text, ALWAYS — never left to auto-detection.
+#
+# `text=auto` above decides per file by sniffing content, and a single NUL byte makes it decide
+# "binary": no textual diff, no textual merge, and `grep` silently declines to match. That is not
+# hypothetical here. Two .cs files reached this repo carrying raw NUL bytes as sentinel characters
+# (`"\0no-reviewbot-remote"`, and the mount dedication probe) written as literal bytes rather than
+# as the C# escape `\0`. One of them was Workspace/ReviewSlot.cs, which grew ~10 KB landing the
+# untrusted-PR mount gate — a security seam whose diff nobody could read, because git rendered the
+# whole change as `Bin 3366 -> 13085 bytes`.
+#
+# Declaring the type here removes the sniffing step, so the same mistake stays reviewable instead of
+# disappearing. It does not stop a NUL being committed; it stops one from hiding the change around it.
+*.cs text eol=lf diff
+
 # Scripts and hooks must remain LF for container and Unix execution.
 *.ps1 text eol=lf
 *.sh text eol=lf

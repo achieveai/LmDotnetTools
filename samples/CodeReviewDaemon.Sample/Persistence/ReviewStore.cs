@@ -162,12 +162,14 @@ internal sealed class ReviewStore : IDisposable
                 repo_id, pr_id, head_sha, base_sha, trigger_watermark, review_kind, variant_id, mode,
                 merge_sha, model_provider, model_id, prompt_template_hash, policy_bundle_version,
                 feature_flag_snapshot, stage, workflow_status, pr_lifecycle_state,
-                is_fork_pr, is_target_repo_public, pr_author, created_at, updated_at)
+                is_fork_pr, is_target_repo_public, pr_author,
+                pr_title, pr_description, pr_target_branch, created_at, updated_at)
             VALUES (
                 $repoId, $prId, $head, $base, $watermark, $kind, $variant, $mode,
                 $merge, $modelProvider, $modelId, $promptHash, $policyVersion,
                 $flags, $stage, $workflow, $prState,
-                $isForkPr, $isTargetRepoPublic, $prAuthor, $now, $now);
+                $isForkPr, $isTargetRepoPublic, $prAuthor,
+                $prTitle, $prDescription, $prTargetBranch, $now, $now);
             """;
         _ = insert.Parameters.AddWithValue("$repoId", run.RepoId);
         _ = insert.Parameters.AddWithValue("$prId", run.PrId);
@@ -189,6 +191,9 @@ internal sealed class ReviewStore : IDisposable
         _ = insert.Parameters.AddWithValue("$isForkPr", run.IsForkPr);
         _ = insert.Parameters.AddWithValue("$isTargetRepoPublic", run.IsTargetRepoPublic);
         _ = insert.Parameters.AddWithValue("$prAuthor", (object?)run.PrAuthor ?? DBNull.Value);
+        _ = insert.Parameters.AddWithValue("$prTitle", (object?)run.PrTitle ?? DBNull.Value);
+        _ = insert.Parameters.AddWithValue("$prDescription", (object?)run.PrDescription ?? DBNull.Value);
+        _ = insert.Parameters.AddWithValue("$prTargetBranch", (object?)run.PrTargetBranch ?? DBNull.Value);
         _ = insert.Parameters.AddWithValue("$now", now);
         _ = insert.ExecuteNonQuery();
 
@@ -258,6 +263,141 @@ internal sealed class ReviewStore : IDisposable
     }
 
     /// <summary>
+    /// Re-writes a run's confidentiality trust signal from the freshest poll. Needed because the flags are
+    /// written by <see cref="CreateOrGetReviewRun"/>'s INSERT and never touched again, so without this a
+    /// run keeps whatever the provider could establish on the day it was created — forever, on every later
+    /// poll, not merely on resume.
+    /// </summary>
+    public void UpdateTrustSignal(long id, bool isForkPr, bool isTargetRepoPublic)
+    {
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            UPDATE review_run
+            SET is_fork_pr = $fork, is_target_repo_public = $public, updated_at = $now
+            WHERE id = $id;
+            """;
+        _ = command.Parameters.AddWithValue("$fork", isForkPr);
+        _ = command.Parameters.AddWithValue("$public", isTargetRepoPublic);
+        _ = command.Parameters.AddWithValue("$now", UtcNow());
+        _ = command.Parameters.AddWithValue("$id", id);
+        _ = command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Records that <paramref name="instanceId"/> is working on this run right now. Written when a process
+    /// starts executing a run's stages, so <see cref="WorkflowStatus.Running"/> stops being an unfalsifiable
+    /// claim: without an owner there is no way to tell a run some other daemon is mid-review from one whose
+    /// process died, and reclaiming the wrong one puts two processes on the same PR and the same notes branch.
+    /// <para>
+    /// <paramref name="heartbeatAt"/> is normally "now"; it is a parameter so a test can plant a claim that
+    /// is already old, rather than sleeping for the length of the stale window.
+    /// </para>
+    /// </summary>
+    public void ClaimReviewRun(long id, string instanceId, DateTimeOffset heartbeatAt)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            UPDATE review_run
+            SET owner_instance = $owner, owner_heartbeat_at = $beat
+            WHERE id = $id;
+            """;
+        _ = command.Parameters.AddWithValue("$owner", instanceId);
+        _ = command.Parameters.AddWithValue("$beat", heartbeatAt.ToString("o"));
+        _ = command.Parameters.AddWithValue("$id", id);
+        _ = command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Refreshes the heartbeat on every run <paramref name="instanceId"/> owns — the periodic "still here"
+    /// that keeps a long stage from reading as a dead process. Scoped to this instance's rows on purpose:
+    /// refreshing another instance's claims would keep a dead daemon's rows alive forever and make them
+    /// permanently unreclaimable, which is the original leak with extra steps.
+    /// </summary>
+    public int HeartbeatOwnedRuns(string instanceId, DateTimeOffset now)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            UPDATE review_run
+            SET owner_heartbeat_at = $beat
+            WHERE owner_instance = $owner AND workflow_status = 'Running';
+            """;
+        _ = command.Parameters.AddWithValue("$beat", now.ToString("o"));
+        _ = command.Parameters.AddWithValue("$owner", instanceId);
+        return command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Drops <paramref name="instanceId"/>'s claim on a run it has finished with. Owner-scoped so a process
+    /// can never release a claim it does not hold.
+    /// </summary>
+    public void ReleaseReviewRun(long id, string instanceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            UPDATE review_run
+            SET owner_instance = NULL, owner_heartbeat_at = NULL
+            WHERE id = $id AND owner_instance = $owner;
+            """;
+        _ = command.Parameters.AddWithValue("$id", id);
+        _ = command.Parameters.AddWithValue("$owner", instanceId);
+        _ = command.ExecuteNonQuery();
+    }
+
+    /// <summary>The instance currently claiming this run, or null when nobody holds it.</summary>
+    public string? ReadOwner(long id)
+    {
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = "SELECT owner_instance FROM review_run WHERE id = $id;";
+        _ = command.Parameters.AddWithValue("$id", id);
+        var value = command.ExecuteScalar();
+        return value is null or DBNull ? null : (string)value;
+    }
+
+    /// <summary>
+    /// Returns every run still marked <see cref="WorkflowStatus.Running"/> that no live process can be
+    /// holding to <see cref="WorkflowStatus.RetryPending"/>, clearing the dead claim. Returns how many were
+    /// reclaimed.
+    /// <para>
+    /// Two things make a run reclaimable, and nothing else does. A NULL owner: no code that claims a run
+    /// leaves it NULL, so a NULL-owned Running row predates ownership entirely and cannot belong to a
+    /// process that is still going. Or a heartbeat older than <paramref name="staleAfter"/>: an owner that
+    /// stopped saying it was there.
+    /// </para>
+    /// <para>
+    /// The bias is deliberately toward doing nothing. Declining to reclaim a genuinely dead run costs a
+    /// delayed retry; reclaiming a live one puts two daemons on the same PR, writing into the same notes
+    /// branch — those are not comparable, so <paramref name="staleAfter"/> is set several heartbeats wide
+    /// and every ambiguous case is left alone. The stage is deliberately NOT reset: it is the work already
+    /// done, and the whole point is that a stranded run was holding real completed work.
+    /// </para>
+    /// </summary>
+    public int ReclaimOrphanedRuns(TimeSpan staleAfter)
+    {
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            UPDATE review_run
+            SET workflow_status = 'RetryPending',
+                owner_instance = NULL,
+                owner_heartbeat_at = NULL,
+                updated_at = $now
+            WHERE workflow_status = 'Running'
+              AND (owner_instance IS NULL OR owner_heartbeat_at IS NULL OR owner_heartbeat_at < $cutoff);
+            """;
+        _ = command.Parameters.AddWithValue("$now", UtcNow());
+        _ = command.Parameters.AddWithValue("$cutoff", (DateTimeOffset.UtcNow - staleAfter).ToString("o"));
+        return command.ExecuteNonQuery();
+    }
+
+    /// <summary>
     /// Looks back over prior <c>review_run</c> rows for the same (repoId, prId), excluding
     /// <paramref name="excludeRunId"/> (the run currently being processed), to give a re-review its
     /// context: the head sha it was last reviewed at, and how many rounds have completed so far. Only
@@ -298,6 +438,77 @@ internal sealed class ReviewStore : IDisposable
 
         return new PriorReviewSummary(prevHeadSha, priorReviewCount);
     }
+
+    /// <summary>
+    /// The review text of every EARLIER primary round on this PR that was never delivered to the provider —
+    /// i.e. whose <c>post-review-comment</c> outbox row never reached <see cref="OutboxStatus.Posted"/>.
+    /// Newest round last, so a caller renders them in the order they were found.
+    /// </summary>
+    /// <remarks>
+    /// A re-review is entitled to answer "no new findings since the last review", and on a posting profile
+    /// that is correct — the earlier findings are already ON the PR. On a collect-only profile nothing was
+    /// ever delivered, so the same sentence hands a reader a round that mentions none of the findings the
+    /// bot actually has. Observed on NOVA PR 5503135: round 01 raised two BLOCKERs, its outbox row stayed
+    /// <c>Collected</c>, and round 02's delivered body carried neither. The same hole opens on a posting
+    /// profile whenever an earlier post FAILED, which is why the query keys on delivery status rather than
+    /// on a configuration flag.
+    /// <para>
+    /// Only the PRIMARY variant, and only runs that actually produced review output, for the same reasons
+    /// <see cref="GetPriorReviewSummary"/> filters that way.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<UndeliveredPriorReview> GetUndeliveredPriorReviews(
+        long repoId, string prId, long excludeRunId, string artifactKind)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(prId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(artifactKind);
+
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        // The artifact is the run's LATEST of its kind — the same "latest wins" rule TryGetLatestArtifact
+        // defines — because a run that retried its review stage holds more than one.
+        command.CommandText = """
+            SELECT rr.id AS run_id, rr.head_sha AS head_sha, ra.payload AS payload
+            FROM review_run rr
+            JOIN review_artifact ra ON ra.id = (
+                SELECT id FROM review_artifact
+                WHERE review_run_id = rr.id AND artifact_kind = $kind
+                ORDER BY id DESC LIMIT 1)
+            WHERE rr.repo_id = $repoId AND rr.pr_id = $prId AND rr.variant_id = $variant
+              AND rr.id != $excludeRunId
+              AND rr.stage IN ('Reviewed', 'Judged', 'Posted')
+              AND NOT EXISTS (
+                SELECT 1 FROM review_outbox ob
+                WHERE ob.review_run_id = rr.id
+                  AND ob.operation = $operation
+                  AND ob.status = $posted)
+            ORDER BY rr.id;
+            """;
+        _ = command.Parameters.AddWithValue("$repoId", repoId);
+        _ = command.Parameters.AddWithValue("$prId", prId);
+        _ = command.Parameters.AddWithValue("$variant", PrimaryVariantId);
+        _ = command.Parameters.AddWithValue("$excludeRunId", excludeRunId);
+        _ = command.Parameters.AddWithValue("$kind", artifactKind);
+        _ = command.Parameters.AddWithValue("$operation", PostReviewCommentOperation);
+        _ = command.Parameters.AddWithValue("$posted", nameof(OutboxStatus.Posted));
+
+        var results = new List<UndeliveredPriorReview>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            results.Add(new UndeliveredPriorReview(
+                reader.GetInt64(reader.GetOrdinal("run_id")),
+                reader.GetString(reader.GetOrdinal("head_sha")),
+                reader.GetString(reader.GetOrdinal("payload"))));
+        }
+
+        return results;
+    }
+
+    /// <summary>The outbox operation that delivers a review comment — the one whose status decides whether a
+    /// round reached the PR. Duplicated from <c>ReviewPoster</c> rather than referenced so the persistence
+    /// layer does not depend on the orchestration layer; the pair is pinned by a test.</summary>
+    private const string PostReviewCommentOperation = "post-review-comment";
 
     /// <summary>Stable id of the primary (non-comparison) review variant — see <see cref="GetPriorReviewSummary"/>.</summary>
     private const string PrimaryVariantId = "primary";
@@ -708,6 +919,9 @@ internal sealed class ReviewStore : IDisposable
         IsForkPr = reader.GetBoolean(reader.GetOrdinal("is_fork_pr")),
         IsTargetRepoPublic = reader.GetBoolean(reader.GetOrdinal("is_target_repo_public")),
         PrAuthor = GetNullableString(reader, "pr_author"),
+        PrTitle = GetNullableString(reader, "pr_title"),
+        PrDescription = GetNullableString(reader, "pr_description"),
+        PrTargetBranch = GetNullableString(reader, "pr_target_branch"),
     };
 
     private static OutboxEntry MapOutbox(SqliteDataReader reader) => new()
@@ -755,6 +969,12 @@ internal sealed record ReviewedPrRow(RepoIdentity Repo, string Provider, string 
 /// never completed a review), and how many rounds have completed so far.
 /// </summary>
 internal sealed record PriorReviewSummary(string? PrevHeadSha, int PriorReviewCount);
+
+/// <summary>
+/// An earlier round on the same PR whose review was never delivered to the provider: the run that produced
+/// it, the head it reviewed, and its raw <c>review</c> artifact payload (the caller owns deserialization).
+/// </summary>
+internal sealed record UndeliveredPriorReview(long RunId, string HeadSha, string Payload);
 
 /// <summary>
 /// One hosted conversation still reachable behind a posted deep-link, as enumerated by

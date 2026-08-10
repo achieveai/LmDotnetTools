@@ -149,19 +149,58 @@ internal sealed class PrLifecycleSweeper
     /// <summary>
     /// Fetches the reviewed-PR list once via <c>listReviewedPrsAsync</c>, then resolves each PR's notes
     /// branch per its lifecycle. Never throws for a single PR's failure — see the class summary.
+    /// <para>
+    /// Every sweep emits one summary line, because this method is the sole trigger for at-close knowledge
+    /// extraction and used to be completely silent. An empty Knowledge Base has three quite different causes
+    /// — nothing has merged yet, extraction runs and fails, or the extraction seam was never composed in —
+    /// and without the tally below they are indistinguishable from the outside.
+    /// </para>
     /// </summary>
     public async Task SweepAsync(CancellationToken cancellationToken)
     {
         var reviewedPrs = await _listReviewedPrsAsync(cancellationToken).ConfigureAwait(false);
 
+        _logger.LogDebug(
+            "PR-lifecycle sweep starting over {WatchedCount} reviewed PR(s); {ResolvedCount} already reached a "
+                + "terminal lifecycle this daemon lifetime and will be skipped.",
+            reviewedPrs.Count,
+            _terminallyResolved.Count);
+
+        var open = 0;
+        var merged = 0;
+        var abandoned = 0;
+        var alreadyResolved = 0;
+        var failed = 0;
+
         foreach (var pr in reviewedPrs)
         {
             try
             {
-                await ResolveAsync(pr, cancellationToken).ConfigureAwait(false);
+                switch (await ResolveAsync(pr, cancellationToken).ConfigureAwait(false))
+                {
+                    case SweepOutcome.AlreadyResolved:
+                        alreadyResolved++;
+                        break;
+                    case SweepOutcome.Open:
+                        open++;
+                        break;
+                    case SweepOutcome.Merged:
+                        merged++;
+                        break;
+                    case SweepOutcome.Abandoned:
+                        abandoned++;
+                        break;
+                    default:
+                        throw new ArgumentOutOfRangeException(
+                            nameof(pr), pr, "ResolveAsync returned an unhandled SweepOutcome.");
+                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
+                // Counted, not just logged: a lookup that throws must not be indistinguishable from a PR that
+                // is genuinely still open, or the merged population the tally exists to measure is understated
+                // by exactly the PRs whose state we failed to read.
+                failed++;
                 _logger.LogWarning(
                     ex,
                     "PR-lifecycle sweep failed for {Provider} PR {PrId}; will retry on the next sweep.",
@@ -169,15 +208,41 @@ internal sealed class PrLifecycleSweeper
                     pr.PrId);
             }
         }
+
+        _logger.LogInformation(
+            "PR-lifecycle sweep finished over {WatchedCount} reviewed PR(s): {OpenCount} open, {MergedCount} "
+                + "merged, {AbandonedCount} abandoned, {AlreadyResolvedCount} already resolved, {FailedCount} "
+                + "failed; knowledge extraction is {KnowledgeExtractionState}. At-close knowledge extraction "
+                + "runs on the merged path only, so a merged count of 0 means the Knowledge Base had no "
+                + "opportunity to gain an entry this sweep.",
+            reviewedPrs.Count,
+            open,
+            merged,
+            abandoned,
+            alreadyResolved,
+            failed,
+            _extractKnowledgeAsync is null ? "not wired" : "wired");
     }
 
-    private async Task ResolveAsync(ReviewedPr pr, CancellationToken cancellationToken)
+    /// <summary>What one PR's resolution did, so <see cref="SweepAsync"/> can tally a sweep. Deliberately
+    /// classified by the lifecycle the provider reported rather than by what the notes branch ended up doing:
+    /// a merged PR whose merge is deferred for a knowledge-extraction retry still counts as merged, because
+    /// the question this tally answers is "did anything close that extraction could have run on?".</summary>
+    private enum SweepOutcome
+    {
+        AlreadyResolved,
+        Open,
+        Merged,
+        Abandoned,
+    }
+
+    private async Task<SweepOutcome> ResolveAsync(ReviewedPr pr, CancellationToken cancellationToken)
     {
         // A branch already resolved to a terminal state this lifetime never needs re-resolving; skipping it
         // avoids a per-poll GitHub lifecycle lookup + git no-op for every PR the daemon has ever closed.
         if (_terminallyResolved.Contains(pr.Branch))
         {
-            return;
+            return SweepOutcome.AlreadyResolved;
         }
 
         var lifecycle = await _getPrLifecycleAsync(pr, cancellationToken).ConfigureAwait(false);
@@ -185,14 +250,14 @@ internal sealed class PrLifecycleSweeper
         {
             case PrLifecycle.Open:
                 // Still open: nothing to resolve yet.
-                break;
+                return SweepOutcome.Open;
 
             case PrLifecycle.Merged:
                 if (await ResolveMergedAsync(pr, cancellationToken).ConfigureAwait(false))
                 {
                     _terminallyResolved.Add(pr.Branch);
                 }
-                break;
+                return SweepOutcome.Merged;
 
             case PrLifecycle.Abandoned:
                 await _branchManager.DeleteBranchAsync(_repoRoot, pr.Branch, cancellationToken)
@@ -203,7 +268,7 @@ internal sealed class PrLifecycleSweeper
                     pr.Provider,
                     pr.PrId);
                 _terminallyResolved.Add(pr.Branch);
-                break;
+                return SweepOutcome.Abandoned;
 
             default:
                 throw new ArgumentOutOfRangeException(nameof(pr), lifecycle, "Unhandled PrLifecycle value.");

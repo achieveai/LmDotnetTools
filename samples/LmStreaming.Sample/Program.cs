@@ -873,7 +873,8 @@ try
                     var workspaceRef = new WorkspaceRef(
                         effectiveWorkspaceId,
                         workspace?.DirectoryRelPath,
-                        workspace?.Marketplaces);
+                        workspace?.Marketplaces,
+                        workspace?.HomeRelPath);
                     if (workspace is not null)
                     {
                         try

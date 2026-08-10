@@ -87,6 +87,104 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
         first.LifecycleState.Should().Be(PrLifecycleState.Open);
     }
 
+    /// <summary>
+    /// The PR's own account of itself. Without it the reviewer holds the diff and no claim to measure it
+    /// against, which is how the NOVA fleet ended up reviewing a binary-only revert with nothing to say.
+    /// GitHub sends <c>body: null</c> for a PR opened with no description, so "absent" and "empty" collapse
+    /// to the same null and the brief renders that as an explicit "(the author left the description empty)".
+    /// </summary>
+    [Fact]
+    public async Task ListOpenPullRequests_carries_the_stated_intent_and_nulls_what_the_payload_omits()
+    {
+        const string json = """
+            [
+              {
+                "number": 7,
+                "state": "open",
+                "merged_at": null,
+                "updated_at": "2026-06-01T10:00:00Z",
+                "title": "Revert the revenue report to the Q3 layout",
+                "body": "Rolls back the Q4 rewrite; drill-through was broken.",
+                "head": { "sha": "head-7" },
+                "base": { "sha": "base-7", "ref": "release/2026.08" }
+              },
+              {
+                "number": 9,
+                "state": "open",
+                "merged_at": null,
+                "updated_at": "2026-06-02T12:30:00Z",
+                "title": "Tidy up logging",
+                "body": null,
+                "head": { "sha": "head-9" },
+                "base": { "sha": "base-9" }
+              }
+            ]
+            """;
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/repos/acme/widgets/pulls", json);
+
+        var page = await Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        page.PullRequests[0].Title.Should().Be("Revert the revenue report to the Q3 layout");
+        page.PullRequests[0].Description.Should().Be("Rolls back the Q4 rewrite; drill-through was broken.");
+        page.PullRequests[0].TargetBranch.Should().Be(
+            "release/2026.08", "a fix aimed at a release branch is held to a different bar than one aimed at main");
+
+        page.PullRequests[1].Title.Should().Be("Tidy up logging");
+        page.PullRequests[1].Description.Should().BeNull("body: null is a PR opened with no description");
+        page.PullRequests[1].TargetBranch.Should().BeNull("base carried a sha but no ref");
+    }
+
+    /// <summary>
+    /// The confidentiality trust signal (design §6 Risk B). A fork PR is one whose HEAD repo differs from its
+    /// BASE repo — not one whose head repo merely happens to be a fork of something (<c>head.repo.fork</c> is
+    /// true for every PR opened inside a fork, including same-repo ones, and reading it would deny trust to
+    /// runs that deserve it). Visibility is <c>base.repo.private</c> inverted.
+    /// </summary>
+    [Fact]
+    public async Task ListOpenPullRequests_reads_the_trust_signal_from_the_head_and_base_repos()
+    {
+        const string json = """
+            [
+              {
+                "number": 7,
+                "state": "open",
+                "merged_at": null,
+                "updated_at": "2026-06-01T10:00:00Z",
+                "head": { "sha": "head-7", "repo": { "full_name": "acme/widgets", "fork": false } },
+                "base": { "sha": "base-7", "repo": { "full_name": "acme/widgets", "private": true } }
+              },
+              {
+                "number": 9,
+                "state": "open",
+                "merged_at": null,
+                "updated_at": "2026-06-02T12:30:00Z",
+                "head": { "sha": "head-9", "repo": { "full_name": "mallory/widgets", "fork": true } },
+                "base": { "sha": "base-9", "repo": { "full_name": "acme/widgets", "private": true } }
+              },
+              {
+                "number": 11,
+                "state": "open",
+                "merged_at": null,
+                "updated_at": "2026-06-03T09:00:00Z",
+                "head": { "sha": "head-11" },
+                "base": { "sha": "base-11" }
+              }
+            ]
+            """;
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/repos/acme/widgets/pulls", json);
+
+        var page = await Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        page.PullRequests[0].IsForkPr.Should().BeFalse("head and base name the same repo");
+        page.PullRequests[0].IsTargetRepoPublic.Should().BeFalse("base.repo.private is true");
+
+        page.PullRequests[1].IsForkPr.Should().BeTrue("the head lives in mallory/widgets, the base in acme/widgets");
+
+        page.PullRequests[2].IsForkPr.Should().BeNull("a payload with no repo objects cannot establish the signal");
+        page.PullRequests[2].IsTargetRepoPublic.Should().BeNull(
+            "null is 'could not determine' — the poller, not the provider, applies the fail-closed default");
+    }
+
     [Fact]
     public async Task ListOpenPullRequests_sends_the_request_github_requires()
     {

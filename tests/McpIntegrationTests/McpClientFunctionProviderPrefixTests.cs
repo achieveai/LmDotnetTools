@@ -1,5 +1,6 @@
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.McpIntegrationTests.TestHelpers;
 using AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
 using ModelContextProtocol.Client;
 
@@ -13,26 +14,9 @@ namespace AchieveAi.LmDotnetTools.McpIntegrationTests;
 /// </summary>
 public class McpClientFunctionProviderPrefixTests
 {
-    // Resolve the sample-server apphost cross-platform: the apphost has no extension on
-    // Unix and a ".exe" suffix on Windows (McpServerTests.ServerLocation hardcodes ".exe").
-    private static string ServerCommand =>
-        Path.Combine(
-            Path.GetDirectoryName(typeof(McpClientFunctionProviderPrefixTests).Assembly.Location)!,
-            OperatingSystem.IsWindows()
-                ? "AchieveAi.LmDotnetTools.McpSampleServer.exe"
-                : "AchieveAi.LmDotnetTools.McpSampleServer"
-        );
-
     private static async Task<McpClient> CreateSampleServerClientAsync()
     {
-        var transport = new StdioClientTransport(
-            new StdioClientTransportOptions
-            {
-                Name = "test-server",
-                Command = ServerCommand,
-                Arguments = Array.Empty<string>(),
-            }
-        );
+        var transport = new StdioClientTransport(McpSampleServerProcess.TransportOptions());
 
         return await McpClient.CreateAsync(transport);
     }

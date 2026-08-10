@@ -329,8 +329,49 @@ public sealed class ReviewStoreTests
             "a PR no run recorded an author for stays unknown rather than borrowing another PR's");
     }
 
-    // ── §12 opaque cursor resync tolerance ────────────────────────────────────────────────────────
+    // ── pr_title / pr_description / pr_target_branch (stated intent) ──────────────────────────────
 
+    /// <summary>
+    /// What the PR claims to do is read off the poll payload once, while the PR is still open, and the review
+    /// runs later — so it has to survive the round trip through <c>review_run</c> or the reviewer judges the
+    /// diff with no claim to judge it against. Nulls must reload as nulls: the brief renders "the author left
+    /// the description empty", and an empty string that reloaded as <c>""</c> would render the same while a
+    /// placeholder would not.
+    /// </summary>
+    [Fact]
+    public void The_stated_intent_round_trips_and_stays_null_when_the_provider_gave_none()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+
+        var withIntent = store.CreateOrGetReviewRun(SampleRun(repoId) with
+        {
+            PrTitle = "Revert the Contoso revenue report to the Q3 layout",
+            PrDescription = "Rolls back the Q4 rewrite; drill-through was broken on three pages.",
+            PrTargetBranch = "release/2026.08",
+        });
+        var withoutIntent = store.CreateOrGetReviewRun(SampleRun(repoId) with
+        {
+            PrId = "200",
+            HeadSha = "sha-x",
+            PrTitle = null,
+            PrDescription = null,
+            PrTargetBranch = null,
+        });
+
+        var reloaded = store.GetReviewRun(withIntent.Id)!;
+        reloaded.PrTitle.Should().Be("Revert the Contoso revenue report to the Q3 layout");
+        reloaded.PrDescription.Should().Be("Rolls back the Q4 rewrite; drill-through was broken on three pages.");
+        reloaded.PrTargetBranch.Should().Be("release/2026.08");
+
+        var bare = store.GetReviewRun(withoutIntent.Id)!;
+        bare.PrTitle.Should().BeNull();
+        bare.PrDescription.Should().BeNull();
+        bare.PrTargetBranch.Should().BeNull();
+    }
+
+    // ── §12 opaque cursor resync tolerance ────────────────────────────────────────────────────────
     private const int CurrentCursorVersion = 1;
 
     [Fact]

@@ -14,7 +14,12 @@ internal sealed record CreateSandboxRequestDto(
     [property: JsonPropertyName("auth_providers")] IReadOnlyList<AuthProviderDto>? AuthProviders,
     [property: JsonPropertyName("network")] NetworkDto? Network,
     [property: JsonPropertyName("discovery")] DiscoveryDto? Discovery,
-    [property: JsonPropertyName("marketplaces")] IReadOnlyList<string>? Marketplaces
+    [property: JsonPropertyName("marketplaces")] IReadOnlyList<string>? Marketplaces,
+    // Workspace-relative home directory. Optional and omitted when null (SandboxJson.RestOptions skips
+    // nulls) so a caller that expresses no preference sends the same bytes it always did — gateways
+    // predating the field ignore it, and the one running here creates the directory, exports it as
+    // SANDBOX_HOME and starts operations in it (verified: home "wt/0" ⇒ pwd /workspace/wt/0).
+    [property: JsonPropertyName("home")] string? Home = null
 );
 
 internal sealed record AppRefDto([property: JsonPropertyName("id")] string Id);

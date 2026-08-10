@@ -82,6 +82,136 @@ public sealed class DaemonOperationPolicyTests
             .IsAllowed.Should().BeFalse("the ADO api route is scoped to the run's repository");
     }
 
+    /// <summary>
+    /// The run's own PROJECT-metadata route is reachable read-only. ADO's PR-list payload omits
+    /// <c>repository.project.visibility</c>, so the confidentiality trust signal can only be established
+    /// from <c>GET /{org}/_apis/projects/{project}</c> — which is org-scoped and therefore falls outside
+    /// the repo route prefix every other provider-API call is confined to. Without this the poller's own
+    /// lookup is egress-blocked and the sibling gate stays shut for a reason no configuration can fix.
+    /// <para>
+    /// The exception is exactly one project (the run's) and exactly GET. A different project is still off
+    /// the allow-list, and no WRITE reaches the route: the whole point of the repo-route confinement is
+    /// that untrusted PR code cannot steer the daemon somewhere else with the bot credential, and an
+    /// exception that widened the method or the project would give back what it protects.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void Ado_run_policy_allows_reading_only_the_runs_own_project_metadata()
+    {
+        var policy = DaemonOperationPolicy.BuildForRun(
+            AdoRepo, reviewBotRepoUrl: "https://dev.azure.com/contoso/Platform/_git/reviewbot");
+
+        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
+                "/contoso/_apis/projects/Platform?api-version=7.1")
+            .IsAllowed.Should().BeTrue("the run's project visibility is the trust signal the gate depends on");
+        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
+                "/contoso/_apis/projects/OtherProject?api-version=7.1")
+            .IsAllowed.Should().BeFalse("only the run's own project is in scope");
+        Api(policy, SandboxOperation.PostReviewComment, "dev.azure.com", "POST",
+                "/contoso/_apis/projects/Platform")
+            .IsAllowed.Should().BeFalse("the project route is readable, never writable");
+    }
+
+    /// <summary>
+    /// The three CI routes <c>AdoCiStatusReader</c> needs are reachable read-only. Every one of them is
+    /// PROJECT-scoped — ADO publishes a PR's build verdict, its test totals and the name of the failing test
+    /// project under <c>/{org}/{project}/_apis/…</c>, never under the repository route — so before this
+    /// exception existed all three were denied and the reviewer could not see CI at all. That is not
+    /// hypothetical: PR 5505458's pipeline had 45,051 tests with 1 failure sitting in ADO while the review
+    /// said nothing about it.
+    /// </summary>
+    [Fact]
+    public void Ado_run_policy_allows_reading_the_runs_own_ci_status_routes()
+    {
+        var policy = DaemonOperationPolicy.BuildForRun(
+            AdoRepo, reviewBotRepoUrl: "https://dev.azure.com/contoso/Platform/_git/reviewbot");
+
+        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
+                "/contoso/Platform/_apis/policy/evaluations"
+                    + "?artifactId=vstfs:///CodeReview/CodeReviewId/proj-guid/5505458&api-version=7.1-preview.1")
+            .IsAllowed.Should().BeTrue("the policy evaluation is what names the PR's build at all");
+        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
+                "/contoso/Platform/_apis/build/builds/39168345?api-version=7.1")
+            .IsAllowed.Should().BeTrue();
+        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
+                "/contoso/Platform/_apis/build/builds/39168345/timeline?api-version=7.1")
+            .IsAllowed.Should().BeTrue("the timeline is the only place ADO names the failing test project");
+        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
+                "/contoso/Platform/_apis/test/ResultSummaryByBuild?buildId=39168345&api-version=7.1-preview.1")
+            .IsAllowed.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// The CI exception is honoured for exactly one operation and exactly one project. Both halves matter:
+    /// the confinement exists so untrusted PR code cannot steer the daemon somewhere else carrying the bot
+    /// credential, and a route that widened either the method or the project would hand that back.
+    /// </summary>
+    [Fact]
+    public void Ado_run_policy_denies_the_ci_routes_to_writes_and_to_other_projects()
+    {
+        var policy = DaemonOperationPolicy.BuildForRun(
+            AdoRepo, reviewBotRepoUrl: "https://dev.azure.com/contoso/Platform/_git/reviewbot");
+
+        Api(policy, SandboxOperation.PostReviewComment, "dev.azure.com", "POST",
+                "/contoso/Platform/_apis/build/builds/39168345")
+            .IsAllowed.Should().BeFalse("the CI routes are readable, never writable");
+        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
+                "/contoso/OtherProject/_apis/build/builds/39168345?api-version=7.1")
+            .IsAllowed.Should().BeFalse("only the run's own project is in scope");
+        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
+                "/contoso/OtherProject/_apis/test/ResultSummaryByBuild?buildId=1&api-version=7.1-preview.1")
+            .IsAllowed.Should().BeFalse("only the run's own project is in scope");
+
+        // A sibling project whose name merely STARTS with the run's must not slip through on the prefix.
+        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
+                "/contoso/Platform-Secrets/_apis/build/builds/1?api-version=7.1")
+            .IsAllowed.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The exception names three route roots, not the project's whole <c>_apis</c> surface. A read the CI
+    /// reader does not make — a work-item query, another repo's blobs — is still outside the run's route,
+    /// so widening the reader later is a deliberate edit here rather than something already granted.
+    /// </summary>
+    [Fact]
+    public void Ado_run_policy_does_not_open_the_projects_whole_api_surface()
+    {
+        var policy = DaemonOperationPolicy.BuildForRun(
+            AdoRepo, reviewBotRepoUrl: "https://dev.azure.com/contoso/Platform/_git/reviewbot");
+
+        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
+                "/contoso/Platform/_apis/wit/workitems?ids=1&api-version=7.1")
+            .IsAllowed.Should().BeFalse();
+        Api(policy, SandboxOperation.ReadProviderMetadata, "dev.azure.com", "GET",
+                "/contoso/Platform/_apis/git/repositories/other/items?path=/secrets.txt")
+            .IsAllowed.Should().BeFalse();
+    }
+
+    [Fact]
+    public void GitHub_run_policy_has_no_ci_status_routes()
+    {
+        // The CI routes are an ADO shape. GitHub's checks hang off the repo route the policy already scopes,
+        // so there is nothing to except and nothing is excepted.
+        var policy = DaemonOperationPolicy.BuildForRun(
+            GitHubRepo, reviewBotRepoUrl: "https://github.com/acme/reviewbot.git");
+
+        Api(policy, SandboxOperation.ReadProviderMetadata, "api.github.com", "GET", "/repos/acme/widgets/check-runs")
+            .IsAllowed.Should().BeTrue("that route is under the run's own repo prefix, not an exception");
+        Api(policy, SandboxOperation.ReadProviderMetadata, "api.github.com", "GET", "/_apis/build/builds/1")
+            .IsAllowed.Should().BeFalse();
+    }
+
+    [Fact]
+    public void GitHub_run_policy_has_no_project_metadata_route()
+    {
+        // GitHub has no project layer, so there is nothing to except and the repo route stays the only way in.
+        var policy = DaemonOperationPolicy.BuildForRun(
+            GitHubRepo, reviewBotRepoUrl: "https://github.com/acme/reviewbot.git");
+
+        Api(policy, SandboxOperation.ReadProviderMetadata, "api.github.com", "GET", "/orgs/acme")
+            .IsAllowed.Should().BeFalse();
+    }
+
     [Fact]
     public void A_collect_only_run_policy_denies_writes_regardless_of_route()
     {

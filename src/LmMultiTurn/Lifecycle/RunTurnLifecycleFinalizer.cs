@@ -447,6 +447,12 @@ public sealed class RunTurnLifecycleFinalizer
     /// <param name="approval">The approval decision, when approval was configured.</param>
     /// <param name="error">The failure, when the outcome is not success.</param>
     /// <param name="toolKind">Where it executed. See <see cref="LifecycleToolKinds"/>.</param>
+    /// <param name="resultClass">
+    /// What the result TEXT reports, independently of <paramref name="outcome"/> — see
+    /// <see cref="ToolCompletedPayload.ResultClass"/>. <c>null</c> means not recorded, never
+    /// that nothing went wrong; the two disagree on precisely the case worth finding, a tool call that
+    /// completed cleanly and came back saying the file is not there.
+    /// </param>
     /// <param name="ct">Cancellation token.</param>
     /// <remarks>
     /// For a delayed result this is emitted <em>before</em> the child run it causes starts, so a
@@ -466,6 +472,7 @@ public sealed class RunTurnLifecycleFinalizer
         ToolApprovalSummary? approval = null,
         LifecycleError? error = null,
         string toolKind = LifecycleToolKinds.Host,
+        string? resultClass = null,
         CancellationToken ct = default)
     {
         if (!IsEnabled)
@@ -485,6 +492,7 @@ public sealed class RunTurnLifecycleFinalizer
                 ToolName = toolName,
                 ToolKind = toolKind,
                 Outcome = outcome,
+                ResultClass = resultClass,
                 WasDeferred = wasDeferred,
                 DurationMilliseconds = durationMilliseconds,
                 Approval = approval,

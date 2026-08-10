@@ -39,7 +39,8 @@ public sealed class CodeReviewDaemonOptionsTests
             })
             .Build();
 
-        var options = config.GetSection(CodeReviewDaemonOptions.SectionName).Get<CodeReviewDaemonOptions>();
+        var options = CodeReviewDaemonOptions.Bind(
+            config.GetSection(CodeReviewDaemonOptions.SectionName));
 
         options.Should().NotBeNull();
         options!.EnableCommentPosting.Should().BeTrue();
@@ -65,7 +66,8 @@ public sealed class CodeReviewDaemonOptionsTests
             })
             .Build();
 
-        var options = config.GetSection(CodeReviewDaemonOptions.SectionName).Get<CodeReviewDaemonOptions>();
+        var options = CodeReviewDaemonOptions.Bind(
+            config.GetSection(CodeReviewDaemonOptions.SectionName));
 
         options.Should().NotBeNull();
         options!.ReviewPoolSize.Should().Be(4);
@@ -73,10 +75,72 @@ public sealed class CodeReviewDaemonOptionsTests
         options.ScratchDirName.Should().Be("work");
         options.EnableReviewerWrites.Should().BeTrue();
         options.MergeNotesBranchOnClose.Should().BeFalse();
-        // A distinctive value (not one of the ["Write","Edit","Bash"] defaults) proves the list bound. Note
-        // the config binder APPENDS bound items onto a non-empty default collection rather than replacing it,
-        // so the configured entry is asserted via Contain rather than exact equality.
-        options.WritableToolAllowList.Should().Contain("PrNotes");
+        // A distinctive value (not one of the ["Write","Edit","Bash"] defaults) proves the list bound, and
+        // exact equality proves it REPLACED the default rather than being appended to it — see
+        // Stated_lists_replace_their_defaults_instead_of_appending_to_them.
+        options.WritableToolAllowList.Should().Equal("PrNotes");
+    }
+
+    [Fact]
+    public void Stated_lists_replace_their_defaults_instead_of_appending_to_them()
+    {
+        // The configuration binder builds a collection by KEEPING what the property already holds and
+        // appending the configured entries, so every list here with a non-empty initializer silently becomes
+        // "the default PLUS what the operator asked for". That is not a tidiness complaint: the nova profile
+        // states SubAgentMarketplaces ["gb"], the daemon probed [gb-plugins,gb], and a gateway that publishes
+        // no gb-plugins alias answers 400 — leaving skill support unverified on every run under
+        // RequireSkillSupport, which is precisely the silent degradation that flag exists to prevent.
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["CodeReviewDaemon:Marketplaces:0"] = "gb",
+                ["CodeReviewDaemon:SubAgentMarketplaces:0"] = "gb",
+                ["CodeReviewDaemon:ReadOnlyToolAllowList:0"] = "Read",
+                ["CodeReviewDaemon:WritableToolAllowList:0"] = "PrNotes",
+            })
+            .Build();
+
+        var options = CodeReviewDaemonOptions.Bind(
+            config.GetSection(CodeReviewDaemonOptions.SectionName));
+
+        options.Marketplaces.Should().Equal("gb");
+        options.SubAgentMarketplaces.Should().Equal("gb");
+        options.ReadOnlyToolAllowList.Should().Equal("Read");
+        options.WritableToolAllowList.Should().Equal("PrNotes");
+    }
+
+    [Fact]
+    public void Unstated_lists_keep_the_documented_default()
+    {
+        // The other half of the seeding: replacement must not turn "the operator said nothing" into an empty
+        // list. ReadOnlyToolAllowList is the one that would hurt — it is what the review agent is allowed to
+        // call, so emptying it by accident produces an agent that can read nothing and reviews on the diff
+        // alone, which still looks like a review.
+        var options = CodeReviewDaemonOptions.Bind(
+            new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["CodeReviewDaemon:EnableAdoProvider"] = "true",
+                })
+                .Build()
+                .GetSection(CodeReviewDaemonOptions.SectionName));
+
+        options.EnableAdoProvider.Should().BeTrue("the section was bound at all");
+        options.Marketplaces.Should().Equal(CodeReviewDaemonOptions.DefaultMarketplaces);
+        options.SubAgentMarketplaces.Should().Equal(CodeReviewDaemonOptions.DefaultSubAgentMarketplaces);
+        options.ReadOnlyToolAllowList.Should().Equal(CodeReviewDaemonOptions.DefaultReadOnlyToolAllowList);
+        options.WritableToolAllowList.Should().Equal(CodeReviewDaemonOptions.DefaultWritableToolAllowList);
+    }
+
+    [Fact]
+    public void Binding_an_absent_section_yields_the_conservative_defaults()
+    {
+        var options = CodeReviewDaemonOptions.Bind(
+            new ConfigurationBuilder().Build().GetSection(CodeReviewDaemonOptions.SectionName));
+
+        options.EnableCommentPosting.Should().BeFalse();
+        options.EnabledRepos.Should().BeEmpty();
+        options.ReadOnlyToolAllowList.Should().Equal(CodeReviewDaemonOptions.DefaultReadOnlyToolAllowList);
     }
 
     [Fact]
@@ -93,7 +157,8 @@ public sealed class CodeReviewDaemonOptionsTests
             })
             .Build();
 
-        var options = config.GetSection(CodeReviewDaemonOptions.SectionName).Get<CodeReviewDaemonOptions>();
+        var options = CodeReviewDaemonOptions.Bind(
+            config.GetSection(CodeReviewDaemonOptions.SectionName));
 
         options.Should().NotBeNull();
         options!.ReviewStageDeadlineMinutes.Should().Be(45);

@@ -148,6 +148,16 @@ internal sealed record GitRemoteUrl(GitUrlKind Kind, string Host, string RepoPat
     private const string AdoLegacyHostSuffix = ".visualstudio.com";
 
     /// <summary>
+    /// The implicit TFS collection name that legacy Azure DevOps URLs may carry as their first path
+    /// segment. On <c>dev.azure.com</c> the collection is implied by the organization, so the modern
+    /// URL for the same repo simply omits it.
+    /// </summary>
+    private const string AdoDefaultCollectionSegment = "DefaultCollection";
+
+    /// <summary>The literal path segment that separates an ADO project from its repository name.</summary>
+    private const string AdoGitSegment = "_git";
+
+    /// <summary>
     /// Rewrites a legacy Azure DevOps <c>https://{org}.visualstudio.com/{project}/_git/{repo}</c> URL to the
     /// modern <c>https://dev.azure.com/{org}/{project}/_git/{repo}</c> shape — the org moves from the <b>host</b>
     /// label into the leading <b>path</b> segment. This is a well-known, fixed ADO URL-shape equivalence (not an
@@ -158,6 +168,13 @@ internal sealed record GitRemoteUrl(GitUrlKind Kind, string Host, string RepoPat
     /// Only an HTTPS <c>*.visualstudio.com</c> URL with a single-label org is transformed; every other URL
     /// (different host, non-HTTPS transport, relative, or a multi-label <c>a.b.visualstudio.com</c> that is not a
     /// bare org host) is returned unchanged so the caller's transport/host/path checks stay fail-closed.
+    /// </para>
+    /// <para>
+    /// A legacy URL may also carry the implicit TFS collection as its first path segment
+    /// (<c>{org}.visualstudio.com/DefaultCollection/{project}/_git/{repo}</c>); <c>dev.azure.com</c> implies the
+    /// collection from the org and omits it, so that segment is dropped as part of the same spelling
+    /// equivalence. See <see cref="TryStripDefaultCollection"/> for the guard that keeps a project literally
+    /// <i>named</i> <c>DefaultCollection</c> from being mangled.
     /// </para>
     /// </summary>
     public static GitRemoteUrl CanonicalizeAdoLegacyHost(GitRemoteUrl url)
@@ -177,8 +194,41 @@ internal sealed record GitRemoteUrl(GitUrlKind Kind, string Host, string RepoPat
             return url;
         }
 
-        var rewrittenPath = NormalizeRepoPath($"/{org}{url.RepoPath}");
+        // Drop the collection BEFORE the org is spliced in, so the check inspects the path exactly as the
+        // legacy URL spelled it (collection first) rather than a path whose leading segment is now the org.
+        var path = TryStripDefaultCollection(url.RepoPath);
+        var rewrittenPath = NormalizeRepoPath($"/{org}{path}");
         return url with { Host = "dev.azure.com", RepoPath = rewrittenPath };
+    }
+
+    /// <summary>
+    /// Drops a leading <c>/DefaultCollection</c> from a legacy ADO path, but only when what remains is still a
+    /// well-formed <c>{project}/_git/{repo}</c> — i.e. the segment really was the collection.
+    /// <para>
+    /// The guard exists because a <i>project</i> may itself be named <c>DefaultCollection</c>, giving
+    /// <c>/DefaultCollection/_git/{repo}</c>. Stripping there would leave <c>/_git/{repo}</c>, a path with no
+    /// project at all, which would then either fail to match its allow rule or — worse — match a rule built for
+    /// a different project. Requiring <c>_git</c> to sit at index 1 of the remainder distinguishes the two:
+    /// a real collection leaves project/_git/repo behind, a project of that name leaves _git/repo.
+    /// </para>
+    /// </summary>
+    private static string TryStripDefaultCollection(string repoPath)
+    {
+        var segments = repoPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length < 4
+            || !string.Equals(
+                segments[0], AdoDefaultCollectionSegment, StringComparison.OrdinalIgnoreCase))
+        {
+            return repoPath;
+        }
+
+        // Remainder must be {project}/_git/{repo}: at least 3 segments with _git in the middle position.
+        if (!string.Equals(segments[2], AdoGitSegment, StringComparison.Ordinal))
+        {
+            return repoPath;
+        }
+
+        return "/" + string.Join('/', segments[1..]);
     }
 
     private static (string Host, string Path) SplitHostAndPath(string authorityAndPath)

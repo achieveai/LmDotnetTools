@@ -1,6 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <!-- net9.0 matches 29 of the 33 test projects here, and is the only target that actually RUNS: this
+         box carries runtimes 9/10/11 and no net8, so a net8 leg aborts with "You must install or update
+         .NET" before a single test executes. Multi-targeting net8.0;net9.0 would look more conservative
+         and be strictly worse — see LmLifecycle.Tests, Sandbox.Tests and Sandbox.Integration.Tests, whose
+         net8 legs silently never run while the summary line still reads "Passed!".
+         Referencing the net8.0 ModelConfigGenerator tool from here is fine; net9.0 consumes net8.0
+         assemblies. If that tool is ever multi-targeted, this can follow, but it does not need to. -->
+    <TargetFramework>net9.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <IsPackable>false</IsPackable>

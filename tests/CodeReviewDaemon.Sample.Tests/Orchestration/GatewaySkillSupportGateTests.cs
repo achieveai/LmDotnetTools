@@ -15,11 +15,14 @@ namespace CodeReviewDaemon.Sample.Tests.Orchestration;
 /// WITH: a review that runs anyway does not fail loudly — it quietly posts a shallow review that LOOKS like a
 /// real one, which is worse than no review because a human trusts it.
 ///
-/// The in-process path asserts this against the daemon's OWN sandbox session. On S2S there is no such session
-/// (the review runs inside a conversation the review host provisions), so the equivalent check reads the
-/// gateway's marketplace catalog. These tests pin the three outcomes that distinction creates — supported ⇒
-/// proceed, unsupported ⇒ stop the daemon, UNREADABLE ⇒ warn and retry next run — plus the gating that keeps
-/// the in-process path unchanged.
+/// There is no daemon-owned sandbox session to assert this against: on S2S the review runs inside a
+/// conversation the review host provisions, so the check reads the gateway's marketplace catalog instead.
+/// These tests pin the three outcomes that creates — supported ⇒ proceed, unsupported ⇒ stop the daemon,
+/// UNREADABLE ⇒ warn and retry next run.
+///
+/// This docstring used to add "plus the gating that keeps the in-process path unchanged", and a fourth test
+/// covered it. Both are gone (#102): <c>Program.cs</c> throws at startup on <c>UseS2SReviewAgent: false</c>,
+/// so there is no second path for the gate to leave alone.
 /// </summary>
 public sealed class GatewaySkillSupportGateTests
 {
@@ -205,24 +208,21 @@ public sealed class GatewaySkillSupportGateTests
         lifetime.StopCalls.Should().Be(1);
     }
 
-    [Fact]
-    public async Task InProcessPath_NeverConsultsTheGatewayProbe()
-    {
-        using var db = new TempSqliteDatabase();
-        var store = new ReviewStore(db.ConnectionString);
-        var probe = new FakeGatewaySkillProbe(new GatewaySkillSupport(false, 0, []));
-        var lifetime = new RecordingHostLifetime();
-        var options = new CodeReviewDaemonOptions { RequireSkillSupport = true };
-        var executor = BuildExecutor(store, new FakeReviewAgentLoopFactory(), options, probe, lifetime);
-        var run = SeedRunWithContext(store, prId: "118");
-
-        await executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
-
-        // The in-process path enforces the same flag against its own session, not the catalog. Probing here
-        // would double-enforce and could stop the daemon over a marketplace the in-process review never uses.
-        probe.Calls.Should().Be(0);
-        lifetime.StopCalls.Should().Be(0);
-    }
+    // DELETED (#102): InProcessPath_NeverConsultsTheGatewayProbe.
+    //
+    // It asserted probe.Calls == 0 and lifetime.StopCalls == 0 on `new CodeReviewDaemonOptions()` — i.e. with
+    // UseS2SReviewAgent false, which Program.cs:278 throws on at startup. The test's own NAME is the finding:
+    // it covered "the in-process path", and that path was removed on 2026-08-01 (d1e66d59). It was the only
+    // test in this file not using S2SOptions().
+    //
+    // Construction grounds, and MEASURED rather than argued: adding UseS2SReviewAgent = true to its options
+    // and running it alone fails. On S2S the probe is consulted — that is the entire subject of this file — so
+    // the assertion is not merely unnecessary, it is the opposite of the live behaviour. There is no version
+    // of this test that both boots and passes.
+    //
+    // Nothing is owed in its place. What it was really pinning — that the gate does not double-enforce — is
+    // covered by the three S2S outcome tests above (supported / unsupported / unreadable), which exercise the
+    // one enforcement point that exists.
 
     private static CodeReviewDaemonOptions S2SOptions(
         bool requireSkillSupport = true, bool enableToolAssistedReview = true) =>

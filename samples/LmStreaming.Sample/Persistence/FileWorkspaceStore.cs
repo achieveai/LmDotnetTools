@@ -93,20 +93,37 @@ public sealed class FileWorkspaceStore : IWorkspaceStore
             );
         }
 
+        // A home that was ASKED for but sanitizes away is rejected rather than silently downgraded to the
+        // workspace root: the caller's whole reason for setting it is that the root is the wrong place to
+        // start, and starting there anyway is the failure that looks like success.
+        var home = SanitizeHomeRelPath(dto.HomeRelPath);
+        if (!string.IsNullOrWhiteSpace(dto.HomeRelPath) && home is null)
+        {
+            throw new InvalidOperationException(
+                $"Could not derive a valid workspace home from '{dto.HomeRelPath}'."
+            );
+        }
+
         await _lock.WaitAsync(ct);
         try
         {
             var userWorkspaces = await LoadUserWorkspacesAsync(ct);
 
-            var collision =
-                string.Equals(directory, _defaultWorkspace.DirectoryRelPath, StringComparison.OrdinalIgnoreCase)
-                || userWorkspaces.Any(w =>
-                    string.Equals(w.DirectoryRelPath, directory, StringComparison.OrdinalIgnoreCase)
-                );
+            // Two workspaces collide when they resolve to the same PLACE, which since homes exist is the
+            // (directory, home) pair rather than the directory alone. Several workspaces deliberately share
+            // one mount when that mount holds several working copies — that is the point of a home — and
+            // rejecting them on the directory alone would make only the first of them creatable.
+            bool SamePlace(Workspace other) =>
+                string.Equals(other.DirectoryRelPath, directory, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(other.HomeRelPath ?? string.Empty, home ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+
+            var collision = SamePlace(_defaultWorkspace) || userWorkspaces.Any(SamePlace);
             if (collision)
             {
                 throw new InvalidOperationException(
-                    $"A workspace with directory '{directory}' already exists."
+                    $"A workspace with directory '{directory}'"
+                        + (home is null ? string.Empty : $" and home '{home}'")
+                        + " already exists."
                 );
             }
 
@@ -116,6 +133,7 @@ public sealed class FileWorkspaceStore : IWorkspaceStore
                 Id = Guid.NewGuid().ToString(),
                 Name = name,
                 DirectoryRelPath = directory,
+                HomeRelPath = home,
                 Marketplaces = dto.Marketplaces ?? [],
                 IsSystemDefined = false,
                 CreatedAt = now,
@@ -201,6 +219,59 @@ public sealed class FileWorkspaceStore : IWorkspaceStore
         sanitized = sanitized.Replace("..", string.Empty);
 
         return sanitized.Trim('-');
+    }
+
+    /// <summary>
+    /// Sanitizes a workspace-relative home path. Unlike <see cref="SanitizeDirectory"/> this KEEPS the
+    /// separators — a home exists to name a subdirectory of the mount, so collapsing it to one segment
+    /// would point at a sibling of the intended directory rather than at it. Each segment is run through
+    /// the same character filter, '.'/'..' segments are dropped/rejected, and the result is rejoined with
+    /// '/'. Returns null when the input is blank or nothing safe survives.
+    /// </summary>
+    /// <remarks>
+    /// '..' is REJECTED (null) rather than stripped. Stripping is what <see cref="SanitizeDirectory"/>
+    /// does, and it is safe there only because the result is a single segment either way. Here, silently
+    /// turning 'a/../../etc' into 'a/etc' would answer a traversal attempt with a plausible-looking path
+    /// instead of a refusal, and the caller has no way to tell the two apart.
+    /// </remarks>
+    internal static string? SanitizeHomeRelPath(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        var invalid = new HashSet<char>(Path.GetInvalidFileNameChars()) { '/', '\\' };
+        var segments = new List<string>();
+        foreach (
+            var rawSegment in raw.Trim().Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries)
+        )
+        {
+            var lowered = rawSegment.Trim().ToLowerInvariant();
+            if (lowered == ".")
+            {
+                continue;
+            }
+
+            if (lowered == "..")
+            {
+                return null;
+            }
+
+            var collapsed = string.Join(
+                '-',
+                lowered.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+            );
+            var sanitized = new string([.. collapsed.Where(c => !invalid.Contains(c))]).Trim('-');
+            if (sanitized.Length == 0 || sanitized.Contains("..", StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            segments.Add(sanitized);
+        }
+
+        return segments.Count == 0 ? null : string.Join('/', segments);
     }
 
     private async Task<List<Workspace>> LoadUserWorkspacesAsync(CancellationToken ct)

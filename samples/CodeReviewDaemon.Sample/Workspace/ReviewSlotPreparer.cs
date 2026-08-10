@@ -1,10 +1,56 @@
+using System.Collections.Concurrent;
+using System.Globalization;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Workspace.Git;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
 
 namespace CodeReviewDaemon.Sample.Workspace;
 
-internal sealed record PreparedCheckout(string StoreRoot, string TargetDir, string NotesDir, string Branch);
+/// <summary>
+/// What preparation could establish about the PR's <c>base...head</c> range — the one thing the diff site
+/// cannot work out for itself, because git reports every cause as the same <c>fatal: no merge base</c>.
+/// <para>
+/// The split that matters is permanent versus recoverable. Only
+/// <see cref="UnrelatedHistories"/> is a property of the commit pair rather than of this daemon's
+/// configuration or of the network, so only it may be stated to a PR author as a fact about their branch.
+/// The rest must stay loud and keep retrying: reporting a ceiling we chose, or a fetch that happened to
+/// fail, as "these commits can never be compared" would silently stop reviewing pull requests that a
+/// one-line config change or a retry would have covered.
+/// </para>
+/// </summary>
+internal enum MergeBaseOutcome
+{
+    /// <summary>base and head share a merge base locally; the three-dot diff can be taken.</summary>
+    Resolved,
+
+    /// <summary>
+    /// No merge base, and no depth can produce one: either the checkout is not shallow at all, or deepening
+    /// ran until it stopped extending either commit, meaning both walks reached real roots. A force-push, a
+    /// rewritten history, or an imported repository. Permanent — retrying costs a fetch and changes nothing.
+    /// </summary>
+    UnrelatedHistories,
+
+    /// <summary>Still no merge base when the depth climb hit its ceiling. Recoverable by widening a bound
+    /// this daemon chose, so it stays an error rather than becoming a verdict.</summary>
+    DepthCeilingReached,
+
+    /// <summary>A deepening fetch failed outright (network, auth, a remote refusing the depth). Says nothing
+    /// about whether the commits are related, so it is indeterminate and must be retried.</summary>
+    DeepenFailed,
+}
+
+/// <summary>
+/// A prepared review checkout. <c>MergeBase</c> carries what preparation established about
+/// <c>base...head</c>, and defaults to <see cref="MergeBaseOutcome.Resolved"/> so a caller that never sets
+/// it keeps today's behaviour — the diff runs and a failure throws. That default is deliberately the loud
+/// one: an unset value can never cause a degraded verdict to be posted to a pull request.
+/// </summary>
+internal sealed record PreparedCheckout(
+    string StoreRoot,
+    string TargetDir,
+    string NotesDir,
+    string Branch,
+    MergeBaseOutcome MergeBase = MergeBaseOutcome.Resolved);
 
 internal interface IReviewSlotPreparer
 {
@@ -58,6 +104,16 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
 {
     internal const string SdkOwnershipMarkerFile = ".git/review-store-sdk-owned";
 
+    /// <summary>
+    /// One gate per shared store path, serializing the mutations that land in the shared clone. Static
+    /// because the preparer is not: the S2S host path uses one long-lived instance, but the in-process path
+    /// builds a fresh preparer per sandbox session, and two of those aimed at the same store must still take
+    /// the same lock. Keyed by path for the same reason.
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> SharedStoreLocks =
+        new(StringComparer.Ordinal);
+
+
     private readonly GitRunner _git;
     private readonly ISandboxFileSystem _fileSystem;
     private readonly string _provider;
@@ -65,12 +121,20 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
     private readonly ILogger<ReviewSlotPreparer> _logger;
     private readonly bool _requireSdkOwnershipMarker;
 
+    /// <summary>
+    /// <c>CodeReviewDaemon:EnableObjectStoreMaintenance</c>. Defaults to <c>false</c> here as well as in the
+    /// options record, so a call site that does not thread the setting through cannot accidentally acquire
+    /// the behaviour — the safe value is the one you get by saying nothing.
+    /// </summary>
+    private readonly bool _enableObjectStoreMaintenance;
+
     public ReviewSlotPreparer(
         GitRunner git,
         ISandboxFileSystem fileSystem,
         string provider,
         ILoggerFactory loggerFactory,
-        bool requireSdkOwnershipMarker = false)
+        bool requireSdkOwnershipMarker = false,
+        bool enableObjectStoreMaintenance = false)
     {
         _git = git ?? throw new ArgumentNullException(nameof(git));
         _fileSystem = fileSystem ?? throw new ArgumentNullException(nameof(fileSystem));
@@ -79,6 +143,7 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
         _logger = loggerFactory.CreateLogger<ReviewSlotPreparer>();
         _requireSdkOwnershipMarker = requireSdkOwnershipMarker;
+        _enableObjectStoreMaintenance = enableObjectStoreMaintenance;
     }
 
     public async Task EnsureStoreAsync(string storeRoot, string storeUrl, CancellationToken cancellationToken)
@@ -186,17 +251,924 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         string notesRelPath,
         OperationPolicy policy,
         CancellationToken cancellationToken) =>
-        PrepareAsync(
-            run,
+        slot.UsesSharedStore
+            ? PrepareSharedAsync(
+                slot, run, storeUrl, submoduleRelPath, branch, defaultBranch, notesRelPath, policy,
+                cancellationToken)
+            : PrepareAsync(
+                run,
+                slot.StorePath,
+                slot.ScratchPath,
+                storeUrl,
+                submoduleRelPath,
+                branch,
+                defaultBranch,
+                notesRelPath,
+                policy,
+                cancellationToken);
+
+    /// <summary>
+    /// The per-repository worktree path: one store clone under <see cref="ReviewSlot.SharedStorePath"/> holds
+    /// every object, and the leased slot gets two <c>git worktree</c>s of it — the store on this PR's notes
+    /// branch, and the reviewed submodule at the PR head. Concurrent reviews of one repository therefore share
+    /// a single fetch and a single object database instead of each paying for a full independent clone.
+    /// </summary>
+    /// <remarks>
+    /// Preparation of one repository's shared store is serialized. Slots are otherwise free to run in
+    /// parallel, but <c>fetch</c>, <c>submodule update</c>, and <c>worktree add</c> all mutate state in the
+    /// shared clone; letting two slots do that at once is how you get half-written refs and a lost race on
+    /// the submodule checkout. The lock covers only the shared-store work — the per-slot worktree operations
+    /// afterwards touch disjoint paths.
+    /// </remarks>
+    private async Task<PreparedCheckout> PrepareSharedAsync(
+        ReviewSlot slot,
+        ReviewRun run,
+        string storeUrl,
+        string submoduleRelPath,
+        string branch,
+        string defaultBranch,
+        string notesRelPath,
+        OperationPolicy policy,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(run);
+        ArgumentException.ThrowIfNullOrWhiteSpace(storeUrl);
+        ArgumentException.ThrowIfNullOrWhiteSpace(submoduleRelPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(branch);
+        ArgumentException.ThrowIfNullOrWhiteSpace(defaultBranch);
+        ArgumentException.ThrowIfNullOrWhiteSpace(notesRelPath);
+        ArgumentNullException.ThrowIfNull(policy);
+
+        var shared = slot.SharedStorePath;
+        var gate = SharedStoreLocks.GetOrAdd(shared, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        string submoduleRoot;
+        // Declared outside the gate so the outcome survives the block that establishes it: the diff site
+        // needs to know WHICH merge-base give-up happened, and that is knowable only here.
+        MergeBaseOutcome mergeBase;
+        try
+        {
+            await EnsureStoreAsync(shared, storeUrl, cancellationToken).ConfigureAwait(false);
+            if (await SlotHygiene
+                    .EnsureCleanAsync(_git, shared, cancellationToken, _logger, _fileSystem)
+                    .ConfigureAwait(false)
+                == HygieneVerdict.NeedsReclone)
+            {
+                throw new SlotNeedsRecloneException(
+                    $"Run {run.Id}: shared review store '{shared}' is structurally unusable; re-clone required.");
+            }
+
+            await RunGitOrThrowAsync(
+                    ["-C", shared, "fetch", "origin"], shared, run, "fetching origin", cancellationToken)
+                .ConfigureAwait(false);
+
+            // The shared clone stays parked on the default branch forever; per-PR branches live in the slot
+            // worktrees. Keeping it off the notes branches is what lets an arbitrary number of them exist at
+            // once — a branch checked out here would be unavailable to every slot.
+            //
+            // Parked on the FETCHED default, not the local ref of the same name. `git fetch origin` above
+            // advances origin/<default> and deliberately leaves <default> alone, so a checkout by name pins
+            // this clone to a ref nothing ever moves. Measured on the live NOVA store: local `main` sat at the
+            // initial commit for a day while `origin/main` ran 54 commits ahead of it, and every notes
+            // worktree cut from it inherited a Knowledge Base frozen at "empty" — which is why every review
+            // brief this daemon had ever assembled reported prior-knowledge=0. Nothing commits to this clone
+            // (the sweeper merges in its own checkout), so the reset is a mirror operation, not a discard.
+            await RunGitOrThrowAsync(
+                    ["-C", shared, "checkout", "--force", defaultBranch],
+                    shared,
+                    run,
+                    $"parking the shared store on '{defaultBranch}'",
+                    cancellationToken)
+                .ConfigureAwait(false);
+            await RunGitOrThrowAsync(
+                    ["-C", shared, "reset", "--hard", $"origin/{defaultBranch}"],
+                    shared,
+                    run,
+                    $"advancing '{defaultBranch}' to the fetched origin/{defaultBranch}",
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            submoduleRoot = await EnsureSharedSubmodulesAsync(
+                    shared, run, storeUrl, submoduleRelPath, policy, cancellationToken)
+                .ConfigureAwait(false);
+
+            await RunGitOrThrowAsync(
+                    ["-C", submoduleRoot, "fetch", "origin", run.BaseSha, run.HeadSha],
+                    submoduleRoot,
+                    run,
+                    "fetching the PR commits",
+                    cancellationToken)
+                .ConfigureAwait(false);
+            await ConfigureObjectStoreGcAsync(submoduleRoot, cancellationToken).ConfigureAwait(false);
+            mergeBase = await EnsureMergeBaseAsync(submoduleRoot, run, cancellationToken)
+                .ConfigureAwait(false);
+            await AutoGcAsync(submoduleRoot, run, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _ = gate.Release();
+        }
+
+        var checkoutSource = await ResolveNotesStartPointAsync(shared, branch, defaultBranch, cancellationToken)
+            .ConfigureAwait(false);
+        await EnsureWorktreeAsync(
+                shared, slot.StorePath, run, ["-B", branch, checkoutSource],
+                "the store notes worktree", cancellationToken)
+            .ConfigureAwait(false);
+        if (!string.Equals(checkoutSource, $"origin/{defaultBranch}", StringComparison.Ordinal))
+        {
+            // Reused branch: it was cut from the default at some earlier review and has not seen anything
+            // merged there since. A freshly cut one is already current, so it is skipped.
+            await BringNotesBranchUpToDateAsync(
+                    slot.StorePath, branch, defaultBranch, run, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        await EnsureWorktreeAsync(
+                submoduleRoot, slot.TargetPath, run, ["--detach", run.HeadSha],
+                "the reviewed submodule worktree", cancellationToken)
+            .ConfigureAwait(false);
+        await EnsureReviewedTreeAsync(slot.TargetPath, run, cancellationToken).ConfigureAwait(false);
+
+        await ClearScratchAsync(scratchRoot: slot.ScratchPath, run, cancellationToken).ConfigureAwait(false);
+
+        return new PreparedCheckout(
             slot.StorePath,
-            slot.ScratchPath,
-            storeUrl,
-            submoduleRelPath,
+            slot.TargetPath,
+            PosixJoin(slot.StorePath, notesRelPath),
             branch,
-            defaultBranch,
-            notesRelPath,
-            policy,
-            cancellationToken);
+            mergeBase);
+    }
+
+    /// <summary>
+    /// Initializes the store's submodules in the shared clone once, and returns the reviewed one's root. The
+    /// siblings are initialized too and deliberately left here rather than copied per slot: they are read-only
+    /// context, so every concurrent review of this repo can read the same copy.
+    /// </summary>
+    private async Task<string> EnsureSharedSubmodulesAsync(
+        string shared,
+        ReviewRun run,
+        string storeUrl,
+        string submoduleRelPath,
+        OperationPolicy policy,
+        CancellationToken cancellationToken)
+    {
+        var initializer = new SubmoduleInitializer(
+            _git, _fileSystem, policy, _provider, _loggerFactory.CreateLogger<SubmoduleInitializer>());
+        var outcome = await initializer
+            .InitializeAsync(shared, GitRemoteUrl.Parse(storeUrl), cancellationToken)
+            .ConfigureAwait(false);
+        foreach (var denied in outcome.Denied)
+        {
+            _logger.LogWarning(
+                "Run {RunId}: submodule '{Path}' ({Url}) was not initialized: {Reason}",
+                run.Id,
+                denied.Path,
+                denied.Url,
+                denied.Reason);
+        }
+
+        if (!outcome.InitializedPaths.Contains(submoduleRelPath, StringComparer.Ordinal))
+        {
+            var reason = outcome.Denied
+                .FirstOrDefault(d => string.Equals(d.Path, submoduleRelPath, StringComparison.Ordinal))?.Reason;
+            if (GitFailureClassifier.Classify(reason) != GitFailureKind.Corrupt)
+            {
+                throw new InvalidOperationException(
+                    $"Run {run.Id}: reviewed submodule '{submoduleRelPath}' did not initialize (transient/unknown): {reason}");
+            }
+
+            throw new SlotCorruptException(
+                $"Run {run.Id}: reviewed submodule '{submoduleRelPath}' did not initialize; store needs re-clone. {reason}");
+        }
+
+        return PosixJoin(shared, submoduleRelPath);
+    }
+
+    /// <summary>
+    /// Picks the start point for the PR's notes branch: the published branch when it exists, else the
+    /// FETCHED store default. Read from the shared clone, which is the only place the remote refs live.
+    /// <para>
+    /// The fallback is <c>origin/&lt;default&gt;</c> rather than the bare local ref, and the distinction is
+    /// the whole reason reviews saw no prior knowledge. <c>git fetch</c> advances <c>origin/main</c> and
+    /// never <c>main</c>, so cutting from the local name gave every new notes branch the store as it looked
+    /// when it was first cloned — on the live NOVA store, the initial commit, with an empty
+    /// <c>KnowledgeBase/</c>, for every PR including ones first seen today.
+    /// </para>
+    /// </summary>
+    private async Task<string> ResolveNotesStartPointAsync(
+        string shared, string branch, string defaultBranch, CancellationToken cancellationToken)
+    {
+        var verify = await _git
+            .RunAsync(["-C", shared, "rev-parse", "--verify", $"origin/{branch}"], shared, cancellationToken)
+            .ConfigureAwait(false);
+        return verify.Succeeded ? $"origin/{branch}" : $"origin/{defaultBranch}";
+    }
+
+    /// <summary>
+    /// Brings a REUSED notes branch forward to the fetched default. Reuse is what preserves the PR's own
+    /// accumulated notes across re-reviews, but on its own it also freezes the Knowledge Base at whatever
+    /// existed the day the branch was cut: the branch is created once per PR and kept for its whole life, so
+    /// a PR first seen before any extraction ran would show the reviewer an empty store forever.
+    /// <para>
+    /// Best-effort by design. A conflict here (the generated <c>_toc.md</c>/<c>_index.jsonl</c> are the
+    /// plausible candidates, since extraction rewrites both wholesale on either side) must leave the review
+    /// running on slightly stale knowledge rather than not running at all — but it MUST also unwind, because
+    /// a half-merged index makes every later git step in this worktree fail and leaves the slot poisoned for
+    /// the next lease as well.
+    /// </para>
+    /// </summary>
+    private async Task BringNotesBranchUpToDateAsync(
+        string worktreeRoot, string branch, string defaultBranch, ReviewRun run, CancellationToken cancellationToken)
+    {
+        var merge = await _git
+            .RunAsync(
+                ["-C", worktreeRoot, "merge", "--no-edit", $"origin/{defaultBranch}"],
+                worktreeRoot,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (merge.Succeeded)
+        {
+            return;
+        }
+
+        _logger.LogWarning(
+            "Run {RunId}: could not bring notes branch '{Branch}' up to date with origin/{DefaultBranch} "
+                + "(exit {Exit}): {Stderr}. Continuing on the branch as it stands — the review proceeds with "
+                + "whatever prior knowledge that branch already carries, which may be less than the store holds.",
+            run.Id, branch, defaultBranch, merge.ExitCode, merge.Stderr);
+        _ = await _git
+            .RunAsync(["-C", worktreeRoot, "merge", "--abort"], worktreeRoot, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The depth climb used to reach a base/head merge base in a shallow checkout. The first step covers an
+    /// ordinary PR — a branch tens of commits behind its target — and each later round asks for ten times as
+    /// much, so a long-lived branch is reached in a handful of round trips rather than a fixed two.
+    /// <para>
+    /// A fixed ladder was what run 147 died on: it ran both of its steps and base still sat 1054 commits in
+    /// with no merge base. The climb instead stops on the real question — a fetch that extends neither commit
+    /// means the histories are exhausted — and the ceiling is only a volume bound, so a monorepo whose single
+    /// checkout is already a million objects cannot pull full history silently.
+    /// </para>
+    /// </summary>
+    private const int MergeBaseFirstDepth = 100;
+
+    /// <summary>How much deeper each round reaches than the last. Ten keeps the number of network round
+    /// trips to four across the whole range rather than trading fetches for precision nothing needs.</summary>
+    private const int MergeBaseDepthMultiplier = 10;
+
+    /// <summary>Hard bound on how deep the climb will ask. Past any real default branch, so reaching it means
+    /// something is wrong rather than merely deep.</summary>
+    private const int MergeBaseDepthCeiling = 100_000;
+
+    /// <summary>
+    /// Guarantees the PR's base and head have a merge base locally, deepening a shallow checkout until they do.
+    /// </summary>
+    /// <remarks>
+    /// Every context path diffs the PR three-dot (<c>base...head</c>), which is defined in terms of the merge
+    /// base — so without one, the diff does not come back empty, it comes back as <c>fatal: no merge base</c>
+    /// and the run dies at ContextReady.
+    /// <para>
+    /// A store whose <c>.gitmodules</c> says <c>shallow = true</c> gets its submodule cloned at depth 1, and
+    /// that lone commit becomes a GRAFT ROOT: git reports it as having no parents at all. The default branch
+    /// is what gets cloned and the default branch is what a PR targets, so the truncated commit is routinely
+    /// the PR's own base — parentless, with no ancestry to walk, and therefore no merge base with anything.
+    /// Fetching the PR commits beforehand does not help: it gives HEAD its history, and leaves base the stub
+    /// it already was.
+    /// </para>
+    /// <para>
+    /// Deepening is cheap here in the way that matters. It walks the boundary back along commits whose trees
+    /// the head fetch has very likely already brought down, so what crosses the wire is commit and tree
+    /// objects rather than another copy of the repository.
+    /// </para>
+    /// <para>
+    /// It re-fetches at an absolute <c>--depth</c> rather than the more targeted <c>--deepen</c>, which asks
+    /// for N commits past the CURRENT boundary and would be the better fit. Azure DevOps answers that one with
+    /// <c>fatal: Server does not support --deepen</c>: it advertises the <c>shallow</c> capability that the
+    /// depth-1 clone rode in on, but not <c>deepen-relative</c>. So depth-from-the-tip it is, on the same
+    /// capability that is already known to work against every remote a store's submodules can live on.
+    /// </para>
+    /// <para>
+    /// That swap carries a trap, and it is why the fetch names commits instead of just saying <c>origin</c>.
+    /// <c>--depth</c> does not only deepen — the flag is documented to "deepen or shorten", and it shortens
+    /// exactly the refs the fetch names. Measured on a lab repo: a head with 160 commits of history, named in
+    /// a <c>--depth=100</c> fetch, came back with 100. Here head routinely carries tens of thousands of
+    /// commits while base is the truncated one, so a fetch that named both would slice away the very history
+    /// the merge base is hiding in — and it would do it silently, leaving the same <c>no merge base</c>
+    /// failure with less to work with than before. So each commit is named only while its reachable history
+    /// is still shorter than the depth being asked for, which is deepening by construction.
+    /// </para>
+    /// <para>
+    /// If it still does not resolve, this returns quietly and lets the diff fail with git's own message. The
+    /// tempting fallback — diffing two-dot — is worse than failing: two-dot against a stale base reports the
+    /// TARGET branch's own movement as though the PR had made it, so the reviewer is handed other people's
+    /// changes to review as this author's. A review that does not happen is recoverable; a review of the wrong
+    /// diff is posted to a PR.
+    /// </para>
+    /// </remarks>
+    private async Task<MergeBaseOutcome> EnsureMergeBaseAsync(
+        string repoRoot, ReviewRun run, CancellationToken cancellationToken)
+    {
+        if (await HasMergeBaseAsync(repoRoot, run, cancellationToken).ConfigureAwait(false))
+        {
+            return MergeBaseOutcome.Resolved;
+        }
+
+        var shallow = await _git
+            .RunAsync(["-C", repoRoot, "rev-parse", "--is-shallow-repository"], repoRoot, cancellationToken)
+            .ConfigureAwait(false);
+        if (!shallow.Succeeded
+            || !shallow.Stdout.Trim().Equals("true", StringComparison.OrdinalIgnoreCase))
+        {
+            // Full history already, and still unrelated: the two commits genuinely do not share an ancestor
+            // (a force-pushed rebase, or a base from before a history rewrite). Deepening cannot invent one.
+            _logger.LogWarning(
+                "Run {RunId}: '{Repo}' has no merge base for {Base}...{Head} and is not shallow; the diff "
+                    + "will fail. The base commit is likely orphaned by a force-push or history rewrite.",
+                run.Id,
+                repoRoot,
+                run.BaseSha,
+                run.HeadSha);
+            return MergeBaseOutcome.UnrelatedHistories;
+        }
+
+        // Climb the depth while each round is still buying history, rather than walking a fixed ladder.
+        // Measured live on run 147: the old [100, 1000] ladder ran to completion and was not enough — a
+        // read-only probe of that store afterwards found base truncated at the graft with 1054 commits
+        // reachable, head whole at 34,579, and merge-base still empty. Raising the ladder to a bigger fixed
+        // number only moves the wall to the next repository.
+        //
+        // The loop terminates on the real question instead. Each round records how far each commit reaches;
+        // a completed fetch that extends NEITHER means both walks have hit actual roots, so the histories
+        // are exhausted rather than merely shallow and no depth can ever produce a merge base. That is a
+        // different diagnosis from running out of depth and gets a different message, because it calls for
+        // the opposite operator action.
+        var lastReach = new Dictionary<string, int>(StringComparer.Ordinal);
+        var everFetched = false;
+
+        for (var depth = MergeBaseFirstDepth;
+            depth <= MergeBaseDepthCeiling;
+            depth *= MergeBaseDepthMultiplier)
+        {
+            var targets = new List<string>();
+            var grew = false;
+            foreach (var sha in new[] { run.BaseSha, run.HeadSha })
+            {
+                var reach = await ReachableCountAsync(repoRoot, sha, cancellationToken).ConfigureAwait(false);
+                if (lastReach.TryGetValue(sha, out var before) && reach > before)
+                {
+                    grew = true;
+                }
+
+                lastReach[sha] = reach;
+
+                // Name a commit only while its reachable history is still shorter than the depth being asked
+                // for. `--depth` is documented to "deepen or shorten", and it shortens exactly the refs the
+                // fetch names — so naming a commit that already reaches further would slice away the very
+                // history the merge base is hiding in.
+                if (reach < depth)
+                {
+                    targets.Add(sha);
+                }
+            }
+
+            if (everFetched && !grew)
+            {
+                _logger.LogWarning(
+                    "Run {RunId}: '{Repo}' deepening no longer extends either commit, so both walks have "
+                        + "reached real roots: {Base} and {Head} are on unrelated histories and no depth can "
+                        + "produce a merge base. This is a force-push, a rewritten history, or an imported "
+                        + "repository — widening the clone depth will not help.",
+                    run.Id,
+                    repoRoot,
+                    run.BaseSha,
+                    run.HeadSha);
+                return MergeBaseOutcome.UnrelatedHistories;
+            }
+
+            if (targets.Count == 0)
+            {
+                // This step is too small to ask for anything without shortening. That is not a reason to
+                // stop — it used to `break` here, which is what silently skipped every deeper step once a
+                // commit had passed the last rung — so try a deeper one.
+                continue;
+            }
+
+            var deepen = await _git
+                .RunAsync(
+                    ["-C", repoRoot, "fetch", $"--depth={depth}", "origin", .. targets],
+                    repoRoot,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (!deepen.Succeeded)
+            {
+                _logger.LogWarning(
+                    "Run {RunId}: re-fetching '{Repo}' at depth {Depth} failed (exit {Exit}): {Stderr}",
+                    run.Id,
+                    repoRoot,
+                    depth,
+                    deepen.ExitCode,
+                    deepen.Stderr);
+                return MergeBaseOutcome.DeepenFailed;
+            }
+
+            everFetched = true;
+
+            // Collapse the near-copy this round just landed, BEFORE the next round lands another. Doing it
+            // here rather than once at the end is what bounds the peak: the climb can issue four fetches, and
+            // on the live NOVA store that meant four packs of 7.2-7.7 GB coexisting.
+            await CompactObjectStoreAsync(repoRoot, run, depth, cancellationToken).ConfigureAwait(false);
+
+            if (await HasMergeBaseAsync(repoRoot, run, cancellationToken).ConfigureAwait(false))
+            {
+                _logger.LogInformation(
+                    "Run {RunId}: re-fetched shallow checkout '{Repo}' at depth {Depth} to reach the merge "
+                        + "base of {Base}...{Head}.",
+                    run.Id,
+                    repoRoot,
+                    depth,
+                    run.BaseSha,
+                    run.HeadSha);
+                return MergeBaseOutcome.Resolved;
+            }
+        }
+
+        _logger.LogWarning(
+            "Run {RunId}: '{Repo}' still has no merge base for {Base}...{Head} at the {Depth} depth ceiling; "
+                + "the diff will fail. The PR's branch is older than the daemon will fetch — widen the "
+                + "ceiling only if this repository genuinely needs it, since the bound exists so a monorepo "
+                + "cannot pull full history silently.",
+            run.Id,
+            repoRoot,
+            run.BaseSha,
+            run.HeadSha,
+            MergeBaseDepthCeiling);
+
+        return MergeBaseOutcome.DepthCeilingReached;
+    }
+
+    /// <summary>
+    /// How many commits are reachable from <paramref name="sha"/> right now — its history as git can currently
+    /// see it, which in a shallow checkout stops at the graft boundary rather than at the repository root.
+    /// </summary>
+    /// <remarks>
+    /// Reports 0 when the count cannot be taken, which is the safe answer for the one caller: 0 is below every
+    /// depth step, so the commit is treated as truncated and gets named in the fetch. The realistic reason for
+    /// failure is that the object is not here at all, and a fetch is precisely the fix for that.
+    /// </remarks>
+    private async Task<int> ReachableCountAsync(
+        string repoRoot, string sha, CancellationToken cancellationToken)
+    {
+        var result = await _git
+            .RunAsync(["-C", repoRoot, "rev-list", "--count", sha], repoRoot, cancellationToken)
+            .ConfigureAwait(false);
+        return result.Succeeded && int.TryParse(result.Stdout.Trim(), out var count) ? count : 0;
+    }
+
+    private async Task<bool> HasMergeBaseAsync(
+        string repoRoot, ReviewRun run, CancellationToken cancellationToken)
+    {
+        // `merge-base` exits 1 with NO output when the commits are unrelated, so the exit code alone is the
+        // answer; a missing commit exits 128 instead and is equally "cannot diff these yet".
+        var result = await _git
+            .RunAsync(
+                ["-C", repoRoot, "merge-base", run.BaseSha, run.HeadSha], repoRoot, cancellationToken)
+            .ConfigureAwait(false);
+        return result.Succeeded && !string.IsNullOrWhiteSpace(result.Stdout);
+    }
+
+    /// <summary>
+    /// How many packs a submodule object store may accumulate before git's own housekeeping collapses them.
+    /// </summary>
+    /// <remarks>
+    /// Git's default is 50, and that default is exactly why nothing ever fired: the live NOVA submodule store
+    /// was measured at 45 packs and 30 GB with <c>gc --auto</c> still correctly reporting no work to do.
+    /// Eight bounds the routine drift — one small pack per review from the PR-commit fetch, ~33 MB on that
+    /// store — without paying a full repack of a multi-gigabyte object store every second review.
+    /// </remarks>
+    private const int ObjectStorePackLimit = 8;
+
+    /// <summary>
+    /// Hands this object store to git's own housekeeping, overriding the three defaults that are wrong for a
+    /// store the daemon re-fetches into for the rest of its life.
+    /// </summary>
+    /// <remarks>
+    /// Written here rather than at clone time because the leaking stores are not the ones
+    /// <see cref="CloneStoreAsync"/> creates. The submodule object stores under <c>.git/modules/&lt;path&gt;</c>
+    /// are made by <c>submodule update --init</c> inside <see cref="SubmoduleInitializer"/>, and this is the
+    /// first place afterwards that names one. The writes are idempotent, so repeating them per prepare costs
+    /// three local config writes and no network.
+    /// <para>
+    /// <c>gc.autoPackLimit</c> is the leak's direct cause — see <see cref="ObjectStorePackLimit"/>.
+    /// </para>
+    /// <para>
+    /// <c>gc.autoDetach=false</c> keeps the collapse INSIDE the per-store lock the caller is holding.
+    /// Detaching is the default, and a background gc rewriting the pack directory is precisely the process
+    /// that would still be running when the next lease starts fetching into it.
+    /// </para>
+    /// <para>
+    /// <c>gc.cruftPacks=true</c> is a version guard, not a preference. Unreachable objects have to go
+    /// somewhere, and before git 2.44 the default was to explode them into LOOSE files. Measured on a lab repo
+    /// built to this shape: the same <c>gc --auto</c> that writes one cruft pack with the setting on writes 180
+    /// loose objects with it off. On the live NOVA store 94% of the object database — 970,000 of 1,034,930
+    /// objects — is unreachable deepening spoil, and the sandbox image runs git 2.39, so accepting that default
+    /// would trade a pack leak for a far worse inode one. The setting has existed since 2.37, so both the
+    /// daemon host's 2.53 and the sandbox's 2.39 honour it.
+    /// </para>
+    /// </remarks>
+    private async Task ConfigureObjectStoreGcAsync(string repoRoot, CancellationToken cancellationToken)
+    {
+        if (!_enableObjectStoreMaintenance)
+        {
+            // Gated with the two commands below, and deliberately not treated as the harmless member of the
+            // three. These keys are what git consults when it decides to rewrite packs on its own, so writing
+            // them is a durable change to how the user's store behaves long after this process exits — the
+            // instruction was to leave local packs alone, and a store left on git's defaults is that.
+            return;
+        }
+
+        (string Key, string Value)[] settings =
+        [
+            ("gc.autoPackLimit", ObjectStorePackLimit.ToString(CultureInfo.InvariantCulture)),
+            ("gc.autoDetach", "false"),
+            ("gc.cruftPacks", "true"),
+        ];
+
+        foreach (var (key, value) in settings)
+        {
+            // Best-effort like every other housekeeping step here: a store that will not take its own gc
+            // config still reviews correctly, it just keeps growing, and that is not worth failing a run over.
+            _ = await _git
+                .RunAsync(["-C", repoRoot, "config", key, value], repoRoot, cancellationToken)
+                .ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Collapses the object store into a single pack, immediately after a deepening fetch has landed a
+    /// near-copy of it. Best-effort: housekeeping that fails must cost disk, never a review.
+    /// </summary>
+    /// <remarks>
+    /// This is the fix for the leak. A <c>--depth</c> fetch re-asks from the TIP rather than from the current
+    /// boundary, so each round of the climb brings down the tip's tree closure again instead of only the
+    /// boundary commits it still lacks — and that closure, not the extra depth, is the bulk. The fingerprint is
+    /// unambiguous on the live NOVA store: four packs of 7.2-7.7 GB holding 4,967,095 objects between them but
+    /// only 1,034,930 distinct ones, i.e. the same object set roughly four times over, 30 GB of the store's 31.
+    /// <para>
+    /// <c>--keep-unreachable</c> is not tidiness — it is required for correctness, and a plain
+    /// <c>repack -a -d</c> here would break every review. The PR's base and head arrive by raw SHA, so nothing
+    /// but <c>FETCH_HEAD</c> points at them, and repack's reachability walk does not treat FETCH_HEAD as a
+    /// root. Measured on a lab repo built to this shape: <c>repack -a -d</c> left the store at 144 KB with the
+    /// base commit DROPPED, discarding the deepening that had just been paid for; the same repack with
+    /// <c>--keep-unreachable</c> kept base and head, preserved the merge base and the shallow boundary, left
+    /// the reviewed worktree's HEAD resolvable, passed <c>fsck</c>, and still collapsed four packs into one
+    /// for a 53% saving. Deepening the store again afterwards still worked.
+    /// </para>
+    /// </remarks>
+    private async Task CompactObjectStoreAsync(
+        string repoRoot, ReviewRun run, int depth, CancellationToken cancellationToken)
+    {
+        if (!_enableObjectStoreMaintenance)
+        {
+            // The store keeps the duplicate pack this round just wrote. That is the accepted cost of the
+            // instruction not to touch local packs — see CodeReviewDaemonOptions.EnableObjectStoreMaintenance.
+            return;
+        }
+
+        var repack = await _git
+            .RunAsync(
+                ["-C", repoRoot, "repack", "-a", "-d", "--keep-unreachable"], repoRoot, cancellationToken)
+            .ConfigureAwait(false);
+        if (!repack.Succeeded)
+        {
+            _logger.LogWarning(
+                "Run {RunId}: repacking '{Repo}' after the depth {Depth} fetch failed (exit {Exit}): "
+                    + "{Stderr}. The review proceeds; the near-duplicate pack this round wrote stays on disk.",
+                run.Id,
+                repoRoot,
+                depth,
+                repack.ExitCode,
+                repack.Stderr);
+            return;
+        }
+
+        _logger.LogInformation(
+            "Run {RunId}: repacked '{Repo}' after deepening to {Depth}, collapsing the pack that fetch "
+                + "duplicated.",
+            run.Id,
+            repoRoot,
+            depth);
+    }
+
+    /// <summary>
+    /// Lets git decide whether the routine drift is worth collapsing — the one small pack per review that the
+    /// PR-commit fetch leaves behind, which <see cref="CompactObjectStoreAsync"/> never sees because it only
+    /// runs on the rare deepening path. A no-op until <see cref="ObjectStorePackLimit"/> is crossed, and
+    /// best-effort for the same reason the repack is.
+    /// </summary>
+    private async Task AutoGcAsync(string repoRoot, ReviewRun run, CancellationToken cancellationToken)
+    {
+        if (!_enableObjectStoreMaintenance)
+        {
+            // Left to git's own defaults, which is the status quo: gc.autoPackLimit defaults to 50, so git's
+            // implicit post-fetch auto-gc has been declining to collapse anything all along.
+            return;
+        }
+
+        var gc = await _git
+            .RunAsync(["-C", repoRoot, "gc", "--auto"], repoRoot, cancellationToken)
+            .ConfigureAwait(false);
+        if (!gc.Succeeded)
+        {
+            _logger.LogWarning(
+                "Run {RunId}: auto-gc of '{Repo}' failed (exit {Exit}): {Stderr}. The review proceeds; the "
+                    + "store keeps whatever packs it had.",
+                run.Id,
+                repoRoot,
+                gc.ExitCode,
+                gc.Stderr);
+        }
+    }
+
+    /// <summary>
+    /// Brings <paramref name="worktreePath"/> into existence as a worktree of <paramref name="ownerRepo"/> at
+    /// the requested position, reusing it in place when it is already one.
+    /// </summary>
+    /// <param name="ownerRepo">The repository whose object store the worktree hangs off.</param>
+    /// <param name="worktreePath">Where the worktree should end up.</param>
+    /// <param name="run">The run, for error attribution.</param>
+    /// <param name="positionArgs">
+    /// Where the worktree should be positioned, spelled the way BOTH <c>worktree add</c> and <c>checkout</c>
+    /// read it — <c>-B &lt;branch&gt; &lt;start-point&gt;</c>, or <c>--detach &lt;commit&gt;</c>. One list, not
+    /// a create/reuse pair: the two commands share this vocabulary exactly, and a pair invites the halves to
+    /// drift. They did. The reuse half was once written as the bare <c>&lt;branch&gt; &lt;start-point&gt;</c>
+    /// that reads correctly to a human, but to git <c>checkout &lt;tree-ish&gt; &lt;path&gt;...</c> is the
+    /// restore-files-from-a-tree form, so it took both words as PATHSPECS and failed with "did not match any
+    /// file(s) known to git" — naming the branch, which of course is not a file. Only the second review of a
+    /// PR reached it, because the first created the worktree instead of repositioning one.
+    /// </param>
+    /// <param name="what">Human-readable name of the worktree, for error messages.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// <c>--relative-paths</c> is not optional. It makes git write the worktree's <c>.git</c> file and the
+    /// owner's <c>worktrees/&lt;name&gt;/gitdir</c> as paths relative to each other, which is the only reason
+    /// this survives at all: the mount is at some host path on the daemon box and at <c>/workspace</c> inside
+    /// the sandbox, and absolute pointers written on one side are broken on the other. The extension it
+    /// declares along the way is then withdrawn — see
+    /// <see cref="DropRelativeWorktreesExtensionAsync"/> for why keeping the paths but not the declaration is
+    /// what lets the sandbox's older git read the checkout at all.
+    /// <para>
+    /// A stale worktree still holding the notes branch is detached first. Git refuses to check a branch out in
+    /// two worktrees at once, so a previous run of the same PR that left its worktree parked on that branch
+    /// would otherwise block every later run of it — a permanent failure from a finished run's leftovers.
+    /// </para>
+    /// </remarks>
+    private async Task EnsureWorktreeAsync(
+        string ownerRepo,
+        string worktreePath,
+        ReviewRun run,
+        IReadOnlyList<string> positionArgs,
+        string what,
+        CancellationToken cancellationToken)
+    {
+        // Clears registrations whose directory is gone, so a wiped slot can be re-added at the same path.
+        _ = await _git.RunAsync(["-C", ownerRepo, "worktree", "prune"], ownerRepo, cancellationToken)
+            .ConfigureAwait(false);
+
+        var branchToClaim = positionArgs.Count > 1 && positionArgs[0] == "-B" ? positionArgs[1] : null;
+        if (branchToClaim is not null)
+        {
+            await DetachOtherWorktreeHoldingAsync(ownerRepo, worktreePath, branchToClaim, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        var probe = await _git
+            .RunAsync(["-C", worktreePath, "rev-parse", "--is-inside-work-tree"], worktreePath, cancellationToken)
+            .ConfigureAwait(false);
+        if (probe.Succeeded)
+        {
+            await RunGitOrThrowAsync(
+                    ["-C", worktreePath, "checkout", "--force", .. positionArgs],
+                    worktreePath,
+                    run,
+                    $"repositioning {what} at '{worktreePath}'",
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        else
+        {
+            await RunGitOrThrowAsync(
+                    ["-C", ownerRepo, "worktree", "add", "--relative-paths", "--force", worktreePath, .. positionArgs],
+                    ownerRepo,
+                    run,
+                    $"creating {what} at '{worktreePath}'",
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        await DropRelativeWorktreesExtensionAsync(ownerRepo, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Removes the <c>extensions.relativeWorktrees</c> declaration that <c>worktree add --relative-paths</c>
+    /// leaves behind, and returns the repository format to 0 once no extension is left to justify 1.
+    /// </summary>
+    /// <remarks>
+    /// The relative pointers themselves are the point and are kept — this only withdraws the repo's
+    /// <i>declaration</i> that it uses them, because that declaration is what the sandbox cannot read.
+    /// Setting the extension bumps <c>core.repositoryformatversion</c> to 1, and a format-1 repo naming an
+    /// extension git does not recognise is refused outright rather than degraded: the reviewed checkout came
+    /// back <c>fatal: unknown repository extension found: relativeworktrees</c> for every git command the
+    /// review agent ran. The daemon box is on git 2.53, which writes the extension; the sandbox image is on
+    /// 2.39, which predates it (<c>--relative-paths</c> landed in 2.48). We control what gets written and not
+    /// what reads it, so the write is what gives.
+    /// <para>
+    /// Nothing is lost by withdrawing it. Resolving a relative <c>gitdir:</c> against the directory holding
+    /// the <c>.git</c> file is behaviour far older than the extension, so old and new git both follow the
+    /// pointers either way. Measured on 2.53 with the extension unset: <c>worktree list</c> resolves every
+    /// entry, the <c>worktree prune</c> this method's caller runs first deletes nothing, a later
+    /// <c>--relative-paths</c> add still writes relative pointers on both sides, and moving the whole tree to
+    /// a different absolute path — the host-to-<c>/workspace</c> transition — leaves the worktrees working.
+    /// </para>
+    /// <para>
+    /// The format is only lowered when the extensions section is empty afterwards. Another extension present
+    /// means format 1 is genuinely required, and a repo declaring <c>objectFormat = sha256</c> is one old git
+    /// really cannot read — turning that into silent misinterpretation would be worse than the honest refusal.
+    /// </para>
+    /// </remarks>
+    private async Task DropRelativeWorktreesExtensionAsync(string ownerRepo, CancellationToken cancellationToken)
+    {
+        // Unset fails when there is nothing to unset, which is the ordinary case on every call after the
+        // first, so its exit code says nothing worth acting on.
+        _ = await _git
+            .RunAsync(
+                ["-C", ownerRepo, "config", "--unset", "extensions.relativeWorktrees"],
+                ownerRepo,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        var remaining = await _git
+            .RunAsync(["-C", ownerRepo, "config", "--get-regexp", "^extensions\\."], ownerRepo, cancellationToken)
+            .ConfigureAwait(false);
+        if (remaining.Succeeded && !string.IsNullOrWhiteSpace(remaining.Stdout))
+        {
+            return;
+        }
+
+        _ = await _git
+            .RunAsync(
+                ["-C", ownerRepo, "config", "core.repositoryformatversion", "0"],
+                ownerRepo,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task DetachOtherWorktreeHoldingAsync(
+        string ownerRepo, string worktreePath, string branch, CancellationToken cancellationToken)
+    {
+        var list = await _git
+            .RunAsync(["-C", ownerRepo, "worktree", "list", "--porcelain"], ownerRepo, cancellationToken)
+            .ConfigureAwait(false);
+        if (!list.Succeeded)
+        {
+            return;
+        }
+
+        string? current = null;
+        foreach (var line in list.Stdout.Split('\n'))
+        {
+            var trimmed = line.Trim();
+            if (trimmed.StartsWith("worktree ", StringComparison.Ordinal))
+            {
+                current = trimmed["worktree ".Length..].Trim();
+            }
+            else if (trimmed == $"branch refs/heads/{branch}"
+                && current is not null
+                && !PathsEqual(current, worktreePath))
+            {
+                _logger.LogInformation(
+                    "Detaching stale worktree {Worktree}, which still holds notes branch '{Branch}'.",
+                    current,
+                    branch);
+                _ = await _git
+                    .RunAsync(["-C", current, "checkout", "--detach"], current, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static bool PathsEqual(string left, string right) =>
+        string.Equals(left.TrimEnd('/'), right.TrimEnd('/'), StringComparison.Ordinal);
+
+    /// <summary>
+    /// Returns the reviewed checkout to exactly the PR head with nothing else in it, and proves it did.
+    /// </summary>
+    /// <remarks>
+    /// This directory is the one every review agent is told to read, and it is recycled: the same
+    /// <c>slot-N/repo</c> serves PR after PR, positioned each time by <c>checkout --force</c>. That restores
+    /// every TRACKED file and, by design, leaves untracked ones exactly where they are — so build output,
+    /// generated sources and agent byproduct from the PREVIOUS review survive into the next one and read to an
+    /// agent as part of the PR in front of it. Nothing else covers this: <see cref="SlotHygiene"/> does the
+    /// <c>reset --hard</c> + <c>clean -ffdx</c>, but it is only ever handed a store path, and under the
+    /// worktree layout the reviewed checkout is a SIBLING of the store rather than a directory inside it.
+    /// <para>
+    /// The two probes afterwards are the part that fails loudly. A tree parked on the wrong commit produces a
+    /// review whose every finding is attributed to code the agent never saw, and there is nothing downstream
+    /// — not the diff, which is commit-to-commit and stays correct regardless, not the notes, not the posted
+    /// comment — that can tell that apart from a real review. Refusing to prepare is the only outcome that
+    /// does not silently publish it: the caller surfaces the failure, the stage retries with no artifact
+    /// persisted, and the retry governor bounds it.
+    /// </para>
+    /// <para>
+    /// A probe that cannot RUN is treated differently from one that runs and disagrees. An unavailable probe
+    /// leaves the question unanswered rather than answering it badly, and refusing every review on an
+    /// unanswered question turns a transient git hiccup into a review outage — so it warns and proceeds.
+    /// Submodule state is excluded from the cleanliness check for the reason
+    /// <see cref="SlotHygiene.EnsureCleanAsync"/> excludes it on the store: a moved gitlink is the review's
+    /// own to re-establish, not leftover content, and gating on it would fail every submodule-bearing repo.
+    /// </para>
+    /// </remarks>
+    private async Task EnsureReviewedTreeAsync(
+        string targetDir, ReviewRun run, CancellationToken cancellationToken)
+    {
+        var cleaned = await _git
+            .RunAsync(["-C", targetDir, "clean", "-ffdx"], targetDir, cancellationToken)
+            .ConfigureAwait(false);
+        if (!cleaned.Succeeded)
+        {
+            _logger.LogWarning(
+                "Run {RunId}: clearing untracked leftovers from the reviewed checkout '{TargetDir}' failed "
+                    + "(exit {Exit}): {Stderr}. The cleanliness probe below is the gate.",
+                run.Id, targetDir, cleaned.ExitCode, cleaned.Stderr);
+        }
+
+        var head = await _git
+            .RunAsync(["-C", targetDir, "rev-parse", "HEAD"], targetDir, cancellationToken)
+            .ConfigureAwait(false);
+        var actualHead = head.Stdout?.Trim() ?? string.Empty;
+        if (!head.Succeeded || actualHead.Length == 0)
+        {
+            _logger.LogWarning(
+                "Run {RunId}: could not read the reviewed checkout's HEAD at '{TargetDir}' (exit {Exit}): "
+                    + "{Stderr}. Proceeding unverified — the review is NOT known to be reading {HeadSha}.",
+                run.Id, targetDir, head.ExitCode, head.Stderr, run.HeadSha);
+            return;
+        }
+
+        if (!string.Equals(actualHead, run.HeadSha, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Run {run.Id}: the reviewed checkout '{targetDir}' is on {actualHead}, not the PR head "
+                + $"{run.HeadSha}; refusing to review a tree that is not the pull request.");
+        }
+
+        var status = await _git
+            .RunAsync(
+                ["-C", targetDir, "status", "--porcelain", "--ignore-submodules=all"],
+                targetDir,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (!status.Succeeded)
+        {
+            _logger.LogWarning(
+                "Run {RunId}: could not probe the reviewed checkout '{TargetDir}' for leftovers (exit {Exit}): "
+                    + "{Stderr}. Proceeding on the verified head alone.",
+                run.Id, targetDir, status.ExitCode, status.Stderr);
+            return;
+        }
+
+        var leftovers = status.Stdout?.Trim() ?? string.Empty;
+        if (leftovers.Length > 0)
+        {
+            throw new InvalidOperationException(
+                $"Run {run.Id}: the reviewed checkout '{targetDir}' is still dirty after cleaning, so it is "
+                + $"not the pull request's tree: {Truncate(leftovers)}");
+        }
+
+        _logger.LogInformation(
+            "Run {RunId}: reviewed checkout '{TargetDir}' verified clean at the PR head {HeadSha}.",
+            run.Id, targetDir, run.HeadSha);
+    }
+
+    /// <summary>Bounds a git status listing so a wholly-unexpected tree cannot produce an unbounded message.</summary>
+    private static string Truncate(string text) =>
+        text.Length <= 512 ? text : string.Concat(text.AsSpan(0, 512), "… (truncated)");
+
+    private async Task ClearScratchAsync(string scratchRoot, ReviewRun run, CancellationToken cancellationToken)
+    {
+        if (_fileSystem is HostFileSystem)
+        {
+            ClearHostScratch(scratchRoot);
+            return;
+        }
+
+        await RunCommandOrThrowAsync(["rm", "-rf", "--", scratchRoot], run, "clearing scratch", cancellationToken)
+            .ConfigureAwait(false);
+        await RunCommandOrThrowAsync(["mkdir", "-p", "--", scratchRoot], run, "creating scratch", cancellationToken)
+            .ConfigureAwait(false);
+    }
 
     public async Task<PreparedCheckout> PrepareAsync(
         ReviewRun run,
@@ -237,7 +1209,9 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         var verify = await _git
             .RunAsync(["-C", storeRoot, "rev-parse", "--verify", $"origin/{branch}"], storeRoot, cancellationToken)
             .ConfigureAwait(false);
-        var checkoutSource = verify.Succeeded ? $"origin/{branch}" : defaultBranch;
+        // origin/<default>, never the bare local ref — see ResolveNotesStartPointAsync for why the two are
+        // not interchangeable after a fetch.
+        var checkoutSource = verify.Succeeded ? $"origin/{branch}" : $"origin/{defaultBranch}";
         await RunGitOrThrowAsync(
                 ["-C", storeRoot, "checkout", "-B", branch, checkoutSource],
                 storeRoot,
@@ -245,6 +1219,11 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
                 $"checking out branch '{branch}' from '{checkoutSource}'",
                 cancellationToken)
             .ConfigureAwait(false);
+        if (verify.Succeeded)
+        {
+            await BringNotesBranchUpToDateAsync(storeRoot, branch, defaultBranch, run, cancellationToken)
+                .ConfigureAwait(false);
+        }
 
         var initializer = new SubmoduleInitializer(
             _git, _fileSystem, policy, _provider, _loggerFactory.CreateLogger<SubmoduleInitializer>());
@@ -283,6 +1262,9 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
                 "fetching the PR commits",
                 cancellationToken)
             .ConfigureAwait(false);
+        await ConfigureObjectStoreGcAsync(targetDir, cancellationToken).ConfigureAwait(false);
+        var mergeBase = await EnsureMergeBaseAsync(targetDir, run, cancellationToken).ConfigureAwait(false);
+        await AutoGcAsync(targetDir, run, cancellationToken).ConfigureAwait(false);
         await RunGitOrThrowAsync(
                 ["-C", targetDir, "checkout", "--force", run.HeadSha],
                 targetDir,
@@ -290,26 +1272,16 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
                 "checking out the PR head",
                 cancellationToken)
             .ConfigureAwait(false);
+        await EnsureReviewedTreeAsync(targetDir, run, cancellationToken).ConfigureAwait(false);
 
-        if (_fileSystem is HostFileSystem)
-        {
-            ClearHostScratch(scratchRoot);
-        }
-        else
-        {
-            await RunCommandOrThrowAsync(
-                    ["rm", "-rf", "--", scratchRoot], run, "clearing scratch", cancellationToken)
-                .ConfigureAwait(false);
-            await RunCommandOrThrowAsync(
-                    ["mkdir", "-p", "--", scratchRoot], run, "creating scratch", cancellationToken)
-                .ConfigureAwait(false);
-        }
+        await ClearScratchAsync(scratchRoot, run, cancellationToken).ConfigureAwait(false);
 
         return new PreparedCheckout(
             storeRoot,
             targetDir,
             PosixJoin(storeRoot, notesRelPath),
-            branch);
+            branch,
+            mergeBase);
     }
 
     private async Task RunGitOrThrowAsync(

@@ -210,15 +210,36 @@ public sealed class MultiTurnAgentReplayTests
     [Fact]
     public async Task Concurrent_subscribe_during_active_publishing_delivers_each_message_exactly_once()
     {
-        // Exercises the real race the `_replayLock` guards: a subscriber registering WHILE a
-        // publisher is actively publishing. With a single serial publisher the messages are totally
-        // ordered, so the subscriber must observe a contiguous, gap-free, duplicate-free run made of
-        // a replay prefix + a live suffix.
+        // A subscriber registering part-way through a run must observe a contiguous, gap-free,
+        // duplicate-free sequence made of a replay prefix it snapshotted plus a live suffix
+        // published afterwards, concurrently with it draining. With a single serial publisher the
+        // messages are totally ordered, so any gap or duplicate is a defect.
+        //
+        // WHAT THIS TEST DOES NOT COVER, stated because the name suggests otherwise: it does not
+        // guard the register-AND-snapshot atomicity that `_replayLock` exists to provide. Moving
+        // `_outputSubscribers[subscriberId] = channel` OUTSIDE that lock — the exact defect the
+        // lock's comment describes — leaves this test green 20 of 20, and in fact leaves all 10
+        // tests in this file green. Hitting that window needs a publish to land between the
+        // registration and the snapshot, and nothing here can schedule that from outside.
+        //
+        // The publisher must also not be allowed to FINISH the run before the subscriber registers,
+        // and nothing but `subscribed` below prevents that. `RunCompletedMessage` clears the replay
+        // buffer (see PublishToAllAsync), so a subscriber registering afterwards snapshots nothing
+        // and then waits for a run that will never publish again — a wait only this test's own
+        // token ends. That wait is CORRECT production behaviour (a late joiner reads persisted
+        // history instead, which is what
+        // Subscriber_joining_after_run_completed_does_not_replay_the_finished_run pins); it was this
+        // arrangement that was wrong. Left ungated, the publisher won every time this test ran on
+        // its own — 20 of 20, each failing at the full 15s timeout rather than on an assertion —
+        // and won only sometimes under full-suite load, which is what made it read as an
+        // intermittent race. Registration happens inside the first MoveNextAsync, so receiving any
+        // message proves it.
         await using var agent = new ReplayTestAgent("thread-1");
         const string runId = "run-1";
         const string genId = "gen-1";
         const int total = 500;
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var subscribed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         await agent.PublishForTest(Assignment("thread-1", runId, genId));
 
@@ -226,6 +247,18 @@ public sealed class MultiTurnAgentReplayTests
         {
             for (var i = 0; i < total; i++)
             {
+                // Hold the run open at the midpoint until the subscriber has registered. This is what
+                // guarantees the subscriber sees BOTH halves of the contract — a replay prefix it
+                // snapshotted and a live suffix published afterwards, concurrently with it draining.
+                // Waiting at the END instead would let the publisher emit all 500 first, leaving a
+                // pure-replay run that asserts the same things while exercising none of the race.
+                // The assignment above is already buffered, so the subscriber is guaranteed a message
+                // to register on and this wait cannot deadlock whichever side arrives first.
+                if (i == total / 2)
+                {
+                    await subscribed.Task;
+                }
+
                 await agent.PublishForTest(TextDelta(runId, genId, i.ToString()));
             }
 
@@ -235,6 +268,8 @@ public sealed class MultiTurnAgentReplayTests
         var received = new List<int>();
         await foreach (var m in agent.SubscribeAsync(cts.Token))
         {
+            _ = subscribed.TrySetResult();
+
             if (m is TextUpdateMessage t && int.TryParse(t.Text, out var n))
             {
                 received.Add(n);

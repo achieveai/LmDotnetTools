@@ -1,7 +1,25 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <!--
+      net9.0, matching ModelConfigGenerator.Tests and the repo's 29-of-33 majority.
+
+      THE PRINCIPLE, same one that KEEPS the net8 leg in tests/Sandbox.Tests: a target framework is a
+      SUPPORT COMMITMENT only for something that ships. Judge a TFM by whether the project produces an
+      artifact someone outside this repo consumes — not by what the majority happen to target. There,
+      the answer is keep net8; here it is drop it. Same rule, opposite outcomes, which is why the rule
+      and not the outcome is written down.
+
+      This ships nothing: no PackageId, no IsPackable, no PackAsTool. Referenced only by the solution,
+      its own test project and docs/. It is an internal dev tool, so its net8 target was a leftover
+      rather than a promise to anyone.
+
+      It also closes a real divergence: the tests moved to net9.0 while the tool stayed on net8.0, so
+      the suite was exercising a runtime the tool did not target — and on a machine with no net8
+      runtime installed (the common case here) `dotnet run` on this project failed outright while its
+      88 tests reported green.
+    -->
+    <TargetFramework>net9.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>AchieveAi.LmDotnetTools.ModelConfigGenerator</AssemblyName>

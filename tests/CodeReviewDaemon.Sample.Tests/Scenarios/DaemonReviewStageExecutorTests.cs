@@ -132,6 +132,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             LoggerFactory,
             new CodeReviewDaemonOptions
             {
+                UseS2SReviewAgent = true,
                 Limits = new CodeReviewDaemon.Sample.Configuration.SandboxLimits { MaxArtifactPayloadChars = 256 },
             },
             diffResult: new SandboxCommandResult(0, hugeDiff, string.Empty));
@@ -154,31 +155,51 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
 
         var commands = fixture.Runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        // The working tree must be moved to the PR head so Read/Grep/Glob and the file manifest reflect the
-        // code the PR proposes, not the clone's default branch (which would ground findings in the wrong code).
+        // The working tree must be moved to the PR head so Read/Grep/Glob and the changed-path listing reflect
+        // the code the PR proposes, not the clone's default branch (which would ground findings in the wrong code).
         commands.Should().Contain(
             a => a.Contains("checkout --force") && a.Contains("head-sha"),
             "the PR head is checked out into the target working tree");
     }
 
+    /// <summary>
+    /// The context artifact must NOT carry a listing of the whole checkout. It used to: every run ran
+    /// <c>git ls-files</c> and persisted up to 2 MiB of it. Measured on the NOVA store before removal, that
+    /// manifest was 423,447,790 of the database's 446,353,408 bytes — 95% of everything the daemon had ever
+    /// stored — across 207 context artifacts, every copy truncated at the same 2 MiB ceiling, and read by
+    /// nothing. The reviewer was never shown it (the brief points at the checkout instead), the Knowledge Base
+    /// ranking reads <c>Diff</c> and <c>ChangedPaths</c>, and a tree listing cut off mid-way is not a faithful
+    /// audit record either. This test pins all three halves of the removal: the command is not run, the
+    /// property is not written, and the artifact still carries what actually is read.
+    /// </summary>
     [Fact]
-    public async Task ContextReady_persists_a_file_manifest_from_git_ls_files()
+    public async Task ContextReady_does_not_list_or_persist_the_whole_checkout()
     {
         using var fixture = Fixture.GitHub(LoggerFactory);
-        // The head checkout's tracked files — the manifest the review agent Reads by exact path to ground
-        // findings (the gateway's Glob/Grep cannot enumerate the repo root reliably).
+        // If anything re-introduces the manifest, this stub is what it would capture — and the assertions below
+        // would find README.md in the payload.
         fixture.Runner.OnArgvContains(
             "ls-files", new SandboxCommandResult(0, "src/Foo/Bar.cs\nsrc/Foo/Baz.cs\nREADME.md\n", string.Empty));
+        fixture.Runner.OnArgvContainsFirst(
+            "diff --name-only", new SandboxCommandResult(0, "src/Foo/Bar.cs\n", string.Empty));
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
 
         var commands = fixture.Runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands.Should().Contain(a => a.Contains("/workspace/target") && a.Contains("ls-files"));
+        commands.Should().NotContain(
+            a => a.Contains("ls-files"),
+            "listing the tree costs a sandbox round-trip per run and nothing consumes the result");
 
         var artifact = fixture.Store.GetArtifacts(run.Id).Should().ContainSingle().Subject;
-        var manifest = JsonDocument.Parse(artifact.Payload).RootElement.GetProperty("FileManifest").GetString()!;
-        manifest.Should().Contain("src/Foo/Bar.cs").And.Contain("README.md");
+        var payload = JsonDocument.Parse(artifact.Payload).RootElement;
+        payload.TryGetProperty("FileManifest", out _).Should().BeFalse(
+            "the manifest was 95% of the store's bytes and had no reader");
+        artifact.Payload.Should().NotContain("README.md", "no tracked-but-unchanged file belongs in the artifact");
+
+        // What IS read stays: the range's changed paths (the brief) and the diff (the KB ranking).
+        payload.GetProperty("ChangedPaths").GetString().Should().Contain("src/Foo/Bar.cs");
+        payload.GetProperty("Diff").GetString().Should().NotBeNullOrEmpty();
     }
 
     [Fact]
@@ -254,7 +275,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             () => observedRunsAtBarrier.Add(factory!.CreatedAgents[0].Lifecycle.Count));
         using var fixture = Fixture.GitHub(
             LoggerFactory,
-            new CodeReviewDaemonOptions { ReviewSubAgentBarrierQuietSeconds = 1 },
+            new CodeReviewDaemonOptions { UseS2SReviewAgent = true, ReviewSubAgentBarrierQuietSeconds = 1 },
             completionSource: source);
         factory = fixture.Factory;
         var run = fixture.SeedRun();
@@ -283,6 +304,111 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             onPoll();
             return Task.FromResult(new ReviewSubAgentTreeSnapshot([]));
         }
+    }
+
+    /// <summary>A roster of <paramref name="count"/> already-terminal children — the healthy fan-out, against
+    /// which the zero case is the anomaly.</summary>
+    private sealed class SettledCompletionSource(int count) : IReviewSubAgentCompletionSource
+    {
+        public Task<ReviewSubAgentTreeSnapshot> GetSnapshotAsync(
+            ReviewRun run, string parentThreadId, CancellationToken ct) =>
+            Task.FromResult(new ReviewSubAgentTreeSnapshot(
+                [.. Enumerable.Range(0, count).Select(i => new ReviewSubAgentNode
+                {
+                    AgentId = $"agent-{i}",
+                    ThreadId = $"thread-child-{i}",
+                    ParentThreadId = parentThreadId,
+                    Depth = 1,
+                    Status = ReviewSubAgentStatus.Completed,
+                    Template = "reviewer",
+                })]));
+    }
+
+    /// <summary>
+    /// Live run 145 posted a 1,401-char review to a real PR having dispatched ZERO dimension agents — no
+    /// performance, security, test-coverage or simplification pass had looked at anything — and it went out
+    /// indistinguishable from run 140's six-agent review. The daemon is entitled to review thinly; it is not
+    /// entitled to do so silently, because the rate is then unmeasurable: reconstructing the six runs that
+    /// exposed this needed three separate log lines joined by hand. One line, carrying the numbers that
+    /// correlate, is what turns "did that happen again?" into a grep.
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_warns_when_the_review_dispatched_no_sub_agents_at_all()
+    {
+        using var logs = new CapturingLoggerFactory();
+        using var fixture = Fixture.GitHub(
+            logs,
+            new CodeReviewDaemonOptions { UseS2SReviewAgent = true, ReviewSubAgentBarrierQuietSeconds = 1 },
+            completionSource: new ObservingCompletionSource(() => { }));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var line = logs.Capturing.MessagesAtLevel(LogLevel.Warning)
+            .Where(m => m.Contains($"Run {run.Id}:", StringComparison.Ordinal)
+                && m.Contains("sub-agent", StringComparison.Ordinal))
+            .Should().ContainSingle("the zero fan-out is reported exactly once, not once per poll")
+            .Subject;
+
+        line.Should().Contain(
+            "0 sub-agent",
+            "the count is the fact — a reader must not have to infer it from the absence of another line");
+        line.Should().MatchRegex(
+            "(?i)first[_ ]?review|delta",
+            "framing decides whether a thin review is even plausible; a delta round with nothing new is not "
+                + "the same event as a first review that examined nothing");
+    }
+
+    /// <summary>
+    /// The partner pin, and the one that decides whether this line survives contact with an operator. A
+    /// warning that also fires on legitimate small reviews gets tuned out within a week, at which point it
+    /// protects nothing — live run 146 dispatched a single child against a one-file diff and was very likely
+    /// correct to. So the threshold is ZERO, not "low", until data justifies a bound.
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_does_not_warn_when_at_least_one_sub_agent_ran()
+    {
+        using var logs = new CapturingLoggerFactory();
+        using var fixture = Fixture.GitHub(
+            logs,
+            new CodeReviewDaemonOptions { UseS2SReviewAgent = true, ReviewSubAgentBarrierQuietSeconds = 1 },
+            completionSource: new SettledCompletionSource(1));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        logs.Capturing.CountAtLevel(LogLevel.Warning, "0 sub-agent").Should().Be(
+            0, "one child on a small diff is an ordinary review, and an alarm that cries on it is soon ignored");
+    }
+
+    /// <summary>
+    /// The same fact, recorded where a HUMAN reading the review later will find it. The log line tells an
+    /// operator the rate; the artifact tells whoever opens this particular review which coverage it never
+    /// had. Run 145's review was posted looking exactly like a six-agent one, and nothing persisted said
+    /// otherwise — so the artifact carries the count, and zero is the degraded case.
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_records_the_sub_agent_count_on_the_review_artifact()
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions { UseS2SReviewAgent = true, ReviewSubAgentBarrierQuietSeconds = 1 },
+            completionSource: new ObservingCompletionSource(() => { }));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var artifact = fixture.Store.GetArtifacts(run.Id)
+            .Should().ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind).Subject;
+        var payload = JsonSerializer.Deserialize<ReviewArtifactPayload>(artifact.Payload);
+
+        payload!.SubAgentCount.Should().Be(
+            0,
+            "a persisted null would mean 'not recorded' and read as an old artifact; an explicit 0 is the "
+                + "claim that this review genuinely had no dimension agent behind it");
     }
 
     /// <summary>
@@ -322,6 +448,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             LoggerFactory,
             new CodeReviewDaemonOptions
             {
+                UseS2SReviewAgent = true,
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
             });
@@ -361,6 +488,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             LoggerFactory,
             new CodeReviewDaemonOptions
             {
+                UseS2SReviewAgent = true,
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
             });
@@ -389,6 +517,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             LoggerFactory,
             new CodeReviewDaemonOptions
             {
+                UseS2SReviewAgent = true,
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
             });
@@ -416,6 +545,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             LoggerFactory,
             new CodeReviewDaemonOptions
             {
+                UseS2SReviewAgent = true,
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
             });
@@ -461,6 +591,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             LoggerFactory,
             new CodeReviewDaemonOptions
             {
+                UseS2SReviewAgent = true,
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
                 Limits = new CodeReviewDaemon.Sample.Configuration.SandboxLimits { MaxArtifactPayloadChars = 320 },
@@ -518,6 +649,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             logs,
             new CodeReviewDaemonOptions
             {
+                UseS2SReviewAgent = true,
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
             });
@@ -563,6 +695,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             logs,
             new CodeReviewDaemonOptions
             {
+                UseS2SReviewAgent = true,
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
             });
@@ -613,6 +746,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             logs,
             new CodeReviewDaemonOptions
             {
+                UseS2SReviewAgent = true,
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
             });
@@ -655,6 +789,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             logs,
             new CodeReviewDaemonOptions
             {
+                UseS2SReviewAgent = true,
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
             });
@@ -691,6 +826,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             logs,
             new CodeReviewDaemonOptions
             {
+                UseS2SReviewAgent = true,
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
             });
@@ -722,6 +858,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             logs,
             new CodeReviewDaemonOptions
             {
+                UseS2SReviewAgent = true,
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
             });
@@ -744,6 +881,39 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             .Should().Be(0, "nothing was left behind, so nothing was truncated");
     }
 
+    /// <summary>
+    /// The fourth zero, and the only one that is a daemon defect rather than a fact about the reviewed repo:
+    /// a run with no leased checkout never probes for <c>CLAUDE.md</c>/<c>AGENTS.md</c> at all. It reaches
+    /// the brief inventory as the same <c>repo-guidance=0</c> a well-behaved probe of a repo with no
+    /// conventions produces, and the two want opposite responses — accept the first, go and find out why the
+    /// lease is missing on the second. A resumed pooled run that lost its in-memory lease lands here, which
+    /// is precisely the case that must not read as "this repository has no house rules".
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_says_the_root_guidance_was_never_probed_when_the_run_has_no_leased_checkout()
+    {
+        using var logs = new CapturingLoggerFactory();
+        using var fixture = Fixture.GitHub(logs);
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var line = logs.Capturing.MessagesAtLevel(LogLevel.Information)
+            .Where(m => m.Contains($"Run {run.Id}:", StringComparison.Ordinal)
+                && m.Contains("root guidance", StringComparison.Ordinal))
+            .Should().ContainSingle("the un-probed run is accounted for like the probed ones, not by silence")
+            .Subject;
+
+        line.Should().Contain(
+            "not probed",
+            "the line has to say the lookup never happened; anything softer reads as a lookup that came "
+                + "back empty, which is the opposite diagnosis");
+        line.Should().NotContain(
+            "absent",
+            "no file was examined, so claiming one is absent asserts something this run never established");
+    }
+
     [Fact]
     public async Task Reviewed_prepends_the_knowledge_base_toc_when_the_store_has_one()
     {
@@ -751,6 +921,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             LoggerFactory,
             new CodeReviewDaemonOptions
             {
+                UseS2SReviewAgent = true,
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
             });
@@ -788,6 +959,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             LoggerFactory,
             new CodeReviewDaemonOptions
             {
+                UseS2SReviewAgent = true,
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
             });
@@ -826,6 +998,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             LoggerFactory,
             new CodeReviewDaemonOptions
             {
+                UseS2SReviewAgent = true,
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
             });
@@ -845,6 +1018,47 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         text.Should().NotContain("Prior knowledge", "a missing _toc.md leaves the review input unchanged");
     }
 
+    [Fact]
+    public async Task Reviewed_leaves_the_input_unchanged_when_the_knowledge_base_is_seeded_but_still_empty()
+    {
+        // The state every store is in until the first PR closes, and the one the nova daemon was actually in:
+        // a _toc.md that exists and reads cleanly but lists no entries, because at-close knowledge extraction
+        // runs only on PrLifecycleSweeper's merged path and nothing had merged yet. Measured over two days,
+        // all 120 review briefs carried a "Prior knowledge (Knowledge Base)" block of exactly the 741-char
+        // header with no link under it — Listed=0, Dropped=0, Truncated=false, no refusals — and the honest
+        // "No usable Knowledge Base" branch, whose only test is an empty block, never ran.
+        //
+        // Asserted here and not only on the renderer because the damage is done at THIS seam: the review
+        // prompt teaches that heading as the sole place prior knowledge appears and teaches its absence as
+        // "there is no Knowledge Base", so a header standing alone tells the reviewer the opposite of the
+        // truth and then instructs it to go joining links that do not exist.
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions
+            {
+                UseS2SReviewAgent = true,
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+            });
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
+        fixture.FileSystem.Seed(
+            "/workspace/store/KnowledgeBase/_toc.md",
+            "# Knowledge Base\n\nDurable lessons captured from closed pull requests.\n");
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        text.Should().NotContain(
+            "Prior knowledge",
+            "an empty Knowledge Base says the same thing as no Knowledge Base, and must say it the same way");
+    }
+
     /// <summary>
     /// A fixture whose store carries curated knowledge AND a per-developer feedback record, with the
     /// feedback agent enabled. The record path is the one <see cref="ReviewFeedbackAgent"/> writes to.
@@ -855,6 +1069,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             loggerFactory,
             new CodeReviewDaemonOptions
             {
+                UseS2SReviewAgent = true,
                 EnableToolAssistedReview = true,
                 CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
                 EnableReviewFeedbackAgent = enableReviewFeedbackAgent,
@@ -1068,7 +1283,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         });
         using var fixture = Fixture.GitHub(
             LoggerFactory,
-            new CodeReviewDaemonOptions { ReviewSubAgentBarrierQuietSeconds = 1 },
+            new CodeReviewDaemonOptions { UseS2SReviewAgent = true, ReviewSubAgentBarrierQuietSeconds = 1 },
             completionSource: source);
         observed = fixture;
         var run = fixture.SeedRun();
@@ -1106,7 +1321,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // confusable: the artifact everything downstream reads has to carry the SYNTHESIS text.
         using var fixture = Fixture.GitHub(
             LoggerFactory,
-            new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true });
+            new CodeReviewDaemonOptions { UseS2SReviewAgent = true, EnableCommentPosting = true, EnableHostSummaryFallback = true });
         fixture.Factory.DecorateCreatedAgent = agent => agent.ThenReplies(
             new TextMessage { Text = SynthesisText, Role = Role.Assistant, RunId = "run-synthesis" });
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
@@ -1232,34 +1447,30 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         agent.Deadlines.Should().AllSatisfy(d => d.Should().BeAfter(DateTimeOffset.UtcNow, "a fresh budget was started"));
     }
 
-    [Fact]
-    public async Task Reviewed_restarts_an_interrupted_in_process_review_collect_only_and_never_promotes_the_provisional()
-    {
-        // An in-process turn died with the loop that produced it: there is no conversation to re-enter and no
-        // accepted input to poll. Fabricating resumability here would either re-post a stale provisional as the
-        // review or wait on a sub-agent tree that no longer exists.
-        using var fixture = Fixture.GitHub(LoggerFactory);
-        var run = fixture.SeedRun();
-        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
-        SeedProvisionalCheckpoint(
-            fixture, run, "thread-that-died", DateTimeOffset.UtcNow.AddMinutes(20), text: StaleProvisionalText);
-        SeedSynthesisRequest(fixture, run, "input-that-died", "thread-that-died");
-
-        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
-
-        fixture.Factory.ResumeHostedThreadIds.Should().ContainSingle().Which.Should().BeNull();
-        fixture.Factory.ResumableLoops.Should().BeEmpty("an in-process loop is not resumable, so none is wrapped");
-        var agent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
-        agent.ReceivedInputs.Should().HaveCount(2, "the attempt restarts collect-only");
-        ArtifactsOf(fixture, run, DaemonReviewStageExecutor.SynthesisRequestArtifactKind).Should().ContainSingle(
-            "the seeded row is the only one — an in-process turn cannot be rejoined, so none is checkpointed");
-        ReviewTextOf(fixture.Store.GetArtifacts(run.Id), DaemonReviewStageExecutor.ReviewArtifactKind)
-            .Should().Be(fixture.Factory.DefaultText).And.NotBe(
-                StaleProvisionalText, "a provisional is never promoted to the authoritative review");
-    }
+    // DELETED (#102): Reviewed_restarts_an_interrupted_in_process_review_collect_only_and_never_promotes_the_provisional.
+    //
+    // Its whole premise was that the interrupted turn was NOT resumable — "an in-process loop is not
+    // resumable, so none is wrapped". That is true only of the in-process path, which Program.cs:278 has
+    // refused to boot since 2026-08-01. It was the single test in this file that the fixture default flip
+    // reddened, out of 134 cases, and its NAME is the finding.
+    //
+    // Measured rather than argued: under UseS2SReviewAgent: true it fails with
+    //   Expected fixture.Factory.ResumeHostedThreadIds to be <null>, but found "thread-that-died".
+    // On S2S the hosted conversation IS rejoined — the exact opposite of what this asserted. There is no
+    // version of it that both boots and passes.
+    //
+    // Nothing is owed. Its one property worth keeping — that a provisional is never promoted to the
+    // authoritative review — is pinned more strongly by
+    // Reviewed_synthesizes_over_the_provisional_and_posts_only_the_synthesis (search ReviewTextOf +
+    // ProvisionalReviewArtifactKind above), which asserts not merely that the review text differs from the
+    // provisional but that the provisional "must never reach the PR". That test asserts against the posted
+    // body, so it covers the consequence rather than the intermediate.
+    //
+    // The live counterpart of the restart behaviour is
+    // Reviewed_discards_a_checkpoint_whose_budget_already_expired_and_starts_a_fresh_lifecycle, which starts
+    // over for a reason that still exists on S2S.
 
     [Theory]
-    [InlineData("workspace")]
     [InlineData("modality")]
     [InlineData("model")]
     [InlineData("rung")]
@@ -1267,23 +1478,39 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     [InlineData("context-generation")]
     public async Task Reviewed_discards_a_checkpoint_whose_lifecycle_identity_no_longer_matches(string mismatch)
     {
-        // A hosted conversation is bound to a checkout, a model and a context this process may no longer be
-        // holding. Resuming a mismatched one is unbounded: the synthesis reviews whatever the conversation is
+        // A hosted conversation is bound to a model and a context this process may no longer be holding.
+        // Resuming a mismatched one is unbounded: the synthesis reviews whatever the conversation is
         // actually attached to and posts those findings to THIS PR, with nothing anywhere reporting an error.
         // Starting over costs exactly one duplicate review. Each case below isolates ONE discriminator; the
         // all-fields-match control is Reviewed_resumes_the_persisted_hosted_conversation_… above.
+        //
+        // There used to be a "workspace" case here, and it went when WorkspaceId left the identity — the
+        // coverage was not dropped quietly, the field was. Its concern (a re-leased slot whose checkout is a
+        // different PR) is answered by ReviewSlotPreparer throwing on a checkout that is not at the run's
+        // head, which is where it can protect a FRESH review as well as a resumed one. The cross-slot resume
+        // this unblocked is pinned by
+        // DaemonReviewStageExecutorPooledTests.Reviewed_resumes_its_checkpoint_when_the_restart_re_leases_a_different_slot.
+        //
+        // This theory is also the mutation target for the identity itself: delete any field from
+        // BuildLifecycleIdentity and the matching case here must go red. If one does not, the identity has a
+        // field nothing tests.
         using var fixture = Fixture.GitHub(LoggerFactory, S2SResumeOptions());
         var run = fixture.SeedRun();
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         var current = LifecycleOf(fixture, run);
         var persisted = mismatch switch
         {
-            // The pooled slot is re-leased per process, so after a restart the same run can hold a slot whose
-            // checkout is a DIFFERENT PR while its checkpointed conversation is bound to the old slot.
-            "workspace" => current with { WorkspaceId = "review-slot-3" },
             // Configuration flipped to hosted: an in-process checkpoint's thread id is a daemon-local
             // review-run-* string that no host would recognise.
-            "modality" => current with { Modality = DaemonReviewStageExecutor.InProcessModality },
+            //
+            // Spelled out rather than referencing a constant, because the production constant is gone (#84).
+            // "in-process" is not an arbitrary placeholder: it is the value BuildLifecycleIdentity actually
+            // wrote between 2026-07-30 (when the lifecycle identity landed) and 2026-08-01 (when Program.cs
+            // began throwing on UseS2SReviewAgent: false), so it is the realistic persisted mismatch rather
+            // than an invented one. The discriminator is a record comparison and never special-cases the
+            // modality, so ANY non-matching string exercises the same branch — this one documents which
+            // string a real checkpoint could carry.
+            "modality" => current with { Modality = "in-process" },
             "model" => current with { ModelId = "gpt-5.6-terra" },
             // An escalation rung runs on its own thread with the overflowing history shed; resuming it as the
             // base attempt would review under a model and window this attempt never chose.
@@ -1292,7 +1519,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
                 LocalThreadId = DaemonReviewStageExecutor.ThreadId(run, run.VariantId + "-esc"),
             },
             "tool-mode" => current with { ToolAssisted = true },
-            // ContextReady was re-entered: the diff the checkpointed conversation reviewed is superseded.
+            // The rebuilt context is about a different PR/base/head/diff: the checkpointed conversation
+            // reviewed a subject this run is no longer about.
             _ => current with { ContextGeneration = current.ContextGeneration + 1 },
         };
         SeedProvisionalCheckpoint(
@@ -1312,9 +1540,52 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     [Fact]
     public async Task Reviewed_starts_a_fresh_lifecycle_when_the_context_stage_was_re_entered_after_the_checkpoint()
     {
-        // The documented rollback path: a run is reset to ContextReady and its context rebuilt. The checkpoint
-        // is keyed to the context generation it was built from — a new 'review-context' row — so re-entering
-        // the stage invalidates it without needing a tombstone to be written by whoever did the rollback.
+        // The documented rollback path: a run is reset to ContextReady and its context REBUILT — and the
+        // rebuild comes back different, because that is what a rollback is for. The checkpoint is keyed to the
+        // context generation it was built from (the 'review-context' row id), so a rebuild that changes the
+        // context invalidates it without needing a tombstone from whoever did the rollback.
+        using var fixture = Fixture.GitHub(LoggerFactory, S2SResumeOptions());
+        var run = fixture.SeedRun();
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        SeedProvisionalCheckpoint(fixture, run, "thread-persisted", DateTimeOffset.UtcNow.AddMinutes(20));
+
+        // First-match-wins, so this overrides the fixture's standing diff rule for every call from here on.
+        _ = fixture.Runner.OnArgvContainsFirst(
+            "diff", new SandboxCommandResult(0, "diff --git a/Bar.cs b/Bar.cs\n+ rebuilt", string.Empty));
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture.Factory.ResumeHostedThreadIds.Should().ContainSingle().Which.Should().BeNull(
+            "the conversation reviewed a diff this run is no longer about");
+        fixture.Factory.ResumableLoops.Should().ContainSingle().Which.MintedThreadIds.Should().ContainSingle();
+    }
+
+    /// <summary>
+    /// The same rollback path when the rebuild changes NOTHING. Re-entering ContextReady recomputes the
+    /// context, but an identical context is not a new generation: no row is appended, so the checkpoint still
+    /// matches and the hosted conversation — with its whole sub-agent fan-out already paid for — is rejoined
+    /// instead of thrown away.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This test does not establish that the resume re-lease is safe in production, and its doc used to say
+    /// it did.</b> The claim was false for as long as it stood: resume has fired 0 times in 4 attempts, and
+    /// every discard was a context rebuild that produced a payload differing in ONE field this fixture cannot
+    /// vary — <c>SiblingRepos</c>, which appears nowhere in this file. This fixture is not store-backed, so its
+    /// sibling list is empty on every call and the two payloads come back byte-identical. The test passed
+    /// because it could not observe the field that breaks it.
+    /// </para>
+    /// <para>
+    /// What the test does establish is narrower and still worth having: that a byte-identical rebuild does not
+    /// append a row, and that a checkpoint survives one. The production guarantee rests on the lifecycle
+    /// identity being keyed to what the review is ABOUT rather than to which row last recorded it — see
+    /// <c>DaemonReviewStageExecutorPooledTests.Reviewed_resumes_when_another_review_populates_a_sibling_between_the_two_context_passes</c>,
+    /// which is store-backed and does vary the sibling set.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Reviewed_resumes_the_checkpoint_when_the_context_stage_re_ran_and_produced_the_same_context()
+    {
         using var fixture = Fixture.GitHub(LoggerFactory, S2SResumeOptions());
         var run = fixture.SeedRun();
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -1323,9 +1594,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
-        fixture.Factory.ResumeHostedThreadIds.Should().ContainSingle().Which.Should().BeNull(
-            "the conversation reviewed a diff this run is no longer about");
-        fixture.Factory.ResumableLoops.Should().ContainSingle().Which.MintedThreadIds.Should().ContainSingle();
+        fixture.Factory.ResumeHostedThreadIds.Should().ContainSingle().Which.Should().Be(
+            "thread-persisted", "the checkpointed conversation reviewed exactly the diff this run is about");
     }
 
     [Fact]
@@ -1567,7 +1837,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     [Fact]
     public async Task EnableABVariants_also_persists_a_b_variant_review_artifact()
     {
-        using var fixture = Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableABVariants = true });
+        using var fixture = Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { UseS2SReviewAgent = true, EnableABVariants = true });
         fixture.Factory.TextByProfileId[$"{DaemonAgentFactory.ReviewProfileId}-b"] = "## Review (B)\nConsider: extract.";
         var run = fixture.SeedRun();
 
@@ -1598,7 +1868,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     [Fact]
     public async Task Judged_persists_a_judge_artifact_when_enabled()
     {
-        using var fixture = Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableJudgeAgent = true });
+        using var fixture = Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { UseS2SReviewAgent = true, EnableJudgeAgent = true });
         fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] = "{\"score\": 8, \"rationale\": \"Solid.\"}";
         var run = fixture.SeedRun();
 
@@ -1615,7 +1885,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     [Fact]
     public async Task An_azure_devops_run_maps_to_the_ado_provider_and_publisher()
     {
-        using var fixture = Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true });
+        using var fixture = Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { UseS2SReviewAgent = true, EnableCommentPosting = true, EnableHostSummaryFallback = true });
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
         await RunAllStagesAsync(fixture, run);
@@ -1631,7 +1901,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     {
         using var fixture = Fixture.GitHub(
             LoggerFactory,
-            new CodeReviewDaemonOptions { ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git" });
+            new CodeReviewDaemonOptions { UseS2SReviewAgent = true, ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git" });
         // This is the first review of the PR: the review branch does not exist yet.
         fixture.Runner.OnArgvContains(
             "rev-parse --verify review/lmdotnettools-118",
@@ -1677,7 +1947,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     {
         using var fixture = Fixture.GitHub(
             LoggerFactory,
-            new CodeReviewDaemonOptions { ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git" });
+            new CodeReviewDaemonOptions { UseS2SReviewAgent = true, ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git" });
         // The ReviewBot checkout does not exist yet (rev-parse probe fails everywhere via Default scripting
         // for /workspace/reviewbot), so the executor must clone it from ReviewBotRepoUrl before publishing (H3).
         fixture.Runner.On(
@@ -1702,7 +1972,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     {
         using var fixture = Fixture.GitHub(
             LoggerFactory,
-            new CodeReviewDaemonOptions { ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git" });
+            new CodeReviewDaemonOptions { UseS2SReviewAgent = true, ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git" });
         // The checkout exists but the skeleton is malformed: only README.md present (PRs/, KnowledgeBase/
         // missing). The executor must surface this rather than pushing into a corrupt repo (H3).
         fixture.FileSystem.Seed("/workspace/reviewbot/README.md", "# ReviewBot");
@@ -1735,7 +2005,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     {
         using var fixture = Fixture.GitHub(
             LoggerFactory,
-            new CodeReviewDaemonOptions { ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git" });
+            new CodeReviewDaemonOptions { UseS2SReviewAgent = true, ReviewBotRepoUrl = "https://github.com/achieveai/CodeReviewBot-Workspace.git" });
         // The push never succeeds → GitSyncFailed: nothing is deleted, the outbox row is left for reconcile.
         fixture.Runner.OnArgvContains(
             "push origin review/lmdotnettools-118",
@@ -1772,7 +2042,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // An ado run but only a 'github' publisher registered → the provider lookup must fail fast.
         using var fixture = Fixture.Ado(
             LoggerFactory,
-            new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true },
+            new CodeReviewDaemonOptions { UseS2SReviewAgent = true, EnableCommentPosting = true, EnableHostSummaryFallback = true },
             publishersOverride: [new FakeReviewCommentPublisher("github")]);
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
@@ -1787,7 +2057,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     [Fact]
     public async Task Posted_does_not_post_a_comment_when_the_review_is_empty()
     {
-        using var fixture = Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true });
+        using var fixture = Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { UseS2SReviewAgent = true, EnableCommentPosting = true, EnableHostSummaryFallback = true });
         // The persisted review carries no prose. Posting a "_No review content was produced._" placeholder would
         // claim the head_sha's idempotency slot on the provider — the backstop scan would then adopt that
         // placeholder and permanently suppress a later REAL review of the same commit (e.g. a re-run on a
@@ -1806,7 +2076,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // "No new findings since the last review." The host summary fallback must treat that as a no-post (not
         // publish it as a PR comment) — otherwise the post-nothing contract is violated and re-review noise
         // reappears via the host path even when the agent correctly posted nothing.
-        using var fixture = Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true });
+        using var fixture = Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { UseS2SReviewAgent = true, EnableCommentPosting = true, EnableHostSummaryFallback = true });
         fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] = "No new findings since the last review.";
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
@@ -1821,7 +2091,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     {
         using var fixture = Fixture.Ado(
             LoggerFactory,
-            new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true, BotName = "GB's Revobot" });
+            new CodeReviewDaemonOptions { UseS2SReviewAgent = true, EnableCommentPosting = true, EnableHostSummaryFallback = true, BotName = "GB's Revobot" });
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
         await RunAllStagesAsync(fixture, run);
@@ -1845,8 +2115,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     public async Task Posted_delivers_the_review_to_the_pr_for_every_provider_when_authorized(string provider)
     {
         using var fixture = provider == "azure-devops"
-            ? Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true })
-            : Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true });
+            ? Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { UseS2SReviewAgent = true, EnableCommentPosting = true, EnableHostSummaryFallback = true })
+            : Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { UseS2SReviewAgent = true, EnableCommentPosting = true, EnableHostSummaryFallback = true });
         var expectedPublisher = provider == "azure-devops" ? fixture.AdoPublisher! : fixture.GitHubPublisher;
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
@@ -1864,8 +2134,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // The dual of the delivery guard: a collect-only profile (EnableCommentPosting=false, the safe default)
         // still produces + retains a review, but must NEVER post it to the PR.
         using var fixture = provider == "azure-devops"
-            ? Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = false, EnableHostSummaryFallback = true })
-            : Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = false, EnableHostSummaryFallback = true });
+            ? Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { UseS2SReviewAgent = true, EnableCommentPosting = false, EnableHostSummaryFallback = true })
+            : Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { UseS2SReviewAgent = true, EnableCommentPosting = false, EnableHostSummaryFallback = true });
         var publisher = provider == "azure-devops" ? fixture.AdoPublisher! : fixture.GitHubPublisher;
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
@@ -1882,8 +2152,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // An empty review must post NOTHING for EITHER provider — posting a placeholder would claim the
         // head_sha's idempotency slot and permanently suppress a later REAL review of the same commit.
         using var fixture = provider == "azure-devops"
-            ? Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true })
-            : Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true });
+            ? Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { UseS2SReviewAgent = true, EnableCommentPosting = true, EnableHostSummaryFallback = true })
+            : Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { UseS2SReviewAgent = true, EnableCommentPosting = true, EnableHostSummaryFallback = true });
         var publisher = provider == "azure-devops" ? fixture.AdoPublisher! : fixture.GitHubPublisher;
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
@@ -1930,8 +2200,330 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         body.Split(expectedLink).Length.Should().Be(2, "the deep-link must be appended exactly once");
     }
 
-    // ── Delivery truthfulness: a post-mode run may not COMPLETE without provider-visible evidence ────
-    // Run 27's shape: the Posted stage failed once on retention, the retry re-ran the stage, produced no
+    /// <summary>
+    /// NOVA PR 5503135's shape: round 01 raised two BLOCKERs and was never delivered (collect-only, so its
+    /// outbox row stayed Collected); round 02 answered a reviewer's question and reported "No new findings
+    /// since the last review." The comment a reader would see therefore contained NONE of the findings the
+    /// bot had — the recommendations existed only in the review store. A round is entitled to say nothing is
+    /// new; it is not entitled to let undelivered findings fall off the record.
+    /// </summary>
+    [Fact]
+    public async Task Posted_carries_an_earlier_round_that_was_never_delivered_into_this_comment()
+    {
+        const string PriorFinding = "[BLOCKER] HIGH — view-backed tables can throw on a null Source";
+        static CodeReviewDaemonOptions S2SOptions() =>
+            new()
+            {
+                UseS2SReviewAgent = true,
+                LmStreamingBaseUrl = "http://localhost:5051",
+                EnableCommentPosting = true,
+            };
+        using var fixture = Fixture.GitHub(LoggerFactory, S2SOptions());
+        var prior = fixture.SeedPriorRound(PriorFinding, delivered: false);
+        var run = fixture.SeedRun(watermark: "wm-2");
+
+        await RunAllStagesAsync(fixture, run);
+
+        var body = fixture.GitHubPublisher.PostedBodies.Should().ContainSingle().Subject;
+        body.Should().Contain(
+            PriorFinding,
+            "an undelivered round's findings are part of what this PR still has outstanding, and this comment "
+                + "is the only place a reader will look for them");
+        body.Should().Contain(
+            $"run {prior.Id}",
+            "the carried text is attributed to the round that wrote it, not presented as this round's work");
+        body.Should().Contain("old-head-sha", "and to the commit it reviewed, which is not this one");
+    }
+
+    [Fact]
+    public async Task Posted_leaves_the_comment_alone_when_the_earlier_round_already_reached_the_pr()
+    {
+        // The other side, and the reason the carry-forward keys on the outbox rather than on a config flag:
+        // when round 01 genuinely posted, repeating it turns every later round into a growing wall of text
+        // the PR already carries. "Nothing new" is then exactly the right comment.
+        const string PriorFinding = "[BLOCKER] HIGH — view-backed tables can throw on a null Source";
+        static CodeReviewDaemonOptions S2SOptions() =>
+            new()
+            {
+                UseS2SReviewAgent = true,
+                LmStreamingBaseUrl = "http://localhost:5051",
+                EnableCommentPosting = true,
+            };
+        using var fixture = Fixture.GitHub(LoggerFactory, S2SOptions());
+        _ = fixture.SeedPriorRound(PriorFinding, delivered: true);
+        var run = fixture.SeedRun(watermark: "wm-2");
+
+        await RunAllStagesAsync(fixture, run);
+
+        var body = fixture.GitHubPublisher.PostedBodies.Should().ContainSingle().Subject;
+        body.Should().NotContain(PriorFinding, "the PR already carries that round's comment");
+        body.Should().NotContain("never delivered");
+    }
+
+    // ── The sentinel is a WHOLE-BODY decision, and it decides only about THIS round ──────────────────
+    // The prompt mandates one exact sentence for the no-op exit, so the classifier's question is "did the
+    // model emit that sentence and nothing else?" A prefix test asks a strictly wider question, and every
+    // body it wrongly answers yes to is discarded in silence: no comment, no retained pr_comment.md, and no
+    // carry-forward of earlier rounds. The tests below pin both halves — what counts as the sentinel, and
+    // what the sentinel is still not allowed to suppress.
+
+    [Theory]
+    [InlineData("No new findings since the last review.")]
+    [InlineData("no new findings since the last review.")]
+    [InlineData("  No new findings since the last review.\n\n")]
+    [InlineData("No new findings since the last review")]
+    [InlineData("No new findings\nsince the last review.")]
+    [InlineData("No new findings.")]
+    [InlineData("No new findings — nothing to post.")]
+    public void A_body_that_is_only_the_sentinel_is_the_sentinel(string reviewText) =>
+        DaemonReviewStageExecutor.IsNoNewFindingsSentinel(reviewText).Should().BeTrue(
+            "the prompt mandates this sentence for the no-op exit, and a round that writes it and nothing "
+                + "else has deliberately decided there is nothing to put on the PR");
+
+    /// <summary>
+    /// The failure this whole change exists for. Each of these opens with the mandated phrase and then keeps
+    /// going — and what follows is the review. Classified as a no-post, none of it is written anywhere a
+    /// reader will look: the run finishes reporting success with its findings left in the review store.
+    /// </summary>
+    [Theory]
+    [InlineData("No new findings in the auth module, but three BLOCKERs elsewhere:\n\n- [BLOCKER] token TTL")]
+    [InlineData("No new findings since the last review.\n\nHowever, one thing I did not raise last round:")]
+    [InlineData("No new findings on the diff itself; the migration still has no backfill.")]
+    [InlineData("No new findings — see below for the two I raised last round that are still open.")]
+    public void A_body_that_merely_opens_with_the_sentinel_is_not_the_sentinel(string reviewText) =>
+        DaemonReviewStageExecutor.IsNoNewFindingsSentinel(reviewText).Should().BeFalse(
+            "everything after the opening phrase is the review, and classifying this as a no-post discards it");
+
+    [Fact]
+    public async Task Posted_delivers_a_review_that_merely_opens_with_the_sentinel_phrase()
+    {
+        // The end-to-end shape of the same defect: the reviewer qualified its "no new findings" and then
+        // raised a BLOCKER. The qualification is not the verdict.
+        const string Body =
+            "No new findings in the files I flagged last round.\n\n"
+            + "The new migration is a different matter:\n\n"
+            + "- [BLOCKER] `AddTenantId` adds a NOT NULL column with no default against a populated table.";
+        using var fixture = Fixture.Ado(
+            LoggerFactory,
+            new CodeReviewDaemonOptions { UseS2SReviewAgent = true, EnableCommentPosting = true, EnableHostSummaryFallback = true });
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] = Body;
+        var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z", mode: "post");
+
+        await RunAllStagesAsync(fixture, run);
+
+        fixture.AdoPublisher!.PostedBodies.Should().ContainSingle()
+            .Which.Should().Contain(
+                "[BLOCKER]",
+                "the body carries a blocker, so it is a review — the words it happens to open with do not "
+                    + "make it a decision to post nothing");
+    }
+
+    /// <summary>
+    /// NOVA PR 5503135's actual round 02, which the existing carry-forward test describes but does not
+    /// reproduce: round 01 raised two BLOCKERs and was never delivered, and round 02 answered "No new
+    /// findings since the last review." Round 02 is entitled to that verdict — but the sentence is only true
+    /// for a reader if round 01's findings are already on the PR, and they are not. The sentinel decides
+    /// whether THIS round has anything to add; it does not decide whether earlier rounds stay withheld.
+    /// </summary>
+    [Fact]
+    public async Task Posted_carries_an_undelivered_earlier_round_even_when_this_round_says_nothing_is_new()
+    {
+        const string PriorFinding = "[BLOCKER] HIGH — view-backed tables can throw on a null Source";
+        static CodeReviewDaemonOptions S2SOptions() =>
+            new()
+            {
+                UseS2SReviewAgent = true,
+                LmStreamingBaseUrl = "http://localhost:5051",
+                EnableCommentPosting = true,
+            };
+        using var fixture = Fixture.GitHub(LoggerFactory, S2SOptions());
+        var prior = fixture.SeedPriorRound(PriorFinding, delivered: false);
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] =
+            "No new findings since the last review.";
+        var run = fixture.SeedRun(watermark: "wm-2");
+
+        await RunAllStagesAsync(fixture, run);
+
+        var body = fixture.GitHubPublisher.PostedBodies.Should().ContainSingle(
+                "a round with nothing of its own to say still owes the PR what was withheld from it")
+            .Subject;
+        body.Should().Contain(PriorFinding);
+        body.Should().Contain($"run {prior.Id}", "the carried text is attributed to the round that wrote it");
+    }
+
+    [Fact]
+    public async Task Posted_still_posts_nothing_when_a_no_new_findings_round_has_nothing_withheld()
+    {
+        // The dual, and the guard against over-correcting: with every earlier round already on the PR, the
+        // sentinel round genuinely has nothing to deliver, and forcing a comment there is the re-review
+        // noise the sentinel exists to stop.
+        static CodeReviewDaemonOptions S2SOptions() =>
+            new()
+            {
+                UseS2SReviewAgent = true,
+                LmStreamingBaseUrl = "http://localhost:5051",
+                EnableCommentPosting = true,
+            };
+        using var fixture = Fixture.GitHub(LoggerFactory, S2SOptions());
+        _ = fixture.SeedPriorRound("[BLOCKER] HIGH — null Source", delivered: true);
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] =
+            "No new findings since the last review.";
+        var run = fixture.SeedRun(watermark: "wm-2");
+
+        await RunAllStagesAsync(fixture, run);
+
+        fixture.GitHubPublisher.PostCount.Should().Be(0, "there is nothing new and nothing withheld");
+        fixture.Store.GetOutboxForRun(run.Id).Should().NotContain(
+            o => o.Operation == ReviewPoster.PostReviewCommentOperation,
+            "no delivery was attempted, so there is no comment outbox row to misread as evidence");
+    }
+
+    /// <summary>
+    /// The reconciliation the daemon has never done: what the fan-out produced against what the review body
+    /// carries. Live run nova-5500188 settled a full roster of specialists and wrote a 38-byte review.md —
+    /// the sentinel, exactly. Nothing logged the discrepancy, so a review that threw away every specialist's
+    /// work is indistinguishable in the record from one that had nothing to throw away.
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_reconciles_a_settled_fan_out_against_a_review_body_that_reports_nothing()
+    {
+        using var logs = new CapturingLoggerFactory();
+        using var fixture = Fixture.GitHub(
+            logs,
+            new CodeReviewDaemonOptions { UseS2SReviewAgent = true, ReviewSubAgentBarrierQuietSeconds = 1 },
+            completionSource: new SettledCompletionSource(4));
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] =
+            "No new findings since the last review.";
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var line = logs.Capturing.MessagesAtLevel(LogLevel.Warning)
+            .Where(m => m.Contains($"Run {run.Id}:", StringComparison.Ordinal)
+                && m.Contains("sub-agent(s) completed", StringComparison.Ordinal))
+            .Should().ContainSingle("the discrepancy is reported once, as its own line")
+            .Subject;
+
+        line.Should().Contain(
+            "4 of 4 sub-agent(s) completed", "how many specialists reported back is half the reconciliation");
+        line.Should().Contain(
+            "38 chars", "and the size of the body that reached a reader is the other half");
+    }
+
+    [Fact]
+    public async Task Reviewed_does_not_reconcile_a_fan_out_against_a_body_that_carries_findings()
+    {
+        // The threshold is the sentinel, not "short": a settled roster and a real verdict is the ordinary
+        // outcome, and an alarm that fires on it is tuned out within a week.
+        using var logs = new CapturingLoggerFactory();
+        using var fixture = Fixture.GitHub(
+            logs,
+            new CodeReviewDaemonOptions { UseS2SReviewAgent = true, ReviewSubAgentBarrierQuietSeconds = 1 },
+            completionSource: new SettledCompletionSource(4));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        logs.Capturing.CountAtLevel(LogLevel.Warning, "sub-agent(s) completed").Should().Be(
+            0, "specialists reporting into a review that then states findings is the healthy path");
+    }
+
+    /// <summary>
+    /// What a whole-body match costs, made measurable. A reviewer that meant to take the no-op exit but
+    /// phrased it its own way is now treated as findings and posts a comment saying nothing — the safe
+    /// direction to be wrong in, but not a free one. Nothing distinguishes that from a genuine review that
+    /// opens with the same words, so the daemon reports the case rather than judging it, and the sentinel
+    /// set gets widened on what this line shows rather than on a guess about model phrasing.
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_reports_a_body_that_opens_with_the_exit_phrase_without_being_it()
+    {
+        using var logs = new CapturingLoggerFactory();
+        using var fixture = Fixture.GitHub(logs);
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] =
+            "No new findings worth raising this round, I think.";
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        logs.Capturing.MessagesAtLevel(LogLevel.Information)
+            .Should().ContainSingle(
+                m => m.Contains($"Run {run.Id}:", StringComparison.Ordinal)
+                    && m.Contains("is not only that sentence", StringComparison.Ordinal),
+                "the near miss is the tuning signal for the sentinel set, and it only exists if it is logged");
+    }
+
+    [Fact]
+    public async Task Reviewed_says_nothing_about_a_body_that_never_goes_near_the_exit_phrase()
+    {
+        using var logs = new CapturingLoggerFactory();
+        using var fixture = Fixture.GitHub(logs);
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        logs.Capturing.CountAtLevel(LogLevel.Information, "is not only that sentence").Should().Be(
+            0, "an ordinary review is not a near miss, and a line that fires on every run measures nothing");
+    }
+
+    [Fact]
+    public void The_store_and_the_poster_agree_on_which_outbox_operation_delivers_a_review()
+    {
+        // GetUndeliveredPriorReviews decides "was this round delivered" by matching an outbox operation
+        // string it holds privately, so the persistence layer need not depend on orchestration. If the two
+        // ever drift, the query silently matches nothing, every prior round looks undelivered, and each
+        // comment grows a duplicate copy of every earlier one — a failure that reads as a formatting bug.
+        typeof(ReviewStore)
+            .GetField(
+                "PostReviewCommentOperation",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!
+            .GetRawConstantValue()
+            .Should().Be(ReviewPoster.PostReviewCommentOperation);
+    }
+
+    /// <summary>
+    /// NOVA runs 32 and 62: the ContextReady stage captured a diff of ZERO characters and zero changed paths,
+    /// and the Reviewed stage handed that to the reviewer anyway. Both failure modes it produces are worse
+    /// than an error. Run 62 answered "No new findings since the last review." — a review of nothing,
+    /// recorded as nothing-new. Run 32 went looking: it diffed a local commit against its parent
+    /// (b531b302 vs 0d11c184, NOT the PR's base...head) and reviewed that, opening "Review basis: Local
+    /// commit …" — a confident review of a range nobody asked about, with nothing marking it as such.
+    /// An empty capture is a fact about the DAEMON's capture, and only the daemon can report it honestly.
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_reports_no_reviewable_changes_instead_of_reviewing_an_empty_capture()
+    {
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        // The shape runs 32/62 recorded: `git diff base...head` came back empty, so no path was named either.
+        fixture.Runner.OnArgvContainsFirst("diff", new SandboxCommandResult(0, string.Empty, string.Empty));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture.Factory.CreatedProfiles.Should().BeEmpty(
+            "with nothing captured there is nothing for a reviewer to read — and an agent given no diff goes "
+                + "and finds its own range to review");
+
+        var review = PayloadOf<ReviewArtifactPayload>(
+            fixture, run, DaemonReviewStageExecutor.ReviewArtifactKind);
+        review.ReviewText.Should().MatchRegex(
+            "(?i)no reviewable",
+            "the run still owes the PR a verdict — silence is indistinguishable from never having run");
+        review.ReviewText.Should().NotContain(
+            "No new findings since the last review.",
+            "that sentence claims a comparison against an earlier round; no comparison happened");
+        review.ReviewText.Should().MatchRegex(
+            "(?i)(base-sha|head-sha)",
+            "naming the range that came back empty is what lets a reader tell a binary-only PR from a fetch "
+                + "that never had the commits");
+    }
+
+    // ── Delivery truthfulness: a post-mode run may not COMPLETE without provider-visible evidence ────    // Run 27's shape: the Posted stage failed once on retention, the retry re-ran the stage, produced no
     // provider comment at all, and the run still went Completed. The stage must instead stay retryable
     // whenever the review was supposed to reach the PR and demonstrably did not — while the deliberate
     // "no new findings" no-post stays a success (forcing a comment there is the re-review noise bug).
@@ -1947,6 +2539,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // ambiguity is exactly what let run 27 complete undelivered, so the stage must stay retryable.
         var options = new CodeReviewDaemonOptions
         {
+            UseS2SReviewAgent = true,
             EnableCommentPosting = true,
             EnableHostSummaryFallback = true,
         };
@@ -1983,6 +2576,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // outcome for an unauthorized attempt, so the stage completes and records exactly that.
         var options = new CodeReviewDaemonOptions
         {
+            UseS2SReviewAgent = true,
             EnableCommentPosting = false,
             EnableHostSummaryFallback = true,
         };
@@ -2015,6 +2609,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // durable Posted+provider-response evidence in the outbox for the delivery classifier to read.
         var options = new CodeReviewDaemonOptions
         {
+            UseS2SReviewAgent = true,
             EnableCommentPosting = true,
             EnableHostSummaryFallback = true,
         };
@@ -2043,6 +2638,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // the sentinel exists to stop.
         var options = new CodeReviewDaemonOptions
         {
+            UseS2SReviewAgent = true,
             EnableCommentPosting = true,
             EnableHostSummaryFallback = true,
         };
@@ -2140,24 +2736,231 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     /// that seeds a mismatch isolates the single discriminator it is about. (No workspace preparer is wired on
     /// this ctor, so the hosted workspace id is null here, as it is in every other test on this fixture.)
     /// </summary>
+    /// <remarks>
+    /// The context generation is obtained by CALLING the production method rather than re-deriving it, and the
+    /// distinction is deliberate. These tests assert a RELATIONSHIP — "a matching checkpoint resumes" — that
+    /// merely happens to be keyed by a value; re-deriving the digest here would copy any bug in it faithfully
+    /// into all thirteen of them and they would all still pass. The digest's own properties are pinned in ONE
+    /// place instead, by <c>StableSubjectHash</c>'s dedicated tests, which construct payloads directly.
+    /// (Contrast the family-pattern table in <c>ModelConfigGeneratorServiceTests</c>, where an independent
+    /// transcription IS the asset because the test's purpose is to pin the value itself.)
+    /// <para>
+    /// A direct call rather than reflection, for the same reason: reflection binds by string name, so a rename
+    /// leaves the build green and fails at runtime. This binds at compile time and breaks loudly.
+    /// </para>
+    /// </remarks>
     private static ReviewLifecycleIdentity LifecycleOf(
         Fixture fixture,
         ReviewRun run,
         string modality = DaemonReviewStageExecutor.S2SModality,
         string? localThreadId = null,
-        string? workspaceId = null,
         string? modelId = null,
         bool toolAssisted = false,
         long? contextGeneration = null) =>
         new(
             modality,
             localThreadId ?? DaemonReviewStageExecutor.ThreadId(run, run.VariantId),
-            workspaceId,
             modelId ?? run.ModelId,
             toolAssisted,
-            contextGeneration
-                ?? fixture.Store.TryGetLatestArtifact(run.Id, DaemonReviewStageExecutor.ContextArtifactKind)?.Id
-                ?? 0);
+            contextGeneration ?? fixture.Executor.ContextSubjectGeneration(run));
+
+    /// <summary>
+    ///     Every SUBJECT field must move the digest. This is the discard direction — the one that guards the
+    ///     failure the fix creates rather than the one it removes.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         <b>Synthetic, and deliberately so: production has no example of any of these.</b> Across 175
+    ///         runs, <c>PrId</c>, <c>BaseSha</c> and <c>HeadSha</c> have never varied between two context rows
+    ///         of the same run — a new head sha starts a new run — and <c>Diff</c> never varied either in 76
+    ///         consecutive pairs. These cases are constructed. A reader who assumes they mirror observed
+    ///         behaviour will badly overestimate how often this path runs.
+    ///     </para>
+    ///     <para>
+    ///         Why they matter anyway: today's identity is too INCLUSIVE, so it discards checkpoints it should
+    ///         keep — wasteful, loud, and safe, because every review is recomputed against correct inputs. A
+    ///         digest that excluded too much would fail the other way, resuming onto a conversation whose
+    ///         reasoning was formed against a diff the PR no longer has, and reading as an ordinary review.
+    ///         The fix converts an expensive-and-safe failure into a cheap-and-wrong one, and this is the
+    ///         guard on that conversion.
+    ///     </para>
+    ///     <para>
+    ///         These pin that the digest DISCRIMINATES. They do not pin that the stage consults it — that is
+    ///         <c>DaemonReviewStageExecutorPooledTests.Reviewed_discards_its_checkpoint_when_the_rebuilt_context_carries_a_different_diff</c>,
+    ///         which drives a differing subject through the real restart-and-re-lease path. Neither half is
+    ///         sufficient alone: delete that stage test as "redundant with these" and the wiring becomes
+    ///         unpinned with nothing going red.
+    ///     </para>
+    /// </remarks>
+    [Theory]
+    [InlineData("PrId")]
+    [InlineData("BaseSha")]
+    [InlineData("HeadSha")]
+    [InlineData("Diff")]
+    public void The_subject_digest_changes_when_any_field_the_review_is_about_changes(string field)
+    {
+        var baseline = SubjectPayload();
+        var altered = field switch
+        {
+            "PrId" => baseline with { PrId = "999" },
+            "BaseSha" => baseline with { BaseSha = new string('b', 40) },
+            "HeadSha" => baseline with { HeadSha = new string('h', 40) },
+            "Diff" => baseline with { Diff = "diff --git a/Other.cs b/Other.cs\n+ different" },
+            _ => throw new ArgumentOutOfRangeException(nameof(field), field, "unhandled subject field"),
+        };
+
+        DaemonReviewStageExecutor.StableSubjectHash(altered).Should().NotBe(
+            DaemonReviewStageExecutor.StableSubjectHash(baseline),
+            "{0} is part of what the review is ABOUT, so a checkpoint built before it changed must not be "
+                + "resumed onto",
+            field);
+    }
+
+    /// <summary>
+    ///     Every EXCLUDED field must leave the digest alone. Without this, a field could be left out of the
+    ///     hash and still reach the discard decision through some other route, reintroducing the defect by a
+    ///     side door.
+    /// </summary>
+    /// <remarks>
+    ///     <c>SiblingRepos</c> is the live one — it is the sole cause of both production discards. The other
+    ///     three are excluded on their own grounds (the roots record a sandbox path with exactly one distinct
+    ///     value across all 245 context rows; changed paths are derived from the diff; the reason string is a
+    ///     diagnostic), and are pinned here so nobody quietly folds one back in.
+    /// </remarks>
+    [Theory]
+    [InlineData("SiblingRepos")]
+    [InlineData("CheckoutRoot")]
+    [InlineData("StoreRoot")]
+    [InlineData("ChangedPaths")]
+    [InlineData("UncomparableReason")]
+    public void The_subject_digest_ignores_every_field_that_is_not_what_the_review_is_about(string field)
+    {
+        var baseline = SubjectPayload();
+        var altered = field switch
+        {
+            "SiblingRepos" => baseline with
+            {
+                SiblingRepos = [new SiblingRepoPointer("Contracts", "/workspace/store/repos/Contracts", "url")],
+            },
+            "CheckoutRoot" => baseline with { CheckoutRoot = "/workspace/slot-7/repo" },
+            "StoreRoot" => baseline with { StoreRoot = "/workspace/slot-7/notes" },
+            "ChangedPaths" => baseline with { ChangedPaths = "Foo.cs\nBar.cs" },
+            "UncomparableReason" => baseline with { UncomparableReason = "merge base unreachable" },
+            _ => throw new ArgumentOutOfRangeException(nameof(field), field, "unhandled excluded field"),
+        };
+
+        DaemonReviewStageExecutor.StableSubjectHash(altered).Should().Be(
+            DaemonReviewStageExecutor.StableSubjectHash(baseline),
+            "{0} describes where the review is mounted or what sits beside it, not what it is reviewing — a "
+                + "checkpoint whose fan-out is already paid for must survive it changing",
+            field);
+    }
+
+    /// <summary>
+    ///     The digest must not depend on where one subject field ends and the next begins, which is why the
+    ///     fields are length-prefixed rather than concatenated.
+    /// </summary>
+    [Fact]
+    public void The_subject_digest_distinguishes_subjects_that_differ_only_in_where_a_field_boundary_falls()
+    {
+        var left = SubjectPayload() with { BaseSha = "aabb", HeadSha = "cc" };
+        var right = SubjectPayload() with { BaseSha = "aa", HeadSha = "bbcc" };
+
+        DaemonReviewStageExecutor.StableSubjectHash(left).Should().NotBe(
+            DaemonReviewStageExecutor.StableSubjectHash(right),
+            "plain concatenation would render both as 'aabbcc' and call two different subjects the same one");
+    }
+
+    /// <summary>A context payload with every subject field set, as the baseline for digest comparisons.</summary>
+    private static ContextArtifactPayload SubjectPayload() =>
+        new("118", new string('a', 40), new string('c', 40), "diff --git a/Foo.cs b/Foo.cs\n+ added");
+
+    /// <summary>
+    ///     A subject field that reads back blank must fail CLOSED to the row id, not be hashed as if the
+    ///     subject were genuinely empty.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         <b>This is not hypothetical and it is not a null check.</b> A schema change can blank a field
+    ///         with no deserialization failure at all: a payload written while the record declared a field the
+    ///         current record no longer declares parses cleanly, and the dropped content reads as blank.
+    ///         <c>FileManifest</c> did exactly this — present in <c>review-context</c> payloads through run
+    ///         138, gone from 139 — and three runs in the nova store (32, 62, 154) already carry a blank
+    ///         <c>Diff</c>, two of which were genuinely reviewed.
+    ///     </para>
+    ///     <para>
+    ///         The direction matters. Drift that blanks a field on ONE side makes the digests differ and
+    ///         discards — wasteful, loud, safe. Drift that blanks the same field on BOTH sides makes the
+    ///         digests MATCH, and the review resumes onto a checkpoint whose subject was never compared —
+    ///         silent, cheap, wrong. The deserialization guard cannot catch the second case, because nothing
+    ///         failed to deserialize. Hence: blank means "could not read the subject", never "the subject is
+    ///         empty".
+    ///     </para>
+    ///     <para>
+    ///         Asserting equality with the ROW ID rather than merely "not the hash" is what makes this a test
+    ///         of the fail-closed direction: the row id is the pre-fix behaviour, i.e. the conservative one.
+    ///     </para>
+    /// </remarks>
+    [Theory]
+    [InlineData("PrId")]
+    [InlineData("BaseSha")]
+    [InlineData("HeadSha")]
+    [InlineData("Diff")]
+    public void A_subject_field_blanked_by_schema_drift_falls_back_to_the_row_id_instead_of_hashing_a_blank(
+        string blankedField)
+    {
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        var run = fixture.SeedRun();
+        var full = SubjectPayload();
+        var drifted = blankedField switch
+        {
+            "PrId" => full with { PrId = string.Empty },
+            "BaseSha" => full with { BaseSha = string.Empty },
+            "HeadSha" => full with { HeadSha = string.Empty },
+            "Diff" => full with { Diff = string.Empty },
+            _ => throw new ArgumentOutOfRangeException(nameof(blankedField)),
+        };
+        var row = fixture.Store.AddArtifact(new ReviewArtifact
+        {
+            ReviewRunId = run.Id,
+            ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
+            ArtifactKind = DaemonReviewStageExecutor.ContextArtifactKind,
+            Provider = "github",
+            Payload = JsonSerializer.Serialize(drifted),
+        });
+
+        fixture.Executor.ContextSubjectGeneration(run).Should().Be(
+            row.Id,
+            "a blank {0} means the subject could not be READ, and hashing it would assert the subject is "
+                + "empty — a claim that is not true and that makes two unreadable subjects compare equal",
+            blankedField);
+    }
+
+    /// <summary>
+    ///     The control for the test above: with every subject field present the digest is used, so the
+    ///     fail-closed branch is reached by blankness and not by something incidental to the fixture.
+    /// </summary>
+    [Fact]
+    public void A_context_whose_subject_is_fully_readable_is_hashed_rather_than_falling_back()
+    {
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        var run = fixture.SeedRun();
+        var full = SubjectPayload();
+        var row = fixture.Store.AddArtifact(new ReviewArtifact
+        {
+            ReviewRunId = run.Id,
+            ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
+            ArtifactKind = DaemonReviewStageExecutor.ContextArtifactKind,
+            Provider = "github",
+            Payload = JsonSerializer.Serialize(full),
+        });
+
+        var generation = fixture.Executor.ContextSubjectGeneration(run);
+        generation.Should().Be(
+            DaemonReviewStageExecutor.StableSubjectHash(full),
+            "a readable subject is what the digest exists to summarise");
+        generation.Should().NotBe(row.Id, "otherwise the assertion above could hold by coincidence");
+    }
 
     /// <summary>Writes the checkpoint a Reviewed stage leaves behind when it is interrupted between the
     /// provisional turn and the synthesis turn — the state every restart test starts from. Defaults to the
@@ -2237,9 +3040,25 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             GitHubPublisher = new FakeReviewCommentPublisher("github");
             AdoPublisher = repoProvider == "azure-devops" ? new FakeReviewCommentPublisher("ado") : null;
 
-            options ??= new CodeReviewDaemonOptions();
+            // s2s: true because it is the only modality Program.cs will boot — it throws at startup on
+            // UseS2SReviewAgent: false (Program.cs:278) — so a fixture defaulting the other way runs every
+            // test that supplies no options against a configuration that cannot ship (#102). It defaulted to
+            // false until then. Call sites that pass their OWN options object are unaffected by this line and
+            // were flipped individually.
+            options ??= new CodeReviewDaemonOptions { UseS2SReviewAgent = true };
             // Resumability is a property of WHERE the turn runs, so the double is resumable on exactly the
             // path production's is: hosted (S2S) turns survive this process, in-process ones do not.
+            //
+            // Measured, so the flip above is not taken on faith: pinning this to `false` (leaving every other
+            // line alone) reddens 71 of the 133 tests in this class, and 13 of the 16 whose own options object
+            // was flipped to S2S. Those 13 therefore reach a branch that only the S2S path takes.
+            //
+            // The 3 survivors are all ContextReady_*, and their survival is NOT a defect in them: they run
+            // ExecuteStageAsync(ContextReady) only, and the resumability throw lives in the review stage, so
+            // this mutant cannot discriminate them. Their flip removes the "cannot boot" objection without
+            // changing what they exercise, because this fixture injects no S2SReviewWorkspacePreparer and the
+            // two fail-closed S2S guards in FetchContextAsync are skipped when it is null. Same "necessary but
+            // not sufficient" caveat as DaemonReviewStageExecutorSessionTests; #103 decides that path's fate.
             Factory.Resumable = options.UseS2SReviewAgent;
             var publishers = publishersOverride
                 ?? (AdoPublisher is null
@@ -2278,6 +3097,57 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             CodeReviewDaemonOptions? options = null,
             IReviewCommentPublisher[]? publishersOverride = null) =>
             new(loggerFactory, "azure-devops", options, diffResult: null, publishersOverride, completionSource: null);
+
+        /// <summary>
+        /// Seeds a COMPLETED earlier round on the same PR (an older head), with its review artifact and the
+        /// outbox row that records whether that round's comment actually reached the provider. The pair is
+        /// the point: a round that produced findings and a row that says they were never delivered is the
+        /// state a later round must not paper over.
+        /// </summary>
+        public ReviewRun SeedPriorRound(string reviewText, bool delivered)
+        {
+            var repoId = Store.EnsureRepo(new RepoIdentity
+            {
+                Provider = _repoProvider,
+                OrgOrOwner = "achieveai",
+                Project = _repoProvider == "azure-devops" ? "Platform" : null,
+                RepoName = "LmDotnetTools",
+                RepoStableId = "repo-stable-1",
+            });
+            var prior = Store.CreateOrGetReviewRun(new ReviewRun
+            {
+                RepoId = repoId,
+                PrId = "118",
+                HeadSha = "old-head-sha",
+                BaseSha = "base-sha",
+                TriggerWatermark = "wm-0",
+                ReviewKind = "full",
+                VariantId = "primary",
+                Mode = "collect-only",
+                Stage = ReviewStage.Posted,
+                WorkflowStatus = WorkflowStatus.Completed,
+                PrLifecycleState = PrLifecycleState.Open,
+            });
+            _ = Store.AddArtifact(new ReviewArtifact
+            {
+                ReviewRunId = prior.Id,
+                ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
+                ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
+                Provider = _repoProvider,
+                Payload = JsonSerializer.Serialize(
+                    new ReviewArtifactPayload(reviewText, "prior-run", "primary")),
+            });
+            _ = Store.EnqueueOutbox(new OutboxEntry
+            {
+                IdempotencyKey = $"prior:{prior.Id}:post-review-comment",
+                Provider = _repoProvider,
+                ReviewRunId = prior.Id,
+                Operation = ReviewPoster.PostReviewCommentOperation,
+                ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
+                Status = delivered ? OutboxStatus.Posted : OutboxStatus.Collected,
+            });
+            return prior;
+        }
 
         public ReviewRun SeedRun(string watermark = "wm-1", string mode = "collect-only", string? prAuthor = null)
         {

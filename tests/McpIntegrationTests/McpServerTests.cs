@@ -12,22 +12,10 @@ namespace AchieveAi.LmDotnetTools.McpIntegrationTests;
 /// </summary>
 public class McpServerTests
 {
-    public static readonly string ServerLocation = Path.Combine(
-        Path.GetDirectoryName(typeof(McpServerTests).Assembly.Location)!,
-        "AchieveAi.LmDotnetTools.McpSampleServer.exe"
-    );
-
     [Fact]
     public async Task GreetingTool_SayHello_ReturnsGreeting()
     {
-        var transport = new StdioClientTransport(
-            new StdioClientTransportOptions
-            {
-                Name = "test-server",
-                Command = ServerLocation,
-                Arguments = Array.Empty<string>(),
-            }
-        );
+        var transport = new StdioClientTransport(McpSampleServerProcess.TransportOptions());
 
         var client = await McpClient.CreateAsync(transport);
         try
@@ -96,14 +84,7 @@ public class McpServerTests
     public async Task CalculatorTool_Add_ReturnsCorrectResult()
     {
         // Create a client using the new transport API
-        var transport = new StdioClientTransport(
-            new StdioClientTransportOptions
-            {
-                Name = "test-server",
-                Command = ServerLocation,
-                Arguments = Array.Empty<string>(),
-            }
-        );
+        var transport = new StdioClientTransport(McpSampleServerProcess.TransportOptions());
 
         var client = await McpClient.CreateAsync(transport);
         try

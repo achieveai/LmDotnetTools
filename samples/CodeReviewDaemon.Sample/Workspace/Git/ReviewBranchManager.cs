@@ -278,11 +278,16 @@ internal sealed class ReviewBranchManager
         // Clean-on-entry: a PRIOR sweep's non-ff merge (below) may have hit a conflict and left this SHARED
         // ReviewBot retention checkout with an unresolved index — after which every `git checkout` fails with
         // "you need to resolve your current index first", wedging the sweep (and the KnowledgeExtractionCommitter)
-        // for this PR every cycle. Abort any in-progress merge and hard-reset so the checkout below starts clean
-        // and a one-time conflict self-heals. Best-effort — a clean checkout has nothing to abort. (SlotHygiene
-        // does this for the pooled review slot; the host retention checkout needs the same guard.)
-        _ = await RunGitAsync(["merge", "--abort"], repoRoot, cancellationToken, allowFailure: true)
-            .ConfigureAwait(false);
+        // for this PR every cycle. Hard-reset so the checkout below starts clean and a one-time conflict
+        // self-heals. (SlotHygiene does this for the pooled review slot; the host retention checkout needs the
+        // same guard.)
+        //
+        // `reset --hard` is the whole guard: it clears MERGE_HEAD and the conflicted index entries on its own,
+        // verified against git — a checkout that failed mid-conflict succeeded after a bare reset with no
+        // abort. A `git merge --abort` used to run first, and on the clean tree that is the normal case it
+        // exits 128 with "fatal: There is no merge to abort (MERGE_HEAD missing)". That put a fatal-looking
+        // git failure in the operator log once per PR per sweep while adding nothing a genuine failure could
+        // then be distinguished from, so it is deliberately not issued.
         _ = await RunGitAsync(["reset", "--hard"], repoRoot, cancellationToken, allowFailure: true)
             .ConfigureAwait(false);
 

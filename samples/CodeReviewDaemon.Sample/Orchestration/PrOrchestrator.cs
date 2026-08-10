@@ -52,6 +52,25 @@ internal sealed class PrOrchestrator
                 run = run with { PrLifecycleState = seed.PrLifecycleState };
             }
 
+            // The seed also carries the freshest CONFIDENTIALITY TRUST SIGNAL, and nothing reconciled it.
+            // Those flags are written by CreateOrGetReviewRun's INSERT and never touched again, so a run
+            // created while the provider could not establish them replayed the stale answer on EVERY later
+            // poll — resume had nothing to do with it. Live: run 144 got the cross-repo sibling gate CLOSED
+            // with a 2-rule allow-list while runs 145 and 146, same binary and same repo, got it OPEN with 7.
+            //
+            // The refresh adopts the seed in BOTH directions, and the tightening direction is the one that
+            // matters. Today's staleness is benign by luck — the stale value IS the fail-closed default, so
+            // it withholds siblings — but the mechanism is not: a run seeded while a repo was same-trust
+            // would otherwise keep that answer after the repo went public, and then staleness GRANTS access.
+            // The seed's values already carry PrPollingService's `?? true` collapse, so an unknown arrives
+            // here as the fail-closed value and this can never be more permissive than the evidence the
+            // current poll actually carried.
+            if (seed.IsForkPr != run.IsForkPr || seed.IsTargetRepoPublic != run.IsTargetRepoPublic)
+            {
+                _store.UpdateTrustSignal(run.Id, seed.IsForkPr, seed.IsTargetRepoPublic);
+                run = run with { IsForkPr = seed.IsForkPr, IsTargetRepoPublic = seed.IsTargetRepoPublic };
+            }
+
             if (StageMachine.IsComplete(run.Stage))
             {
                 return run;
@@ -80,6 +99,13 @@ internal sealed class PrOrchestrator
             {
                 return run;
             }
+
+            // Claim the run for this process before any stage runs. WorkflowStatus.Running says "someone is
+            // working on this"; the claim is what makes that statement checkable. Without it every Running
+            // row looks unowned, and the startup reclaim (task 29) could not tell a run this daemon is
+            // mid-review from one whose process died — taking the wrong one puts two processes on the same
+            // PR, writing into the same notes branch.
+            _store.ClaimReviewRun(run.Id, DaemonInstance.Id, DateTimeOffset.UtcNow);
 
             foreach (var stage in StageMachine.RemainingStages(run.Stage))
             {
@@ -131,6 +157,14 @@ internal sealed class PrOrchestrator
         }
         finally
         {
+            // Drop this process's ownership claim on EVERY exit from the run — completion, the
+            // PR-not-open short-circuit, and the failure→RetryPending rethrow alike. A claim left behind
+            // by a process that has stopped working the run would make it look live to the next startup's
+            // reclaim, stranding it for a whole stale window; one left behind permanently would strand it
+            // for good, which is the leak this exists to close. Owner-scoped, so this can only ever drop
+            // a claim this process holds.
+            _store.ReleaseReviewRun(run.Id, DaemonInstance.Id);
+
             // Guarantee a pooled review slot is returned on EVERY terminal outcome of this run — normal
             // completion (where the Posted stage already returned it, so this is a no-op), the PR-not-open
             // short-circuit, and the failure→RetryPending rethrow — so a run that never reaches Posted can
@@ -155,10 +189,13 @@ internal sealed class PrOrchestrator
         {
             try
             {
-                var payload = JsonSerializer.Deserialize<ReviewArtifactPayload>(artifact.Payload);
-                if (payload?.ReviewText.TrimStart().StartsWith(
-                        "No new findings",
-                        StringComparison.OrdinalIgnoreCase) == true)
+                var payload = JsonSerializer.Deserialize<ReviewArtifactPayload>(
+                    artifact.Payload, DaemonReviewStageExecutor.PayloadOptions);
+                // Through the executor's predicate, not a second copy of it. This was an inlined StartsWith,
+                // which reported "nothing posted" for any review whose opening words happened to be the exit
+                // phrase — a body full of BLOCKERs included. Two constructions of one rule drift, and the
+                // drift shows up as a delivery outcome that contradicts what the run actually did.
+                if (DaemonReviewStageExecutor.IsNoNewFindingsSentinel(payload?.ReviewText))
                 {
                     return "no new findings — nothing posted";
                 }

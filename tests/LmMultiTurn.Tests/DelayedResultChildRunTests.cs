@@ -405,6 +405,41 @@ public class DelayedResultChildRunTests
         toolCompleted.Error!.Message.Should().Be("the upstream service rejected it");
     }
 
+    [Fact]
+    public async Task AFailedReadTheToolCalledSuccessful_IsSucceededOnOutcomeAndNotFoundOnResultClass()
+    {
+        var publisher = new RecordingLifecyclePublisher();
+        await using var harness = await Harness.StartAsync(_mockAgent, "tc_1", publisher: publisher);
+
+        // The #90 shape, and the reason ResultClass exists. A sandbox read of a missing, mistyped or
+        // out-of-scope path returns a SUCCESSFUL tool result whose text says the file is not there.
+        await harness.Loop.ResolveToolCallAsync(
+            "tc_1",
+            "File does not exist yet: /marketplaces/gb/code-reviewer/reference/search-discipline.md",
+            isError: false);
+        await harness.WaitForProviderCallsAsync(2);
+
+        var toolCompleted = publisher
+            .Payloads<ToolCompletedPayload>(LifecycleEventTypes.ToolCompleted)
+            .Should()
+            .ContainSingle(p => p.WasDeferred)
+            .Subject;
+
+        // The DISAGREEMENT is the finding, so both halves are load-bearing and neither may be "fixed" into
+        // agreement with the other. Outcome stays Succeeded because the call genuinely completed — that is a
+        // transport claim with consumers outside this repo, and widening it would move the ground under all
+        // of them silently.
+        toolCompleted.Outcome.Should().Be(
+            LifecycleToolOutcomes.Succeeded,
+            "the call completed; Succeeded has never meant the tool accomplished anything");
+        toolCompleted.Error.Should().BeNull(
+            "no error was signalled — which is exactly why an audit over Outcome alone comes back clean");
+
+        // ...and this is the field that makes the failure findable. 289 results of this shape were emitted in
+        // one night with nothing anywhere able to count them.
+        toolCompleted.ResultClass.Should().Be("not-found");
+    }
+
     #endregion
 
     #region Helpers

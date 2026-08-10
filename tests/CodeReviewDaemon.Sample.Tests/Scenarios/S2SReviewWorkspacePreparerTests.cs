@@ -1,3 +1,4 @@
+using System.Text.Json;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
@@ -235,10 +236,131 @@ public sealed class S2SReviewWorkspacePreparerTests
         handler.Requests.Should().BeEmpty("it fails before naming anything to LmStreaming");
     }
 
+    [Fact]
+    public async Task AdoptSlotAsync_on_the_worktree_layout_opens_the_agent_in_its_own_slots_checkout()
+    {
+        // The mount is per REPOSITORY now, so the leaf alone no longer says where this run's code is: two
+        // concurrent reviews of one repo are mounted on the SAME directory and differ only by which worktree
+        // inside it they open on. The gateway home is what carries that difference — it is created, exported
+        // as SANDBOX_HOME and becomes the operation's working directory, so a review that is handed the mount
+        // root would start in a directory holding every slot's worktree and the store, and its first
+        // relative-path tool call would land in the wrong PR.
+        var git = new FakeSandboxCommandRunner();
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "api/workspaces", "[]")
+            .OnJson(
+                HttpMethod.Post,
+                "api/workspaces",
+                "{\"id\":\"ws-nova\",\"name\":\"Review review-nova slot 1\",\"directoryRelPath\":\"review-nova\","
+                    + "\"homeRelPath\":\"slot-1/repo\",\"marketplaces\":[\"code-reviewer\"]}");
+        using var http = NewHttp(handler);
+        var preparer = NewPreparer(http, git);
+
+        var prepared = await preparer.AdoptSlotAsync(
+            MakeWorktreeSlot(1, "review-nova"), MakeRun("118"), CancellationToken.None);
+
+        prepared.Leaf.Should().Be("review-nova", "the REPO's mount is the leaf; the slot is addressed by home");
+        prepared.WorkspaceId.Should().Be("ws-nova");
+        var post = handler.Requests.Single(r => r.Method == HttpMethod.Post);
+        JsonDocument.Parse(post.Body!).RootElement.GetProperty("homeRelPath").GetString()
+            .Should().Be(
+                "slot-1/repo",
+                "home is relative to the mount and names the reviewed checkout, not the store or the mount root");
+        git.Commands.Should().BeEmpty("adoption must not touch the working tree the pool already prepared");
+    }
+
+    [Fact]
+    public async Task AdoptSlotAsync_on_the_legacy_layout_sends_no_home_and_starts_at_the_mount_root()
+    {
+        // Pre-worktree, the slot OWNS its whole mount and its root is already the right place to start. Sending
+        // a home there would create a directory the pool never populated and start the review inside it.
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "api/workspaces", "[]")
+            .OnJson(
+                HttpMethod.Post,
+                "api/workspaces",
+                "{\"id\":\"ws-slot-0\",\"name\":\"Review slot 0\",\"directoryRelPath\":\"review-slot-0\","
+                    + "\"marketplaces\":[\"code-reviewer\"]}");
+        using var http = NewHttp(handler);
+        var preparer = NewPreparer(http, new FakeSandboxCommandRunner());
+
+        _ = await preparer.AdoptSlotAsync(MakeSlot(0, "review-slot-0"), MakeRun("118"), CancellationToken.None);
+
+        var post = handler.Requests.Single(r => r.Method == HttpMethod.Post);
+        JsonDocument.Parse(post.Body!).RootElement.GetProperty("homeRelPath").ValueKind
+            .Should().Be(JsonValueKind.Null, "no home means the gateway keeps its historical mount-root start");
+    }
+
+    [Fact]
+    public async Task AdoptSlotAsync_for_two_slots_of_one_repo_does_not_reuse_the_first_ones_workspace()
+    {
+        // Both slots of a repo share ONE mount, so their workspaces share a directoryRelPath and are told apart
+        // only by home. Matching on the leaf alone would hand slot 1 the workspace already opened on slot 0's
+        // worktree — the review would run, produce findings, and file them against a DIFFERENT PR's code.
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "api/workspaces",
+                "[{\"id\":\"ws-slot-0\",\"name\":\"Review review-nova slot 0\",\"directoryRelPath\":\"review-nova\","
+                    + "\"homeRelPath\":\"slot-0/repo\",\"marketplaces\":[\"code-reviewer\"]}]")
+            .OnJson(
+                HttpMethod.Post,
+                "api/workspaces",
+                "{\"id\":\"ws-slot-1\",\"name\":\"Review review-nova slot 1\",\"directoryRelPath\":\"review-nova\","
+                    + "\"homeRelPath\":\"slot-1/repo\",\"marketplaces\":[\"code-reviewer\"]}");
+        using var http = NewHttp(handler);
+        var preparer = NewPreparer(http, new FakeSandboxCommandRunner());
+
+        var prepared = await preparer.AdoptSlotAsync(
+            MakeWorktreeSlot(1, "review-nova"), MakeRun("222"), CancellationToken.None);
+
+        prepared.WorkspaceId.Should().Be("ws-slot-1", "a different home is a different place, so a new workspace");
+    }
+
+    [Fact]
+    public async Task AdoptSlotAsync_for_a_recycled_worktree_slot_reuses_the_workspace_with_the_same_home()
+    {
+        // The counterpart of the test above: same mount AND same home is the same place, so a recycled slot
+        // must not mint a duplicate workspace on every review it serves.
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "api/workspaces",
+                "[{\"id\":\"ws-slot-1\",\"name\":\"Review review-nova slot 1\",\"directoryRelPath\":\"review-nova\","
+                    + "\"homeRelPath\":\"slot-1/repo\",\"marketplaces\":[\"code-reviewer\"]}]");
+        using var http = NewHttp(handler);
+        var preparer = NewPreparer(http, new FakeSandboxCommandRunner());
+
+        var prepared = await preparer.AdoptSlotAsync(
+            MakeWorktreeSlot(1, "review-nova"), MakeRun("333"), CancellationToken.None);
+
+        prepared.WorkspaceId.Should().Be("ws-slot-1");
+        handler.Requests
+            .Where(r => r.Uri.ToString().Contains("api/workspaces", StringComparison.Ordinal))
+            .Should().OnlyContain(r => r.Method == HttpMethod.Get, "a recycled slot must not POST a duplicate");
+    }
+
     private static ReviewSlot MakeSlot(int index, string dirName)
     {
         var hostPath = $"{BasePath}/{dirName}";
         return new ReviewSlot(index, hostPath, $"{hostPath}/store", $"{hostPath}/scratch");
+    }
+
+    /// <summary>A slot on the shared-object-store worktree layout: the mount belongs to the REPO and the slot
+    /// is a named directory inside it, which is what the gateway home addresses.</summary>
+    private static ReviewSlot MakeWorktreeSlot(int index, string mountDirName)
+    {
+        var mount = $"{BasePath}/{mountDirName}";
+        var slotDir = $"slot-{index}";
+        return new ReviewSlot(
+            index,
+            mount,
+            $"{mount}/{slotDir}/notes",
+            $"{mount}/{slotDir}/scratch",
+            RepoKey: "dev.azure.com/o365exchange/Weve_DA/_git/Nova",
+            SharedStorePath: $"{mount}/store",
+            TargetPath: $"{mount}/{slotDir}/repo",
+            SlotDirName: slotDir);
     }
 
     private static HttpClient NewHttp(FakeHttpMessageHandler handler) =>

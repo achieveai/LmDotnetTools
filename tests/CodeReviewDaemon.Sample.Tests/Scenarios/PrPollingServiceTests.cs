@@ -118,6 +118,11 @@ public sealed class PrPollingServiceTests : LoggingTestBase
             .Be(WorkflowStatus.RetryPending, "the failed PR is left for reconcile, not lost");
     }
 
+    // The PR-lifecycle sweep no longer runs on this loop, so the test that pinned it against the poll body
+    // ("The_lifecycle_sweep_runs_even_while_the_poll_body_is_still_working") moved to
+    // MaintenanceSweepServiceTests, where it is asserted across BOTH services with its evidence intact —
+    // together with its mirror, that a long sweep no longer holds off the poll body either.
+
     [Fact]
     public async Task A_poison_target_does_not_starve_the_other_targets()
     {
@@ -152,6 +157,191 @@ public sealed class PrPollingServiceTests : LoggingTestBase
 
         public Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("simulated provider failure");
+    }
+
+    /// <summary>
+    /// A BUSY target must not starve the targets behind it. This is the sibling of
+    /// <see cref="A_poison_target_does_not_starve_the_other_targets"/> and it guards the failure that
+    /// actually happens: that one anticipates an <em>exception</em> on target[0], which is caught per target,
+    /// so the loop moves on. Nothing anticipated target[0] simply having a lot of work.
+    /// <para>
+    /// <c>PollTargetAsync</c> awaits <c>PrOrchestrator.RunAsync</c> inline for every PR it discovered, and
+    /// each of those is a whole review. So the second target is not polled until the first target's entire
+    /// backlog has been reviewed end to end. Live, that is measured at ~10 min per review against ~43
+    /// in-window PRs — roughly 7 hours to reach target[1] — and the daemon restarts long before that, which
+    /// is why four of five enabled repos have never been polled at all.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_busy_target_does_not_starve_the_targets_behind_it()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+
+        const int BusyPrCount = 40;
+        var busyPrs = Enumerable.Range(1, BusyPrCount).Select(i => PrDescriptor(i.ToString())).ToArray();
+        var executor = new RecordingStageExecutor();
+        var orchestrator = new PrOrchestrator(store, executor, LoggerFactory.CreateLogger<PrOrchestrator>());
+
+        var busy = new MockPrProvider(Provider, busyPrs, NextCursor());
+        // Snapshots how many reviews had already completed at the moment this target was first polled.
+        var starved = new ObservingPrProvider(
+            "azure-devops",
+            new MockPrProvider("azure-devops", [PrDescriptor("999")], NextCursor()),
+            () => executor.ReleaseCount);
+
+        var targets = new[]
+        {
+            new PrPollTarget { Provider = Provider, Repo = SampleRepo(), Scope = Scope },
+            new PrPollTarget { Provider = "azure-devops", Repo = SampleRepo(), Scope = "ado:active" },
+        };
+        var poller = new PrPollingService(
+            targets, [busy, starved], store, orchestrator, LoggerFactory.CreateLogger<PrPollingService>());
+
+        await poller.PollOnceAsync(CancellationToken.None);
+
+        starved.ReviewsDoneAtFirstCall.Should().NotBeNull("the second target must be polled at all");
+        starved.ReviewsDoneAtFirstCall.Should().BeLessThan(
+            BusyPrCount,
+            "a target must not have to wait for another target's ENTIRE backlog before it is polled once; "
+                + "at production review durations that wait is hours, and the daemon restarts first");
+    }
+
+    /// <summary>Wraps an <see cref="IPrProvider"/> and records an observation the first time it is polled, so
+    /// a test can assert on the INTERLEAVING of the poll loop rather than only on its end state.</summary>
+    private sealed class ObservingPrProvider(string provider, IPrProvider inner, Func<int> probe) : IPrProvider
+    {
+        public string Provider { get; } = provider;
+
+        /// <summary>The probe's value when this provider was first asked for PRs; null if it never was.</summary>
+        public int? ReviewsDoneAtFirstCall { get; private set; }
+
+        public Task<PullRequestPage> ListOpenPullRequestsAsync(PrPollRequest request, CancellationToken cancellationToken)
+        {
+            ReviewsDoneAtFirstCall ??= probe();
+            return inner.ListOpenPullRequestsAsync(request, cancellationToken);
+        }
+
+        public Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
+            inner.GetPrStateAsync(repo, prId, cancellationToken);
+    }
+
+    /// <summary>
+    /// The per-target cap and the cursor have to agree, and the dangerous direction is silent. The provider's
+    /// NextCursor points past the WHOLE page, so a cycle that reviewed only the first few PRs and then saved
+    /// it would step over the PRs it deliberately skipped — and because the cursor only moves forward, those
+    /// PRs are never listed again. That turns a fairness fix into permanent data loss, which is strictly worse
+    /// than the starvation it replaces: starved PRs are late, skipped PRs never happen.
+    /// <para>
+    /// The second half is the trap the first half sets. Holding the cursor put means the next cycle re-lists
+    /// the same page, so the already-finished PRs at its head are seen again — and if those consumed cap slots
+    /// the page could never drain. Both properties are asserted here because either alone is satisfiable by a
+    /// broken implementation.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_capped_pass_holds_the_cursor_and_still_drains_the_page_across_cycles()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var prs = Enumerable.Range(1, PrPollingService.DefaultMaxReviewsPerTargetPerCycle + 2)
+            .Select(i => PrDescriptor(i.ToString()))
+            .ToArray();
+        var provider = new MockPrProvider(Provider, prs, NextCursor());
+        var poller = BuildPoller(store, provider);
+
+        await poller.PollOnceAsync(CancellationToken.None);
+
+        store.ReadCursor(Provider, Scope, PrPollingService.CursorVersion).ShouldResync.Should().BeTrue(
+            "a capped pass left PRs unreviewed on this page; advancing past them would lose them for good");
+        var repoId = store.EnsureRepo(SampleRepo());
+        store.CreateOrGetReviewRun(SeedFor(repoId, prs[^1].PrId)).Stage.Should()
+            .Be(ReviewStage.Discovered, "the PRs past the cap were deliberately not reviewed this cycle");
+
+        // Re-listing the same page must make progress, not spin: the finished PRs at its head cost a lookup
+        // and must not consume the cap a second time.
+        await poller.PollOnceAsync(CancellationToken.None);
+
+        store.CreateOrGetReviewRun(SeedFor(repoId, prs[^1].PrId)).Stage.Should()
+            .Be(ReviewStage.Posted, "the second cycle must reach the PRs the capped one left behind");
+        store.ReadCursor(Provider, Scope, PrPollingService.CursorVersion).ShouldResync.Should().BeFalse(
+            "the page finally drained, so the cursor may now advance past it");
+    }
+
+    /// <summary>
+    /// Rotation has to be DURABLE, not just fair within one process. The daemon restarted eight times in a
+    /// single day; a loop that is fair per cycle but always re-enters at target[0] gives the later targets
+    /// only whatever time is left after target[0]'s share, every time, forever. That is why four of five
+    /// enabled repos had never been polled — and it is the failure mode #60 already demonstrated once, where
+    /// a mechanism looked correct in a single-process test and never fired in production.
+    /// <para>
+    /// Here the first cycle is interrupted while the FIRST target is being polled — the case that matters,
+    /// because it is the target whose backlog outlives the process. A fresh service over the same store must
+    /// then begin at the SECOND target. This is what makes writing the rotation position before the work
+    /// rather than after it load-bearing: on completion it would never be written for this target at all.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task An_interrupted_cycle_resumes_at_the_next_target_after_a_restart()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        using var cts = new CancellationTokenSource();
+
+        var orchestrator = new PrOrchestrator(store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
+        var targets = new[]
+        {
+            new PrPollTarget { Provider = Provider, Repo = SampleRepo(), Scope = Scope },
+            new PrPollTarget { Provider = "azure-devops", Repo = SampleRepo(), Scope = "ado:active" },
+        };
+
+        // Process A: the cycle dies while target[0] is in flight, before it ever finished.
+        var first = new CancellingPrProvider(
+            Provider, new MockPrProvider(Provider, [PrDescriptor("118")], NextCursor()), cts);
+        var secondA = new MockPrProvider("azure-devops", [PrDescriptor("999")], NextCursor());
+        var processA = new PrPollingService(
+            targets, [first, secondA], store, orchestrator, LoggerFactory.CreateLogger<PrPollingService>());
+
+        var interrupted = async () => await processA.PollOnceAsync(cts.Token);
+        _ = await interrupted.Should().ThrowAsync<OperationCanceledException>();
+        secondA.CallCount.Should().Be(0, "the cycle died before reaching the second target");
+
+        // Process B: a restart. Same store, fresh service — exactly what eight restarts a day look like.
+        // Both providers are wrapped so the assertion can pin the ORDER they were polled in. Reaching the
+        // second target is not evidence of anything: an un-rotated cycle reaches it too, just last, which is
+        // precisely the bug. Only "second target FIRST" distinguishes a durable rotation from no rotation.
+        var seq = 0;
+        var firstB = new ObservingPrProvider(
+            Provider, new MockPrProvider(Provider, [PrDescriptor("118")], NextCursor()), () => seq++);
+        var secondB = new ObservingPrProvider(
+            "azure-devops", new MockPrProvider("azure-devops", [PrDescriptor("999")], NextCursor()), () => seq++);
+        var processB = new PrPollingService(
+            targets, [firstB, secondB], store, orchestrator, LoggerFactory.CreateLogger<PrPollingService>());
+
+        await processB.PollOnceAsync(CancellationToken.None);
+
+        secondB.ReviewsDoneAtFirstCall.Should().Be(
+            0, "the restarted cycle must BEGIN at the target the interrupted one never reached");
+        firstB.ReviewsDoneAtFirstCall.Should().Be(1, "the interrupted target goes to the back of the rotation");
+        var repoId = store.EnsureRepo(SampleRepo());
+        store.CreateOrGetReviewRun(SeedFor(repoId, "999")).Stage.Should()
+            .Be(ReviewStage.Posted, "the previously-unreachable target's PR was actually reviewed");
+    }
+
+    /// <summary>Cancels the cycle the first time it is polled, modelling a process that dies while its first
+    /// target is still working — the shape that made rotation-on-completion never fire.</summary>
+    private sealed class CancellingPrProvider(string provider, IPrProvider inner, CancellationTokenSource cts) : IPrProvider
+    {
+        public string Provider { get; } = provider;
+
+        public Task<PullRequestPage> ListOpenPullRequestsAsync(PrPollRequest request, CancellationToken cancellationToken)
+        {
+            cts.Cancel();
+            return inner.ListOpenPullRequestsAsync(request, cancellationToken);
+        }
+
+        public Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
+            inner.GetPrStateAsync(repo, prId, cancellationToken);
     }
 
     [Fact]
@@ -271,6 +461,85 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         CursorPayload = "{\"page\":2}",
         HighWaterMark = "2026-06-01T00:00:00Z",
     };
+
+    /// <summary>
+    /// The poll payload is the ONE moment the daemon holds what the PR says about itself: the review runs
+    /// later — minutes to hours later, and on a retry possibly after the PR has been edited, retargeted or
+    /// closed. Anything not carried onto the seeded run here is gone, and the reviewer is left judging a diff
+    /// with no claim to judge it against.
+    /// </summary>
+    [Fact]
+    public async Task A_discovered_prs_stated_intent_is_carried_onto_the_run_it_seeds()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var descriptor = PrDescriptor("118") with
+        {
+            Author = "jane.doe@contoso.com",
+            Title = "Revert the Contoso revenue report to the Q3 layout",
+            Description = "Rolls back the Q4 rewrite; drill-through was broken on three pages.",
+            TargetBranch = "release/2026.08",
+        };
+        var provider = new MockPrProvider(Provider, [descriptor], NextCursor());
+        var poller = BuildPoller(store, provider);
+
+        await poller.PollOnceAsync(CancellationToken.None);
+
+        var repoId = store.EnsureRepo(SampleRepo());
+        var run = store.CreateOrGetReviewRun(SeedFor(repoId, "118"));
+        run.PrAuthor.Should().Be("jane.doe@contoso.com");
+        run.PrTitle.Should().Be("Revert the Contoso revenue report to the Q3 layout");
+        run.PrDescription.Should().Be("Rolls back the Q4 rewrite; drill-through was broken on three pages.");
+        run.PrTargetBranch.Should().Be("release/2026.08");
+    }
+
+    /// <summary>
+    /// The confidentiality trust signal must reach the run, because <c>AllowsCrossRepoCoLocation</c> reads it
+    /// off the run and nothing else can. It went unwired for the daemon's whole life: measured on the NOVA
+    /// store, all 138 runs carried <c>is_fork_pr=1, is_target_repo_public=1</c> — the fail-closed defaults —
+    /// so the gate was unconditionally false and every configured sibling was refused. The visible symptom was
+    /// 416 "submodule … is not on the allow-list" denials across 104 runs: exactly the 4 non-reviewed
+    /// submodules, every run.
+    /// </summary>
+    [Fact]
+    public async Task A_discovered_prs_trust_signal_is_carried_onto_the_run_it_seeds()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var descriptor = PrDescriptor("118") with { IsForkPr = false, IsTargetRepoPublic = false };
+        var provider = new MockPrProvider(Provider, [descriptor], NextCursor());
+        var poller = BuildPoller(store, provider);
+
+        await poller.PollOnceAsync(CancellationToken.None);
+
+        var repoId = store.EnsureRepo(SampleRepo());
+        var run = store.CreateOrGetReviewRun(SeedFor(repoId, "118"));
+        run.IsForkPr.Should().BeFalse("the provider positively established the head is not from a fork");
+        run.IsTargetRepoPublic.Should().BeFalse("the provider positively established the target repo is private");
+    }
+
+    /// <summary>
+    /// The other half of the same carry, and the more important one: a provider that could NOT determine the
+    /// signal reports null, and null must land as <c>true</c> — the fail-closed value. Getting this backwards
+    /// would co-locate private sibling repos beside a PR whose trust was never established, which is precisely
+    /// the risk the gate exists for.
+    /// </summary>
+    [Fact]
+    public async Task A_trust_signal_the_provider_could_not_determine_stays_fail_closed_on_the_run()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var descriptor = PrDescriptor("118") with { IsForkPr = null, IsTargetRepoPublic = null };
+        var provider = new MockPrProvider(Provider, [descriptor], NextCursor());
+        var poller = BuildPoller(store, provider);
+
+        await poller.PollOnceAsync(CancellationToken.None);
+
+        var repoId = store.EnsureRepo(SampleRepo());
+        var run = store.CreateOrGetReviewRun(SeedFor(repoId, "118"));
+        run.IsForkPr.Should().BeTrue("unknown trust is treated exactly like a confirmed fork PR");
+        run.IsTargetRepoPublic.Should().BeTrue("unknown visibility is treated exactly like a public repo");
+    }
 
     private static PullRequestDescriptor PrDescriptor(string prId) => new()
     {

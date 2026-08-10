@@ -1562,12 +1562,235 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         AddToHistory(historyResult);
         await PublishToAllAsync(result, ct);
 
-        Logger.LogDebug(
-            "Tool result for {ToolCallId}: {ResultPreview}",
+        // EUII split. ResultPreview is raw tool output — for a code-review agent that is source code and PR
+        // content — so it stays at Trace, which release builds strip. Debug carries only non-EUII facts:
+        // tool name, result length, and a failure CLASS.
+        //
+        // This is not a downgrade of the diagnostics. Every forensic query run against this log counted
+        // failure CLASSES, never payload text: 289 "file does not exist", 221 HTTP 502s, 11 exit-127s, 440
+        // empty results. All of those are answerable from the Debug line alone, and the 440 empties — which
+        // were unattributable because no tool name was recorded — become attributable for the first time.
+        //
+        // ToolName is logged because without it a RESULT cannot be tied to the tool that produced it without
+        // joining on ToolCallId across records.
+        Logger.LogTrace(
+            "Tool result for {ToolCallId} ({ToolName}): {ResultPreview}",
             toolCall.ToolCallId,
+            toolCall.FunctionName,
             result.Result.Length > 100 ? result.Result[..100] + "..." : result.Result);
 
+        Logger.LogDebug(
+            "Tool result for {ToolCallId} ({ToolName}): {ResultClass}, {ResultLength} chars "
+                + "(isError={IsError}, errorCode={ErrorCode})",
+            toolCall.ToolCallId,
+            toolCall.FunctionName,
+            ClassifyResult(result.Result, result.IsError, result.IsDeferred),
+            result.Result.Length,
+            result.IsError,
+            SafeErrorCode(result.ErrorCode));
+
         return result;
+    }
+
+    /// <summary>
+    /// Passes an error CODE through to Debug, or nothing. <c>ErrorCode</c> is documented as a
+    /// provider/tool-specific code, but nothing enforces that, and this event sits at Debug where the EUII
+    /// rule is absolute. So the contract is enforced here rather than assumed: anything over 64 characters
+    /// or containing whitespace is a message, not a code, and yields <c>null</c>. A provider that starts
+    /// putting prose in this field then costs a diagnostic, never a leak.
+    /// </summary>
+    internal static string? SafeErrorCode(string? errorCode)
+    {
+        if (string.IsNullOrEmpty(errorCode) || errorCode.Length > 64)
+        {
+            return null;
+        }
+
+        foreach (var c in errorCode)
+        {
+            if (char.IsWhiteSpace(c))
+            {
+                return null;
+            }
+        }
+
+        return errorCode;
+    }
+
+    /// <summary>
+    /// Buckets a tool result for diagnostics: <c>ok</c>, <c>empty</c>, <c>not-found</c>, <c>denied</c>,
+    /// <c>timeout</c>, <c>error</c>, <c>unclassified</c> or <c>deferred</c>. Exists so a failure can be
+    /// COUNTED without logging the payload that would reveal what failed, which is what lets the raw
+    /// preview stay at Trace.
+    /// <para>
+    /// Reported ALONGSIDE <see cref="ToolCallResult.IsError"/>, never derived from it, because the two
+    /// disagree on exactly the case that matters. A sandbox Read of a path that is missing, mistyped or
+    /// outside the agent's scope comes back as a SUCCESSFUL tool result whose text happens to say
+    /// "File does not exist yet" — <c>IsError</c> is false, and the failure is indistinguishable from real
+    /// content. That is how 167 failed reads of one reference document went unnoticed across 82 review
+    /// threads. Logging both makes the disagreement visible, and the disagreement is the finding.
+    /// </para>
+    /// <para>
+    /// Deliberately conservative: markers are narrow and high-signal, and anything unrecognised is reported
+    /// as <c>ok</c> rather than guessed into a class. An under-reported failure is a gap; a fabricated class
+    /// is a wrong answer that reads as a right one.
+    /// </para>
+    /// <para>
+    /// Takes primitives rather than a result type because both <c>ToolCallResult</c> and
+    /// <c>ToolCallResultMessage</c> carry this same triple, and the classification depends on nothing else.
+    /// </para>
+    /// <para>
+    /// PUBLIC because it has a second caller outside this assembly: the review daemon counts the same failure
+    /// classes over the transcripts its review host publishes. Two copies of these markers would drift, and
+    /// the two defects this method has already had — a successful <c>[Exit code: 0]</c> read as an error, and
+    /// a marker matched deep inside returned content — are exactly the kind that get fixed in one copy only.
+    /// </para>
+    /// </summary>
+    public static string ClassifyResult(string? text, bool isError, bool isDeferred)
+    {
+        if (isDeferred)
+        {
+            return "deferred";
+        }
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return "empty";
+        }
+
+        if (Leads(text, "does not exist") || Leads(text, "Failed to read file") || Leads(text, "no such file"))
+        {
+            return "not-found";
+        }
+
+        if (Leads(text, "policy_evaluation_failed")
+            || Leads(text, "upstream_error")
+            || Leads(text, "is not on the allow-list")
+            || Leads(text, "scoped-write")
+            || Leads(text, "permission denied")
+            || Leads(text, "403 Forbidden")
+            // The collaboration directory's transcript-visibility refusal. Measured at 223 occurrences in
+            // 22,564 live results, every one at offset 0 — the single largest denial shape in the corpus, and
+            // it was landing in "ok" because none of the markers above appear in it.
+            || Leads(text, "cannot read that agent's transcript")
+            // The egress proxy's 502 as a PYTHON exception rather than the JSON envelope "upstream_error"
+            // above catches. Same denial, three renderings — `<class 'urllib.error.HTTPError'> HTTP Error
+            // 502`, `<HTTPError 502: 'Bad Gateway'>`, `HTTPError HTTP Error 502` — 23 of them, all reported
+            // as ordinary content. This is the #50 population, so a count that misses it understates the one
+            // thing #50 is about.
+            || Leads(text, "Bad Gateway")
+            || Leads(text, "Access denied"))
+        {
+            return "denied";
+        }
+
+        // Timeouts are their own class, not a flavour of error, because they are the one failure where the
+        // right next action differs: an error says the attempt was wrong, a timeout says it may not have
+        // been. Folding them into "error" loses exactly the distinction an operator would act on, and
+        // folding them into "ok" — which is where all 302 of them were going — loses them entirely.
+        //
+        // Three shapes, all measured near offset 0: the tool wrapper's own wall-clock cutoff (84), the
+        // sub-agent wait envelope reporting that what it waited on never reached terminal (218), and the MCP
+        // layer's cancellation (46). Checked BEFORE the MCP error marker below, because a cancelled MCP call
+        // matches both and the more specific fact is the useful one.
+        if (Leads(text, "Command timed out after")
+            || Leads(text, "\"status\":\"timeout\"")
+            || Leads(text, "The request was canceled"))
+        {
+            return "timeout";
+        }
+
+        if (Leads(text, "command not found")
+            // The MCP layer's own failure envelope — "Error executing MCP tool <Name>: ...". A prefix at
+            // offset 0 covering Bash, Grep, Skill and every other MCP-hosted tool at once, and the whole
+            // family was invisible. Its cancellation variant is caught as a timeout above, deliberately.
+            || Leads(text, "Error executing MCP tool")
+            || FailingExitCode(text))
+        {
+            return "error";
+        }
+
+        // "ok" means "nothing recognisable went wrong", which is NOT the same as "succeeded" — and the two
+        // must not share a bucket, or a failure shape this classifier has never seen arrives as ok and is
+        // invisible, which is the exact defect the instrument exists to catch. So when the handler DID
+        // signal failure and no marker names it, say so: a rising unclassified count is the signal that a
+        // new failure shape has appeared.
+        //
+        // Honest limit, worth knowing before trusting this: a novel failure that ALSO reports isError=false
+        // — the shape that produced #90 — is indistinguishable from real content by text alone, and lands in
+        // ok. The classifier cannot close that; ResultLength at Debug and the Trace preview are the backstop.
+        return isError ? "unclassified" : "ok";
+
+        // A tool FAILURE announces itself at the top of the result; a tool result that merely CONTAINS these
+        // words further down is a file whose text discusses them. Without the window this classifier reads
+        // its own corpus: a Read of any source file containing "does not exist" — including the test file
+        // that pins this method — is reported as a failed read, and the count grows with how much code the
+        // reviewer opens rather than with how much broke.
+        //
+        // 256 is measured, not chosen. Across 21,912 live tool results every one of these markers lands
+        // early: "does not exist" at offset <40 in 345 of 347 hits, "Failed to read file" 12 of 12,
+        // "policy_evaluation_failed" 81 of 88, and none of the six markers appears past offset 100 in any
+        // record. The window is deliberately wider than the widest observed hit, because the daemon's
+        // transcript route wraps the same text in a JSON envelope and pushes every offset right.
+        static bool Leads(string? haystack, string needle) =>
+            haystack is not null
+            && haystack.IndexOf(needle, StringComparison.OrdinalIgnoreCase) is >= 0 and < LeadingMarkerWindow;
+    }
+
+    /// <summary>How far into a tool result a failure marker may appear and still be that tool's own failure
+    /// rather than a mention of one inside content it returned.</summary>
+    private const int LeadingMarkerWindow = 256;
+
+    /// <summary>
+    /// Whether the result carries a shell exit-code marker reporting a NON-ZERO status.
+    /// <para>
+    /// The one marker that cannot use the leading window, because it is a suffix by construction: the shell
+    /// tool appends <c>[Exit code: N]</c> after the command's whole output, so on any verbose command it sits
+    /// tens of kilobytes in. It has to be read from the end.
+    /// </para>
+    /// <para>
+    /// And it has to be READ, not merely detected. <c>[Exit code: 0]</c> is a real and common value — a
+    /// successful command — so treating the marker's presence as failure reports every wrapped shell call
+    /// that succeeded as an error, which is worse than not classifying them at all: it manufactures a failure
+    /// rate out of the tool the reviewer uses most. The client-side renderer already reads it this way
+    /// (<c>parseExitCode</c>/<c>isErrorResult</c>); this is the same rule on the server.
+    /// </para>
+    /// <para>
+    /// The LAST marker wins. A captured-output envelope can report <c>exit_code: 0</c> at the top while the
+    /// stdout it captured ends in <c>[Exit code: 2]</c>; the inner, later one is the command's own verdict.
+    /// </para>
+    /// </summary>
+    private static bool FailingExitCode(string text)
+    {
+        const string Marker = "[Exit code:";
+        var at = text.LastIndexOf(Marker, StringComparison.OrdinalIgnoreCase);
+        if (at < 0)
+        {
+            return false;
+        }
+
+        var i = at + Marker.Length;
+        while (i < text.Length && text[i] == ' ')
+        {
+            i++;
+        }
+
+        var start = i;
+        if (i < text.Length && (text[i] == '-' || text[i] == '+'))
+        {
+            i++;
+        }
+
+        while (i < text.Length && char.IsAsciiDigit(text[i]))
+        {
+            i++;
+        }
+
+        // Unparseable is NOT failure. A marker whose value cannot be read says nothing about the command, and
+        // guessing "error" here would put the fabricated-class problem back in through the last remaining door.
+        return i > start
+            && int.TryParse(text.AsSpan(start, i - start), out var code)
+            && code != 0;
     }
 
     /// <summary>
@@ -1603,6 +1826,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             error: result.IsError
                 ? new LifecycleError { Code = result.ErrorCode ?? string.Empty, Message = result.Result }
                 : null,
+            // The stream's only view of what the tool actually RETURNED. Emitted alongside the outcome, never
+            // folded into it: `Succeeded` remains the transport claim it has always been, and this answers the
+            // separate question the outcome cannot. A consumer that groups tool failures by outcome finds none
+            // of the 289 failed reads; grouping by this finds all of them.
+            resultClass: ClassifyResult(result.Result, result.IsError, result.IsDeferred),
             ct: ct);
     }
 
@@ -1615,6 +1843,22 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     /// auditing the stream: denied means the handler never ran. The distinguishing signal is the
     /// error code, which <c>PreparedToolInvocation.ToBlockedResult</c> sets to the approval outcome
     /// — the same constants the payload's approval decision uses.
+    /// <para>
+    /// <b>What <see cref="LifecycleToolOutcomes.Succeeded"/> means here, because the name over-claims.</b>
+    /// It means the CALL completed without the handler signalling failure. It does not mean the tool
+    /// accomplished anything. A sandbox read of a missing, mistyped or out-of-scope path returns a
+    /// successful result whose text says the file is not there — <c>IsError</c> is false, so it arrives
+    /// here and leaves as <c>Succeeded</c> with no <see cref="LifecycleError"/> attached. Measured: all
+    /// 289 failed reads in one night's review traffic were emitted that way, and an audit of the stream
+    /// for them comes back clean. That is worse than a missing signal, because it answers the question.
+    /// </para>
+    /// <para>
+    /// Deliberately NOT widened to consult the result text. <c>Succeeded</c> is a defensible
+    /// transport-level claim with consumers that cannot be enumerated from this repository, and changing
+    /// what an existing value means would silently move the ground under every one of them. The text
+    /// classification is published beside it as <c>ToolCompletedPayload.ResultClass</c> instead — see
+    /// <see cref="ClassifyResult"/>. Group by that field, not this one, to ask what the tools returned.
+    /// </para>
     /// </remarks>
     private static string ClassifyToolOutcome(ToolCallResultMessage result)
     {
@@ -2108,6 +2352,14 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 error: isError
                     ? new LifecycleError { Code = newMessage.ErrorCode ?? string.Empty, Message = result }
                     : null,
+                // The SECOND emission site for this event, and it maps its own outcome inline rather than
+                // going through ClassifyToolOutcome — so the class has to be set here too or every delayed
+                // result reports none, which is the same blind spot in half the population.
+                //
+                // isDeferred is false on purpose despite wasDeferred being true: the deferral is over, this
+                // IS the answer. Passing true would classify every resolved call as "deferred" and the field
+                // would carry no information on exactly the path that waited longest for it.
+                resultClass: ClassifyResult(result, isError, isDeferred: false),
                 ct: ct);
         }
 

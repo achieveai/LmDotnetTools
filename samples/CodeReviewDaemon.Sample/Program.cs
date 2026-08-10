@@ -54,8 +54,7 @@ if (maxPrAgeDaysOverride is int maxPrAgeDaysFlag)
 // Conservative defaults (collect-only, GitHub-only, repo allow-list empty); each flag is an explicit
 // operator opt-in to a higher-blast-radius behavior. See CodeReviewDaemonOptions.
 var daemonOptions =
-    builder.Configuration.GetSection(CodeReviewDaemonOptions.SectionName).Get<CodeReviewDaemonOptions>()
-    ?? new CodeReviewDaemonOptions();
+    CodeReviewDaemonOptions.Bind(builder.Configuration.GetSection(CodeReviewDaemonOptions.SectionName));
 builder.Services.AddSingleton(daemonOptions);
 
 // The ADO org(s) whose legacy {org}.visualstudio.com submodule URLs the host-side git rewrites to
@@ -312,6 +311,17 @@ builder.Services.AddSingleton(sp => new LmStreamingS2SClient(
     daemonAppId,
     daemonKeyMissing ? null : daemonAppKey));
 
+// Refuse to start against a review host running with agent collaboration OFF — the LmStreaming sample's
+// shipped default — because with it off every delegate reviewer's note is committed as a placeholder stub
+// and NOTHING else reports a problem. Gated on the S2S path: a non-S2S profile never reads a sub-agent
+// transcript and must not be failed over a host it does not use.
+if (daemonOptions.UseS2SReviewAgent)
+{
+    builder.Services.AddHostedService(sp => new ReviewHostCollaborationPreflight(
+        sp.GetRequiredService<LmStreamingS2SClient>(),
+        sp.GetRequiredService<ILogger<ReviewHostCollaborationPreflight>>()));
+}
+
 // Completion-source seam for the recursive review completion barrier: reads the review host's versioned
 // recursive sub-agent tree over the same S2S client. IMPORTANT — the review host (LmStreaming.Sample) must
 // be deployed with the recursive `?recursive=true` endpoint BEFORE the daemon barrier is enabled.
@@ -335,7 +345,7 @@ builder.Services.AddSingleton(sp => new S2SReviewWorkspacePreparer(
     new GitRunner(new HostGitCommandRunner(
         BuildHostGitCredentialsSource(sp),
         sp.GetRequiredService<ILogger<HostGitCommandRunner>>(),
-        hostGitAdoOrgs)),
+        hostGitAdoOrgs), daemonOptions.BotName),
     effectiveWorkspaceBase!,
     daemonOptions.LmStreamingReviewMarketplace,
     sp.GetRequiredService<ILogger<S2SReviewWorkspacePreparer>>()));
@@ -387,7 +397,9 @@ builder.Services.AddSingleton<PolicyEnforcedHttpClientFactory>();
 builder.Services.AddSingleton<IPrProvider>(sp => new GitHubPrProvider(
     sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("github"),
     sp.GetRequiredService<GitHubOAuthProvider>(),
-    sp.GetRequiredService<ILogger<GitHubPrProvider>>()));
+    sp.GetRequiredService<ILogger<GitHubPrProvider>>(),
+    daemonOptions.MaxPagesPerPoll,
+    daemonOptions.MaxPrsPerPage));
 
 // GitHub review posting is host-side (like ADO below). Agent-owned posting via code-reviewer:post-pr-review was
 // abandoned — the agent loaded the skill but never actually posted — so DaemonReviewStageExecutor.PostAsync posts
@@ -402,7 +414,9 @@ if (daemonOptions.EnableAdoProvider)
     builder.Services.AddSingleton<IPrProvider>(sp => new AdoPrProvider(
         sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("ado"),
         sp.GetRequiredService<AdoOAuthProvider>(),
-        sp.GetRequiredService<ILogger<AdoPrProvider>>()));
+        sp.GetRequiredService<ILogger<AdoPrProvider>>(),
+        daemonOptions.MaxPagesPerPoll,
+        daemonOptions.MaxPrsPerPage));
 
     // ADO review posting is host-side (like GitHub above): DaemonReviewStageExecutor.PostAsync posts ADO
     // reviews through this publisher. Resolve the CONCRETE AdoOAuthProvider, not IOAuthTokenProvider, which is
@@ -411,6 +425,17 @@ if (daemonOptions.EnableAdoProvider)
         sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("ado"),
         sp.GetRequiredService<AdoOAuthProvider>(),
         sp.GetRequiredService<ILogger<AdoReviewCommentPublisher>>()));
+
+    // The PR's CI build and test results. Registered beside the provider because it answers a question the
+    // reviewer cannot answer from inside its sandbox: that has no dotnet, no network and a 2 GB cap, so it
+    // cannot build the repo, let alone run its tests. On PR 5505458 the pipeline had already recorded 45,051
+    // tests with a single failure named down to TagService.UnitTests while the review said nothing about it —
+    // the answer existed, nobody fetched it. Same concrete AdoOAuthProvider as the publisher above, and for
+    // the same reason: IOAuthTokenProvider is ambiguous with GitHub registered against it too.
+    builder.Services.AddSingleton(sp => new AdoCiStatusReader(
+        sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("ado"),
+        sp.GetRequiredService<AdoOAuthProvider>(),
+        sp.GetRequiredService<ILogger<AdoCiStatusReader>>()));
 }
 
 // Host-side git authenticates to every OAuth provider the daemon is signed in to — GitHub for github.com
@@ -557,16 +582,17 @@ if (daemonOptions.EnableToolAssistedReview
                 : Path.Combine(AppContext.BaseDirectory, "review-pool");
 
     var slotDirPrefix = "slot-";
-    // S2S flattens the slot to ONE segment directly under the base. The gateway re-roots a workspace by a
-    // multi-segment rel path just fine (that is the in-process layout, {base}/review-pool/slot-{i}), but the
-    // S2S path names the same directory to LmStreaming as a workspace *directory*, and
-    // FileWorkspaceStore.SanitizeDirectory strips '/' and '\\' — "review-pool/slot-0" would silently become
-    // "review-poolslot-0", a different (empty) directory the agent would review as if it were the repo.
-    // {base}/review-slot-{i} sits BESIDE the untouched review-pool/ used by the in-process profiles.
+    // S2S flattens the mount to ONE segment directly under the base. The gateway re-roots a workspace by a
+    // multi-segment rel path just fine (that is the in-process layout, {base}/review-pool/review-{repo}), but
+    // the S2S path names the same directory to LmStreaming as a workspace *directory*, and
+    // FileWorkspaceStore.SanitizeDirectory strips '/' and '\\' — "review-pool/review-nova" would silently
+    // become "review-poolreview-nova", a different (empty) directory the agent would review as if it were the
+    // repo. {base}/review-{repo-slug} sits BESIDE the untouched review-pool/ used by the in-process profiles.
+    // The per-slot subdivision that used to be in this name now lives INSIDE the mount, as the gateway home.
     if (daemonOptions.UseS2SReviewAgent && !string.IsNullOrWhiteSpace(effectiveWorkspaceBase))
     {
         poolRoot = effectiveWorkspaceBase!.TrimEnd('/', '\\');
-        slotDirPrefix = "review-slot-";
+        slotDirPrefix = "review-";
     }
 
     // Host-side only (never mounted) on the in-process path; on S2S the knowledge-extraction arm mounts it as
@@ -591,19 +617,29 @@ if (daemonOptions.EnableToolAssistedReview
             loggerFactory.CreateLogger<ReviewSlotPool>(),
             slotDirPrefix);
 
-        // A slot directory whose name does not survive LmStreaming's workspace-directory sanitizer unchanged
+        // A mount directory whose name does not survive LmStreaming's workspace-directory sanitizer unchanged
         // would be mounted as a DIFFERENT, empty directory — a failure that looks like success: the agent finds
         // no repo, reports nothing wrong, and the review passes vacuously. Fail at startup instead.
+        //
+        // Two shapes are checked because both can be produced: the per-repo mount ("{prefix}{repo-slug}") that
+        // the worktree pool leases, and the flat "{prefix}{index}" a repo-less lease still falls back to.
+        // RepoSlug emits only lowercase alphanumerics and dashes by construction, so a canary key covering that
+        // alphabet settles every repo name at once — what is actually under test here is the configured prefix.
         if (daemonOptions.UseS2SReviewAgent)
         {
+            var candidates = new List<string> { pool.MountDirectoryName("dev.azure.com/Contoso/Some Project/_git/Repo.Name") };
             for (var i = 0; i < daemonOptions.ReviewPoolSize; i++)
             {
-                var slotDir = pool.SlotDirectoryName(i);
+                candidates.Add($"{slotDirPrefix}{i}");
+            }
+
+            foreach (var slotDir in candidates)
+            {
                 var sanitized = S2SReviewWorkspacePreparer.SanitizeLeaf(slotDir);
                 if (!string.Equals(slotDir, sanitized, StringComparison.Ordinal))
                 {
                     throw new InvalidOperationException(
-                        $"Review slot directory '{slotDir}' is not stable under LmStreaming's workspace-directory "
+                        $"Review mount directory '{slotDir}' is not stable under LmStreaming's workspace-directory "
                             + $"sanitizer (it becomes '{sanitized}'), so the hosted conversation would be mounted on "
                             + "a different, empty directory. Choose a slot prefix of lowercase letters, digits and "
                             + "dashes only.");
@@ -612,16 +648,22 @@ if (daemonOptions.EnableToolAssistedReview
         }
 
         // The store is a GitHub superproject (AchieveAiReviews); its submodule URLs resolve under "github".
-        var hostPreparer = new ReviewSlotPreparer(new GitRunner(hostRunner), hostFileSystem, "github", loggerFactory);
+        var hostPreparer = new ReviewSlotPreparer(
+            new GitRunner(hostRunner, daemonOptions.BotName),
+            hostFileSystem,
+            "github",
+            loggerFactory,
+            enableObjectStoreMaintenance: daemonOptions.EnableObjectStoreMaintenance);
         return new ReviewSlotWorkspace(
             pool,
             hostPreparer,
             (session, provider) => new ReviewSlotPreparer(
-                new GitRunner(session.CommandRunner),
+                new GitRunner(session.CommandRunner, daemonOptions.BotName),
                 session.FileSystem,
                 provider,
                 loggerFactory,
-                requireSdkOwnershipMarker: true),
+                requireSdkOwnershipMarker: true,
+                enableObjectStoreMaintenance: daemonOptions.EnableObjectStoreMaintenance),
             hostRunner,
             hostFileSystem);
     });
@@ -632,7 +674,7 @@ if (daemonOptions.EnableToolAssistedReview
         var store = sp.GetRequiredService<ReviewStore>();
         var providers = sp.GetServices<IPrProvider>().ToList();
         var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
-        var hostGit = new GitRunner(slots.HostRunner);
+        var hostGit = new GitRunner(slots.HostRunner, daemonOptions.BotName);
         var branchManager = new ReviewBranchManager(
             hostGit, slots.HostFileSystem, loggerFactory.CreateLogger<ReviewBranchManager>());
         var sweepLogger = loggerFactory.CreateLogger("pr-lifecycle-sweep");
@@ -886,6 +928,13 @@ builder.Services.AddSingleton(sp => new RetryGovernor(
     () => DateTimeOffset.UtcNow,
     sp.GetRequiredService<ILogger<RetryGovernor>>()));
 builder.Services.AddSingleton<PrOrchestrator>();
+// Reclaims runs left Running by a process that died, and heartbeats this process's own claims so a
+// concurrent daemon's live runs are never taken (task 29). Reclaim runs on ENTRY rather than one interval
+// later — the maintenance sweep's original shape waited out its interval and therefore never ran at all in
+// sessions shorter than it, which is the mistake this deliberately does not repeat.
+builder.Services.AddHostedService(sp => new OrphanedRunReclaimer(
+    sp.GetRequiredService<ReviewStore>(),
+    sp.GetRequiredService<ILogger<OrphanedRunReclaimer>>()));
 // The PR-watching loop. Registering a BackgroundService adds NO route, so the host's mapped routes stay
 // exactly the one webhook below. With the allow-list empty (default) it has no targets and is inert.
 builder.Services.AddHostedService(sp => new PrPollingService(
@@ -893,33 +942,32 @@ builder.Services.AddHostedService(sp => new PrPollingService(
     sp.GetServices<IPrProvider>(),
     sp.GetRequiredService<ReviewStore>(),
     sp.GetRequiredService<PrOrchestrator>(),
-    sp.GetRequiredService<ILogger<PrPollingService>>(),
-    // Maintenance runs on the poller cadence: the PR-lifecycle sweep (registered by the pooled path) and the
-    // deep-link retention sweep (registered by the S2S path when a window is configured). Either or both may
-    // be absent, in which case the poller keeps polling with no sweep (design §4.5).
-    sweepAsync: ComposeMaintenanceSweep(
-        sp.GetService<PrLifecycleSweeper>() is { } lifecycleSweeper ? lifecycleSweeper.SweepAsync : null,
-        sp.GetService<DeepLinkRetentionSweeper>() is { } retentionSweeper ? retentionSweeper.SweepAsync : null)));
+    sp.GetRequiredService<ILogger<PrPollingService>>()));
 
-// Chains the optional maintenance sweeps into the poller's single seam, in the order they were introduced:
-// the lifecycle sweep first, so its today's-semantics timing is unchanged by the retention sweep landing
-// behind it. The poller already wraps the whole seam in its own try/catch, so a throwing sweep skips the
-// rest of THIS cycle and both are retried on the next one — harmless against a 24-hour ceiling checked every
-// 30 seconds.
-static Func<CancellationToken, Task>? ComposeMaintenanceSweep(
-    Func<CancellationToken, Task>? first,
-    Func<CancellationToken, Task>? second)
+// Maintenance, on its OWN cadence — one hosted service per sweep, never chained onto the poll loop. The
+// PR-lifecycle sweep is registered by the pooled path and the deep-link retention sweep by the S2S path when
+// a window is configured, so each is guarded on its sweeper actually being in the container (design §4.5);
+// the guard reads the collection rather than resolving inside the factory, because a hosted service that
+// exists only to do nothing still starts a loop and announces a cadence it will never honour.
+//
+// Separate services rather than one chained delegate: the lifecycle sweep's first pass is a 125-PR backlog
+// lasting hours, and chained it would starve whatever sat behind it exactly as it starved the poller.
+if (builder.Services.Any(d => d.ServiceType == typeof(PrLifecycleSweeper)))
 {
-    if (first is null || second is null)
-    {
-        return first ?? second;
-    }
+    builder.Services.AddHostedService(sp => new MaintenanceSweepService(
+        "PR-lifecycle",
+        sp.GetRequiredService<PrLifecycleSweeper>().SweepAsync,
+        TimeSpan.FromSeconds(daemonOptions.MaintenanceSweepIntervalSeconds),
+        sp.GetRequiredService<ILogger<MaintenanceSweepService>>()));
+}
 
-    return async ct =>
-    {
-        await first(ct).ConfigureAwait(false);
-        await second(ct).ConfigureAwait(false);
-    };
+if (builder.Services.Any(d => d.ServiceType == typeof(DeepLinkRetentionSweeper)))
+{
+    builder.Services.AddHostedService(sp => new MaintenanceSweepService(
+        "Deep-link retention",
+        sp.GetRequiredService<DeepLinkRetentionSweeper>().SweepAsync,
+        TimeSpan.FromSeconds(daemonOptions.MaintenanceSweepIntervalSeconds),
+        sp.GetRequiredService<ILogger<MaintenanceSweepService>>()));
 }
 
 // ── HTTP surface ───────────────────────────────────────────────────────────────────────────────

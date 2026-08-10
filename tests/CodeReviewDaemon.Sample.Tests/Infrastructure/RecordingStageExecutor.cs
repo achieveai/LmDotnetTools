@@ -20,16 +20,24 @@ internal sealed class RecordingStageExecutor : IReviewStageExecutor
     /// <paramref name="throwAtStage"/> if given, else at the first stage) — used to prove one poison PR
     /// does not starve the rest of a poll cycle.
     /// </param>
-    public RecordingStageExecutor(ReviewStage? throwAtStage = null, string? throwForPrId = null)
+    /// <param name="gate">
+    /// When set, every stage awaits this task before completing — so a test can hold the poll body in flight
+    /// and assert what the rest of the loop does meanwhile. Production stages take minutes; a double that
+    /// returns instantly hides every ordering defect that only appears while work is still running.
+    /// </param>
+    public RecordingStageExecutor(ReviewStage? throwAtStage = null, string? throwForPrId = null, Task? gate = null)
     {
         _throwAtStage = throwAtStage;
         _throwForPrId = throwForPrId;
+        _gate = gate;
     }
+
+    private readonly Task? _gate;
 
     /// <summary>The stages executed, in the order the orchestrator invoked them.</summary>
     public List<ReviewStage> ExecutedStages { get; } = [];
 
-    public Task ExecuteStageAsync(ReviewStage stage, ReviewRun run, CancellationToken cancellationToken)
+    public async Task ExecuteStageAsync(ReviewStage stage, ReviewRun run, CancellationToken cancellationToken)
     {
         var prMatches = _throwForPrId is null || string.Equals(run.PrId, _throwForPrId, StringComparison.Ordinal);
         var stageMatches = _throwAtStage is null ? _throwForPrId is not null : _throwAtStage == stage;
@@ -38,8 +46,12 @@ internal sealed class RecordingStageExecutor : IReviewStageExecutor
             throw new InvalidOperationException($"Simulated failure at stage {stage} for PR {run.PrId}.");
         }
 
+        if (_gate is not null)
+        {
+            await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         ExecutedStages.Add(stage);
-        return Task.CompletedTask;
     }
 
     /// <summary>Records lease releases the orchestrator requested (this double leases no real slots, so it

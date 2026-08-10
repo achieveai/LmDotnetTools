@@ -149,7 +149,8 @@ public sealed partial class SandboxClient
             Discovery: request.Discovery is { } discovery
                 ? new DiscoveryDto(new DiscoveryWebhookDto(discovery.WebhookUrl, discovery.WebhookAuth))
                 : null,
-            Marketplaces: request.Marketplaces.Count > 0 ? [.. request.Marketplaces] : null
+            Marketplaces: request.Marketplaces.Count > 0 ? [.. request.Marketplaces] : null,
+            Home: request.Home
         );
 
     private static AuthProviderDto ToDto(SandboxAuthProvider provider) =>

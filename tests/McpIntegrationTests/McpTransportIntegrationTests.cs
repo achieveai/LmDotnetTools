@@ -18,14 +18,7 @@ public class McpTransportIntegrationTests
     {
         // Arrange - Setup server and client
         using var cts = new CancellationTokenSource();
-        var transport = new StdioClientTransport(
-            new StdioClientTransportOptions
-            {
-                Name = "test-server",
-                Command = McpServerTests.ServerLocation,
-                Arguments = Array.Empty<string>(),
-            }
-        );
+        var transport = new StdioClientTransport(McpSampleServerProcess.TransportOptions());
 
         var client = await McpClient.CreateAsync(transport);
 
@@ -71,14 +64,7 @@ public class McpTransportIntegrationTests
     {
         // Arrange - Setup server and client
         using var cts = new CancellationTokenSource();
-        var transport = new StdioClientTransport(
-            new StdioClientTransportOptions
-            {
-                Name = "test-server",
-                Command = McpServerTests.ServerLocation,
-                Arguments = Array.Empty<string>(),
-            }
-        );
+        var transport = new StdioClientTransport(McpSampleServerProcess.TransportOptions());
 
         var client = await McpClient.CreateAsync(transport);
 

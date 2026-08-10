@@ -234,6 +234,98 @@ public sealed class SubmoduleInitializerTests : LoggingTestBase
             .ContainSingle(a => a.Contains("submodule update --init -- libs/LibProfiler"));
     }
 
+    /// <summary>
+    /// The security decision and the network operation must be about the SAME URL. Canonicalization was
+    /// applied only inside the allow check, so the policy approved
+    /// <c>dev.azure.com/{org}/{project}/_git/{repo}</c> while <c>git submodule update</c> went on cloning
+    /// whatever <c>.gitmodules</c> said — the legacy <c>{org}.visualstudio.com/DefaultCollection/…</c>
+    /// form. Live, that is the MODISService sibling: <c>TF200016: The following project does not exist:
+    /// DefaultCollection</c>, because against the modern service the leading <c>DefaultCollection</c>
+    /// segment reads as the project name. The daemon's ADO credential is keyed to <c>dev.azure.com</c>
+    /// too, so even a resolvable legacy host would have gone unauthenticated.
+    /// <para>
+    /// A gate that approves one URL and then fetches a different one is wrong independently of whether
+    /// this particular clone happens to succeed, which is why the assertion is on the URL git is pointed
+    /// at rather than on the outcome.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_legacy_url_is_cloned_from_the_same_canonical_form_the_policy_approved()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        var fs = new FakeSandboxFileSystem();
+        fs.Files[$"{RepoRoot}/.gitmodules"] = """
+            [submodule "libs/LibProfiler"]
+            	path = libs/LibProfiler
+            	url = https://mcqdbdev.visualstudio.com/DefaultCollection/MCQdb_Development/_git/LibProfiler
+            """;
+
+        var outcome = await CreateAdoInitializer(runner, fs)
+            .InitializeAsync(RepoRoot, AdoRepoRemote, CancellationToken.None);
+
+        outcome.InitializedPaths.Should().Equal("libs/LibProfiler");
+
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().Contain(
+            a => a.Contains("submodule.libs/LibProfiler.url", StringComparison.Ordinal)
+                && a.Contains(
+                    "https://dev.azure.com/mcqdbdev/MCQdb_Development/_git/LibProfiler", StringComparison.Ordinal),
+            "git must be pointed at the URL the allow-list actually approved, or the gate is deciding "
+                + "about one repository while the clone reaches for another");
+        commands.Should().NotContain(
+            a => a.Contains("visualstudio.com", StringComparison.Ordinal),
+            "nothing should still be reaching for the legacy host once it has been canonicalized");
+    }
+
+    /// <summary>
+    /// The percent-escape has to survive into the clone URL. <c>GitRemoteUrl</c> deliberately does not
+    /// decode <c>%20</c> — the allow-list matches on the escaped spelling — so rebuilding a URL from the
+    /// canonical host and path must not decode it either. A raw space would make the URL invalid, turning
+    /// a fixed clone into a differently-broken one.
+    /// </summary>
+    [Fact]
+    public async Task A_canonical_clone_url_keeps_its_percent_escapes()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        var fs = new FakeSandboxFileSystem();
+        fs.Files[$"{RepoRoot}/.gitmodules"] = """
+            [submodule "orleans"]
+            	path = libs/orleans
+            	url = https://mcqdbdev.visualstudio.com/MCQdb_Development/_git/Microsoft%20Orleans
+            """;
+
+        _ = await CreateAdoInitializer(runner, fs).InitializeAsync(RepoRoot, AdoRepoRemote, CancellationToken.None);
+
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().Contain(
+            a => a.Contains(
+                "https://dev.azure.com/mcqdbdev/MCQdb_Development/_git/Microsoft%20Orleans",
+                StringComparison.Ordinal),
+            "the escaped spelling is what the allow-list matched and what git needs to request");
+    }
+
+    /// <summary>
+    /// A URL that needed no canonicalization must be left entirely alone — no redundant config write, and
+    /// certainly no rewrite. The remap exists to close a specific legacy-host gap, not to take over how
+    /// every submodule resolves its remote.
+    /// </summary>
+    [Fact]
+    public async Task A_modern_url_is_not_rewritten_at_all()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        var fs = new FakeSandboxFileSystem();
+        fs.Files[$"{RepoRoot}/.gitmodules"] = """
+            [submodule "libs/LibProfiler"]
+            	path = libs/LibProfiler
+            	url = https://dev.azure.com/mcqdbdev/MCQdb_Development/_git/LibProfiler
+            """;
+
+        _ = await CreateAdoInitializer(runner, fs).InitializeAsync(RepoRoot, AdoRepoRemote, CancellationToken.None);
+
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
+            a => a.Contains("submodule.libs/LibProfiler.url", StringComparison.Ordinal),
+            "the URL already agreed with the approved one; rewriting it would be churn on every init");
+    }
+
     [Fact]
     public async Task Ado_legacy_host_matches_a_url_encoded_submodule_name()
     {

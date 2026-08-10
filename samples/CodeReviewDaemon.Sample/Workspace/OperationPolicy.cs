@@ -89,6 +89,44 @@ internal sealed record ReviewScope(
     /// where the concrete repo route is not yet known).
     /// </summary>
     public string? ApiRepoPathPrefix { get; init; }
+
+    /// <summary>
+    /// The one provider-API route outside <see cref="ApiRepoPathPrefix"/> this run may READ: its own
+    /// project's metadata (ADO <c>/{org}/_apis/projects/{project}</c>). It exists because ADO's PR-list
+    /// payload omits <c>repository.project.visibility</c>, so the confidentiality trust signal the
+    /// cross-repo sibling gate depends on can only be established from the org-scoped project API — which
+    /// by construction cannot sit under a per-repo prefix. <c>null</c> for GitHub, which has no project
+    /// layer and therefore nothing to except.
+    /// <para>
+    /// Scoped to exactly one project and honoured only for the read-only
+    /// <see cref="SandboxOperation.ReadProviderMetadata"/>. Widening either would hand back what the repo
+    /// confinement exists to protect: that untrusted PR code cannot steer the daemon to another project's
+    /// route, or to a write, carrying the bot credential.
+    /// </para>
+    /// </summary>
+    public string? ApiProjectMetadataPath { get; init; }
+
+    /// <summary>
+    /// The provider-API route roots outside <see cref="ApiRepoPathPrefix"/> this run may READ to establish
+    /// its PR's CI verdict (ADO: the policy evaluation that names the build, the build itself plus its
+    /// timeline, and the build's test summary). They exist for the same structural reason
+    /// <see cref="ApiProjectMetadataPath"/> does: ADO publishes builds and test results per PROJECT
+    /// (<c>/{org}/{project}/_apis/build/…</c>), never under a repository, so by construction they cannot sit
+    /// under a per-repo prefix. Empty for GitHub, whose check-runs hang off the repo route already in scope.
+    /// <para>
+    /// Without them the reviewer cannot see CI at all, and the cost is not theoretical: PR 5505458's pipeline
+    /// reported 45,051 tests with 1 failure — named down to <c>TagService.UnitTests</c> — while the review it
+    /// produced said nothing about it and cited the PR's own commit message for build health instead.
+    /// </para>
+    /// <para>
+    /// Each entry is a route ROOT, not the project's <c>_apis</c> surface: a work-item query or another repo's
+    /// blobs are still out of scope. Scoped to exactly one project (the run's) and honoured only for the
+    /// read-only <see cref="SandboxOperation.ReadProviderMetadata"/>, on the same terms as
+    /// <see cref="ApiProjectMetadataPath"/> — widening the method or the project would hand back exactly what
+    /// the repo confinement protects.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<string> ApiCiStatusPaths { get; init; } = [];
 }
 
 /// <summary>
@@ -146,7 +184,8 @@ internal sealed class OperationPolicy
                 ? PolicyDecision.Deny("this variant is collect-only and has no post capability")
                 : DecideApi(request, "POST", "post review comment"),
 
-            SandboxOperation.ReadProviderMetadata => DecideApi(request, "GET", "read provider metadata"),
+            SandboxOperation.ReadProviderMetadata => DecideApi(
+                request, "GET", "read provider metadata", allowReadOnlyProjectRoutes: true),
 
             _ => PolicyDecision.Deny($"unknown operation '{request.Operation}'"),
         };
@@ -237,7 +276,18 @@ internal sealed class OperationPolicy
             $"submodule '{request.Host}{StripQuery(request.Path)}' is not on the allow-list");
     }
 
-    private PolicyDecision DecideApi(OperationRequest request, string expectedMethod, string label)
+    /// <summary>
+    /// Evaluates a provider-API request. <paramref name="allowReadOnlyProjectRoutes"/> lets the two
+    /// project-scoped exceptions — <see cref="ReviewScope.ApiProjectMetadataPath"/> and
+    /// <see cref="ReviewScope.ApiCiStatusPaths"/> — count as in-scope routes alongside the repo prefix; it is
+    /// passed only by the read-only <see cref="SandboxOperation.ReadProviderMetadata"/> arm, so no write can
+    /// ever reach them.
+    /// </summary>
+    private PolicyDecision DecideApi(
+        OperationRequest request,
+        string expectedMethod,
+        string label,
+        bool allowReadOnlyProjectRoutes = false)
     {
         if (!HostMatches(request.Host, _scope.ApiHost))
         {
@@ -252,8 +302,14 @@ internal sealed class OperationPolicy
         }
 
         // When the concrete repo route is known (per-run policy, PR #121 H2), the request path must fall
-        // under it — host + method alone are not enough, or a review could hit a sibling repo's API.
-        if (_scope.ApiRepoPathPrefix is { } prefix && !PathUnderApiPrefix(request.Path, prefix))
+        // under it — host + method alone are not enough, or a review could hit a sibling repo's API. The
+        // run's OWN project-scoped read routes are the only exceptions (see ApiProjectMetadataPath and
+        // ApiCiStatusPaths): ADO publishes project visibility and build/test results nowhere else, and both
+        // are things the review is wrong without — a closed cross-repo gate in the first case, a reviewer
+        // that cannot see a failing pipeline in the second.
+        if (_scope.ApiRepoPathPrefix is { } prefix
+            && !PathUnderApiPrefix(request.Path, prefix)
+            && !IsReadOnlyProjectRoute(request.Path, allowReadOnlyProjectRoutes))
         {
             return PolicyDecision.Deny(
                 $"{label} path '{StripQuery(request.Path)}' is outside the run's API route '{prefix}'");
@@ -263,20 +319,50 @@ internal sealed class OperationPolicy
     }
 
     /// <summary>
+    /// True when <paramref name="requestPath"/> is one of the run's own project-scoped READ exceptions.
+    /// Returns false outright when <paramref name="allowed"/> is false, which is what keeps the exceptions
+    /// unreachable from the write arm no matter what the scope carries.
+    /// </summary>
+    private bool IsReadOnlyProjectRoute(string requestPath, bool allowed)
+    {
+        if (!allowed)
+        {
+            return false;
+        }
+
+        if (_scope.ApiProjectMetadataPath is { } projectRoute
+            && PathUnderApiPrefix(requestPath, projectRoute))
+        {
+            return true;
+        }
+
+        foreach (var ciRoute in _scope.ApiCiStatusPaths)
+        {
+            if (PathUnderApiPrefix(requestPath, ciRoute))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// True when <paramref name="requestPath"/> targets the run's own provider-API route (begins with
     /// <paramref name="apiPrefix"/> after normalization). Rejects path traversal and a sibling whose
     /// name merely shares the prefix.
     /// </summary>
     private static bool PathUnderApiPrefix(string requestPath, string apiPrefix)
     {
-        var path = StripQuery(requestPath);
-        if (path.Contains("..", StringComparison.Ordinal))
+        // Decode BEFORE the traversal check: decoding is what turns '%2e%2e' into '..', so checking the
+        // raw text would inspect a string in which the traversal is still hidden.
+        var normalizedPath = PathCanonicalizer.NormalizePathForComparison(StripQuery(requestPath));
+        if (normalizedPath.Contains("..", StringComparison.Ordinal))
         {
             return false;
         }
 
-        var normalizedPath = PathCanonicalizer.NormalizeForComparison(path);
-        var normalizedPrefix = PathCanonicalizer.NormalizeForComparison(apiPrefix);
+        var normalizedPrefix = PathCanonicalizer.NormalizePathForComparison(apiPrefix);
         if (!normalizedPrefix.StartsWith('/'))
         {
             normalizedPrefix = "/" + normalizedPrefix;
@@ -304,14 +390,15 @@ internal sealed class OperationPolicy
     /// </summary>
     private static bool PathUnderRepo(string requestPath, string repoPath)
     {
-        var path = StripQuery(requestPath);
-        if (path.Contains("..", StringComparison.Ordinal))
+        // Decode BEFORE the traversal check, for the reason spelled out on
+        // PathCanonicalizer.NormalizePathForComparison: the decode is what turns '%2e%2e' into '..'.
+        var normalizedPath = PathCanonicalizer.NormalizePathForComparison(StripQuery(requestPath));
+        if (normalizedPath.Contains("..", StringComparison.Ordinal))
         {
             return false;
         }
 
-        var normalizedPath = PathCanonicalizer.NormalizeForComparison(path);
-        var normalizedRepo = PathCanonicalizer.NormalizeForComparison(repoPath);
+        var normalizedRepo = PathCanonicalizer.NormalizePathForComparison(repoPath);
         if (!normalizedRepo.StartsWith('/'))
         {
             normalizedRepo = "/" + normalizedRepo;

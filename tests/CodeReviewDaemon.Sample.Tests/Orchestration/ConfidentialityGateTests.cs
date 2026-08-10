@@ -18,6 +18,16 @@ namespace CodeReviewDaemon.Sample.Tests.Orchestration;
 /// is the single decision point <see cref="DaemonReviewStageExecutor.BuildStoreSubmoduleAllowList"/> (Task
 /// 16, <see cref="CrossRepoCheckoutTests"/>) consults before adding any configured sibling.
 /// </summary>
+/// <remarks>
+/// Every options object here now sets <c>UseS2SReviewAgent: true</c> (#102), because the default is the
+/// config <c>Program.cs:278</c> throws on at startup. <b>That flip is hygiene, not a fix, and claiming
+/// otherwise would be the error this ticket exists to stop.</b> These tests build an executor only to reach
+/// two internal methods, and neither reads a modality-dependent option:
+/// <c>AllowsCrossRepoCoLocation</c> is <c>!run.IsForkPr &amp;&amp; !run.IsTargetRepoPublic</c> — no options at
+/// all — and <c>BuildStoreSubmoduleAllowList</c> reads <c>CrossRepoSiblings</c>. No stage is executed. So the
+/// flip changes nothing observable; it only stops the next reader treating this fixture as evidence about a
+/// configuration the daemon can actually ship.
+/// </remarks>
 public sealed class ConfidentialityGateTests
 {
     private static readonly RepoIdentity AcmeWidgets = new()
@@ -48,7 +58,7 @@ public sealed class ConfidentialityGateTests
     public void CoLocation_SameOrgNonFork_Allowed()
     {
         using var db = new TempSqliteDatabase();
-        var executor = BuildExecutor(db, new CodeReviewDaemonOptions { EnableToolAssistedReview = true });
+        var executor = BuildExecutor(db, new CodeReviewDaemonOptions { UseS2SReviewAgent = true, EnableToolAssistedReview = true });
 
         executor
             .AllowsCrossRepoCoLocation(SeedRun(isForkPr: false, isTargetRepoPublic: false), AcmeWidgets)
@@ -60,7 +70,7 @@ public sealed class ConfidentialityGateTests
     public void CoLocation_ForkPr_Denied()
     {
         using var db = new TempSqliteDatabase();
-        var executor = BuildExecutor(db, new CodeReviewDaemonOptions { EnableToolAssistedReview = true });
+        var executor = BuildExecutor(db, new CodeReviewDaemonOptions { UseS2SReviewAgent = true, EnableToolAssistedReview = true });
 
         executor
             .AllowsCrossRepoCoLocation(SeedRun(isForkPr: true, isTargetRepoPublic: false), AcmeWidgets)
@@ -72,7 +82,7 @@ public sealed class ConfidentialityGateTests
     public void CoLocation_PublicRepo_Denied()
     {
         using var db = new TempSqliteDatabase();
-        var executor = BuildExecutor(db, new CodeReviewDaemonOptions { EnableToolAssistedReview = true });
+        var executor = BuildExecutor(db, new CodeReviewDaemonOptions { UseS2SReviewAgent = true, EnableToolAssistedReview = true });
 
         executor
             .AllowsCrossRepoCoLocation(SeedRun(isForkPr: false, isTargetRepoPublic: true), OssRepo)
@@ -86,7 +96,7 @@ public sealed class ConfidentialityGateTests
         // A run built without positively setting either trust field must deny co-location — the
         // fail-closed default (design §6 Risk B: never permissive when trust cannot be confirmed).
         using var db = new TempSqliteDatabase();
-        var executor = BuildExecutor(db, new CodeReviewDaemonOptions { EnableToolAssistedReview = true });
+        var executor = BuildExecutor(db, new CodeReviewDaemonOptions { UseS2SReviewAgent = true, EnableToolAssistedReview = true });
         var run = new ReviewRun
         {
             RepoId = 1,
@@ -115,6 +125,7 @@ public sealed class ConfidentialityGateTests
         using var db = new TempSqliteDatabase();
         var options = new CodeReviewDaemonOptions
         {
+            UseS2SReviewAgent = true,
             EnableToolAssistedReview = true,
             CrossRepoSiblings = ["acme/other-service"],
         };
@@ -147,7 +158,7 @@ public sealed class ConfidentialityGateTests
         // "submodule '…MCQdbDEV.git/info/refs' is not on the allow-list"). Assert the reviewed ADO repo's
         // own submodule is granted with its dev.azure.com host + path.
         using var db = new TempSqliteDatabase();
-        var executor = BuildExecutor(db, new CodeReviewDaemonOptions { EnableToolAssistedReview = true });
+        var executor = BuildExecutor(db, new CodeReviewDaemonOptions { UseS2SReviewAgent = true, EnableToolAssistedReview = true });
         var run = SeedRun(isForkPr: false, isTargetRepoPublic: false);
 
         var rules = executor.BuildStoreSubmoduleAllowList(run, AdoRepo);

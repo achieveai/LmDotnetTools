@@ -51,11 +51,17 @@ public sealed record SandboxSession(string WorkspaceId, string SessionId, string
 /// <paramref name="Marketplaces"/> are the plugin-marketplace aliases this workspace enables;
 /// when non-empty they drive the sandbox-create selection, otherwise the global
 /// <see cref="SandboxGatewayOptions.Marketplaces"/> default applies.
+/// <paramref name="HomeRelPath"/> is an optional home directory INSIDE the mounted workspace: the
+/// gateway creates it, exports it as <c>SANDBOX_HOME</c>, and starts the agent there. It exists so a
+/// workspace that deliberately mounts more than the agent's own working copy — a checkout co-located
+/// with sibling repos, say — can still land the agent in its own subdirectory. Null means "the
+/// workspace root", the behaviour of every caller that does not set it.
 /// </summary>
 public sealed record WorkspaceRef(
     string Id,
     string? DirectoryRelPath = null,
-    IReadOnlyList<string>? Marketplaces = null);
+    IReadOnlyList<string>? Marketplaces = null,
+    string? HomeRelPath = null);
 
 /// <summary>
 /// A conversation's sandbox-established binding: the exact <see cref="WorkspaceRef"/> and creating
@@ -1127,7 +1133,8 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
             marketplaces,
             authProviders,
             network,
-            discovery
+            discovery,
+            workspaceRef.HomeRelPath
         );
 
         _logger.LogInformation(
@@ -1136,10 +1143,11 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
         );
 
         _logger.LogInformation(
-            "Creating sandbox session for workspace {WorkspaceId} (app {AppId}, path '{WorkspaceRelPath}')",
+            "Creating sandbox session for workspace {WorkspaceId} (app {AppId}, path '{WorkspaceRelPath}', home '{HomeRelPath}')",
             workspaceId,
             effectiveCredential.AppId,
-            workspaceRelPath
+            workspaceRelPath,
+            createRequest.Home ?? "(workspace root)"
         );
 
         if (authProviders is { Count: > 0 })

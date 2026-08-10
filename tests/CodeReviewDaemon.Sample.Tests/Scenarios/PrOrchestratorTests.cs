@@ -122,6 +122,35 @@ public sealed class PrOrchestratorTests : LoggingTestBase
         orchestrator.ClassifyDeliveryOutcome(run).Should().Be("no new findings — nothing posted");
     }
 
+    /// <summary>
+    /// The same classification, at the third place the daemon asks the question. This one used to hold its
+    /// own inlined copy of the rule, so a review that merely OPENED with the exit phrase was reported as
+    /// "nothing posted" — an outcome line contradicting both the outbox and the comment on the PR. Two
+    /// constructions of one rule drift; this pins them to the one predicate.
+    /// </summary>
+    [Fact]
+    public void Delivery_outcome_does_not_report_nothing_posted_for_a_review_that_carries_findings()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var run = SeedRun(store) with { Mode = "post" };
+        store.AddArtifact(new ReviewArtifact
+        {
+            ReviewRunId = run.Id,
+            ArtifactSchemaVersion = 1,
+            ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
+            Provider = "github",
+            Payload =
+                "{\"ReviewText\":\"No new findings in the auth module, but the migration adds a NOT NULL "
+                + "column with no default.\",\"RunId\":\"r\",\"VariantId\":\"primary\"}",
+        });
+        var orchestrator = new PrOrchestrator(store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
+
+        orchestrator.ClassifyDeliveryOutcome(run).Should().NotBe(
+            "no new findings — nothing posted",
+            "this run produced a finding, so whatever its delivery outcome is, it is not 'nothing to post'");
+    }
+
     [Fact]
     public void Delivery_outcome_requires_terminal_comment_outbox_evidence_to_claim_posted()
     {

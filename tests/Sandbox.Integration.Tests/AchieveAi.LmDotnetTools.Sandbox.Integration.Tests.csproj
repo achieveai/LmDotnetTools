@@ -1,5 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <!--
+      DELIBERATE dual-target — do NOT collapse to net9.0. See the fuller note in
+      tests/Sandbox.Tests/AchieveAi.LmDotnetTools.Sandbox.Tests.csproj. Short form: the Sandbox package
+      ships net8.0;net9.0, ci.yml installs 8.0.x, ci-test.ps1 throws if the nupkg lacks lib/net8.0/, and
+      sandbox-contract.yml runs a live net8.0 + net9.0 contract matrix. A net8 abort locally means no
+      net8 runtime on your machine, not a defect here.
+    -->
     <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>

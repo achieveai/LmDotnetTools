@@ -37,7 +37,6 @@ internal static class AgentTextCollector
 
         // Finalized assistant TextMessages, if the provider emits any.
         var finalizedText = new StringBuilder();
-        var finalizedCount = 0;
         string? finalizedGenerationId = null;
         // Fallback: incremental assistant TextUpdateMessage deltas accumulated in arrival order.
         var streamedText = new StringBuilder();
@@ -63,7 +62,6 @@ internal static class AgentTextCollector
                         {
                             finalizedGenerationId = finalized.GenerationId;
                             _ = finalizedText.Clear();
-                            finalizedCount = 0;
                         }
 
                         if (finalizedText.Length > 0)
@@ -72,7 +70,6 @@ internal static class AgentTextCollector
                         }
 
                         _ = finalizedText.Append(finalized.Text);
-                        finalizedCount++;
                     }
 
                     break;
@@ -102,17 +99,23 @@ internal static class AgentTextCollector
 
         // Prefer the provider's finalized message(s) when present; otherwise fall back to the accumulated
         // streaming deltas. One or the other — never summed — so the text is never doubled.
-        var (text, assistantMessageCount) = finalizedCount > 0
-            ? (finalizedText.ToString(), finalizedCount)
-            : (streamedText.ToString(), streamedText.Length > 0 ? 1 : 0);
+        var text = finalizedText.Length > 0 ? finalizedText.ToString() : streamedText.ToString();
 
-        return new AgentTextResult(text, runId ?? agent.CurrentRunId, assistantMessageCount);
+        return new AgentTextResult(text, runId ?? agent.CurrentRunId);
     }
 }
 
 /// <summary>
-/// The collected assistant text, the run id that produced it (the first run id seen, falling back to the
-/// agent's <see cref="IMultiTurnAgent.CurrentRunId"/>), and how many assistant messages were joined (a
-/// finalized-message count, or 1 when the text was assembled from streaming deltas).
+/// The collected assistant text and the run id that produced it (the first run id seen, falling back to the
+/// agent's <see cref="IMultiTurnAgent.CurrentRunId"/>).
+/// <para>
+/// This deliberately carries NO message count. One was returned here for a long time and read by nobody, and
+/// it could not have earned its keep if someone had: the generation reset above clears the counter along with
+/// the text, so a run that discarded an entire turn reported exactly what a run that discarded nothing
+/// reported. A number that is identical in the case it exists to detect is not observability, it is the
+/// appearance of it — and it would have been the thing a future reader trusted instead of looking. If a
+/// discarded generation ever needs to be visible, it needs a count that survives the reset AND a consumer
+/// that acts on it; either half alone changes nothing. <c>AgentTextCollectorTests</c> pins the drop itself.
+/// </para>
 /// </summary>
-internal sealed record AgentTextResult(string Text, string? RunId, int AssistantMessageCount);
+internal sealed record AgentTextResult(string Text, string? RunId);

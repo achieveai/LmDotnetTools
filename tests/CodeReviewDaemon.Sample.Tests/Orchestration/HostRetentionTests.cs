@@ -44,12 +44,17 @@ public sealed class HostRetentionTests
 
         using var db = new TempSqliteDatabase();
         var store = new ReviewStore(db.ConnectionString);
+        // Resumable because the options below are S2S: RunReviewAttemptAsync throws when UseS2SReviewAgent is
+        // on and the loop exposes no IResumableReviewTurn. Production's S2S factory always does; the fake only
+        // does when told, so this is arrangement, not behaviour. Omitting it fails inside the review stage
+        // with a resumability error that says nothing about retention — the subject of this test.
+        var factory = new FakeReviewAgentLoopFactory { Resumable = true };
         var executor = new DaemonReviewStageExecutor(
             store,
-            new FakeReviewAgentLoopFactory(),
+            factory,
             sandbox,
             sandboxFileSystem,
-            new CodeReviewDaemonOptions { ReviewBotRepoUrl = ReviewBotRepoUrl },
+            new CodeReviewDaemonOptions { ReviewBotRepoUrl = ReviewBotRepoUrl, UseS2SReviewAgent = true },
             [new FakeReviewCommentPublisher("github")],
             NullLoggerFactory.Instance,
             hostRetention: hostRetention);

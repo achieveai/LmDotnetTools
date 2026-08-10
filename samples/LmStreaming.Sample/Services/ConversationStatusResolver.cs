@@ -122,7 +122,19 @@ public sealed class ConversationStatusResolver(IConversationStore conversationSt
     /// an internal reasoning trace as the answer. If the run produced no genuine assistant answer (a
     /// pure tool-call run), falls back to the last non-user message so a Completed/Errored run still
     /// surfaces its tool activity — but never falls back to the user's own input (e.g. an errored run
-    /// that never got past persisting the prompt resolves to a null response, not an echo of the ask).
+    /// that never got past persisting the prompt resolves to a null response, not an echo of the ask),
+    /// and never to a thinking trace the scan above has already rejected.
+    /// <para>
+    /// <b>Only the LAST assistant answer survives.</b> A run that emits prose, calls a tool, then emits
+    /// more prose persists two assistant <see cref="TextMessage"/>s under one run id, and everything
+    /// before the last is dropped here with no marker. That is load-bearing beyond the chat UI: the code
+    /// review daemon reads this field as the whole review body (<c>LmStreamingS2SClient.ParseStatus</c> →
+    /// <c>review.md</c>), so a model that starts narrating between tool calls would silently ship a
+    /// review missing everything but its closing paragraph. Benign today only because the models in use
+    /// reserve prose for their final turn — measured at exactly one assistant TextMessage per run across
+    /// review runs 153/158/159/160/165, despite 27–33 tool calls each. Pinned by
+    /// <c>ConversationStatusResolverTests</c>; if that assumption ever breaks, this is where it breaks.
+    /// </para>
     /// </summary>
     private async Task<object?> LoadFinalResponseAsync(string threadId, string runId, CancellationToken ct)
     {
@@ -147,8 +159,39 @@ public sealed class ConversationStatusResolver(IConversationStore conversationSt
             }
         }
 
-        var fallback = runMessages.LastOrDefault(m => m.Role != nameof(Role.User));
+        // The fallback must not undo the scan above. A thinking trace is an assistant-role TextMessage, so
+        // a bare "last non-user message" would hand back exactly what the scan just refused — and because a
+        // thinking TextMessage serializes WITH a `text` property, every consumer that reads that field would
+        // take the model's private deliberation for its answer. The review daemon does precisely that, so a
+        // reasoning-only run would have published the model's scratch work as the review body.
+        var fallback = runMessages.LastOrDefault(
+            m => m.Role != nameof(Role.User) && !IsThinkingTrace(m));
         return fallback == null ? null : DeserializeMessage(fallback);
+    }
+
+    /// <summary>
+    /// Whether a persisted message is a provider thinking/reasoning trace rather than content. Requires
+    /// deserializing, because <see cref="TextMessage.IsThinking"/> is not flattened onto
+    /// <see cref="PersistedMessage"/> the way <see cref="PersistedMessage.Role"/> is. A message that cannot
+    /// be deserialized is not claimed to be a trace — the fallback would rather surface something opaque
+    /// than silently discard the only thing a run produced.
+    /// </summary>
+    private static bool IsThinkingTrace(PersistedMessage message)
+    {
+        if (message.MessageType != nameof(TextMessage))
+        {
+            return false;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<IMessage>(message.MessageJson, ResponseMessageOptions)
+                is TextMessage { IsThinking: true };
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     /// <summary>

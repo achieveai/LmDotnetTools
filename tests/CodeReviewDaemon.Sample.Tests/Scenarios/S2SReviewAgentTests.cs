@@ -174,6 +174,53 @@ public sealed class S2SReviewAgentTests
         surface.CompletionSource.Should().BeNull();
     }
 
+    /// <summary>
+    /// <b>The invariant that keeps <see cref="AgentTextCollector"/>'s reconstruction machinery asleep.</b>
+    /// One run yields exactly ONE message.
+    /// <para>
+    /// The collector was written for an in-process loop that streams deltas across many generations, so it
+    /// carries a generation tracker: on a NEW <c>GenerationId</c> it <c>Clear()</c>s everything accumulated
+    /// so far, keeping only the last generation's text and discarding earlier turns with no log, no marker,
+    /// and no surviving count. None of that can fire against this agent, and this agent is the only thing the
+    /// daemon can drive: <c>Program.cs</c> throws at startup unless <c>UseS2SReviewAgent</c> is true, and
+    /// <c>S2SReviewAgentLoopFactory</c> is the only <c>IReviewAgentLoopFactory</c> that exists.
+    /// </para>
+    /// <para>
+    /// The single yield is what makes it safe, which is the one thing asserted below. (Its <c>GenerationId</c>
+    /// also happens to be null, so the reset's <c>null != null</c> comparison could not trip even if a second
+    /// message arrived unstamped — but that is a second line of defence, not the guarantee, and stamping an id
+    /// on a lone message changes no outcome. It is left unasserted so that a traceability change does not have
+    /// to argue with a test.)
+    /// </para>
+    /// <para>
+    /// So if you are here because this test failed, you did not break a formatting rule. Adding a second
+    /// yield — progress deltas, a preamble, a per-turn narration — hands the collector input it has dormant,
+    /// untested code for, and that code DROPS earlier generations silently. Read
+    /// <c>AgentTextCollectorTests</c> for exactly what it does before you decide, because the discarded text
+    /// is review findings and nothing downstream would report their absence.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task ExecuteRunAsync_yields_exactly_one_message_so_the_collector_never_reconstructs()
+    {
+        var handler = new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities()
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
+            .OnJson(
+                HttpMethod.Get,
+                "/status",
+                "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"BLOCKER: unbounded retry.\"}}")
+            .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-1\"}");
+        using var http = NewHttp(handler);
+        var agent = NewAgent(new LmStreamingS2SClient(http, "s", "id", "key"), title: null);
+
+        var messages = await DriveAsync(agent, "review this PR");
+
+        var only = messages.Should().ContainSingle(
+            "a second message would wake the collector's generation-reset path, which drops the earlier one")
+            .Subject.Should().BeOfType<TextMessage>().Subject;
+        only.Text.Should().Be("BLOCKER: unbounded retry.");
+    }
+
     [Fact]
     public async Task ExecuteRunAsync_throws_when_the_hosted_run_ends_errored_even_with_partial_text()
     {

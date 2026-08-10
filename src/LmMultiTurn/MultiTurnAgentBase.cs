@@ -1296,9 +1296,16 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             SingleWriter = false,
         });
 
-        // Atomically register this subscriber AND snapshot the in-flight run's buffered messages,
+        // Register this subscriber AND snapshot the in-flight run's buffered messages under ONE lock,
         // so a message published concurrently is delivered EITHER via this replay snapshot OR via
         // the live channel below — never both, never neither. See `_replayLock` remarks.
+        //
+        // NOTHING ENFORCES THIS. Moving the registration below out of the lock — the whole of the
+        // defect — was measured to leave every test in MultiTurnAgentReplayTests green, 20 of 20 on
+        // the test named for this property and 10 of 10 across the file. The window is a few
+        // instructions wide and opens inside this method, so no test can schedule a publish into it
+        // from outside. Treat the guarantee above as a requirement the reader must uphold by hand,
+        // NOT as one the suite will catch you breaking. See #107 for the options.
         IReadOnlyList<IMessage> replay;
         lock (_replayLock)
         {

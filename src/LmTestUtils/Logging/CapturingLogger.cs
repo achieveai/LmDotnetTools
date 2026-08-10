@@ -31,4 +31,16 @@ public sealed class CapturingLogger<T> : ILogger<T>
     public int CountAtLevel(LogLevel level, string substring)
         => _entries.Count(e => e.Level == level
             && e.Text.Contains(substring, StringComparison.Ordinal));
+
+    /// <summary>
+    ///     Rendered messages captured at <paramref name="level"/>, in the order they were logged.
+    /// </summary>
+    /// <remarks>
+    ///     Use this when a test needs to assert that ONE line carries several facts.
+    ///     <see cref="CountAtLevel"/> can only say that each substring appeared somewhere, which still passes
+    ///     when the facts are scattered across unrelated lines — and a diagnostic line's value is precisely
+    ///     that a single record ties them together.
+    /// </remarks>
+    public IReadOnlyList<string> MessagesAtLevel(LogLevel level)
+        => [.. _entries.Where(e => e.Level == level).Select(e => e.Text)];
 }

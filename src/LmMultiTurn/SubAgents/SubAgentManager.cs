@@ -617,7 +617,33 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         // Foreground (blocking) queued spawn: wait for the pump to create+start the agent, then await
         // its completion exactly as an inline foreground spawn would. Honours the caller's ct.
-        var startedState = await queued.StateReady.Task.WaitAsync(ct);
+        //
+        // Cancellation is ROUTED THROUGH CancelQueuedSpawn rather than observed by WaitAsync(ct), and the
+        // difference is the whole point. WaitAsync observes ct on the CALLER's thread and throws at once,
+        // so the caller returned cancelled while the queue-time admission — a root-wide capacity lease and
+        // a "queued" directory row, both taken by AdmitToCollaboration long before this queue — was still
+        // charged, waiting for the pump to get round to noticing. CancelQueuedSpawn already retires before
+        // it unblocks; it was simply being bypassed, so that ordering never got to matter. A caller that
+        // cancelled and immediately retried could be refused capacity that was about to come back.
+        //
+        // Registering makes the retirement happen BEFORE the caller can observe cancellation, on whichever
+        // thread cancels. CancelQueuedSpawn is idempotent (see its remarks), so the pump's own later pass
+        // over this entry stays a safe no-op. StateReady is RunContinuationsAsynchronously, so completing
+        // it from inside the callback cannot inline this method's continuation onto the cancelling thread
+        // and deadlock against the registration's own disposal.
+        //
+        // The registration is scoped to the QUEUED WAIT ALONE, and that scope is load-bearing. Held across
+        // AwaitCompletionAsync it would still be armed once the pump had started this agent, so a caller
+        // cancelling a RUNNING sub-agent would call CancelQueuedSpawn on it and retire a live agent's
+        // admission — handing back capacity that is genuinely in use and marking a running agent "Stopped"
+        // in the directory. Disposing at the end of the wait closes that: Dispose waits for an in-flight
+        // callback to finish, so past this block the callback cannot run at all, rather than racing a check.
+        SubAgentState startedState;
+        await using (ct.Register(() => CancelQueuedSpawn(queued, ct)))
+        {
+            startedState = await queued.StateReady.Task;
+        }
+
         return await AwaitCompletionAsync(startedState, ct);
     }
 
@@ -2823,6 +2849,11 @@ public sealed class SubAgentManager : IAsyncDisposable
         var textBuilder = new StringBuilder();
         string? textGenerationId = null;
 
+        // Set when THIS stream carries an AskUserQuestion tool call, and cleared when the run it belongs to
+        // completes. It exists because the registry probe below can be consulted before the child has
+        // finished parking the call — see the comment at the RunCompletedMessage branch.
+        var streamSawAskUserQuestion = false;
+
         try
         {
             await foreach (var msg in state.Agent.SubscribeAsync(ct))
@@ -2878,6 +2909,16 @@ public sealed class SubAgentManager : IAsyncDisposable
                     lastTextContent = tm.Text;
                 }
 
+                // The parked-question signal taken from the STREAM, which is ordered by construction: this
+                // message is delivered before the RunCompletedMessage of the same run, so observing it here
+                // cannot be too early. The registry probe below can be — that is the whole defect.
+                if (msg is ToolCallMessage askTc
+                    && string.Equals(
+                        askTc.FunctionName, AskUserQuestionToolProvider.ToolName, StringComparison.Ordinal))
+                {
+                    streamSawAskUserQuestion = true;
+                }
+
                 if (msg is RunCompletedMessage rcm)
                 {
                     state.LastResult = lastTextContent;
@@ -2888,9 +2929,32 @@ public sealed class SubAgentManager : IAsyncDisposable
                     // loop (state.Agent) still holds the deferred call live in its own registry. Compute
                     // that HERE, before deciding whether to release the concurrency slot, so the decision
                     // and HandleRunCompletionAsync's own terminal/non-terminal branching never disagree.
+                    //
+                    // The stream observation is ORed in and is not redundant: asking the loop's registry is
+                    // a question about a DIFFERENT object's state at the moment of asking, and the child
+                    // parking the call is not ordered against this run reporting completion. When the probe
+                    // won that race it returned false for a child that had genuinely parked, the run was
+                    // treated as terminal, and the caller got the "(no text response)" placeholder at
+                    // HandleRunCompletionAsync while the permit was released and the agent torn down —
+                    // destroying the real answer. Measured at ~1 in 10 (#95). The tool call, by contrast,
+                    // arrives on THIS stream ahead of this very message, so it cannot be observed too early.
+                    // The probe is kept as well: it still catches a call parked by an earlier run whose
+                    // ToolCallMessage this monitor never saw.
+                    //
+                    // Gated by SubAgentManagerParkedQuestionRaceTests, which does not sample this race but
+                    // FORCES it: TestAgentFactoryOverride supplies an agent that is not a MultiTurnAgentLoop,
+                    // so HasPendingAskUserQuestionAsync's type guard returns false deterministically — the
+                    // losing side of the race, on every run — while the fake's stream still emits the tool
+                    // call in its real position. Reverting this signal turns that test red in ~250ms with
+                    // "but found \"(no text response)\"", i.e. for the classification, never a timeout. A
+                    // paired test drives a run that parks NO question and asserts the caller still gets the
+                    // real text, so a signal that over-fires (holding an ordinary sub-agent non-terminal and
+                    // never releasing its permit) is caught too. Do not delete the probe on the assumption
+                    // that this signal subsumes it — the probe covers the earlier-run case above, which
+                    // neither test constructs.
                     var awaitingQuestion = !rcm.HasPendingMessages
                         && !rcm.IsError
-                        && await HasPendingAskUserQuestionAsync(state);
+                        && (streamSawAskUserQuestion || await HasPendingAskUserQuestionAsync(state));
 
                     // Release the slot BEFORE the (possibly slow/backpressured) parent relay in
                     // HandleRunCompletionAsync — but ONLY for a genuinely TERMINAL completion. A
@@ -2909,6 +2973,10 @@ public sealed class SubAgentManager : IAsyncDisposable
                     await HandleRunCompletionAsync(state, rcm, lastTextContent, awaitingQuestion, ct);
                     lastTextContent = null;
                     textGenerationId = null;
+                    // Scoped to the run that just ended, exactly like the text accumulator: a question the
+                    // human has since answered must not make the NEXT run look non-terminal, or the answer
+                    // run would never release the permit.
+                    streamSawAskUserQuestion = false;
                     _ = textBuilder.Clear();
                 }
             }

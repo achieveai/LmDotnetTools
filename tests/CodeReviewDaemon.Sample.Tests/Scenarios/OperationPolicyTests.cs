@@ -328,4 +328,117 @@ public sealed class OperationPolicyTests
         policy.ShouldInjectCredential(deniedRequest).Should().BeFalse();
         policy.ShouldInjectCredential(allowedRequest).Should().BeTrue();
     }
+
+    /// <summary>
+    /// An ADO-shaped scope carrying the two read-only route exceptions — the project-metadata route and the
+    /// CI-status routes — both of which sit OUTSIDE <see cref="ReviewScope.ApiRepoPathPrefix"/> because ADO
+    /// publishes them per project, not per repository.
+    /// </summary>
+    private static OperationPolicy CreateAdoPolicy(bool allowWriteOperations = true) =>
+        new(
+            new ReviewScope(
+                Provider: "ado",
+                TargetHost: "dev.azure.com",
+                TargetRepoPath: "/contoso/Platform/_git/core",
+                ForkHost: null,
+                ForkRepoPath: null,
+                ReviewBotHost: "dev.azure.com",
+                ReviewBotRepoPath: "/contoso/Platform/_git/reviewbot",
+                ApiHost: "dev.azure.com",
+                AllowedSubmodules: [])
+            {
+                ApiRepoPathPrefix = "/contoso/Platform/_apis/git/repositories/core",
+                ApiProjectMetadataPath = "/contoso/_apis/projects/Platform",
+                ApiCiStatusPaths =
+                [
+                    "/contoso/Platform/_apis/policy/evaluations",
+                    "/contoso/Platform/_apis/build/builds",
+                    "/contoso/Platform/_apis/test/ResultSummaryByBuild",
+                ],
+            },
+            allowWriteOperations);
+
+    [Fact]
+    public void ApiCiStatusPaths_are_readable_alongside_the_repo_route()
+    {
+        var policy = CreateAdoPolicy();
+
+        // The run's own repo route still works — the exception adds routes, it does not replace the prefix.
+        Read(policy, "/contoso/Platform/_apis/git/repositories/core/pullrequests/5505458")
+            .IsAllowed.Should().BeTrue();
+        Read(policy, "/contoso/Platform/_apis/build/builds/39168345/timeline?api-version=7.1")
+            .IsAllowed.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// The CI routes are honoured ONLY under <see cref="SandboxOperation.ReadProviderMetadata"/>. The other
+    /// operation that reaches the provider-API arm is <see cref="SandboxOperation.PostReviewComment"/>, and it
+    /// must not see the exception at all: a write reaching a route the repo confinement does not cover is the
+    /// exact shape the confinement exists to prevent, and a POST to a build route would carry the bot
+    /// credential there.
+    /// </summary>
+    [Fact]
+    public void ApiCiStatusPaths_are_not_honoured_for_a_write()
+    {
+        var policy = CreateAdoPolicy();
+
+        policy.Decide(
+                new OperationRequest(
+                    SandboxOperation.PostReviewComment,
+                    "ado",
+                    "dev.azure.com",
+                    "POST",
+                    "/contoso/Platform/_apis/build/builds/39168345"))
+            .IsAllowed.Should().BeFalse("the CI exception is read-only");
+        policy.ShouldInjectCredential(
+                new OperationRequest(
+                    SandboxOperation.PostReviewComment,
+                    "ado",
+                    "dev.azure.com",
+                    "POST",
+                    "/contoso/Platform/_apis/build/builds/39168345"))
+            .Should().BeFalse("a denied write is never credential-injected either");
+    }
+
+    [Fact]
+    public void ApiCiStatusPaths_do_not_admit_a_traversal_out_of_the_project()
+    {
+        var policy = CreateAdoPolicy();
+
+        // Percent-encoded traversal: decoded before the '..' check, so it is caught rather than hidden.
+        Read(policy, "/contoso/Platform/_apis/build/builds/%2e%2e/%2e%2e/Other/_apis/build/builds/1")
+            .IsAllowed.Should().BeFalse();
+        Read(policy, "/contoso/Platform/_apis/build/builds-archive/1")
+            .IsAllowed.Should().BeFalse("a sibling route sharing the prefix is not the allowed route");
+    }
+
+    [Fact]
+    public void A_scope_with_no_ci_routes_denies_them()
+    {
+        // The default is an empty list, so a scope built before this existed behaves exactly as it did: the
+        // repo prefix is the only way in. Built here WITH a repo prefix and WITHOUT the CI routes, because a
+        // host-only scope (ApiRepoPathPrefix null) skips the route check entirely and would prove nothing.
+        var policy = new OperationPolicy(
+            new ReviewScope(
+                Provider: "ado",
+                TargetHost: "dev.azure.com",
+                TargetRepoPath: "/contoso/Platform/_git/core",
+                ForkHost: null,
+                ForkRepoPath: null,
+                ReviewBotHost: "dev.azure.com",
+                ReviewBotRepoPath: "/contoso/Platform/_git/reviewbot",
+                ApiHost: "dev.azure.com",
+                AllowedSubmodules: [])
+            {
+                ApiRepoPathPrefix = "/contoso/Platform/_apis/git/repositories/core",
+            });
+
+        Read(policy, "/contoso/Platform/_apis/build/builds/39168345?api-version=7.1")
+            .IsAllowed.Should().BeFalse();
+    }
+
+    private static PolicyDecision Read(OperationPolicy policy, string path) =>
+        policy.Decide(
+            new OperationRequest(
+                SandboxOperation.ReadProviderMetadata, "ado", "dev.azure.com", "GET", path));
 }

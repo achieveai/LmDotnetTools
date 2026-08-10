@@ -83,8 +83,41 @@ public sealed record ToolCompletedPayload
     /// <summary>
     /// How the call ended. See <see cref="LifecycleToolOutcomes"/>. Open vocabulary.
     /// </summary>
+    /// <remarks>
+    /// <b><see cref="LifecycleToolOutcomes.Succeeded"/> is a transport claim, not an accomplishment
+    /// claim.</b> It means the call completed without the handler signalling failure — nothing more. A
+    /// sandbox read of a missing path returns a SUCCESSFUL tool result whose text says the file is not
+    /// there, and it is reported here as <c>Succeeded</c> with no <see cref="Error"/> attached. That is
+    /// not a rare edge: 289 such results were emitted on this stream in a single night, and a query for
+    /// them over <see cref="Outcome"/> alone comes back clean.
+    /// <para>
+    /// So do NOT read this field as "the tool did what was asked". <see cref="ResultClass"/> is the field
+    /// that answers that question, and the two are deliberately separate: this one describes the call,
+    /// that one describes what came back.
+    /// </para>
+    /// </remarks>
     [JsonPropertyName("outcome")]
     public string Outcome { get; set; } = LifecycleToolOutcomes.Succeeded;
+
+    /// <summary>
+    /// What the result TEXT reports, independently of whether the handler signalled failure:
+    /// <c>ok</c>, <c>empty</c>, <c>not-found</c>, <c>denied</c>, <c>error</c>, <c>unclassified</c> or
+    /// <c>deferred</c>. Open vocabulary. <c>null</c> means not recorded — an event from a build that
+    /// predates this field, never a positive claim that nothing went wrong.
+    /// </summary>
+    /// <remarks>
+    /// Added ALONGSIDE <see cref="Outcome"/> rather than changing what <c>Succeeded</c> means, because
+    /// that value is a defensible transport-level statement with consumers that cannot be enumerated
+    /// from this repository. Widening an existing field's meaning would silently change what every
+    /// existing reader is told; adding one leaves them exactly as correct as they were.
+    /// <para>
+    /// This is the field to group by when the question is "what did the tools actually return" — the
+    /// one that <see cref="Outcome"/> cannot answer, and the reason a tool-failure count built on the
+    /// error flag would have reported zero for a population of 289 real failures and looked healthy.
+    /// </para>
+    /// </remarks>
+    [JsonPropertyName("result_class")]
+    public string? ResultClass { get; set; }
 
     /// <summary>
     /// Whether the call was deferred and resolved after its requesting run reached a terminal

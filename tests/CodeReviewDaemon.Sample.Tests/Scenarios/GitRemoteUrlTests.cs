@@ -122,4 +122,31 @@ public sealed class GitRemoteUrlTests
         canonical.Host.Should().Be(expectedHost);
         canonical.RepoPath.Should().Be(expectedPath);
     }
+
+    [Fact]
+    public void CanonicalizeAdoLegacyHost_drops_the_implicit_DefaultCollection_segment()
+    {
+        // The TFS-era collection is implied by the org on dev.azure.com, so the two spellings address the
+        // same repo and must reduce to one (real case: NOVA_reviews declares MODISService this way).
+        var legacy = GitRemoteUrl.CanonicalizeAdoLegacyHost(GitRemoteUrl.Parse(
+            "https://o365exchange.visualstudio.com/DefaultCollection/O365%20Core/_git/MODISService"));
+        var modern = GitRemoteUrl.Parse(
+            "https://dev.azure.com/o365exchange/O365%20Core/_git/MODISService");
+
+        legacy.Host.Should().Be("dev.azure.com");
+        legacy.RepoPath.Should().Be("/o365exchange/O365%20Core/_git/MODISService");
+        (legacy.Host, legacy.RepoPath).Should().Be((modern.Host, modern.RepoPath));
+    }
+
+    [Fact]
+    public void CanonicalizeAdoLegacyHost_keeps_a_project_actually_named_DefaultCollection()
+    {
+        // /DefaultCollection/_git/{repo} is a PROJECT of that name, not a collection prefix. Stripping it
+        // would leave a path with no project — which would match no rule, or the wrong project's rule.
+        var canonical = GitRemoteUrl.CanonicalizeAdoLegacyHost(GitRemoteUrl.Parse(
+            "https://mcqdbdev.visualstudio.com/DefaultCollection/_git/LibProfiler"));
+
+        canonical.Host.Should().Be("dev.azure.com");
+        canonical.RepoPath.Should().Be("/mcqdbdev/DefaultCollection/_git/LibProfiler");
+    }
 }

@@ -24,6 +24,19 @@ public record Workspace
     public required string DirectoryRelPath { get; init; }
 
     /// <summary>
+    /// Optional home directory INSIDE the mounted workspace, relative to
+    /// <see cref="DirectoryRelPath"/> — the gateway creates it, exports it as <c>SANDBOX_HOME</c>,
+    /// and starts the agent there. Null (the default, and what every pre-existing stored workspace
+    /// deserializes to) means the workspace root.
+    /// <para>
+    /// Unlike <see cref="DirectoryRelPath"/> this may be MULTI-SEGMENT: the point of a home is to
+    /// subdivide a mount, so a workspace that deliberately mounts a checkout beside its sibling repos
+    /// can still land the agent in one specific working copy.
+    /// </para>
+    /// </summary>
+    public string? HomeRelPath { get; init; }
+
+    /// <summary>
     /// Plugin marketplaces enabled for this workspace.
     /// </summary>
     public IReadOnlyList<string> Marketplaces { get; init; } = [];
@@ -60,6 +73,12 @@ public record WorkspaceCreate
     public string? DirectoryRelPath { get; init; }
 
     /// <summary>
+    /// Optional home directory within the workspace (see <see cref="Workspace.HomeRelPath"/>).
+    /// Sanitized segment-by-segment on creation; null/blank means the workspace root.
+    /// </summary>
+    public string? HomeRelPath { get; init; }
+
+    /// <summary>
     /// Optional plugin marketplaces to enable. Null is treated as an empty list.
     /// </summary>
     public IReadOnlyList<string>? Marketplaces { get; init; }
@@ -85,7 +104,8 @@ public sealed record WorkspaceView(
     long CreatedAt,
     long UpdatedAt,
     string Compatibility,
-    IReadOnlyList<string> UnsupportedMarketplaces
+    IReadOnlyList<string> UnsupportedMarketplaces,
+    string? HomeRelPath = null
 );
 
 public sealed record WorkspaceGatewayView(
@@ -115,7 +135,8 @@ public static class WorkspaceViewMapping
             workspace.CreatedAt,
             workspace.UpdatedAt,
             compatibility.Compatibility.ToString().ToLowerInvariant(),
-            compatibility.UnsupportedMarketplaces
+            compatibility.UnsupportedMarketplaces,
+            workspace.HomeRelPath
         );
     }
 }

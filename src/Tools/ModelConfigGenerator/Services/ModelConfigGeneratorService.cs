@@ -24,10 +24,12 @@ public partial class ModelConfigGeneratorService
         ["claude"] = MyRegex4(),
         ["gpt"] = MyRegex5(),
         ["gemini"] = MyRegex6(),
+        ["gemma"] = MyRegex19(),
         ["grok"] = MyRegex7(),
         ["glm"] = MyRegex8(),
         ["openrouter"] = MyRegex9(),
         ["mistral"] = MyRegex10(),
+        ["minimax"] = MyRegex20(),
         ["cohere"] = MyRegex11(),
         ["yi"] = MyRegex12(),
         ["phi"] = MyRegex13(),
@@ -434,73 +436,113 @@ public partial class ModelConfigGeneratorService
     /// <summary>
     ///     Gets the family name for a model ID.
     /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         Ids are conventionally <c>vendor/model</c>, and several vendors publish models whose names
+    ///         carry another vendor's family name — <c>deepseek/deepseek-r1-distill-llama-70b</c> is a
+    ///         DeepSeek model, not a Llama one. Matching the whole id would let whichever family happens to
+    ///         come first in <see cref="ModelFamilyPatterns" /> claim it, so the vendor segment is tried
+    ///         first and the rest of the id only decides when the vendor is one we do not recognise.
+    ///     </para>
+    ///     <para>
+    ///         The vendor segment keeps its trailing slash so that patterns which include one — the
+    ///         <c>openrouter/</c> alternative — still match here rather than falling through to the
+    ///         whole-id pass.
+    ///     </para>
+    /// </remarks>
     private static string GetModelFamily(string modelId)
+    {
+        var slashIndex = modelId.IndexOf('/', StringComparison.Ordinal);
+        if (slashIndex >= 0)
+        {
+            var vendor = modelId[..(slashIndex + 1)];
+            var vendorFamily = MatchFamilyPattern(vendor);
+            if (vendorFamily is not null)
+            {
+                return vendorFamily;
+            }
+        }
+
+        return MatchFamilyPattern(modelId) ?? "unknown";
+    }
+
+    /// <summary>
+    ///     Returns the first family whose pattern matches <paramref name="candidate" />, or <see langword="null" />
+    ///     when none does.
+    /// </summary>
+    private static string? MatchFamilyPattern(string candidate)
     {
         foreach (var (family, pattern) in ModelFamilyPatterns)
         {
-            if (pattern.IsMatch(modelId))
+            if (pattern.IsMatch(candidate))
             {
                 return family;
             }
         }
 
-        return "unknown";
+        return null;
     }
 
-    [GeneratedRegex(@"llama|meta-llama", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    [GeneratedRegex(@"llama", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MyRegex();
 
-    [GeneratedRegex(@"qwen|alibaba", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    [GeneratedRegex(@"qwen|alibaba", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MyRegex1();
 
-    [GeneratedRegex(@"kimi|moonshot", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    [GeneratedRegex(@"kimi|moonshot", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MyRegex2();
 
-    [GeneratedRegex(@"deepseek", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    [GeneratedRegex(@"deepseek", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MyRegex3();
 
-    [GeneratedRegex(@"claude|anthropic", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    [GeneratedRegex(@"claude|anthropic", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MyRegex4();
 
-    [GeneratedRegex(@"gpt|openai", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    [GeneratedRegex(@"gpt|openai", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MyRegex5();
 
-    [GeneratedRegex(@"gemini|google", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    [GeneratedRegex(@"gemini", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MyRegex6();
 
-    [GeneratedRegex(@"grok|xai", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    [GeneratedRegex(@"grok|xai", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MyRegex7();
 
-    [GeneratedRegex(@"glm|thudm|chatglm", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    [GeneratedRegex(@"glm|thudm|chatglm", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MyRegex8();
 
-    [GeneratedRegex(@"openrouter/|cloaked", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    [GeneratedRegex(@"openrouter/|cloaked", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MyRegex9();
 
-    [GeneratedRegex(@"mistral", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    [GeneratedRegex(@"mistral", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MyRegex10();
 
-    [GeneratedRegex(@"cohere|command", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    [GeneratedRegex(@"cohere|^command", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MyRegex11();
 
-    [GeneratedRegex(@"yi-|01-ai", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    [GeneratedRegex(@"yi-|01-ai", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MyRegex12();
 
-    [GeneratedRegex(@"phi-|microsoft", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    [GeneratedRegex(@"phi-", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MyRegex13();
 
-    [GeneratedRegex(@"falcon", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    [GeneratedRegex(@"falcon", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MyRegex14();
 
-    [GeneratedRegex(@"wizard", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    [GeneratedRegex(@"wizard", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MyRegex15();
 
-    [GeneratedRegex(@"vicuna", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    [GeneratedRegex(@"vicuna", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MyRegex16();
 
-    [GeneratedRegex(@"alpaca", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    [GeneratedRegex(@"alpaca", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MyRegex17();
 
-    [GeneratedRegex(@"nous|hermes", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    [GeneratedRegex(@"nous|hermes", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MyRegex18();
+
+    [GeneratedRegex(@"gemma", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex MyRegex19();
+
+    [GeneratedRegex(@"minimax", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex MyRegex20();
 }

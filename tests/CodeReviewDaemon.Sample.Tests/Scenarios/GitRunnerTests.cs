@@ -30,10 +30,54 @@ public sealed class GitRunnerTests
                 "-c",
                 "core.hooksPath=/dev/null",
                 "-c",
-                "user.name=AchieveAi Review Bot",
+                "user.name=Revobot",
                 "-c",
-                "user.email=review-bot@achieveai.local",
+                "user.email=revobot@revobot.local",
                 "status");
+    }
+
+    [Fact]
+    public async Task RunAsync_commits_under_the_configured_bot_name()
+    {
+        // CodeReviewDaemonOptions.BotName always documented itself as the retention commits' user.name,
+        // but the identity was a hardcoded constant, so every commit in every store landed as
+        // "AchieveAi Review Bot" however the operator had configured the daemon.
+        var fake = new FakeSandboxCommandRunner();
+        var runner = new GitRunner(fake, "Revobot (Nova)");
+
+        await runner.RunAsync(["commit", "-m", "notes"], "/work/repo", CancellationToken.None);
+
+        fake.Commands.Single().Argv.Should().ContainInOrder("-c", "user.name=Revobot (Nova)");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task RunAsync_falls_back_to_the_default_name_rather_than_committing_namelessly(string? botName)
+    {
+        var fake = new FakeSandboxCommandRunner();
+        var runner = new GitRunner(fake, botName);
+
+        await runner.RunAsync(["commit", "-m", "notes"], "/work/repo", CancellationToken.None);
+
+        fake.Commands.Single().Argv.Should().ContainInOrder("-c", "user.name=Revobot");
+    }
+
+    [Fact]
+    public async Task RunAsync_keeps_one_committer_address_whatever_the_bot_is_called()
+    {
+        // The address is the identity key the store's history is grouped by, so renaming the bot must not
+        // split one bot's commits across two authors.
+        var fake = new FakeSandboxCommandRunner();
+
+        await new GitRunner(fake, "Revobot (Nova)").RunAsync(["status"], null, CancellationToken.None);
+        await new GitRunner(fake, "GB's Revobot").RunAsync(["status"], null, CancellationToken.None);
+
+        fake.Commands
+            .Select(c => c.Argv.Single(a => a.StartsWith("user.email=", StringComparison.Ordinal)))
+            .Should()
+            .AllBe("user.email=revobot@revobot.local");
     }
 
     [Fact]

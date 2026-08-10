@@ -359,8 +359,24 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         commands.Should().Contain(a => a.Contains($"merge --no-edit -X theirs origin/{ReviewBranch}"));
     }
 
+    /// <summary>
+    /// Clean-on-entry: a PRIOR sweep's non-ff merge could have hit a conflict and left this SHARED retention
+    /// checkout with an unresolved index — after which every <c>git checkout</c> fails "you need to resolve
+    /// your current index first", wedging the sweep for this PR every cycle. So the checkout is reset BEFORE
+    /// the default branch is checked out, and that ordering is the property worth pinning.
+    /// <para>
+    /// It used to run <c>git merge --abort</c> first as well. That was redundant and not free:
+    /// <c>reset --hard</c> already clears <c>MERGE_HEAD</c> and the conflicted index entries — verified
+    /// directly against git, where a checkout that failed mid-conflict succeeded after a bare
+    /// <c>reset --hard</c> with no abort — while <c>merge --abort</c> on a clean tree exits 128 with
+    /// "fatal: There is no merge to abort (MERGE_HEAD missing)". The clean tree is the overwhelmingly common
+    /// case, so the only thing the abort reliably produced was a fatal-looking git failure in the log, once
+    /// per PR per sweep, against which a genuine failure would not stand out. This test therefore asserts it
+    /// is NOT issued: a command that cannot help and can only mislead is worse than no command.
+    /// </para>
+    /// </summary>
     [Fact]
-    public async Task MergeToDefault_aborts_any_conflicted_merge_and_resets_before_checking_out_the_default()
+    public async Task MergeToDefault_resets_before_checking_out_the_default_without_a_doomed_merge_abort()
     {
         var runner = new FakeSandboxCommandRunner();
         var fs = new FakeSandboxFileSystem();
@@ -371,14 +387,18 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         result.Should().BeTrue();
 
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        // Clean-on-entry: a PRIOR sweep's non-ff merge could have hit a conflict and left this SHARED retention
-        // checkout with an unresolved index — after which every `git checkout` fails "you need to resolve your
-        // current index first", wedging the sweep for this PR every cycle. Abort any in-progress merge and
-        // hard-reset BEFORE checking out the default so the checkout can't inherit that state.
-        IndexOf(commands, "merge --abort").Should().BeGreaterThanOrEqualTo(0);
-        IndexOf(commands, "reset --hard").Should().BeGreaterThanOrEqualTo(0);
-        IndexOf(commands, "merge --abort").Should().BeLessThan(IndexOf(commands, $"checkout {DefaultBranch}"));
-        IndexOf(commands, "reset --hard").Should().BeLessThan(IndexOf(commands, $"checkout {DefaultBranch}"));
+        IndexOf(commands, "reset --hard").Should().BeGreaterThanOrEqualTo(
+            0, "the shared checkout is cleaned on entry, or a prior conflict wedges it every cycle");
+        IndexOf(commands, "reset --hard").Should().BeLessThan(
+            IndexOf(commands, $"checkout {DefaultBranch}"),
+            "cleaning after the checkout would be too late — the checkout is what fails on a dirty index");
+        // Matched the same way IndexOf matches (substring, not item equality): every recorded command carries
+        // a `-c core.hooksPath=/dev/null` prefix, so an equality-based NotContain would pass against any
+        // argv whatsoever and assert precisely nothing.
+        IndexOf(commands, "merge --abort").Should().Be(
+            -1,
+            "reset --hard already clears MERGE_HEAD and the conflicted index, so the abort only ever "
+                + "contributed an exit-128 'fatal:' on the clean-tree path that is the normal case");
     }
 
     [Fact]

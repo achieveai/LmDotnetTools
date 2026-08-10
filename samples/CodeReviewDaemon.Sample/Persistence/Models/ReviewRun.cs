@@ -39,19 +39,34 @@ internal sealed record ReviewRun
 
     // ── Confidentiality trust signal (Task 17, design §6 Risk B) ────────────────────────────────
     /// <summary>
-    /// True when the PR head comes from a fork (or this is unknown). Defaults <c>true</c> (fail closed):
-    /// a run nothing has positively marked as same-org must be treated as untrusted, the same as a
-    /// confirmed fork PR, so <c>DaemonReviewStageExecutor.AllowsCrossRepoCoLocation</c> never co-locates
-    /// the sibling private submodule beside it. Intended to be populated from the PR provider's fork
-    /// indicator (GitHub <c>head.repo.fork</c>) once the poller plumbs it through — not yet wired (gap).
+    /// True when the PR head comes from a fork, OR when nothing could establish that it doesn't. Defaults
+    /// <c>true</c> (fail closed): a run nothing has positively marked as same-trust must be treated as
+    /// untrusted, the same as a confirmed fork PR, so
+    /// <c>DaemonReviewStageExecutor.AllowsCrossRepoCoLocation</c> never co-locates a sibling private
+    /// submodule beside it.
+    /// <para>
+    /// Populated by <c>PrPollingService</c> from <see cref="Orchestration.PullRequestDescriptor.IsForkPr"/>,
+    /// which is nullable there ("the provider could not tell") and collapses to this default. The provider
+    /// signal is GitHub <c>head.repo.full_name != base.repo.full_name</c> / ADO's <c>forkSource</c> — NOT
+    /// GitHub's <c>head.repo.fork</c> flag, which is true for every PR opened inside a fork including
+    /// same-repo ones, and would deny co-location to runs that deserve it.
+    /// </para>
+    /// <para>
+    /// This carry went missing for the daemon's whole life, and the default made the omission invisible:
+    /// nothing wrote either field, so the gate read <c>!true &amp;&amp; !true</c> and every configured
+    /// cross-repo sibling was refused on every run. If a future change moves the collapse out of the poller,
+    /// it must land somewhere equally singular — two places deciding what "unknown" means is how a
+    /// fail-closed default quietly becomes fail-open.
+    /// </para>
     /// </summary>
     public bool IsForkPr { get; init; } = true;
 
     /// <summary>
-    /// True when the target repo is public (or this is unknown). Defaults <c>true</c> (fail closed) for
-    /// the same reason as <see cref="IsForkPr"/>. Intended to be populated from the PR provider's
-    /// visibility field (GitHub <c>base.repo.private</c>, inverted) once the poller plumbs it through —
-    /// not yet wired (gap).
+    /// True when the target repo is public, OR when nothing could establish that it isn't. Defaults
+    /// <c>true</c> (fail closed) for the same reason as <see cref="IsForkPr"/>, and populated the same way:
+    /// <c>PrPollingService</c> collapses the provider's nullable
+    /// <see cref="Orchestration.PullRequestDescriptor.IsTargetRepoPublic"/> (GitHub <c>base.repo.private</c>
+    /// inverted; ADO <c>repository.project.visibility</c>).
     /// </summary>
     public bool IsTargetRepoPublic { get; init; } = true;
 
@@ -68,4 +83,33 @@ internal sealed record ReviewRun
     /// </para>
     /// </summary>
     public string? PrAuthor { get; init; }
+
+    // ── What the PR says it does ─────────────────────────────────────────────────────────────────
+    /// <summary>
+    /// The PR's title (GitHub <c>title</c>, ADO <c>title</c>), captured at poll time so the review brief
+    /// can state what the change claims to do rather than only which files it touched.
+    /// <para>
+    /// Null on rows written before this was captured, and on any provider payload that omits it. Renders
+    /// as absent — never as a placeholder — because "the author wrote no title" and "we did not capture
+    /// one" must stay distinguishable to a reviewer weighing whether the diff matches its stated intent.
+    /// </para>
+    /// </summary>
+    public string? PrTitle { get; init; }
+
+    /// <summary>
+    /// The PR's description body (GitHub <c>body</c>, ADO <c>description</c>) as written by its author.
+    /// <para>
+    /// This is fully author-controlled prose and therefore an untrusted, prompt-injection-bearing input:
+    /// every consumer that renders it into an agent prompt must frame it as quoted UNTRUSTED DATA, the
+    /// same as a diff or an existing comment. Null when absent; not part of the run's identity tuple.
+    /// </para>
+    /// </summary>
+    public string? PrDescription { get; init; }
+
+    /// <summary>
+    /// The branch the PR merges INTO (GitHub <c>base.ref</c>, ADO <c>targetRefName</c>, short form).
+    /// Lets the reviewer weigh risk by destination — a change landing on a release branch warrants a
+    /// different bar than the same change landing on a feature branch. Null when the provider omits it.
+    /// </summary>
+    public string? PrTargetBranch { get; init; }
 }

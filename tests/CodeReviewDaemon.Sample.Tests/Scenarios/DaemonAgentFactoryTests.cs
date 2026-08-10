@@ -73,8 +73,10 @@ public sealed class DaemonAgentFactoryTests
         // The user's standing rules for how Revobot reviews (see memory revobot-review-posting-requirements):
         // (1) review the FULL PR; (2/5) judge resolution from each thread's conversation, not just a status
         // hint; (3) weigh comments from ALL authors (bots + humans); (4) answer a question directed at the
-        // bot; (6) the existing-comments block is split past-vs-new. These shape the FINDINGS, so they are
-        // unconditional on the collect-only first turn — the caller's should_post never gates them.
+        // bot. These shape the FINDINGS, so they are unconditional on the collect-only first turn — the
+        // caller's should_post never gates them. Rule (6), the past-vs-new split, is NOT among them: it is
+        // meaningful only once there is a last review to be new since, so it moved under is_rereview in
+        // prompt v1.2 and is pinned by the test below.
         var prompt = DaemonAgentFactory.CreateReviewProfile(
             new Dictionary<string, object> { ["bot_name"] = "Revobot", ["should_post"] = true }).SystemPrompt;
 
@@ -82,8 +84,186 @@ public sealed class DaemonAgentFactoryTests
         prompt.Should().MatchRegex("(?i)ALL AUTHORS"); // (3) consider other bots + humans
         prompt.Should().MatchRegex("(?i)resolved"); // (2/5) resolution judgment, not blind re-post
         prompt.Should().Contain("[status]"); // (5) status is a HINT — the LLM decides resolution
-        prompt.Should().Contain("New comments since your last review"); // (6) the two-part split
         prompt.Should().MatchRegex("(?i)ANSWER any question"); // (4) a question aimed at the bot must be answered
+    }
+
+    [Fact]
+    public void ReviewProfile_Prompt_withholds_the_no_op_exit_until_there_is_a_prior_review()
+    {
+        // The trap this pins: v1.0 and v1.1 opened the existing-comments block with "On a re-review, …" and
+        // then stated every rule in it UNCONDITIONALLY — including "make your final review exactly 'No new
+        // findings since the last review.'" A first-time reviewer has, by construction, no last review to
+        // have found anything since, so the cheapest way to satisfy that sentence is to emit it and never
+        // open the diff. That is what 51 of 104 PRs in the NOVA fleet came back as. Fixing the daemon-side
+        // dedup brief (FirstReviewExistingCommentsGuidance) was necessary but not sufficient: runs 131/132
+        // were first runs, ran against the fixed brief, and still took the exit — the prompt offered it on
+        // its own. So the exit and its delta framing must be reachable ONLY when is_rereview is true.
+        const string NoOpExit = "No new findings since the last review.";
+        const string Split = "New comments since your last review";
+
+        var firstReview = DaemonAgentFactory.CreateReviewProfile(
+            new Dictionary<string, object> { ["bot_name"] = "Revobot" }).SystemPrompt;
+
+        firstReview.Should().NotContain(NoOpExit, "a first-time reviewer must have no way to opt out of reviewing");
+        firstReview.Should().NotContain(Split, "there is no earlier round for comments to be new since");
+
+        var reReview = DaemonAgentFactory.CreateReviewProfile(
+            new Dictionary<string, object>
+            {
+                ["bot_name"] = "Revobot",
+                ["is_rereview"] = true,
+                ["review_round"] = "02",
+                ["prev_commit"] = "abc123",
+                ["new_commit"] = "def456",
+            }).SystemPrompt;
+
+        // Withheld, not deleted: on a genuine re-review "nothing new" is a legitimate, useful outcome.
+        reReview.Should().Contain(NoOpExit);
+        reReview.Should().Contain(Split);
+    }
+
+    [Fact]
+    public void ReviewProfile_Prompt_dispatches_the_context_gatherer_for_a_linked_work_item()
+    {
+        // The brief carries the PR's title and description (its own words) but nothing they REFER to, so
+        // "does this change do what it was asked to do" — and "is this PR incomplete, or one task of
+        // several?" — are both unanswerable from it. code-reviewer:pr-context-gatherer exists to walk that
+        // chain and was never named in the prompt, so it was never dispatched on any run.
+        var prompt = DaemonAgentFactory.CreateReviewProfile(
+            new Dictionary<string, object> { ["bot_name"] = "Revobot" }).SystemPrompt;
+
+        prompt.Should().Contain("code-reviewer:pr-context-gatherer");
+        // The lookup leaves the sandbox, and on NOVA the egress proxy has refused provider calls
+        // (policy_evaluation_failed). A failed lookup that goes unmentioned is the worst outcome: the review
+        // reads as though the work item was consulted.
+        var index = prompt.IndexOf("pr-context-gatherer", StringComparison.Ordinal);
+        prompt[index..].Should().MatchRegex(
+            "(?i)(SAY SO|say so)",
+            "a lookup that failed has to be visible in the review, not silently absent from it");
+        prompt[index..].Should().MatchRegex(
+            "(?i)never infer",
+            "and the gap must not be filled by guessing the work item from the diff");
+    }
+
+    [Fact]
+    public void ReviewProfile_Prompt_requires_the_gatherer_line_even_when_the_lookup_was_never_attempted()
+    {
+        // The escape hatch fired 0 times in 158 reviews, and the construction explains why: it was worded
+        // "If that lookup FAILS ... SAY SO", and failure requires an attempt. An agent that declines to
+        // dispatch the gatherer never fails, so it never says so, and the daemon receives no signal at all —
+        // a review that silently skipped the step is indistinguishable from a review of a PR with no work
+        // item. The duty therefore has to be keyed on the OUTCOME (gathered / tried and failed / did not
+        // try), not on a failure that only exists once something was tried.
+        var prompt = DaemonAgentFactory.CreateReviewProfile(
+            new Dictionary<string, object> { ["bot_name"] = "Revobot" }).SystemPrompt;
+
+        var index = prompt.IndexOf("pr-context-gatherer", StringComparison.Ordinal);
+        index.Should().BeGreaterThan(-1);
+        prompt[index..].Should().MatchRegex(
+            "(?i)did NOT attempt",
+            "not attempting the lookup has to be reportable, or the only observable case is the one that ran");
+        prompt[index..].Should().MatchRegex(
+            "(?i)you did not try",
+            "the three outcomes must be named, so 'nothing said' can never mean 'nothing to say'");
+    }
+
+    [Fact]
+    public void ReviewProfile_Prompt_does_not_let_the_no_network_clause_excuse_the_work_item_lookup()
+    {
+        // Step 2 mandates dispatching a sub-agent whose entire job is a provider-API lookup; step 5, ~30 lines
+        // later, states as flat fact that the sandbox "has no toolchain and no network". A reviewer that
+        // believes it has no network has no reason to dispatch a network-only sub-agent, so the two
+        // instructions contradict each other and the cheaper one wins. The clause is correct about WHY CI is
+        // the only build evidence — it must not generalise into a reason to skip anything else.
+        var prompt = DaemonAgentFactory.CreateReviewProfile(
+            new Dictionary<string, object> { ["bot_name"] = "Revobot" }).SystemPrompt;
+
+        var index = prompt.IndexOf("no toolchain and no network", StringComparison.Ordinal);
+        index.Should().BeGreaterThan(-1);
+        prompt[index..].Should().MatchRegex(
+            "(?i)not a licence to skip",
+            "the build-evidence clause must be scoped, or it reads as a blanket unreachability claim");
+    }
+
+    [Fact]
+    public void ReviewProfile_Prompt_requires_a_compile_or_runtime_verdict_to_cite_what_it_was_inferred_from()
+    {
+        // Measured across 169 reviews of record: zero claims of having built or tested anything, and ten
+        // assertions about compile/test/runtime OUTCOMES — every one of them a static inference that showed
+        // its evidence (run 174 quoted the removed import AND the surviving usage before saying the Scala
+        // source no longer compiles). This pins that behaviour rather than repairing it: the reviewer already
+        // does this ten times out of ten, and the clause exists so a model or prompt change cannot quietly
+        // drop it. It also inlines the two rules from code-reviewer:codebase-search-discipline that matter
+        // most here, because that skill's reference document fails to load in roughly half of all reviews.
+        var prompt = DaemonAgentFactory.CreateReviewProfile(
+            new Dictionary<string, object> { ["bot_name"] = "Revobot" }).SystemPrompt;
+
+        prompt.Should().MatchRegex(
+            "(?i)inference stated as an observation",
+            "a sound inference is welcome; one dressed as something observed is not");
+        prompt.Should().MatchRegex(
+            "(?i)unable to find",
+            "search-discipline rule 6 — qualify uncertainty rather than asserting absence");
+        prompt.Should().MatchRegex(
+            "(?i)green build",
+            "search-discipline rule 4 — a passing build outranks a search that missed the symbol");
+    }
+
+    [Fact]
+    public void ReviewProfile_Prompt_says_where_a_required_answer_goes_on_the_collect_turn()
+    {
+        // Observed on NOVA run 138 (PR 5503135, round 02): the prompt requires answering a question aimed at
+        // the bot, but the collect turn has no delivery channel — this profile is rendered with should_post
+        // forced false, and the DELIVERY section forbids any provider write. The agent resolved that
+        // contradiction the only way left to it: it curl'd the Azure DevOps threads API, the sandbox's egress
+        // policy refused the write, and the round's final review opened "Unable to post the required in-thread
+        // answer…". It spent the round on a blocked write instead of on reviewing.
+        // The duty is not the bug — the missing channel is. So the instruction must NAME where the answer
+        // goes: into the review text, which is the thing this turn actually produces and the daemon delivers.
+        var prompt = DaemonAgentFactory.CreateReviewProfile(
+            new Dictionary<string, object> { ["bot_name"] = "Revobot", ["should_post"] = true }).SystemPrompt;
+
+        var answerIndex = prompt.IndexOf("ANSWER any question", StringComparison.Ordinal);
+        answerIndex.Should().BeGreaterThan(-1);
+        // Read the sentence that carries the duty, not the whole prompt: a rule stated here and contradicted
+        // three paragraphs later is exactly what run 138 was handed.
+        var sentence = prompt[answerIndex..Math.Min(prompt.Length, answerIndex + 400)];
+        sentence.Should().MatchRegex(
+            "(?i)(in|into) the review",
+            "the answer has to go somewhere this turn can actually put it — the review text the daemon delivers");
+        sentence.Should().MatchRegex(
+            "(?i)do not (post|reply|deliver)|never post",
+            "and the instruction must say, right there, that answering is not posting");
+    }
+
+    [Fact]
+    public void ReviewProfile_Prompt_keeps_the_sub_agent_duty_alive_on_a_re_review()
+    {
+        // The other half of run 138: round 01 dispatched 4 sub-agents, round 02 dispatched 0 — the daemon's
+        // completion barrier settled with zero children and the run produced 0 reviewer transcripts. The
+        // dispatch duty is stated once, in step 2, in first-review terms; the re-review block then restates
+        // only the obligations round 02 went on to satisfy (answer the new comments, "nothing new" is a valid
+        // outcome). What is restated at the point of use is what gets followed, so the delta arrived
+        // unreviewed by any dimension agent while the round still reported itself complete.
+        var reReview = DaemonAgentFactory.CreateReviewProfile(
+            new Dictionary<string, object>
+            {
+                ["bot_name"] = "Revobot",
+                ["is_rereview"] = true,
+                ["review_round"] = "02",
+                ["prev_commit"] = "abc123",
+                ["new_commit"] = "def456",
+            }).SystemPrompt;
+
+        var exitIndex = reReview.IndexOf("No new findings since the last review.", StringComparison.Ordinal);
+        exitIndex.Should().BeGreaterThan(-1);
+        var reReviewBlock = reReview[Math.Max(0, exitIndex - 1200)..];
+        reReviewBlock.Should().MatchRegex(
+            "(?i)sub-agent",
+            "the re-review block must restate the fan-out duty where the round is actually framed");
+        reReviewBlock.Should().MatchRegex(
+            "(?i)answering .{0,60}(is not|does not)",
+            "answering a question is not a substitute for re-reviewing the delta — round 02 treated it as one");
     }
 
     [Fact]

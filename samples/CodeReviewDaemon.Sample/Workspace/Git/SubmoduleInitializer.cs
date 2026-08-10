@@ -116,11 +116,21 @@ internal sealed class SubmoduleInitializer
         {
             var submodulePath = JoinRelative(relativeDir, entry.Path);
 
-            var url = GitRemoteUrl.Parse(entry.Url);
-            if (url.IsRelative)
+            var parsed = GitRemoteUrl.Parse(entry.Url);
+            if (parsed.IsRelative)
             {
-                url = url.Resolve(parentRemote);
+                parsed = parsed.Resolve(parentRemote);
             }
+
+            // Canonicalize ONCE, here, so the allow decision and the clone are about the same URL. This used
+            // to happen inside DecideFetch, where it was invisible to everything after it: the policy
+            // approved dev.azure.com/{org}/{project}/_git/{repo} and `git submodule update` then cloned
+            // whatever .gitmodules said — the legacy {org}.visualstudio.com/DefaultCollection/… form. A gate
+            // that decides about one repository while the fetch reaches for another is wrong regardless of
+            // whether the fetch happens to succeed. Canonicalizing here also means the RESOLVED url is what
+            // a nested level receives as its parent remote, so a relative child of a legacy-host submodule
+            // resolves against the modern host too.
+            var url = GitRemoteUrl.CanonicalizeAdoLegacyHost(parsed);
 
             var decision = DecideFetch(url);
             if (!decision.IsAllowed)
@@ -131,6 +141,23 @@ internal sealed class SubmoduleInitializer
                     entry.Url,
                     decision.Reason);
                 denied.Add(new SubmoduleDenied(submodulePath, entry.Url, decision.Reason));
+                continue;
+            }
+
+            // Point git at the approved URL when canonicalization moved it. `git submodule init` only copies
+            // a .gitmodules url into .git/config when one is not already set, so writing it first is what
+            // makes `update` clone from the canonical form. Live, this is the MODISService sibling: the
+            // legacy path's leading DefaultCollection segment reads as a project name to the modern service
+            // ("TF200016: The following project does not exist: DefaultCollection"), and the daemon's ADO
+            // credential is keyed to dev.azure.com, so the legacy host would have gone unauthenticated too.
+            if (!await TryPointAtCanonicalUrlAsync(levelDir, entry, parsed, url, cancellationToken)
+                .ConfigureAwait(false))
+            {
+                var reason =
+                    $"could not point submodule '{entry.Name}' at its canonical URL; refusing to clone from "
+                    + "the un-approved one";
+                _logger.LogWarning("Submodule '{Path}' ({Url}) denied: {Reason}", submodulePath, entry.Url, reason);
+                denied.Add(new SubmoduleDenied(submodulePath, entry.Url, reason));
                 continue;
             }
 
@@ -166,8 +193,54 @@ internal sealed class SubmoduleInitializer
     }
 
     /// <summary>
-    /// Validates a (resolved) submodule URL: only HTTP(S) transports are permitted, and the host/path
-    /// must be on the <see cref="OperationPolicy"/> allow-list for <see cref="SandboxOperation.FetchSubmodule"/>.
+    /// Writes <c>submodule.&lt;name&gt;.url</c> into the level's local git config when canonicalization
+    /// changed the URL, so the subsequent <c>submodule update --init</c> clones from the form the policy
+    /// approved rather than the one <c>.gitmodules</c> declared. A no-op (returning true) when the URL was
+    /// already canonical — the remap closes a specific legacy-host gap and has no business touching every
+    /// other submodule's remote.
+    /// <para>
+    /// Returns false when the config write fails, which the caller turns into a denial. Falling through to
+    /// the clone would be the worst outcome available: fetching the un-approved URL after the gate said yes
+    /// to a different one.
+    /// </para>
+    /// </summary>
+    private async Task<bool> TryPointAtCanonicalUrlAsync(
+        string levelDir,
+        SubmoduleEntry entry,
+        GitRemoteUrl parsed,
+        GitRemoteUrl canonical,
+        CancellationToken cancellationToken)
+    {
+        if (string.Equals(parsed.Host, canonical.Host, StringComparison.Ordinal)
+            && string.Equals(parsed.RepoPath, canonical.RepoPath, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        // Only an https URL is ever rewritten (CanonicalizeAdoLegacyHost leaves every other kind alone), and
+        // RepoPath keeps its percent-escapes — GitRemoteUrl deliberately does not decode them, which is both
+        // what let the allow rule match "Microsoft%20Orleans" and what keeps this reconstructed URL valid.
+        var canonicalUrl = $"https://{canonical.Host}{canonical.RepoPath}";
+        var configured = await _git
+            .RunAsync(["config", $"submodule.{entry.Name}.url", canonicalUrl], levelDir, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!configured.Succeeded)
+        {
+            return false;
+        }
+
+        _logger.LogDebug(
+            "Submodule '{Name}' declares the legacy ADO host; cloning from the canonical {Url} instead.",
+            entry.Name,
+            canonicalUrl);
+        return true;
+    }
+
+    /// <summary>
+    /// Validates a (resolved, already-canonicalized) submodule URL: only HTTP(S) transports are permitted,
+    /// and the host/path must be on the <see cref="OperationPolicy"/> allow-list for
+    /// <see cref="SandboxOperation.FetchSubmodule"/>.
     /// </summary>
     private PolicyDecision DecideFetch(GitRemoteUrl url)
     {
@@ -176,13 +249,6 @@ internal sealed class SubmoduleInitializer
             return PolicyDecision.Deny(
                 $"submodule transport '{url.Kind}' is not permitted (only HTTP/HTTPS)");
         }
-
-        // Azure DevOps legacy-host equivalence: a repo's own .gitmodules may declare the historical
-        // {org}.visualstudio.com host form, but the per-run allow-list (and the modern ADO credential) are
-        // keyed to dev.azure.com. Canonicalize the parsed URL BEFORE building the policy request so the
-        // exact host+path allow rule matches. This is a fixed URL-shape rewrite, not a security relaxation:
-        // a non-visualstudio.com URL is returned unchanged and still gated by the explicit allow-list.
-        url = GitRemoteUrl.CanonicalizeAdoLegacyHost(url);
 
         var request = new OperationRequest(
             SandboxOperation.FetchSubmodule,

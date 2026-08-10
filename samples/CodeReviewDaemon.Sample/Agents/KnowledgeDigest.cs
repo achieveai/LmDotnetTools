@@ -1,5 +1,6 @@
 using System.Text;
 using CodeReviewDaemon.Sample.Configuration;
+using CodeReviewDaemon.Sample.Orchestration;
 
 namespace CodeReviewDaemon.Sample.Agents;
 
@@ -339,17 +340,37 @@ internal static class KnowledgeDigest
     /// disappears silently. Returns an empty <see cref="KnowledgeDigestBlock.Text"/> when there is nothing
     /// to say, letting the caller leave the review input untouched.
     /// <para>
+    /// <paramref name="bodies"/> maps <see cref="KnowledgeEntryMeta.File"/> to the raw text of that entry's
+    /// file, and is what turns this block from a bibliography into knowledge. Measured on the live daemon:
+    /// 26 briefs carried a block naming 15 entries apiece, and not one review ever quoted a single entry
+    /// body — the reviewer is handed paths and told to Read them, and it does not. So the lesson is HANDED
+    /// to it instead: the best-ranked entries carry their prose inlined under their own path, the rest keep
+    /// the listing, and which is which falls out of the character budget rather than a count chosen here.
+    /// The listings are laid down FIRST and bodies spend only what they leave, because an entry that loses
+    /// its path as well as its body is unreachable — strictly worse than the listing-only block this
+    /// replaces. Passing null renders exactly the block this method rendered before bodies existed.
+    /// </para>
+    /// <para>
+    /// This method still performs no IO and reads no clock: the caller does the reading, so the same index
+    /// and the same bodies always produce the same digest, and the ranking stays unit-testable. That is the
+    /// whole reason the bodies arrive as data rather than as a path to go and fetch.
+    /// </para>
+    /// <para>
     /// <see cref="KnowledgeDigestBlock.Rendered"/> lists the entries that SURVIVED the budget, which is
     /// deliberately not the same as the entries passed in: the caller logs that list as its proof that
     /// retrieval reached the reviewer, and a proof that names entries the reviewer never received is worse
     /// than no proof at all — it is the silent failure this logging exists to expose, wearing a green badge.
+    /// <see cref="KnowledgeDigestBlock.Inlined"/> is the subset that arrived with its lesson attached, for
+    /// the same reason: "surfaced 15 entries" cannot tell a block of fifteen headlines from a block that
+    /// actually said something, and those two are the whole difference this change is about.
     /// </para>
     /// </summary>
     public static KnowledgeDigestBlock Render(
         IReadOnlyList<KnowledgeEntryMeta> entries,
         string knowledgeBaseRoot,
         int charBudget,
-        int omitted)
+        int omitted,
+        IReadOnlyDictionary<string, string>? bodies = null)
     {
         ArgumentNullException.ThrowIfNull(entries);
         ArgumentNullException.ThrowIfNull(knowledgeBaseRoot);
@@ -359,7 +380,12 @@ internal static class KnowledgeDigest
         // not a corner - so an escaping entry sitting beyond the cut would never reach Rejected, would
         // never be warned about, and would still be counted below as an entry the agent can go and fetch
         // from _toc.md. That is precisely the silent disappearance the rejection reporting exists to stop.
-        var resolved = new List<(KnowledgeEntryMeta Entry, string Path)>(entries.Count);
+        //
+        // The ORIGINAL travels alongside the cleaned copy because the neutralization report is about what
+        // the extraction agent wrote, and the cleaned copy is that evidence with the interesting part
+        // removed. A body refused further down reports against the same original, so one entry with a bad
+        // title AND a bad body is one record rather than two disagreeing ones.
+        var resolved = new List<DigestSlot>(entries.Count);
         var rejected = new List<KnowledgeEntryMeta>();
         var neutralized = new List<KnowledgeEntryMeta>();
         foreach (var entry in entries)
@@ -381,7 +407,7 @@ internal static class KnowledgeDigest
                 neutralized.Add(entry);
             }
 
-            resolved.Add((safe, absolute));
+            resolved.Add(new DigestSlot(entry, safe, absolute, string.Empty, string.Empty));
         }
 
         // Space for the footer is reserved before anything is written, against the largest count it could
@@ -389,19 +415,19 @@ internal static class KnowledgeDigest
         // the budget. Appending it afterwards would make it the one unchecked write in the method.
         var header = Header();
         var reserve = Footer(omitted + resolved.Count, knowledgeBaseRoot).Length;
-        var builder = new StringBuilder();
-        var rendered = new List<KnowledgeEntryMeta>(resolved.Count);
+        var slots = new List<DigestSlot>(resolved.Count);
 
         // The header is an append like any other and is checked like one. There is no "at least one entry"
         // exemption anywhere in this loop: an entry allowed to skip the check is an entry that can carry an
         // unbounded model-authored title straight past the budget, which is how a nominal 8 KiB block ends
         // up crowding the PR itself out of the reviewer's context window.
-        if (header.Length + reserve <= charBudget)
+        var headerFits = header.Length + reserve <= charBudget;
+        if (headerFits)
         {
-            _ = builder.Append(header);
-            foreach (var (entry, absolute) in resolved)
+            var spent = header.Length;
+            foreach (var candidate in resolved)
             {
-                var line = RenderEntry(entry, absolute, charBudget - builder.Length - reserve);
+                var line = RenderEntry(candidate.Entry, candidate.Path, charBudget - spent - reserve);
                 if (line.Length == 0)
                 {
                     // Skip this entry, do NOT stop. An empty render is a fact about THIS entry - its path
@@ -413,34 +439,309 @@ internal static class KnowledgeDigest
                     continue;
                 }
 
-                _ = builder.Append(line);
-                rendered.Add(entry);
+                slots.Add(candidate with { Listing = line });
+                spent += line.Length;
             }
+
+            // Bodies come SECOND, out of what the listings left, so a lesson can never cost the reviewer a
+            // path. They are also the only part of the block whose size the ranking cannot see, so this is
+            // the pass that decides how many entries arrive as knowledge rather than as a reference.
+            InlineBodies(
+                slots,
+                bodies,
+                knowledgeBaseRoot,
+                charBudget - spent - reserve,
+                charBudget / MaxBodyShareOfBudget,
+                neutralized);
         }
 
         // Counted off the RESOLVED pool, so a rejected entry is neither rendered nor missing. The footer's
         // promise is that whatever did not fit is reachable through _toc.md, and pointing the agent at an
         // entry we just refused to resolve would be an invitation to go and find the very thing refused.
-        var missing = omitted + (resolved.Count - rendered.Count);
-        if (rendered.Count == 0)
+        var missing = omitted + (resolved.Count - slots.Count);
+        if (slots.Count == 0)
         {
             // Nothing survived - every entry was refused, or the budget could not hold even one. A header
             // with no paths beneath it reads exactly like a Knowledge Base that happens to be empty, so say
             // nothing at all unless there is a count worth reporting, and let the caller leave the review
             // input untouched; refusals travel back through Rejected, which is where they get logged.
             return new KnowledgeDigestBlock(
-                builder.Length > 0 && missing > 0 ? header + Footer(missing, knowledgeBaseRoot) : string.Empty,
+                headerFits && missing > 0 ? header + Footer(missing, knowledgeBaseRoot) : string.Empty,
+                [],
                 [],
                 rejected,
                 neutralized);
         }
 
+        var builder = new StringBuilder(header);
+        foreach (var slot in slots)
+        {
+            _ = builder.Append(slot.Listing).Append(slot.Body);
+        }
+
         return new KnowledgeDigestBlock(
             builder.Append(missing > 0 ? Footer(missing, knowledgeBaseRoot) : string.Empty).ToString(),
-            rendered,
+            [.. slots.Select(slot => slot.Entry)],
+            [.. slots.Where(slot => slot.Body.Length > 0).Select(slot => slot.Entry)],
             rejected,
             neutralized);
     }
+
+    /// <summary>
+    /// One entry's place in the block: the record the extraction agent wrote, the cleaned copy the reviewer
+    /// reads, the absolute path both of them resolve to, the listing line, and the inlined lesson beneath it
+    /// (empty until the body pass fills it, and for every entry the body pass could not afford).
+    /// </summary>
+    private readonly record struct DigestSlot(
+        KnowledgeEntryMeta Original,
+        KnowledgeEntryMeta Entry,
+        string Path,
+        string Listing,
+        string Body);
+
+    /// <summary>
+    /// The largest share of the whole block any single lesson may occupy, as a divisor of the budget.
+    /// <para>
+    /// A bound, not a preference. The prose behind an entry is written by the knowledge-extraction agent
+    /// and is as unbounded as the <c>"file"</c> value beside it, so plain first-fit lets one runaway entry
+    /// swallow every character the listings left and leave the fourteen entries behind it as headlines —
+    /// the same starvation an oversized path used to cause, one field over. Expressed as a share rather
+    /// than a character count so it tracks whatever budget the caller passes; a quarter leaves room for
+    /// three more lessons however the caller sizes the block, and the measured Knowledge Base (627-1196
+    /// bytes per entry against an 8 KiB block) never comes near it.
+    /// </para>
+    /// </summary>
+    private const int MaxBodyShareOfBudget = 4;
+
+    /// <summary>
+    /// Fills in the inlined lesson for as many of <paramref name="slots"/> as <paramref name="room"/>
+    /// affords, best-ranked first.
+    /// <para>
+    /// Every body is cleaned BEFORE any of them is fitted, for the same reason every entry is resolved
+    /// before any is rendered: budget pressure is the normal case, so a defect the budget happens to cut
+    /// would otherwise be a defect nobody is told about. What the extraction agent wrote into an entry is
+    /// true whether or not there was room to print it.
+    /// </para>
+    /// <para>
+    /// A body that will not fit is SKIPPED rather than stopped at, because whether it fits is dominated by
+    /// its own model-authored length: one 20k lesson ranked first must not decide that the short lessons
+    /// behind it are unaffordable. Room running out is a different fact, and that one does stop the pass.
+    /// </para>
+    /// </summary>
+    private static void InlineBodies(
+        List<DigestSlot> slots,
+        IReadOnlyDictionary<string, string>? bodies,
+        string knowledgeBaseRoot,
+        int room,
+        int perEntryAllowance,
+        List<KnowledgeEntryMeta> neutralized)
+    {
+        if (bodies is null || bodies.Count == 0 || slots.Count == 0)
+        {
+            return;
+        }
+
+        var alreadyReported = neutralized.Select(entry => entry.File).ToHashSet(StringComparer.Ordinal);
+        var cleaned = new List<(int Slot, IReadOnlyList<string> Lines)>(slots.Count);
+        for (var slot = 0; slot < slots.Count; slot++)
+        {
+            if (!bodies.TryGetValue(slots[slot].Entry.File, out var raw))
+            {
+                continue;
+            }
+
+            var lines = CleanBody(raw, knowledgeBaseRoot, out var refusedALine);
+
+            // One record per ENTRY, not per cleaned field: an entry whose title and whose body both carried
+            // an escaping link is one defective entry, and reporting it twice would make the operator's
+            // count of defective entries depend on how many of its fields happened to be bad.
+            if (refusedALine && alreadyReported.Add(slots[slot].Original.File))
+            {
+                neutralized.Add(slots[slot].Original);
+            }
+
+            if (lines.Count > 0)
+            {
+                cleaned.Add((slot, lines));
+            }
+        }
+
+        var spent = 0;
+        foreach (var (slot, lines) in cleaned)
+        {
+            if (room - spent <= 0)
+            {
+                break;
+            }
+
+            var body = FitBody(lines, Math.Min(perEntryAllowance, room - spent));
+            if (body.Length == 0)
+            {
+                continue;
+            }
+
+            slots[slot] = slots[slot] with { Body = body };
+            spent += body.Length;
+        }
+    }
+
+    /// <summary>
+    /// An entry file reduced to the lines of its lesson that may be shown to the reviewer: frontmatter
+    /// stripped, refused lines dropped, and the blank lines that merely pad the ends removed.
+    /// <para>
+    /// The frontmatter goes because <see cref="RenderEntry"/> already printed title, tags and scope on the
+    /// two lines above, and re-printing them as YAML would spend the budget saying the same thing twice.
+    /// It is stripped only when its closing fence is actually there: a lone leading <c>---</c> is a
+    /// thematic break in ordinary Markdown, and eating prose up to the next one would delete the lesson.
+    /// </para>
+    /// <para>
+    /// A line is REFUSED on the same rule the metadata gets — <see cref="CarriesAnEscapingLink"/>, one rule
+    /// for every model-authored string that reaches the prompt — plus the heading test below. Refusal is
+    /// per line rather than per entry because a body is many lines and the rest of them are still the
+    /// lesson; that is the <c>_toc.md</c> route's verdict, and a body has the same shape as a <c>_toc.md</c>
+    /// (many independent lines) rather than a metadata field's (one value that either survives or does not).
+    /// Nothing is edited WITHIN a line, which is the rule this file learned the hard way.
+    /// </para>
+    /// <para>
+    /// In FRONT of all of that sits <see cref="UntrustedTranscriptText.Sanitize"/>, the daemon's existing
+    /// rule for text a model produced, applied here for the reason that class documents rather than by
+    /// analogy: the knowledge extractor's prompt is built by concatenating a PR's notes files, and those
+    /// files are where spliced spam and forged <c>【assistant to=functions.Write】</c> markers were actually
+    /// observed. An entry body is therefore downstream of exactly the text that machinery exists to defang,
+    /// and it now lands in a prompt verbatim. It is applied unconditionally and is NOT reported as a
+    /// refusal: the substitution is deliberately visible, nothing is lost, and folding hygiene into the
+    /// neutralization count would blunt a signal that currently means "this entry carried a bad link".
+    /// </para>
+    /// </summary>
+    private static IReadOnlyList<string> CleanBody(
+        string? body, string knowledgeBaseRoot, out bool refusedALine)
+    {
+        refusedALine = false;
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return [];
+        }
+
+        var kept = new List<string>();
+        foreach (var raw in StripFrontmatter(UntrustedTranscriptText.Sanitize(body)))
+        {
+            var line = raw.TrimEnd();
+            if (IsAnAtxHeading(line) || CarriesAnEscapingLink(line, knowledgeBaseRoot))
+            {
+                refusedALine = true;
+                continue;
+            }
+
+            kept.Add(line);
+        }
+
+        // Blank lines BETWEEN paragraphs stay - they are what keeps a lesson readable - but the ones at
+        // either end only spend budget saying nothing, and a trailing one would push the next entry's
+        // bullet away from the entry it belongs to.
+        var first = kept.FindIndex(line => line.Length > 0);
+        var last = kept.FindLastIndex(line => line.Length > 0);
+        return first < 0 ? [] : kept.GetRange(first, last - first + 1);
+    }
+
+    /// <summary>
+    /// Whether a body line is an ATX heading, judged after any block-container markers the way
+    /// <see cref="CarriesAReferenceStyleLink"/> judges a definition — CommonMark reads a heading inside a
+    /// block quote or a list item exactly as it reads one at column zero.
+    /// <para>
+    /// Refused rather than rendered because <see cref="Heading"/> is the one string the review prompt
+    /// teaches as "this is prior knowledge", and these bodies are LLM-authored from PR content. A lesson
+    /// that can write a heading can write THAT heading, and a forged second block is indistinguishable from
+    /// the daemon's own to the only party that acts on it. The block's structure is all that marks where
+    /// untrusted text begins and ends, so the structure is the thing an untrusted line may not write. A
+    /// lesson that loses a <c>### Details</c> line loses formatting; the alternative loses the contract.
+    /// </para>
+    /// </summary>
+    private static bool IsAnAtxHeading(string line)
+    {
+        var text = StripBlockContainerMarkers(line);
+        return !text.IsEmpty && text[0] == '#';
+    }
+
+    /// <summary>
+    /// An entry file's lines with a closed YAML frontmatter block removed, or all of them when there is no
+    /// such block to remove.
+    /// </summary>
+    private static IReadOnlyList<string> StripFrontmatter(string body)
+    {
+        var lines = body.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n').Split('\n');
+        if (lines.Length == 0 || lines[0].Trim() != FrontmatterFence)
+        {
+            return lines;
+        }
+
+        var close = Array.FindIndex(lines, 1, line => line.Trim() == FrontmatterFence);
+        return close < 0 ? lines : lines[(close + 1)..];
+    }
+
+    private const string FrontmatterFence = "---";
+
+    /// <summary>
+    /// The lesson indented under its entry, within <paramref name="room"/>, or an empty string when not
+    /// even its first line fits.
+    /// <para>
+    /// Indented so the reviewer can see which entry the prose belongs to: the block's only structure is
+    /// "bullet, metadata, path", and unindented prose between two bullets belongs to neither of them.
+    /// </para>
+    /// <para>
+    /// The cut lands BETWEEN lines and takes the tail, never the middle. Prose is not a path, so cutting it
+    /// costs no correctness — but it is an argument, and a later paragraph delivered without the one it
+    /// qualifies can invert the lesson. Losing the tail and saying so leaves the reviewer with a true
+    /// prefix and the path to the rest, which is on the line directly above.
+    /// </para>
+    /// </summary>
+    private static string FitBody(IReadOnlyList<string> lines, int room)
+    {
+        var whole = new StringBuilder(BodySeparator);
+        foreach (var line in lines)
+        {
+            _ = whole.Append(IndentBodyLine(line));
+        }
+
+        if (whole.Length <= room)
+        {
+            return whole.ToString();
+        }
+
+        // Room for the notice is taken before the first line is written, for the same reason the footer's
+        // is: admitting the cut may not itself be what overruns the budget.
+        var budget = room - BodyCutNotice.Length;
+        var builder = new StringBuilder(BodySeparator);
+        foreach (var line in lines)
+        {
+            var text = IndentBodyLine(line);
+            if (builder.Length + text.Length > budget)
+            {
+                break;
+            }
+
+            _ = builder.Append(text);
+        }
+
+        return builder.Length == BodySeparator.Length
+            ? string.Empty
+            : builder.Append(BodyCutNotice).ToString();
+    }
+
+    /// <summary>
+    /// Separates the lesson from the path line above it. Without it the two run together into a single
+    /// paragraph for any reader that resolves Markdown, so the absolute path — the one part of the line the
+    /// reviewer is meant to act on — ends up welded to the first sentence of the prose.
+    /// </summary>
+    private const string BodySeparator = "\n";
+
+    /// <summary>A body line under its entry. A blank line stays blank rather than becoming two spaces.</summary>
+    private static string IndentBodyLine(string line) => line.Length == 0 ? "\n" : $"  {line}\n";
+
+    /// <summary>
+    /// Says the lesson was cut. Points at the path rather than at <c>_toc.md</c>, because unlike an entry
+    /// that never fitted, this one's exact absolute path is two lines above and the rest of it is there.
+    /// </summary>
+    private const string BodyCutNotice = "  (lesson truncated — the rest is in the file above)\n";
 
     /// <summary>
     /// Splits <paramref name="entries"/> into those whose <see cref="KnowledgeEntryMeta.File"/> resolves
@@ -516,8 +817,9 @@ internal static class KnowledgeDigest
     /// <see cref="Render"/> — the ToC carries titles and KB-relative links, so there are no tags, no scope
     /// and no ranking — but it arrives under the same <see cref="Heading"/> and states the absolute root the
     /// links hang off, so the agent can still open an entry and still hand paths to its sub-agents. Returns
-    /// an empty <see cref="KnowledgeTocBlock.Text"/> for a blank table of contents, letting the caller leave
-    /// the review input untouched.
+    /// an empty <see cref="KnowledgeTocBlock.Text"/> for a blank table of contents — and for one that is
+    /// readable but lists nothing, which says the same thing about the store and so must render the same way:
+    /// the <see cref="Heading"/> over an empty list is a claim the store cannot back.
     /// <para>
     /// Bounded by the SAME <paramref name="charBudget"/> as the ranked path. This is the degraded route, so
     /// an unbounded one here would mean the only uncapped prior-knowledge block is the one rendered after
@@ -565,6 +867,13 @@ internal static class KnowledgeDigest
         var listed = 0;
         var truncated = false;
         var refused = new List<string>();
+
+        // Whether anything openable reached the block — tracked SEPARATELY from <c>listed</c>, which counts
+        // only lines matching the "- [Title](path)" entry shape. The two part ways on a line like
+        // "> - [Alpha](system/alpha.md)": a blockquoted entry is not counted as one, yet it is rendered and
+        // its link is contained, joinable and the only prior knowledge the reviewer gets. The emptiness gate
+        // below asks "did the reviewer receive a route into the Knowledge Base", and only this answers it.
+        var deliveredALink = false;
 
         // Refused ENTRY LINES, not refused links: the total below counts entry lines, so only a refusal that
         // removes one of those may be subtracted from it. One line can carry more than one escaping
@@ -685,6 +994,7 @@ internal static class KnowledgeDigest
                 }
 
                 _ = builder.Append(text);
+                deliveredALink |= links.Count > 0;
                 if (IsTocEntry(line))
                 {
                     listed++;
@@ -718,6 +1028,27 @@ internal static class KnowledgeDigest
         if (builder.Length == 0)
         {
             return new KnowledgeTocBlock(string.Empty, 0, dropped, true, refused, duplicates);
+        }
+
+        // Nothing openable reached the block, and nothing explains why: no link was refused, no entry was cut
+        // for room, none was a repeat. What is in the builder is therefore the heading and its instructions
+        // standing over an empty list — a smaller block than usual, but not a smaller CLAIM. The prompt
+        // teaches this heading as the one place prior knowledge appears and teaches that its absence means
+        // there is no Knowledge Base to look for, so printing it with no link beneath it states the opposite
+        // of the truth to the only party that acts on it, and spends the header's own instructions ("join a
+        // link onto that directory", "copy the paths into its brief") sending the agent after entries that do
+        // not exist. A freshly seeded store is the ordinary case, not an exotic one: measured on nova, 120 of
+        // 120 reviews took this fallback at Listed=0 with nothing refused or dropped, so the caller's honest
+        // "No usable Knowledge Base" branch — whose only test is Text.Length == 0 — never ran once, in exactly
+        // the cold start it exists for.
+        //
+        // Every other clause is load-bearing, and each keeps a different fact reaching the caller: a refusal
+        // is only ever logged on the non-empty branch, a drop means the store HAS entries this block withheld
+        // for room, and truncation means the file was too big to render rather than empty. Any of those and
+        // the heading is earned. This is the one shape where it is not.
+        if (!deliveredALink && refused.Count == 0 && dropped == 0 && duplicates == 0 && !truncated)
+        {
+            return new KnowledgeTocBlock(string.Empty, 0, 0, false, [], 0);
         }
 
         var closing = dropped > 0 ? Footer(dropped, knowledgeBaseRoot)
@@ -1364,11 +1695,12 @@ internal static class KnowledgeDigest
         $"""
         {Heading}
 
-        Durable lessons from earlier reviews, ranked by relevance to the files this PR changes. Open one
-        with the Read tool using the EXACT ABSOLUTE PATH shown below — do NOT Grep or Glob for it, because
-        a root-level Grep can come back empty even when the file exists. When you dispatch a sub-agent for
-        a dimension, copy the paths that match that dimension into its brief; it has no other way to see
-        them and will otherwise review with no prior knowledge at all.
+        Durable lessons from earlier reviews, ranked by relevance to the files this PR changes. The
+        best-ranked entries carry their full text here, indented under their path; the rest carry the path
+        alone — open one with the Read tool using that EXACT ABSOLUTE PATH, and do NOT Grep or Glob for it,
+        because a root-level Grep can come back empty even when the file exists. When you dispatch a
+        sub-agent for a dimension, copy the lessons and the paths that match that dimension into its brief;
+        it has no other way to see them and will otherwise review with no prior knowledge at all.
 
 
         """;
@@ -1497,6 +1829,15 @@ internal static class KnowledgeDigest
     /// Resolves an entry's KB-relative <see cref="KnowledgeEntryMeta.File"/> against the Knowledge Base
     /// root, refusing anything whose canonical form lands outside it.
     /// <para>
+    /// Public because the CALLER needs it too, and needs it to be this one. The root a body is READ from is
+    /// not the root rendered into the prompt — in pooled S2S mode one is the daemon's own disk and the other
+    /// is where the agent sees that directory mounted — so the caller performs a join this class cannot
+    /// perform for it, on the one value in the index an LLM wrote. A plain string join does not resolve
+    /// <c>..</c>, and a body read from outside the store would be inlined into the prompt as though it were
+    /// knowledge: the exact failure <see cref="Render"/> refuses, reached through the read instead of the
+    /// render. One rule, both roots.
+    /// </para>
+    /// <para>
     /// Worth the trouble because this value is NOT trusted input. During regeneration the index is built
     /// from a directory listing, but the digest reads it back from <c>_index.jsonl</c> on disk in the
     /// store, and the store's <c>KnowledgeBase/</c> is written by the knowledge agent - an LLM with
@@ -1512,7 +1853,7 @@ internal static class KnowledgeDigest
     /// already contains it, so it lands harmlessly under the root. A path carrying an ampersand is refused
     /// outright, for the reason given at the check itself.
     /// </summary>
-    private static bool TryResolveEntryPath(string knowledgeBaseRoot, string? file, out string absolutePath)
+    public static bool TryResolveEntryPath(string knowledgeBaseRoot, string? file, out string absolutePath)
     {
         absolutePath = string.Empty;
         if (string.IsNullOrWhiteSpace(file))
@@ -1792,17 +2133,26 @@ internal static class KnowledgeDigest
 
 /// <summary>
 /// The rendered prior-knowledge block: its <paramref name="Text"/>, the entries that actually made it into
-/// that text after the character budget was applied, the entries refused because their path did not
-/// resolve inside the Knowledge Base, and the entries KEPT after a metadata field of theirs was cleared for
-/// carrying an escaping link. All four are reported together so the caller can log what the reviewer
-/// genuinely received AND what was withheld from it - a refusal nobody logs is indistinguishable from a
-/// Knowledge Base that never held the entry.
+/// that text after the character budget was applied, the subset of those that arrived with their lesson
+/// inlined rather than as a path alone, the entries refused because their path did not resolve inside the
+/// Knowledge Base, and the entries KEPT after model-authored content of theirs was cleared for carrying an
+/// escaping link. All five are reported together so the caller can log what the reviewer genuinely received
+/// AND what was withheld from it - a refusal nobody logs is indistinguishable from a Knowledge Base that
+/// never held the entry.
+/// <para>
+/// <paramref name="Inlined"/> is always a subset of <paramref name="Rendered"/> and is the difference
+/// between a block that named fifteen lessons and a block that told the reviewer any of them. Reported
+/// separately because a count of surfaced entries cannot tell those two apart, and for 26 briefs it did
+/// not: every one of them logged a healthy surfaced count over a block the reviewer never opened an entry
+/// from.
+/// </para>
 /// <para>
 /// <paramref name="Neutralized"/> is separate from <paramref name="Rejected"/> because the entry was NOT
 /// rejected: it keeps its slot and its path is intact. What the operator needs to know is that the knowledge
-/// agent wrote a link into a title, tag or scope that pointed outside the Knowledge Base - a fact about
-/// extraction quality that would otherwise leave no trace at all, since the entry it happened to arrives
-/// looking perfectly healthy.
+/// agent wrote a link that pointed outside the Knowledge Base into a title, tag, scope or body line - a fact
+/// about extraction quality that would otherwise leave no trace at all, since the entry it happened to
+/// arrives looking perfectly healthy. One record per entry however many of its fields were cleaned, and
+/// always the ORIGINAL, because the cleaned copy is the evidence with the interesting part removed.
 /// </para>
 /// <para>
 /// It is <b>not</b> a subset of <paramref name="Rendered"/>, and reading it as one is how a delivery claim
@@ -1816,6 +2166,7 @@ internal static class KnowledgeDigest
 internal sealed record KnowledgeDigestBlock(
     string Text,
     IReadOnlyList<KnowledgeEntryMeta> Rendered,
+    IReadOnlyList<KnowledgeEntryMeta> Inlined,
     IReadOnlyList<KnowledgeEntryMeta> Rejected,
     IReadOnlyList<KnowledgeEntryMeta> Neutralized);
 

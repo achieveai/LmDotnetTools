@@ -19,6 +19,19 @@ public class Program
     {
         try
         {
+            // Help is a REQUESTED, SUCCESSFUL operation and is handled here rather than in the parser,
+            // for the same reason --list-families is (below): the parser signals every outcome with a
+            // null, so "help was printed" and "the arguments were bad" arrive indistinguishable and Main
+            // maps both to exit 1. A --help that exits non-zero fails any smoke test whose whole purpose
+            // is "does the binary start", and the failure reads as a broken tool rather than as a wrong
+            // return value. Matched to the parser's own casing (it lowercases before switching), so
+            // --HELP behaves the same here as it does there.
+            if (args.Any(a => a.ToLowerInvariant() is "--help" or "-h"))
+            {
+                ShowHelp();
+                return 0;
+            }
+
             var options = ParseArguments(args);
             if (options == null)
             {
@@ -127,8 +140,9 @@ public class Program
             switch (args[i].ToLowerInvariant())
             {
                 case "--help" or "-h":
-                    ShowHelp();
-                    return null;
+                    // Handled in main method — see the comment there. Returning null here would make a
+                    // successful help request indistinguishable from a parse failure.
+                    break;
 
                 case "--output"
                 or "-o":

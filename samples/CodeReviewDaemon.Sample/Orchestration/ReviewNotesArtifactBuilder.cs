@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
+using AchieveAi.LmDotnetTools.LmMultiTurn;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Workspace.Git;
@@ -200,6 +201,9 @@ internal static partial class UntrustedTranscriptText
 /// <param name="PrevHeadSha">Head reviewed in the prior round; null on a first review.</param>
 /// <param name="Roster">The settled sub-agent roster — full nodes, including the agent ids
 /// <see cref="ReviewSubAgentTreeSnapshot.ToSafeInventory"/> deliberately strips before the prompt sees it.</param>
+/// <param name="DispatchDuration">How long the provisional turn plus the barrier took — the phase in which
+/// fan-out either happens or does not. Recorded because it is the sharpest discriminator on a thin review:
+/// across six live runs, fan-out, this duration and review length moved together almost monotonically.</param>
 internal sealed record ReviewNotesArtifactContext(
     int ReviewRound,
     string ModelId,
@@ -210,7 +214,8 @@ internal sealed record ReviewNotesArtifactContext(
     string? StoreRoot,
     string? NotesDir,
     string? PrevHeadSha,
-    ReviewSubAgentTreeSnapshot Roster);
+    ReviewSubAgentTreeSnapshot Roster,
+    TimeSpan DispatchDuration = default);
 
 /// <summary>
 /// Builds the per-PR notes artifacts the daemon commits alongside <c>review.md</c>.
@@ -233,8 +238,23 @@ internal sealed record ReviewNotesArtifactContext(
 /// </summary>
 internal sealed class ReviewNotesArtifactBuilder
 {
+    /// <summary>
+    /// Name of the retained copy of the PR comment, written beside <c>review.md</c> in the same per-PR notes
+    /// dir. Authored by the commit gate, not by this class — the body is composed at the post call site — but
+    /// named here so the file and the "Files this round wrote" line that advertises it cannot disagree.
+    /// </summary>
+    internal const string PostedCommentFileName = "pr_comment.md";
+
     private readonly IReviewAgentTranscriptSource? _transcripts;
     private readonly ILogger _logger;
+
+    /// <summary>
+    /// Failing tool results seen across every transcript this build read — the lead's and each specialist's.
+    /// An instance field because it is a per-REVIEW total and the builder is constructed once per review;
+    /// reported once from <see cref="BuildAsync"/> rather than per agent, because a number that arrives as
+    /// routine per-agent chatter is filtered out, which is the same blindness in a new costume.
+    /// </summary>
+    private FailedToolResults _failedToolResults;
 
     public ReviewNotesArtifactBuilder(IReviewAgentTranscriptSource? transcripts, ILogger logger)
     {
@@ -246,13 +266,21 @@ internal sealed class ReviewNotesArtifactBuilder
     /// Produces the round's artifacts, relative to <paramref name="notesRelPath"/> (the lease's per-PR notes
     /// dir — the only path the commit stages). Always returns at least the context file. Never throws for a
     /// transcript-side failure; the returned files record it instead.
+    /// <para>
+    /// <paramref name="postedComment"/> says whether the commit gate is also writing
+    /// <see cref="PostedCommentFileName"/> this round. Display-only — it decides one line of the file inventory,
+    /// and the file itself is written by the gate. False when the review produced no comment to post (the
+    /// no-new-findings sentinel, or a configuration with no host-side post), which is exactly when that file is
+    /// legitimately absent and the inventory must not advertise it.
+    /// </para>
     /// </summary>
     public async Task<IReadOnlyList<ReviewArtifactFile>> BuildAsync(
         ReviewRun run,
         RepoIdentity repo,
         string notesRelPath,
         ReviewNotesArtifactContext context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool postedComment = false)
     {
         ArgumentNullException.ThrowIfNull(run);
         ArgumentNullException.ThrowIfNull(context);
@@ -260,7 +288,7 @@ internal sealed class ReviewNotesArtifactBuilder
         var round = context.ReviewRound.ToString("D2", CultureInfo.InvariantCulture);
         var lead = await BuildLeadFindingsAsync(run, round, context, cancellationToken).ConfigureAwait(false);
         var findings = await BuildFindingsAsync(run, round, context, cancellationToken).ConfigureAwait(false);
-        var contextFile = BuildContextFile(run, repo, round, context, lead, findings);
+        var contextFile = BuildContextFile(run, repo, round, context, lead, findings, postedComment);
 
         List<ReviewArtifactFile> files =
         [
@@ -273,6 +301,26 @@ internal sealed class ReviewNotesArtifactBuilder
             "Run {RunId}: daemon authored {Count} notes artifact(s) for round {Round} "
                 + "({AgentCount} reviewer transcript(s), {FailureCount} unreadable).",
             run.Id, files.Count, round, findings.Count, findings.Count(f => !f.TranscriptRead) + (lead.TranscriptRead ? 0 : 1));
+
+        // What the review's TOOLS reported, as against what the review said about them. Logged on every
+        // build including the clean one, because the question this answers is a rate — "is this zero, and is
+        // it rising?" — and a line that only appears when something is wrong makes the healthy denominator
+        // unobtainable. It also makes the zero itself meaningful: a review whose tools genuinely never failed
+        // and a review whose transcripts could not be read both produce no failures, and only the presence of
+        // this line with a transcript count beside it tells them apart.
+        //
+        // Information, not Warning, and for a reason that has already been paid for once. These failures are
+        // routine at the tool layer and mostly benign — a speculative read of a path that may not exist is a
+        // normal thing for an agent to do — so a warning here would fire on nearly every review and be
+        // filtered inside a week, at which point it protects nothing. What is NOT routine is the daemon
+        // having no idea how many there were, which is the state this ends.
+        var failed = _failedToolResults;
+        _logger.LogInformation(
+            "Run {RunId}: round {Round} tool results reported {FailedToolResults} failure(s) across the "
+                + "transcripts read — {NotFoundCount} not-found, {DeniedCount} denied, "
+                + "{TimeoutCount} timeout, {ErrorCount} error. A review body that mentions none of these "
+                + "did not necessarily notice them.",
+            run.Id, round, failed.Total, failed.NotFound, failed.Denied, failed.Timeout, failed.Error);
 
         return files;
     }
@@ -318,7 +366,8 @@ internal sealed class ReviewNotesArtifactBuilder
             context,
             Label,
             static (source, threadId, ct) => source.GetRootTranscriptAsync(threadId, ct),
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            reportTurnCount: true).ConfigureAwait(false);
 
         return new FindingsArtifact($"PR_Findings_{round}_00_lead-reviewer.md", header.ToString(), Label, read);
     }
@@ -421,7 +470,8 @@ internal sealed class ReviewNotesArtifactBuilder
             CancellationToken,
             Task<IReadOnlyList<ReviewAgentTranscriptEntry>>
         > fetch,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool reportTurnCount = false)
     {
         if (_transcripts is null || string.IsNullOrWhiteSpace(context.HostedThreadId))
         {
@@ -454,9 +504,65 @@ internal sealed class ReviewNotesArtifactBuilder
             return false;
         }
 
-        AppendRetainedEntries(header, entries);
+        var retention = AppendRetainedEntries(header, entries);
+
+        // Counted BEFORE the artifact drops the rows it reads. AppendRetainedEntries discards tool traffic —
+        // correctly, those files record conclusions and not lookups — so this is the last moment the daemon
+        // sees what the tools actually returned.
+        _failedToolResults += CountFailedToolResults(entries);
+
+        // Reported for the LEAD only, and on every read including the healthy one, because the count is the
+        // only thing that distinguishes a lead reviewer that said nothing between its two daemon-driven turns
+        // from one that said three things the daemon never saw. Both look identical in every other record:
+        // those turns run on the host's initiative, so they never pass through the agent seam, and the host's
+        // own copy is deleted at DeepLinkRetentionHours. Logging this only when something was DROPPED would
+        // answer "did the budget bite?" while leaving "how much was there?" unanswerable.
+        //
+        // Lead-only is deliberate. This method also runs once per specialist, so an unconditional line here
+        // would be six on a five-delegate review — and a count that arrives as routine per-agent chatter gets
+        // filtered out, which is the same blindness in a new costume. The undriven-turn question is about the
+        // ROOT conversation anyway: a specialist's thread has no daemon-driven turns to compare against.
+        if (reportTurnCount)
+        {
+            _logger.LogInformation(
+                "Run {RunId}: {Label} transcript held {OwnTurns} assistant turn(s) of {Entries} message(s); "
+                    + "{Written} retained, {Omitted} dropped for budget.",
+                run.Id,
+                label,
+                retention.OwnTurnsWritten + retention.OwnTurnsOmitted,
+                entries.Count,
+                retention.OwnTurnsWritten,
+                retention.OwnTurnsOmitted);
+        }
+
+        if (retention.OwnTurnsOmitted > 0)
+        {
+            // The one condition that must never be inferred from a file nobody opens. Everything else this
+            // method drops is context the daemon can reproduce; an omitted OWN turn is the agent's analysis,
+            // and losing it silently is the exact failure this class exists to end.
+            _logger.LogWarning(
+                "Run {RunId}: {Omitted} of {Total} of {Label}'s own turn(s) did not fit the notes artifact "
+                    + "budget and were dropped — this agent's conclusions are only partly recorded.",
+                run.Id, retention.OwnTurnsOmitted, retention.OwnTurnsWritten + retention.OwnTurnsOmitted, label);
+        }
+
         return true;
     }
+
+    /// <summary>
+    /// What one call to <see cref="AppendRetainedEntries"/> kept of the agent's <i>own</i> answers.
+    /// <para>
+    /// Only the own-turn counts are reported back. Omitted context is disclosed in the file and nowhere else,
+    /// deliberately: it is material the daemon can reproduce, it is routine on any real review, and an
+    /// operator alarm that fires routinely is tuned out within a week. An omitted own turn is the agent's
+    /// analysis, which is a defect and is escalated. Collapsing the two into one "omitted" number is how a
+    /// dropped conclusion read like a tidy budget trim for 138 consecutive runs.
+    /// </para>
+    /// </summary>
+    private readonly record struct RetainedTranscript(int OwnTurnsWritten, int OwnTurnsOmitted);
+
+    /// <summary>The transcript role whose entries are the agent's own output rather than what it was handed.</summary>
+    private const string OwnTurnRole = "assistant";
 
     /// <summary>
     /// Writes the entries worth keeping, then states plainly what it left out.
@@ -466,13 +572,37 @@ internal sealed class ReviewNotesArtifactBuilder
     /// place. A reader must be able to tell "this reviewer said little" apart from "the daemon dropped
     /// most of it".
     /// </para>
+    /// <para>
+    /// <b>Two tiers, and the split is the whole point.</b> Selection used to be a single chronological walk
+    /// that stopped at the first entry which overran the budget. Transcript order is fixed — the brief the
+    /// daemon sent, then the delegates' completion notices, then the agent's own answers — so the agent's
+    /// conclusions were structurally last and structurally the first thing cut. Measured over 42 live
+    /// artifacts, 6 held <i>no</i> assistant message at all and 5 more held one of two; on nova-5500188 the
+    /// daemon's own 6,071-char brief took 51% of the budget before a single conclusion was written.
+    /// </para>
+    /// <para>
+    /// So the agent's own turns are admitted FIRST and the remaining budget is filled with everything else.
+    /// Context is admitted skip-and-continue rather than stop-at-first-overflow, so one oversized entry (the
+    /// brief, always) no longer shuts out the smaller ones behind it. Output stays chronological; only the
+    /// <i>selection</i> is tiered, because a reader needs the conversation in the order it happened.
+    /// </para>
+    /// <para>
+    /// Deprioritising the delegates' completion notices is safe, and was measured rather than assumed: across
+    /// 43 live PRs the per-delegate <c>PR_Findings_*</c> files are always a superset of the notices in the
+    /// lead's transcript (77 files against 41 notices, zero PRs the other way), and 90–96% of a notice's
+    /// substantive lines appear verbatim in its own delegate's file. What is NOT safe — and is deliberately
+    /// not done — is skipping every <c>User</c>-role entry: the notices carry that role, so a blanket role
+    /// filter would trade this silent drop for a new one.
+    /// </para>
     /// </summary>
-    private static void AppendRetainedEntries(StringBuilder header, IReadOnlyList<ReviewAgentTranscriptEntry> entries)
+    private static RetainedTranscript AppendRetainedEntries(
+        StringBuilder header,
+        IReadOnlyList<ReviewAgentTranscriptEntry> entries)
     {
         if (entries.Count == 0)
         {
             header.AppendLine("_The review host returned no messages for this agent._");
-            return;
+            return default;
         }
 
         var retained = entries.Where(IsFindingsBearing).ToArray();
@@ -483,38 +613,104 @@ internal sealed class ReviewNotesArtifactBuilder
                 .Append("_All ").Append(entries.Count.ToString(CultureInfo.InvariantCulture))
                 .AppendLine(" of this agent's messages were tool traffic, token accounting, or empty")
                 .AppendLine("payloads — it produced no prose of its own._");
-            return;
+            return default;
         }
 
+        // Measured at the widest ordinal any entry could be given, so a block never costs more at write time
+        // than it did at selection time and the budget cannot be overrun by a digit.
+        var blocks = retained.Select(e => RenderEntry(e, retained.Length)).ToArray();
+
+        // The budget bounds the TRANSCRIPT, not the daemon-authored fact table above it: that header is fixed
+        // size, is the same on every artifact, and is not what one verbose reviewer can inflate.
         var budget = UntrustedTranscriptText.MaxArtifactChars;
-        var written = 0;
-        foreach (var entry in retained)
+        var admitted = new bool[retained.Length];
+        var used = 0;
+        var ownWritten = 0;
+        var ownOmitted = 0;
+        var contextOmitted = 0;
+
+        // Tier 1 — the agent's own answers. One entry can never exhaust the budget on its own
+        // (MaxEntryChars is half MaxArtifactChars, and Fence enforces it), so the first own turn always
+        // fits and a findings file can never come out with the prompt but none of the answer.
+        // ReviewNotesArtifactBuilderTests pins that relationship between the two constants.
+        //
+        // CHRONOLOGICAL, and deliberately so — do NOT "fix" this to newest-first. On overflow the turns
+        // that drop are the LAST ones, which means the SYNTHESIS goes first while the earlier mid-flight
+        // replies survive. That reads backwards until you count the copies: the synthesis is also written
+        // verbatim to review.md in this same notes dir, while the mid-flight turns the daemon never drove
+        // have no other copy anywhere — the hosted conversation that held them is discarded at
+        // DeepLinkRetentionHours. Never spend a unique copy to protect a redundant one.
+        //
+        // The headroom is thin and the number is worth knowing: the largest real review to date renders
+        // 8,897 chars of assistant prose against this 12,000 budget, so a fan-out with two more mid-flight
+        // replies reaches it. Acceptable only because the failure is loud — ownOmitted > 0 and
+        // AppendTranscriptAsync warns. UndrivenTurnRetentionTests pins both halves.
+        for (var i = 0; i < retained.Length; i++)
         {
-            if (header.Length >= budget)
+            if (!IsOwnTurn(retained[i]))
             {
-                header
-                    .AppendLine()
-                    .Append("_[daemon: artifact size budget reached — ")
-                    .Append((retained.Length - written).ToString(CultureInfo.InvariantCulture))
-                    .AppendLine(" further message(s) omitted]_");
-                break;
+                continue;
             }
 
-            written++;
-            header
-                .Append("### ").Append(written.ToString(CultureInfo.InvariantCulture)).Append(". ")
-                .Append(UntrustedTranscriptText.Inline(entry.Role, maxChars: 24))
-                .Append(" · ").Append(UntrustedTranscriptText.Inline(entry.MessageType, maxChars: 40));
-            if (entry.TimestampUtc is { } ts)
+            if (used + blocks[i].Length > budget)
             {
-                header.Append(" · ").Append(ts.ToString("u", CultureInfo.InvariantCulture));
+                ownOmitted++;
+                continue;
             }
 
+            admitted[i] = true;
+            used += blocks[i].Length;
+            ownWritten++;
+        }
+
+        // Tier 2 — what the agent was handed: the review brief and the delegates' completion notices.
+        for (var i = 0; i < retained.Length; i++)
+        {
+            if (admitted[i] || IsOwnTurn(retained[i]))
+            {
+                continue;
+            }
+
+            if (used + blocks[i].Length > budget)
+            {
+                contextOmitted++;
+                continue;
+            }
+
+            admitted[i] = true;
+            used += blocks[i].Length;
+        }
+
+        var written = 0;
+        for (var i = 0; i < retained.Length; i++)
+        {
+            if (admitted[i])
+            {
+                header.Append(RenderEntry(retained[i], ++written));
+            }
+        }
+
+        if (ownOmitted > 0)
+        {
             header
                 .AppendLine()
+                .Append("_[daemon: artifact size budget reached — ")
+                .Append(ownOmitted.ToString(CultureInfo.InvariantCulture))
+                .Append(" of this agent's OWN ")
+                .Append((ownWritten + ownOmitted).ToString(CultureInfo.InvariantCulture))
+                .AppendLine(" turn(s) omitted. Its conclusions are only partly recorded here; the")
+                .AppendLine("authoritative review body is `review.md`]_");
+        }
+
+        if (contextOmitted > 0)
+        {
+            header
                 .AppendLine()
-                .AppendLine(UntrustedTranscriptText.Fence(entry.Body))
-                .AppendLine();
+                .Append("_[daemon: artifact size budget reached — ")
+                .Append(contextOmitted.ToString(CultureInfo.InvariantCulture))
+                .AppendLine(" further context message(s) omitted (the review brief the daemon sent, and")
+                .AppendLine("delegate completion notices). This agent's own turns were kept ahead of them,")
+                .AppendLine("and each delegate's findings file carries its result in full]_");
         }
 
         if (dropped > 0)
@@ -526,6 +722,40 @@ internal sealed class ReviewNotesArtifactBuilder
                 .AppendLine(" message(s) omitted as tool traffic, token accounting, or empty payloads —")
                 .AppendLine("this file keeps what the reviewer concluded, not how it looked things up]_");
         }
+
+        return new RetainedTranscript(ownWritten, ownOmitted);
+    }
+
+    /// <summary>
+    /// Whether this row is the agent's own output rather than something it was handed. Compared
+    /// case-insensitively because the role is a raw string off the host's persisted message, not an enum.
+    /// </summary>
+    private static bool IsOwnTurn(ReviewAgentTranscriptEntry entry) =>
+        string.Equals(entry.Role, OwnTurnRole, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// One transcript entry as it appears in the file: a numbered heading carrying role, message type and
+    /// timestamp, then the body fenced and sanitized. Extracted so the same bytes are used to price an entry
+    /// during selection and to write it afterwards — a budget computed against different text than the one
+    /// emitted is not a budget.
+    /// </summary>
+    private static string RenderEntry(ReviewAgentTranscriptEntry entry, int ordinal)
+    {
+        var block = new StringBuilder()
+            .Append("### ").Append(ordinal.ToString(CultureInfo.InvariantCulture)).Append(". ")
+            .Append(UntrustedTranscriptText.Inline(entry.Role, maxChars: 24))
+            .Append(" · ").Append(UntrustedTranscriptText.Inline(entry.MessageType, maxChars: 40));
+        if (entry.TimestampUtc is { } ts)
+        {
+            block.Append(" · ").Append(ts.ToString("u", CultureInfo.InvariantCulture));
+        }
+
+        return block
+            .AppendLine()
+            .AppendLine()
+            .AppendLine(UntrustedTranscriptText.Fence(entry.Body))
+            .AppendLine()
+            .ToString();
     }
 
     /// <summary>
@@ -552,10 +782,92 @@ internal sealed class ReviewNotesArtifactBuilder
         }
 
         var type = entry.MessageType;
-        return !type.Contains("ToolCall", StringComparison.OrdinalIgnoreCase)
-            && !type.Contains("ToolsCall", StringComparison.OrdinalIgnoreCase)
+        return !IsToolTraffic(type)
             && !type.Contains("Usage", StringComparison.OrdinalIgnoreCase)
             && !type.Contains("Reasoning", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Whether this row is a tool call or its result rather than anything an agent said. Factored out of
+    /// <see cref="IsFindingsBearing"/> because <see cref="CountFailedToolResults"/> reads exactly the rows
+    /// that method throws away, and the two must not disagree about which those are — a drift would leave the
+    /// counter measuring a different population than the one the artifacts omit.
+    /// </summary>
+    private static bool IsToolTraffic(string messageType) =>
+        messageType.Contains("ToolCall", StringComparison.OrdinalIgnoreCase)
+        || messageType.Contains("ToolsCall", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>How many of one agent's tool results came back reporting a failure, by class.</summary>
+    internal readonly record struct FailedToolResults(int NotFound, int Denied, int Timeout, int Error)
+    {
+        public int Total => NotFound + Denied + Timeout + Error;
+
+        public static FailedToolResults operator +(FailedToolResults a, FailedToolResults b) =>
+            new(a.NotFound + b.NotFound, a.Denied + b.Denied, a.Timeout + b.Timeout, a.Error + b.Error);
+    }
+
+    /// <summary>
+    /// Counts the tool results in one agent's transcript that reported a failure the agent may never have
+    /// mentioned.
+    /// <para>
+    /// This is the daemon's only independent view of what a review's tools actually returned. It exists
+    /// because the reviewer's own account cannot be relied on: 167 failed reads of one reference document
+    /// across 82 review threads produced no mention in any review body, because a sandbox Read of a missing
+    /// path returns a SUCCESSFUL tool result whose text happens to say the file is not there. The agent is
+    /// simply handed that text and moves on. Nothing between the tool and the review noticed.
+    /// </para>
+    /// <para>
+    /// Reads the rows <see cref="IsFindingsBearing"/> discards. Tool traffic is excluded from the artifacts
+    /// on purpose — those files record what the reviewer concluded, not how it looked things up — so this is
+    /// the last point at which the daemon sees the results at all, and after this they are gone.
+    /// </para>
+    /// <para>
+    /// <b>Built on the result TEXT, never on the error flag.</b> A counter reading <c>IsError</c> would have
+    /// returned zero for the entire population it exists to find and looked perfectly healthy — a green
+    /// instrument over the defect it was built to catch. The flag was false on all 289 of them.
+    /// </para>
+    /// <para>
+    /// <b>The classifier is shared, not copied.</b> <see cref="MultiTurnAgentLoop.ClassifyResult"/> is the
+    /// same one the agent loop logs with, and it has already had two defects that a second copy would still
+    /// carry: a successful <c>[Exit code: 0]</c> read as an error, and a marker matched deep inside content a
+    /// tool legitimately returned.
+    /// </para>
+    /// <para>
+    /// <b>Known imprecision, stated rather than papered over.</b> The unit here is a MESSAGE, not a result: a
+    /// transcript row arrives as the raw persisted JSON of a <c>ToolsCallResultMessage</c>, which can carry
+    /// more than one result, and the row is classified once. So a message holding a failure and a success
+    /// counts as one failure, and a message holding two failures counts as one. The number is therefore a
+    /// floor on failing messages, not a count of failing calls — which is enough for its purpose (is this
+    /// rate zero, and is it rising?) and not enough for any purpose that needs the exact figure.
+    /// </para>
+    /// </summary>
+    internal static FailedToolResults CountFailedToolResults(IReadOnlyList<ReviewAgentTranscriptEntry> entries)
+    {
+        var notFound = 0;
+        var denied = 0;
+        var timeout = 0;
+        var error = 0;
+        foreach (var entry in entries)
+        {
+            if (!IsToolTraffic(entry.MessageType) || string.IsNullOrWhiteSpace(entry.Body))
+            {
+                continue;
+            }
+
+            // isError/isDeferred are false because the transcript does not carry either flag — and on the
+            // population this exists to see, isError was false at the source anyway. That is the whole defect:
+            // the handler reported success and the text reported failure.
+            switch (MultiTurnAgentLoop.ClassifyResult(entry.Body, isError: false, isDeferred: false))
+            {
+                case "not-found": notFound++; break;
+                case "denied": denied++; break;
+                case "timeout": timeout++; break;
+                case "error": error++; break;
+                default: break;
+            }
+        }
+
+        return new FailedToolResults(notFound, denied, timeout, error);
     }
 
     /// <summary>
@@ -569,7 +881,8 @@ internal sealed class ReviewNotesArtifactBuilder
         string round,
         ReviewNotesArtifactContext context,
         FindingsArtifact lead,
-        IReadOnlyList<FindingsArtifact> findings)
+        IReadOnlyList<FindingsArtifact> findings,
+        bool postedComment)
     {
         var builder = new StringBuilder()
             .Append("# PR review context — round ").AppendLine(round)
@@ -644,7 +957,16 @@ internal sealed class ReviewNotesArtifactBuilder
             .AppendLine("means the commit gate dropped it — that is a daemon bug, not a quiet reviewer.")
             .AppendLine()
             .AppendLine($"- `review.md` — the authoritative review body")
-            .AppendLine($"- `PR_Context_{round}.md` — this file")
+            .AppendLine($"- `PR_Context_{round}.md` — this file");
+        if (postedComment)
+        {
+            builder.AppendLine(
+                $"- `{PostedCommentFileName}` — the PR comment itself, byte for byte: `review.md` with the bot-name "
+                    + "prefix and the deep-link line the reader would have seen. Present whether or not posting "
+                    + "was enabled, so a collect-only run can be read as the dry run it is.");
+        }
+
+        builder
             .Append("- `").Append(lead.FileName).Append("` — ").Append(lead.Label)
             .AppendLine(lead.TranscriptRead ? string.Empty : " (transcript unavailable — see the file)");
         foreach (var artifact in findings)

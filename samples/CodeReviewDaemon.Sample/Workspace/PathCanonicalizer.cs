@@ -118,4 +118,44 @@ internal static class PathCanonicalizer
         ArgumentNullException.ThrowIfNull(value);
         return value.Normalize(NormalizationForm.FormC).ToLower(CultureInfo.InvariantCulture);
     }
+
+    /// <summary>
+    /// <see cref="NormalizeForComparison"/> for a URL <b>path</b>: percent-escapes are decoded first, so
+    /// a path that must carry an escape to be a legal URL still compares equal to the same path written
+    /// literally. An Azure DevOps project whose name contains a space is the case that forces this — a
+    /// <c>.gitmodules</c> URL can only spell <c>O365 Core</c> as <c>O365%20Core</c>, while the allow-list
+    /// rule is built from the operator's configured project name, which carries the real space.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Callers MUST run their <c>..</c> rejection on the RESULT of this method, never on the raw
+    /// input.</b> Decoding is precisely what turns <c>%2e%2e</c> into <c>..</c>, so a traversal check
+    /// performed before the decode inspects a string in which the traversal is still hidden. Every use
+    /// site in <see cref="OperationPolicy"/> is ordered decode-then-check for that reason.
+    /// </para>
+    /// <para>
+    /// Decoding is applied ONCE. A doubly-encoded <c>%252e%252e</c> therefore decodes to the literal
+    /// text <c>%2e%2e</c> and not to <c>..</c>, which is the fail-closed outcome: it matches no allow
+    /// rule. Malformed escapes are left as written rather than throwing, so an unparseable path simply
+    /// fails to match instead of faulting the policy decision.
+    /// </para>
+    /// </remarks>
+    public static string NormalizePathForComparison(string value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+
+        string decoded;
+        try
+        {
+            decoded = Uri.UnescapeDataString(value);
+        }
+        catch (UriFormatException)
+        {
+            // A malformed escape is not a decodable path; compare what was actually written. It will not
+            // match an allow rule built from a real project name, which is the fail-closed answer.
+            decoded = value;
+        }
+
+        return NormalizeForComparison(decoded);
+    }
 }

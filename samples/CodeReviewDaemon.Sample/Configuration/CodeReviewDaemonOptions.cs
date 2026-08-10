@@ -12,6 +12,64 @@ internal sealed class CodeReviewDaemonOptions
     /// <summary>Configuration section name: <c>CodeReviewDaemon</c>.</summary>
     public const string SectionName = "CodeReviewDaemon";
 
+    /// <summary>Default for <see cref="Marketplaces"/>.</summary>
+    public static readonly IReadOnlyList<string> DefaultMarketplaces = ["gb-plugins", "superpowers"];
+
+    /// <summary>Default for <see cref="SubAgentMarketplaces"/>.</summary>
+    public static readonly IReadOnlyList<string> DefaultSubAgentMarketplaces = ["gb-plugins"];
+
+    /// <summary>Default for <see cref="ReadOnlyToolAllowList"/>.</summary>
+    public static readonly IReadOnlyList<string> DefaultReadOnlyToolAllowList =
+        ["Read", "Grep", "Glob", "Skill"];
+
+    /// <summary>Default for <see cref="WritableToolAllowList"/>.</summary>
+    public static readonly IReadOnlyList<string> DefaultWritableToolAllowList = ["Write", "Edit", "Bash"];
+
+    /// <summary>
+    /// Binds the options from <paramref name="section"/>, working around the configuration binder's
+    /// treatment of collections.
+    /// </summary>
+    /// <remarks>
+    /// <c>Get&lt;T&gt;()</c> binds a JSON array onto a collection property by KEEPING whatever the property
+    /// already holds and appending the configured entries. For every property here whose initializer is
+    /// non-empty, that quietly turns an operator's list into the default plus their list. It is not
+    /// hypothetical: the nova profile asks for <c>SubAgentMarketplaces: ["gb"]</c> and the daemon probed
+    /// <c>[gb-plugins,gb]</c>, which a gateway publishing no <c>gb-plugins</c> alias answers with 400 — so
+    /// under <see cref="RequireSkillSupport"/> skill support went unverified on every single run, which is
+    /// the exact silent-degradation that flag exists to prevent.
+    /// <para>
+    /// The fix is to seed each of those properties with an EMPTY list whenever the section actually states
+    /// the key, so the binder's append lands on nothing and the operator's list survives verbatim; when the
+    /// key is absent the documented default is seeded instead and the binder leaves it alone. Both branches
+    /// go through one <c>Bind</c>, so every other property binds exactly as it did before.
+    /// </para>
+    /// <para>
+    /// Only the four non-empty-default lists need seeding. A property defaulting to <c>[]</c> already has
+    /// nothing to append to, and appending to nothing is what replacement looks like.
+    /// </para>
+    /// </remarks>
+    public static CodeReviewDaemonOptions Bind(IConfiguration section)
+    {
+        ArgumentNullException.ThrowIfNull(section);
+
+        var options = new CodeReviewDaemonOptions
+        {
+            Marketplaces = SeedForBinding(section, nameof(Marketplaces), DefaultMarketplaces),
+            SubAgentMarketplaces =
+                SeedForBinding(section, nameof(SubAgentMarketplaces), DefaultSubAgentMarketplaces),
+            ReadOnlyToolAllowList =
+                SeedForBinding(section, nameof(ReadOnlyToolAllowList), DefaultReadOnlyToolAllowList),
+            WritableToolAllowList =
+                SeedForBinding(section, nameof(WritableToolAllowList), DefaultWritableToolAllowList),
+        };
+        section.Bind(options);
+        return options;
+
+        static IReadOnlyList<string> SeedForBinding(
+            IConfiguration section, string key, IReadOnlyList<string> fallback) =>
+            section.GetSection(key).Exists() ? [] : fallback;
+    }
+
     /// <summary>
     /// When <c>false</c> (default) the daemon is <b>collect-only</b>: review output is persisted but no
     /// comments are posted to the PR. Posting to a live PR is an outward-facing action, so it stays off
@@ -241,8 +299,33 @@ internal sealed class CodeReviewDaemonOptions
     /// Maximum number of provider pages a single poll fetches before stopping (PR #121 M5). Bounds the
     /// work one poll cycle does when a repo has many open PRs; the next poll resumes from the advanced
     /// cursor. Default 10.
+    /// <para>
+    /// This was declared with no readers at all until 2026-08-09 — both providers carried their own
+    /// <c>private const int MaxPages = 10</c>, so the knob documented a control that did not exist. It is
+    /// now the value both of them use.
+    /// </para>
     /// </summary>
     public int MaxPagesPerPoll { get; init; } = 10;
+
+    /// <summary>
+    /// How many pull requests a single provider page requests.
+    /// <para>
+    /// This exists because leaving it to the server was measurably losing PRs. The ADO request set no
+    /// <c>$top</c> at all, so it took ADO's documented default of 101 — and <c>Weve_DA/Nova</c> had
+    /// <b>707 active pull requests</b> when this was measured (2026-08-09, read-only <c>az repos pr
+    /// list</c>; the daemon had seen 200 distinct <c>pr_id</c> in its entire life). The recency filter
+    /// cannot rescue that, because it only ever sees what the page returned: roughly 600 active PRs were
+    /// never enumerated, so an old PR that had just been pushed to was invisible whenever a hundred newer
+    /// PRs existed — precisely the case <c>ResolveRecencySignalsAsync</c> exists to catch.
+    /// </para>
+    /// <para>
+    /// 200 rather than ADO's 1000 maximum: every PR older than the recency window costs one bounded
+    /// <c>/pushes</c> lookup, so page size trades round trips against how much work one page commits to.
+    /// Combined with <see cref="MaxPagesPerPoll"/> the default covers 2,000 open PRs per repo per poll.
+    /// GitHub's own cap is 100 per page and is clamped to it.
+    /// </para>
+    /// </summary>
+    public int MaxPrsPerPage { get; init; } = 200;
 
     /// <summary>
     /// When &gt; 0, the poller only reviews PRs whose recency signal falls within this many days: GitHub
@@ -270,7 +353,7 @@ internal sealed class CodeReviewDaemonOptions
     public string? WorkspaceHostRoot { get; init; }
 
     /// <summary>Plugin-marketplace aliases enabled on the per-run session. Default <c>gb-plugins</c>, <c>superpowers</c>.</summary>
-    public IReadOnlyList<string> Marketplaces { get; init; } = ["gb-plugins", "superpowers"];
+    public IReadOnlyList<string> Marketplaces { get; init; } = DefaultMarketplaces;
 
     /// <summary>
     /// Marketplace aliases whose discovered sub-agents are exposed to the review agent as spawnable
@@ -279,21 +362,27 @@ internal sealed class CodeReviewDaemonOptions
     /// default <c>gb-plugins</c> exposes EVERY plugin's agents in that marketplace (not just
     /// <c>code-reviewer</c>). An empty list ⇒ expose ALL discovered sub-agents regardless of marketplace.
     /// </summary>
-    public IReadOnlyList<string> SubAgentMarketplaces { get; init; } = ["gb-plugins"];
+    public IReadOnlyList<string> SubAgentMarketplaces { get; init; } = DefaultSubAgentMarketplaces;
 
     /// <summary>
     /// The read-only MCP tool names the review agent may call. The daemon owns all writes, so this must
     /// never include <c>Write</c>/<c>Edit</c>. Default <c>Read</c>/<c>Grep</c>/<c>Glob</c>/<c>Skill</c>.
     /// </summary>
-    public IReadOnlyList<string> ReadOnlyToolAllowList { get; init; } = ["Read", "Grep", "Glob", "Skill"];
+    public IReadOnlyList<string> ReadOnlyToolAllowList { get; init; } = DefaultReadOnlyToolAllowList;
 
     /// <summary>
-    /// GitHub <c>owner/repo</c> paths of the <c>AchieveAiReviews</c> store's sibling-repo submodules the
-    /// tool-assisted review may additionally read for cross-repo context, beyond the reviewed repo and the
-    /// always-allowed <c>Contracts/</c> layer (Task 16). Empty (default) means no sibling co-location.
-    /// These are only added to the run's submodule allow-list when the confidentiality gate
-    /// (<c>DaemonReviewStageExecutor.AllowsCrossRepoCoLocation</c>, Task 17) permits it for the run — a
-    /// fork or public-repo PR never gets them, regardless of this configuration.
+    /// The review store's sibling-repo submodules the tool-assisted review may additionally read for cross-repo
+    /// context, beyond the reviewed repo and the always-allowed <c>Contracts/</c> layer (Task 16). Empty
+    /// (default) means no sibling co-location. These are only added to the run's submodule allow-list when the
+    /// confidentiality gate (<c>DaemonReviewStageExecutor.AllowsCrossRepoCoLocation</c>, Task 17) permits it for
+    /// the run — a fork or public-repo PR never gets them, regardless of this configuration.
+    /// <para>
+    /// Spelling is provider-specific. A GitHub sibling is the full <c>owner/repo</c> path. An Azure DevOps
+    /// sibling is a bare repo name, resolved under the same org and project as the repo being reviewed — or
+    /// <c>project/repo</c> when the sibling lives in a <b>different project</b> of the same org, which a store
+    /// spanning projects requires (the org is always the reviewed repo's, since a store's submodules are
+    /// same-org by construction).
+    /// </para>
     /// </summary>
     public IReadOnlyList<string> CrossRepoSiblings { get; init; } = [];
 
@@ -311,9 +400,9 @@ internal sealed class CodeReviewDaemonOptions
     /// adds — or repoints an existing path to — any other name/host is still denied.
     /// </para>
     /// <para>
-    /// Names are matched against the parsed request URL path, which is NOT URL-decoded, so a URL-encoded
-    /// segment must be listed exactly as it appears in the URL (e.g. <c>Microsoft%20Orleans</c>, not
-    /// <c>Microsoft Orleans</c>).
+    /// Names are matched against the request URL path after a single percent-decode of both sides, so a
+    /// segment that must be escaped to be a legal URL may be listed either way: <c>Microsoft%20Orleans</c> and
+    /// <c>Microsoft Orleans</c> both match the URL <c>.../_git/Microsoft%20Orleans</c>.
     /// </para>
     /// </summary>
     public IReadOnlyList<string> ReviewedRepoSubmodules { get; init; } = [];
@@ -364,12 +453,29 @@ internal sealed class CodeReviewDaemonOptions
     /// <summary>Ceiling for the exponential retry backoff. Default 900s (15m).</summary>
     public int RetryBackoffCapSeconds { get; init; } = 900;
 
+    /// <summary>
+    /// How often each periodic maintenance sweep (PR-lifecycle, deep-link retention) starts a new pass,
+    /// measured from the end of the previous one. Default 900s (15m) — deliberately far slower than the
+    /// 30s poll cadence, for two reasons.
+    /// <para>
+    /// Cost: the lifecycle sweep makes one provider lifecycle lookup per still-open reviewed PR, per pass.
+    /// At the 125 PRs currently watched, running it on the poll cadence would be roughly 250 provider calls
+    /// a minute — a rate-limit incident of its own making. At 15 minutes it is about eight a minute.
+    /// </para>
+    /// <para>
+    /// Value: the only latency this controls is merge → Knowledge Base extraction, and nothing waits on it.
+    /// An extracted lesson is read by LATER reviews of OTHER PRs, so arriving a quarter of an hour after the
+    /// merge costs nothing that a faster cadence would buy back.
+    /// </para>
+    /// </summary>
+    public int MaintenanceSweepIntervalSeconds { get; init; } = 900;
+
     /// <summary>When true, the reviewer gets scoped Write/Edit/Bash to take PR notes + do
     /// file-level diffs (code stays read-only; writes scoped to the PR notes dir + scratch).</summary>
     public bool EnableReviewerWrites { get; init; }
 
     /// <summary>Extra tool names granted when <see cref="EnableReviewerWrites"/> is on.</summary>
-    public IReadOnlyList<string> WritableToolAllowList { get; init; } = ["Write", "Edit", "Bash"];
+    public IReadOnlyList<string> WritableToolAllowList { get; init; } = DefaultWritableToolAllowList;
 
     /// <summary>Merge the persistent PR notes branch into the store default branch on PR close.</summary>
     public bool MergeNotesBranchOnClose { get; init; } = true;
@@ -377,7 +483,7 @@ internal sealed class CodeReviewDaemonOptions
     /// <summary>
     /// Display name the daemon presents as, both as the git commit identity's <c>user.name</c> for
     /// retention commits (see <see cref="Workspace.Git.GitRunner"/>; the commit <c>user.email</c> stays the
-    /// fixed <c>review-bot@achieveai.local</c> regardless of this setting) and as a <c>[BotName]</c> prefix
+    /// fixed <c>revobot@revobot.local</c> regardless of this setting) and as a <c>[BotName]</c> prefix
     /// on the body of every posted PR comment — the comment's actual author is a shared OAuth app or a
     /// person's token, so the prefix disambiguates that the content was authored by the bot on their
     /// behalf. Default <c>Revobot</c>; an operator may personalize it, e.g. <c>GB's Revobot</c>.
@@ -385,12 +491,21 @@ internal sealed class CodeReviewDaemonOptions
     public string BotName { get; init; } = "Revobot";
 
     /// <summary>
-    /// When <c>true</c>, the daemon drives each review through a running <b>LmStreaming.Sample</b> server
-    /// over the S2S REST API instead of the in-process <c>LiveReviewAgentLoopFactory</c>. This makes the
-    /// review a real LmStreaming-hosted conversation (parent loop + <c>code-reviewer:*</c> sub-agent tree)
-    /// that a human can open and judge via the deep-link appended to the posted comment. Default <c>false</c>
-    /// (in-process review, unchanged) — opt-in because it requires a reachable LmStreaming review host and a
-    /// shared sandbox gateway. Requires <see cref="LmStreamingBaseUrl"/> and <see cref="LmStreamingProviderId"/>.
+    /// Must be <c>true</c>. The daemon drives each review through a running <b>LmStreaming.Sample</b> server
+    /// over the S2S REST API, making the review a real LmStreaming-hosted conversation (parent loop +
+    /// <c>code-reviewer:*</c> sub-agent tree) that a human can open and judge via the deep-link appended to
+    /// the posted comment. Requires <see cref="LmStreamingBaseUrl"/> and <see cref="LmStreamingProviderId"/>.
+    /// <para>
+    /// This is a required setting whose absence is a startup failure, not a toggle with two supported modes.
+    /// The alternative it used to select — the in-process <c>LiveReviewAgentLoopFactory</c> — has been
+    /// REMOVED, so <c>Program.cs</c> throws on <c>false</c> rather than silently falling back to a path that
+    /// no longer exists. The property survives only because that refusal has to be able to read the value.
+    /// </para>
+    /// <para>
+    /// The CLR default is <c>false</c>, so <c>appsettings.json</c> alone cannot boot the daemon — it does not
+    /// set this key. Every shipped profile does: <c>achieveai</c>, <c>astra</c>, <c>mcqdb</c>, <c>nova</c>,
+    /// <c>s2s</c>.
+    /// </para>
     /// </summary>
     public bool UseS2SReviewAgent { get; init; }
 
@@ -467,6 +582,36 @@ internal sealed class CodeReviewDaemonOptions
     /// mid-transition (e.g. a child that finished and a grandchild about to be spawned in response).
     /// </summary>
     public int ReviewSubAgentBarrierQuietSeconds { get; init; } = 2;
+
+    /// <summary>
+    /// Whether the daemon is allowed to run git housekeeping — <c>repack</c>, <c>gc --auto</c>, and the
+    /// <c>gc.*</c> config writes — against the submodule object stores inside a review slot.
+    /// <b>Off, and it must stay off unless the operator turns it on deliberately.</b>
+    /// </summary>
+    /// <remarks>
+    /// This is NOT a performance toggle, and it is not off because the maintenance is unfinished or unsafe.
+    /// It is off because the owner of these machines instructed that local git packs not be touched, and
+    /// every one of those commands rewrites an object store in place, on disk, under a directory the daemon
+    /// does not own. Default-off is the requirement; treating it as a tuning knob to be flipped on for
+    /// throughput would break that instruction.
+    /// <para>
+    /// The cost of leaving it off is known and accepted: a submodule store accumulates roughly one pack per
+    /// review, and the deepening path adds a near-duplicate of the whole store per round. Measured live, one
+    /// store reached 50 packs and 30 GB, of which four packs held the same object set four times over. Git's
+    /// own defaults do not rescue this — <c>gc.autoPackLimit</c> defaults to 50, so git's implicit post-fetch
+    /// auto-gc had correctly decided there was nothing to do the entire time. Leaving the store on those
+    /// defaults is exactly the status quo being preserved.
+    /// </para>
+    /// <para>
+    /// Turning it on is safe from the daemon's side — see <c>ReviewSlotPreparer.CompactObjectStoreAsync</c>
+    /// for why the repack must carry <c>--keep-unreachable</c> (without it the PR's base commit, which only
+    /// <c>FETCH_HEAD</c> points at, is deleted outright) and <c>ConfigureObjectStoreGcAsync</c> for why
+    /// <c>gc.cruftPacks</c> must be set explicitly (before git 2.44 the default explodes unreachable objects
+    /// into loose files, and the sandbox image runs 2.39). Both were measured, not reasoned about. What the
+    /// flag governs is not whether that work is correct but whether it is ours to do.
+    /// </para>
+    /// </remarks>
+    public bool EnableObjectStoreMaintenance { get; init; }
 
     /// <summary>The resolved cross-repo store URL: <see cref="CrossRepoStoreUrl"/> when set, else
     /// <see cref="ReviewBotRepoUrl"/> (the review store and the ReviewBot retention repo are one repo).</summary>

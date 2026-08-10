@@ -511,4 +511,228 @@ public sealed class LmStreamingS2SClientTests
 
         await act.Should().ThrowAsync<InvalidOperationException>();
     }
+
+    /// <summary>
+    /// The review host must run with <c>AgentCollaboration__Enabled=true</c>, and the LmStreaming sample's
+    /// shipped DEFAULT is off — so the misconfiguration is the easy one to fall into and it is completely
+    /// silent. With collaboration off, the agent-transcript route 404s and
+    /// <c>ReviewNotesArtifactBuilder</c> writes every delegate's note as a ~750-byte stub reading "The daemon
+    /// could not read this transcript from the review host". Observed live on PRs 5501480 and 5501629: the
+    /// lead-reviewer note was full (the daemon owns that conversation directly) while all five delegate notes
+    /// were stubs. It is not retroactive either — the hierarchy rows a collaboration-off host persisted carry
+    /// no node record, so those PRs stay stubbed forever. Reviews complete, notes are written, everything
+    /// reads as success, and the sub-agents' reasoning is simply gone.
+    /// </summary>
+    [Fact]
+    public async Task EnsureAgentCollaborationAsync_throws_when_the_host_reports_collaboration_unavailable()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                req => req.RequestUri!.ToString().Contains("/transcript", StringComparison.Ordinal),
+                _ => new HttpResponseMessage(HttpStatusCode.NotFound)
+                {
+                    Content = new StringContent(
+                        "{\"error\":\"Agent collaboration is disabled.\",\"code\":\"collaboration_unavailable\"}"),
+                });
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "secret", "app-id", "app-key");
+
+        var act = () => client.EnsureAgentCollaborationAsync(CancellationToken.None);
+
+        var thrown = (await act.Should().ThrowAsync<ReviewHostContractException>()).Which;
+        thrown.Message.Should().Contain(
+            "AgentCollaboration",
+            "someone hitting this at 2am must be told the SETTING, not just that something is unavailable");
+        thrown.Message.Should().Contain(
+            "transcript",
+            "and the route, so the claim is checkable against the host without reading this source");
+        thrown.Message.Should().MatchRegex(
+            "(?i)stub|could not read|sub-agent",
+            "and the consequence — silently stubbed sub-agent notes is why this is worth failing startup over");
+    }
+
+    /// <summary>
+    /// The discriminator. <c>api/conversations/capabilities</c> cannot answer this question — probed against
+    /// the live host with collaboration ON it returns only schemaVersion/messageIdempotency/spawnSuppression
+    /// and says nothing about collaboration — so the transcript route itself is the probe, and the error CODE
+    /// is what separates the two 404s. <c>unknown_thread</c> means the route is live and merely does not know
+    /// this conversation, which is the expected answer for a thread id that was never real: collaboration is
+    /// on. Requiring no real conversation or agent is exactly what makes this usable at startup.
+    /// </summary>
+    [Fact]
+    public async Task EnsureAgentCollaborationAsync_passes_when_the_route_reports_an_unknown_thread()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                req => req.RequestUri!.ToString().Contains("/transcript", StringComparison.Ordinal),
+                _ => new HttpResponseMessage(HttpStatusCode.NotFound)
+                {
+                    Content = new StringContent(
+                        "{\"error\":\"Conversation 'thread-doesnotexist000' not found.\",\"code\":\"unknown_thread\"}"),
+                });
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "secret", "app-id", "app-key");
+
+        var act = () => client.EnsureAgentCollaborationAsync(CancellationToken.None);
+
+        await act.Should().NotThrowAsync(
+            "the route answered, so collaboration is on — a 404 for a thread that never existed is the "
+                + "CORRECT response and must not be read as the feature being off");
+    }
+
+    /// <summary>
+    /// Fail-open on everything else, and this is the load-bearing half. A startup assertion that trips on an
+    /// unrelated blip is worse than no assertion: it turns a transient hiccup into a daemon that will not
+    /// boot, and the first thing anyone does with an alarm that cries wolf is remove it. Only the specific
+    /// <c>collaboration_unavailable</c> code proves the feature is off; a 500, a timeout, an empty body or an
+    /// error envelope this daemon does not recognise prove nothing at all.
+    /// </summary>
+    [Theory]
+    [InlineData(HttpStatusCode.InternalServerError, "{\"code\":\"something_else\"}")]
+    [InlineData(HttpStatusCode.BadGateway, "")]
+    [InlineData(HttpStatusCode.NotFound, "not json at all")]
+    [InlineData(HttpStatusCode.OK, "[]")]
+    public async Task EnsureAgentCollaborationAsync_passes_on_anything_that_is_not_that_exact_code(
+        HttpStatusCode status, string body)
+    {
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                req => req.RequestUri!.ToString().Contains("/transcript", StringComparison.Ordinal),
+                _ => new HttpResponseMessage(status) { Content = new StringContent(body) });
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "secret", "app-id", "app-key");
+
+        var act = () => client.EnsureAgentCollaborationAsync(CancellationToken.None);
+
+        await act.Should().NotThrowAsync(
+            "none of these establishes that collaboration is off, and refusing to start the daemon over an "
+                + "ambiguous answer trades a silent defect for a loud false one");
+    }
+
+    /// <summary>
+    /// The timeout the theory above only CLAIMED to cover. Its remark lists "a timeout" among the answers that
+    /// prove nothing, but every case it actually runs is an HTTP status — so the one transport failure that
+    /// reaches this code as an exception rather than a response was never exercised, and it was the one that
+    /// broke.
+    /// <para>
+    /// <see cref="HttpClient"/> reports its own <see cref="HttpClient.Timeout"/> as a
+    /// <see cref="TaskCanceledException"/> — which derives from <see cref="OperationCanceledException"/> — with
+    /// an inner <see cref="TimeoutException"/> and the CALLER's token untouched. A fail-open filter written as
+    /// <c>when (ex is not OperationCanceledException)</c> therefore does not catch it, and a review host that
+    /// hangs rather than refusing the connection takes the whole daemon down at startup: 100 seconds of boot
+    /// latency followed by a raw cancellation stack that names neither the host nor the setting. Measured — 13
+    /// tests across the suite failed this way, every one of them a test that merely started the host.
+    /// </para>
+    /// <para>
+    /// A hung host is a real problem and it is not THIS problem. The whole point of the probe is that only
+    /// <c>collaboration_unavailable</c> is evidence.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task EnsureAgentCollaborationAsync_passes_when_the_request_times_out()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                req => req.RequestUri!.ToString().Contains("/transcript", StringComparison.Ordinal),
+                _ => throw new TaskCanceledException(
+                    "The request was canceled due to the configured HttpClient.Timeout of 100 seconds elapsing.",
+                    new TimeoutException("A task was canceled.")));
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "secret", "app-id", "app-key");
+
+        var act = () => client.EnsureAgentCollaborationAsync(CancellationToken.None);
+
+        await act.Should().NotThrowAsync(
+            "a host that hangs says nothing about whether collaboration is enabled, and a startup assertion "
+                + "that cannot tell a slow host from a misconfigured one is an assertion nobody will keep");
+    }
+
+    /// <summary>
+    /// The other half of the same filter, and the reason it cannot simply swallow every
+    /// <see cref="OperationCanceledException"/>: when the daemon is genuinely shutting down, the probe must
+    /// abandon rather than report a verdict it never obtained. The discriminator is the caller's token, not
+    /// the exception type — those are the same type and opposite situations.
+    /// </summary>
+    [Fact]
+    public async Task EnsureAgentCollaborationAsync_still_propagates_a_real_cancellation()
+    {
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                req => req.RequestUri!.ToString().Contains("/transcript", StringComparison.Ordinal),
+                _ => throw new TaskCanceledException("cancelled"));
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "secret", "app-id", "app-key");
+
+        var act = () => client.EnsureAgentCollaborationAsync(cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>(
+            "shutdown is not a passing preflight — swallowing it would report the host as verified when the "
+                + "probe never finished");
+    }
+
+    /// <summary>
+    /// The startup assertion cannot be the only detection point, because it deliberately fails OPEN: it gives
+    /// the host ten seconds and passes on anything it cannot establish. A daemon started alongside a review
+    /// host that is still coming up therefore boots with the setting unverified — and a host restarted later
+    /// is never re-checked at all. In both windows the regression is silent again.
+    /// <para>
+    /// This is the second net, and it runs when the host is definitely up: the live transcript read. Before
+    /// this, that path went through <c>EnsureSuccessStatusCode</c>, which reports
+    /// <c>404 (Not Found)</c> and DISCARDS the body — so the one field naming the cause never reached the log
+    /// or the notes artifact, and the operator saw only an opaque stub. That is exactly the symptom the
+    /// config comment described.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task GetAgentTranscriptAsync_names_the_setting_when_collaboration_is_disabled()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                req => req.RequestUri!.ToString().Contains("/transcript", StringComparison.Ordinal),
+                _ => new HttpResponseMessage(HttpStatusCode.NotFound)
+                {
+                    Content = new StringContent(
+                        "{\"error\":\"Agent collaboration is disabled.\",\"code\":\"collaboration_unavailable\"}"),
+                });
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "secret", "app-id", "app-key");
+
+        var act = () => client.GetAgentTranscriptAsync("thread-root", "agent-1", CancellationToken.None);
+
+        var thrown = (await act.Should().ThrowAsync<ReviewHostContractException>()).Which;
+        thrown.Message.Should().Contain(
+            "AgentCollaboration",
+            "the note this stub replaces is unreadable unless the message names the setting to change");
+        thrown.Message.Should().MatchRegex(
+            "(?i)startup",
+            "and it must say the startup check let this through, or the operator re-runs the check that "
+                + "already passed instead of looking at the host");
+    }
+
+    /// <summary>
+    /// And the ordinary failure keeps its ordinary shape. A transcript that 404s for any other reason — an
+    /// agent id the host does not know, a thread that has aged out — is not a misconfiguration, and dressing
+    /// it up as one would send whoever reads the notes artifact to restart a host that is running correctly.
+    /// </summary>
+    [Fact]
+    public async Task GetAgentTranscriptAsync_leaves_an_ordinary_404_alone()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                req => req.RequestUri!.ToString().Contains("/transcript", StringComparison.Ordinal),
+                _ => new HttpResponseMessage(HttpStatusCode.NotFound)
+                {
+                    Content = new StringContent("{\"error\":\"forbidden\",\"code\":\"unknown_target\"}"),
+                });
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "secret", "app-id", "app-key");
+
+        var act = () => client.GetAgentTranscriptAsync("thread-root", "nope", CancellationToken.None);
+
+        await act.Should().ThrowAsync<HttpRequestException>(
+            "only the collaboration code is evidence of the misconfiguration; every other 404 stays the "
+                + "transport failure it is");
+    }
 }

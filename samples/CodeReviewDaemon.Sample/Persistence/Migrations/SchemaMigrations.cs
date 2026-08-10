@@ -18,6 +18,8 @@ internal static class SchemaMigrations
         new Migration(2, V2Sql),
         new Migration(3, V3Sql),
         new Migration(4, V4Sql),
+        new Migration(5, V5Sql),
+        new Migration(6, V6Sql),
     ];
 
     // ── v1: initial orchestration schema ─────────────────────────────────────────────────────────
@@ -147,5 +149,48 @@ internal static class SchemaMigrations
     // into one shared public file. Neither is recoverable, so absence stays absence.
     private const string V4Sql = """
         ALTER TABLE review_run ADD COLUMN pr_author TEXT NULL;
+        """;
+
+    // ── v5: what the PR says it does — title, description, target branch ──────────────────────────
+    // The review brief used to name only the repo, the PR number and the two shas, so the reviewer saw
+    // WHAT changed but never what the change CLAIMED to do. That gap is not academic: a revert PR whose
+    // 13 files were all binaries read, to the reviewer, as an unexplained blob rewrite — the fact that it
+    // was a revert appeared nowhere except inside a quoted third-party bot comment. "Does the diff do
+    // what the PR says?" is the first question a reviewer asks and the daemon could not ask it.
+    //
+    // Captured on the run row at poll time for the same reason as pr_author (v4): the review runs long
+    // after the poll that observed the PR, and re-fetching then costs a provider call against a PR that
+    // may have changed or closed. The description is also the ONE piece of PR content that is fully
+    // author-written prose, so pinning the version that was actually reviewed matters for auditability.
+    //
+    // All three NULL-able with no default: rows written before this migration genuinely have no captured
+    // title, and every consumer must render absence as absence. A '' default would be indistinguishable
+    // from a PR whose author really left the description empty.
+    private const string V5Sql = """
+        ALTER TABLE review_run ADD COLUMN pr_title         TEXT NULL;
+        ALTER TABLE review_run ADD COLUMN pr_description   TEXT NULL;
+        ALTER TABLE review_run ADD COLUMN pr_target_branch TEXT NULL;
+        """;
+
+    // ── v6: run ownership, so an orphaned run can be told from a live one ────────────────────────
+    // WorkflowStatus.Running claims "a process is working on this right now", and nothing ever
+    // withdrew that claim: a process that died mid-run left the row Running forever, with no code
+    // path that ever looked at a run by status again. Measured on the live store: four rows stranded
+    // at ContextReady, two of them from before the day's first restart, one holding a real 158 KB
+    // context artifact computed and then abandoned.
+    //
+    // Reclaiming such a row is only safe if we can tell it apart from a run some OTHER live daemon is
+    // working on — steal one of those and two processes review the same PR into the same notes
+    // branch, which is worse than the leak. Hence an owner identity plus a heartbeat: the owner is a
+    // per-PROCESS id, deliberately not a pid, because a pid is only meaningful on one machine and
+    // these columns have to stay sound when a database is reachable from more than one.
+    //
+    // Both columns are NULL-able with no default, so this is a metadata-only ALTER: no table rewrite,
+    // no rows touched, size of the database irrelevant. Pre-existing rows arrive with a NULL owner,
+    // which is precisely the signal that identifies them as orphans of a process that cannot still
+    // hold them.
+    private const string V6Sql = """
+        ALTER TABLE review_run ADD COLUMN owner_instance     TEXT NULL;
+        ALTER TABLE review_run ADD COLUMN owner_heartbeat_at TEXT NULL;
         """;
 }

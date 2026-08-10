@@ -95,11 +95,17 @@ internal sealed class S2SReviewWorkspacePreparer
     /// </summary>
     /// <remarks>
     /// It deliberately runs <b>no git at all</b> — re-running the checkout here would fight the preparer for
-    /// the same working tree. The slot's directory name IS the workspace leaf, which is why the pool is
-    /// configured with a single-segment slot prefix on this path: the gateway mounts that leaf at
-    /// <c>/workspace</c>, so the slot's <c>store/</c> and scratch children land at exactly the container paths
-    /// the pooled review stage already computes — the whole point of mounting the slot rather than a bare
-    /// per-PR clone.
+    /// the same working tree. The mount's directory name IS the workspace leaf, which is why the pool is
+    /// configured with a single-segment prefix on this path: the gateway mounts that leaf at
+    /// <c>/workspace</c>, so the store and scratch children land at exactly the container paths the pooled
+    /// review stage already computes — the whole point of mounting the slot rather than a bare per-PR clone.
+    /// <para>
+    /// Under the per-repository worktree layout the mount is shared by every concurrent review of that repo,
+    /// so the leaf alone no longer says where this run's code is. The slot's checkout is named separately, as
+    /// the gateway <b>home</b>: the gateway creates it, exports it as <c>SANDBOX_HOME</c>, and starts the
+    /// agent's operations there, so the review opens on its own PR's worktree even though a sibling review of
+    /// the same repository is mounted on the same directory.
+    /// </para>
     /// </remarks>
     public async Task<PreparedReviewWorkspace> AdoptSlotAsync(
         ReviewSlot slot,
@@ -121,14 +127,22 @@ internal sealed class S2SReviewWorkspacePreparer
                     + "empty directory.");
         }
 
+        // The reviewed checkout, relative to the mount — "slot-0/repo" — which is what the gateway home takes.
+        // Empty on the pre-worktree layout, where the slot owns the whole mount and its root is already right.
+        var home = slot.UsesSharedStore && !string.IsNullOrEmpty(slot.SlotDirName)
+            ? $"{slot.SlotDirName}/repo"
+            : null;
+
         _logger.LogInformation(
-            "Adopting leased review slot {Index} as the S2S workspace for PR {PrId}: leaf '{Leaf}'.",
+            "Adopting leased review slot {Index} as the S2S workspace for PR {PrId}: leaf '{Leaf}', home '{Home}'.",
             slot.Index,
             run.PrId,
-            leaf);
+            leaf,
+            home ?? "(workspace root)");
 
-        var name = string.Format(CultureInfo.InvariantCulture, "Review slot {0}", slot.Index);
-        var workspaceId = await EnsureWorkspaceForLeafAsync(leaf, name, cancellationToken).ConfigureAwait(false);
+        var name = string.Format(CultureInfo.InvariantCulture, "Review {0} slot {1}", leaf, slot.Index);
+        var workspaceId = await EnsureWorkspaceForLeafAsync(leaf, name, cancellationToken, home)
+            .ConfigureAwait(false);
 
         return new PreparedReviewWorkspace(leaf, workspaceId, slot.HostPath, run.PrId);
     }
@@ -246,47 +260,59 @@ internal sealed class S2SReviewWorkspacePreparer
     }
 
     /// <summary>
-    /// Finds an existing LmStreaming workspace whose <c>DirectoryRelPath</c> is <paramref name="leaf"/>
-    /// (idempotent re-run) and returns its id; otherwise creates one pointing at the leaf with the review
-    /// marketplace attached. The compare is against a leaf the caller has already made sanitize-stable, so a
-    /// second run for the same leaf reuses the workspace rather than minting a duplicate.
+    /// Finds an existing LmStreaming workspace that names the SAME place as (<paramref name="leaf"/>,
+    /// <paramref name="homeRelPath"/>) — an idempotent re-run — and returns its id; otherwise creates one
+    /// pointing there with the review marketplace attached. The compare is against a leaf the caller has
+    /// already made sanitize-stable, so a second run for the same pair reuses the workspace rather than
+    /// minting a duplicate.
     /// </summary>
     /// <remarks>
-    /// Shared by all three producers of a leaf — the per-PR clone (<see cref="PrepareAsync"/>), the leased
-    /// pool slot (<see cref="AdoptSlotAsync"/>) and the sweeper's knowledge-extraction store — so "a
-    /// directory becomes a workspace" has exactly one implementation.
+    /// The home is part of the match, not decoration. Under the per-repo worktree pool several workspaces
+    /// deliberately share ONE mount and differ only by which working copy inside it they open on; matching
+    /// on the leaf alone would hand every one of them the FIRST workspace, so every concurrent review of a
+    /// repo would be pointed at whichever PR happened to be prepared first — a wrong review, not an error.
+    /// <para>
+    /// Shared by all producers of a leaf — the per-PR clone (<see cref="PrepareAsync"/>), the leased pool
+    /// slot (<see cref="AdoptSlotAsync"/>) and the sweeper's knowledge-extraction store — so "a directory
+    /// becomes a workspace" has exactly one implementation.
+    /// </para>
     /// </remarks>
     internal async Task<string> EnsureWorkspaceForLeafAsync(
         string leaf,
         string name,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? homeRelPath = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(leaf);
 
         var marketplaces = string.IsNullOrWhiteSpace(_reviewMarketplace)
             ? (IReadOnlyList<string>)[]
             : [_reviewMarketplace];
+        var home = string.IsNullOrWhiteSpace(homeRelPath) ? null : homeRelPath;
 
         var existing = await _client.ListWorkspacesAsync(cancellationToken).ConfigureAwait(false);
         foreach (var workspace in existing)
         {
-            if (string.Equals(workspace.DirectoryRelPath, leaf, StringComparison.Ordinal))
+            if (string.Equals(workspace.DirectoryRelPath, leaf, StringComparison.Ordinal)
+                && string.Equals(workspace.HomeRelPath ?? string.Empty, home ?? string.Empty, StringComparison.Ordinal))
             {
                 _logger.LogInformation(
-                    "Reusing existing S2S review workspace {WorkspaceId} for leaf '{Leaf}'.",
+                    "Reusing existing S2S review workspace {WorkspaceId} for leaf '{Leaf}' (home '{Home}').",
                     workspace.Id,
-                    leaf);
+                    leaf,
+                    home ?? "(mount root)");
                 return workspace.Id;
             }
         }
 
         var created = await _client
-            .CreateWorkspaceAsync(name, leaf, marketplaces, cancellationToken)
+            .CreateWorkspaceAsync(name, leaf, marketplaces, cancellationToken, home)
             .ConfigureAwait(false);
         _logger.LogInformation(
-            "Created S2S review workspace {WorkspaceId} for leaf '{Leaf}' (marketplaces: {Count}).",
+            "Created S2S review workspace {WorkspaceId} for leaf '{Leaf}' (home '{Home}', marketplaces: {Count}).",
             created.Id,
             leaf,
+            home ?? "(mount root)",
             marketplaces.Count);
         return created.Id;
     }

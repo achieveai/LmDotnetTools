@@ -1,5 +1,28 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <!--
+      DELIBERATE dual-target — do NOT collapse to net9.0.
+
+      THE PRINCIPLE, which settles this and the next case: a target framework is a SUPPORT COMMITMENT
+      only for something that ships. Judge a TFM by whether the project produces an artifact someone
+      outside this repo consumes — not by what the majority of projects happen to target. (The same
+      principle, applied to src/Tools/ModelConfigGenerator, produces the OPPOSITE answer: no PackageId,
+      nothing consumes it, so its net8 target was vestigial and it moved to net9.)
+
+      Here it ships. AchieveAi.LmDotnetTools.Sandbox carries a PackageId and targets net8.0;net9.0, and
+      this project is what proves the net8 build of it works. Retargeting would delete the only
+      execution coverage of a framework we publish binaries for.
+
+      net8 is enforced, not vestigial: .github/workflows/ci.yml installs 8.0.x, scripts/ci-test.ps1
+      throws if the produced nupkg is missing lib/net8.0/, and sandbox-contract.yml runs a live contract
+      matrix across net8.0 + net9.0. The multi-target was added on purpose in 23151f5b ("typed .NET SDK
+      for sandbox gateway management"), moving net9.0 -> net8.0;net9.0.
+
+      If the net8 leg ABORTS for you with "You must install or update .NET to run this application",
+      that is a missing net8 RUNTIME on your machine, not a defect here. Install it, or run
+      `dotnet test -f net9.0` locally. Note the failure is easy to misread: the run exits 1 while its
+      last human-readable line still says "Passed! ... (net9.0)".
+    -->
     <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>

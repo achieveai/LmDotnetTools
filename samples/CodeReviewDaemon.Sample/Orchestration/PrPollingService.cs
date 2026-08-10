@@ -1,3 +1,4 @@
+using System.Globalization;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 
@@ -9,11 +10,34 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// <see cref="PrOrchestrator"/>. Each poll cycle is isolated: a failure on one cycle is logged and the
 /// loop continues, so one transient provider error does not stop the daemon. <see cref="PollOnceAsync"/>
 /// is the testable unit; <see cref="ExecuteAsync"/> just repeats it.
+/// <para>
+/// This loop carries NO maintenance work. It used to host the PR-lifecycle and deep-link retention sweeps
+/// through a <c>sweepAsync</c> seam, and that was wrong in both orderings: behind the poll body the sweeps
+/// waited on a cycle that reviews every PR inline and never finishes, and ahead of it a 125-PR sweep backlog
+/// held off reviewing for hours. Periodic maintenance now runs on <see cref="MaintenanceSweepService"/>,
+/// one instance per sweep, so neither side can starve the other.
+/// </para>
 /// </summary>
 internal sealed class PrPollingService : BackgroundService
 {
     /// <summary>Cursor payload schema version this build understands (plan §12).</summary>
     public const int CursorVersion = 1;
+
+    /// <summary>
+    /// Reserved <c>poll_cursor</c> key holding the rotation position. Not a target: the leading underscores
+    /// keep it out of any real provider/scope namespace, and <see cref="PollTargetAsync"/> never sees it
+    /// because rotation is read and written by index, not by iterating cursor rows.
+    /// </summary>
+    private const string RotationProvider = "__daemon";
+    private const string RotationScope = "__poll-rotation";
+
+    /// <summary>
+    /// PRs one target may review before the cycle moves on. Deliberately small: a cycle's worst case is this
+    /// times the target count times a review's duration, and that product has to stay well inside a process
+    /// lifetime or the later targets are never reached. At the live ~10 min per review and five targets, 3
+    /// puts a full rotation near 2.5 h; raising it favours draining a busy repo over reaching a quiet one.
+    /// </summary>
+    public const int DefaultMaxReviewsPerTargetPerCycle = 3;
 
     private readonly IReadOnlyList<PrPollTarget> _targets;
     private readonly IReadOnlyList<IPrProvider> _providers;
@@ -21,8 +45,8 @@ internal sealed class PrPollingService : BackgroundService
     private readonly PrOrchestrator _orchestrator;
     private readonly ILogger<PrPollingService> _logger;
     private readonly TimeSpan _pollInterval;
-    private readonly Func<CancellationToken, Task>? _sweepAsync;
     private readonly TimeProvider _timeProvider;
+    private readonly int _maxReviewsPerTargetPerCycle;
 
     public PrPollingService(
         IEnumerable<PrPollTarget> targets,
@@ -31,8 +55,8 @@ internal sealed class PrPollingService : BackgroundService
         PrOrchestrator orchestrator,
         ILogger<PrPollingService> logger,
         TimeSpan? pollInterval = null,
-        Func<CancellationToken, Task>? sweepAsync = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        int? maxReviewsPerTargetPerCycle = null)
     {
         _targets = [.. targets];
         _providers = [.. providers];
@@ -40,8 +64,10 @@ internal sealed class PrPollingService : BackgroundService
         _orchestrator = orchestrator;
         _logger = logger;
         _pollInterval = pollInterval ?? TimeSpan.FromSeconds(30);
-        _sweepAsync = sweepAsync;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _maxReviewsPerTargetPerCycle = maxReviewsPerTargetPerCycle is > 0
+            ? maxReviewsPerTargetPerCycle.Value
+            : DefaultMaxReviewsPerTargetPerCycle;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -61,25 +87,6 @@ internal sealed class PrPollingService : BackgroundService
                 _logger.LogError(ex, "Poll cycle failed; continuing after the interval.");
             }
 
-            // PR-lifecycle sweep (design §4.5): merge-on-close / delete-on-abandon for reviewed PRs' notes
-            // branches, on the same cadence as polling. Isolated from the poll so a sweep failure never stops
-            // the poller (the sweeper is itself degrade-not-throw per PR).
-            if (_sweepAsync is not null)
-            {
-                try
-                {
-                    await _sweepAsync(stoppingToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                {
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "PR-lifecycle sweep failed; continuing after the interval.");
-                }
-            }
-
             try
             {
                 await Task.Delay(_pollInterval, stoppingToken);
@@ -94,12 +101,36 @@ internal sealed class PrPollingService : BackgroundService
     /// <summary>
     /// Runs one poll pass over every target: read the cursor (resyncing if missing/old/future/invalid),
     /// ask the provider for open PRs, orchestrate each, then persist the advanced cursor.
+    /// <para>
+    /// Targets are visited starting from the PERSISTED rotation position, and each target reviews at most
+    /// <see cref="_maxReviewsPerTargetPerCycle"/> PRs before the loop moves on. Both halves are needed and
+    /// they fix different failures. Without the bound, <see cref="PollTargetAsync"/> awaits a whole review
+    /// per discovered PR, so target[1] waits for target[0]'s entire backlog — measured live at ~43 in-window
+    /// PRs × ~10 min, about seven hours. Without the persisted position, every restart begins at target[0]
+    /// again, and this daemon restarted eight times in one day, so the later targets were never reached: four
+    /// of five enabled repos had never been polled once.
+    /// </para>
     /// </summary>
     internal async Task PollOnceAsync(CancellationToken cancellationToken)
     {
-        foreach (var target in _targets)
+        if (_targets.Count == 0)
+        {
+            return;
+        }
+
+        var start = ReadRotationStart();
+        for (var offset = 0; offset < _targets.Count; offset++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            var index = (start + offset) % _targets.Count;
+            var target = _targets[index];
+
+            // Advance the rotation BEFORE the work, not after. Persisting on completion would never fire for
+            // precisely the target that needs rotating away from — one whose backlog outlives the process —
+            // so a restart would return to it forever. Written first, an interrupted target resumes at the
+            // NEXT one and cannot monopolize across restarts.
+            SaveRotationStart((index + 1) % _targets.Count);
 
             // Per-target isolation: a provider fetch (or any failure) on one target must not starve the
             // rest of the cycle. Log and continue with the next target; the cursor is only advanced on a
@@ -117,6 +148,39 @@ internal sealed class PrPollingService : BackgroundService
                 _logger.LogError(ex, "Poll of target {Scope} failed; continuing with the next target.", target.Scope);
             }
         }
+    }
+
+    /// <summary>
+    /// The index of the target this cycle starts from, persisted so rotation survives a restart. Stored as an
+    /// ordinary <c>poll_cursor</c> row under a RESERVED provider/scope that no real target can collide with —
+    /// deliberately reusing the existing cursor table rather than adding a table and a migration for one
+    /// integer. Anything unreadable, out of range, or absent means "start at the top", which is also the
+    /// first-run answer.
+    /// </summary>
+    private int ReadRotationStart()
+    {
+        var stored = _store.ReadCursor(RotationProvider, RotationScope, CursorVersion);
+        if (stored.ShouldResync || stored.Cursor is null)
+        {
+            return 0;
+        }
+
+        return int.TryParse(stored.Cursor.CursorPayload, NumberStyles.Integer, CultureInfo.InvariantCulture, out var next)
+            && next >= 0
+            && next < _targets.Count
+            ? next
+            : 0;
+    }
+
+    private void SaveRotationStart(int next)
+    {
+        _store.SaveCursor(new OpaqueCursor
+        {
+            Provider = RotationProvider,
+            Scope = RotationScope,
+            CursorVersion = CursorVersion,
+            CursorPayload = next.ToString(CultureInfo.InvariantCulture),
+        });
     }
 
     private async Task PollTargetAsync(PrPollTarget target, CancellationToken cancellationToken)
@@ -148,9 +212,23 @@ internal sealed class PrPollingService : BackgroundService
             cancellationToken);
 
         var repoId = _store.EnsureRepo(target.Repo);
+        var reviewed = 0;
+        var truncated = false;
         foreach (var pr in ApplyRecencyFilter(target, cutoff, page.PullRequests))
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            if (reviewed >= _maxReviewsPerTargetPerCycle)
+            {
+                truncated = true;
+                _logger.LogInformation(
+                    "Target {Scope}: reviewed {Reviewed} PR(s) this cycle, the per-target cap; yielding to the "
+                        + "next target with more of this page still pending. The cursor is NOT advanced, so the "
+                        + "remainder is re-listed and resumed next cycle.",
+                    target.Scope,
+                    reviewed);
+                break;
+            }
 
             var seed = new ReviewRun
             {
@@ -169,7 +247,44 @@ internal sealed class PrPollingService : BackgroundService
                 // Captured now, while the PR is still open and the poll payload is in hand: the at-close
                 // feedback extraction runs much later, against a PR that may already be closed.
                 PrAuthor = pr.Author,
+                // Same reason, and the same one-shot window: what the PR claims to do is read off the poll
+                // payload now so the review — which runs later, possibly after the PR has moved on — can
+                // judge the diff against the intent that was actually in force when it was picked up.
+                PrTitle = pr.Title,
+                PrDescription = pr.Description,
+                PrTargetBranch = pr.TargetBranch,
+                // The confidentiality trust signal, collapsed HERE and nowhere else. A provider reports
+                // null when its payload could not establish the answer; the run's fields are plain bools,
+                // so this is the one seam where "could not tell" has to become a decision — and it becomes
+                // the fail-closed one. Getting either default backwards would co-locate a private sibling
+                // repo beside a diff whose trust was never established, which is the whole risk the gate in
+                // DaemonReviewStageExecutor.AllowsCrossRepoCoLocation exists to hold shut.
+                IsForkPr = pr.IsForkPr ?? true,
+                IsTargetRepoPublic = pr.IsTargetRepoPublic ?? true,
             };
+
+            // Only the degraded case is logged, and only at Debug: when a provider could establish the trust
+            // signal there is nothing to say, but when it could not, the run silently loses access to every
+            // cross-repo sibling and the only symptom downstream is a wall of allow-list denials. This line is
+            // what makes that attributable to the payload rather than to the allow-list.
+            if (pr.IsForkPr is null || pr.IsTargetRepoPublic is null)
+            {
+                _logger.LogDebug(
+                    "PR {PrId} on {Scope}: provider could not establish the confidentiality trust signal "
+                        + "(fork={ProviderIsForkPr}, public={ProviderIsTargetRepoPublic}); defaulting fail-closed, "
+                        + "so cross-repo siblings will not be co-located for this run.",
+                    pr.PrId, target.Scope, pr.IsForkPr, pr.IsTargetRepoPublic);
+            }
+
+            // The cap counts WORK, not PRs seen, and only the run's state BEFORE this cycle can tell the two
+            // apart: RunAsync returns the finished run either way, so its outcome says "complete" both for a
+            // PR that was already done and for one this cycle just reviewed. Reading the pre-state here is
+            // what separates them. It matters because the two halves of the fairness fix would otherwise
+            // deadlock: a capped pass deliberately leaves the cursor put, so the next cycle re-lists the same
+            // page, and if the finished PRs at its head ate the cap every time, the PRs past the cap would
+            // never be reached on any cycle — #88's own starvation one level down, with the page as the queue.
+            // This is a create-or-get on the row the orchestrator is about to resolve anyway, not extra work.
+            var alreadyComplete = StageMachine.IsComplete(_store.CreateOrGetReviewRun(seed).Stage);
 
             // Per-PR isolation: one poison PR must not abort the rest of the target's PRs. The
             // orchestrator has already marked the failed run RetryPending before rethrowing, so it will
@@ -177,6 +292,11 @@ internal sealed class PrPollingService : BackgroundService
             try
             {
                 _ = await _orchestrator.RunAsync(seed, cancellationToken);
+
+                if (!alreadyComplete)
+                {
+                    reviewed++;
+                }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -184,6 +304,8 @@ internal sealed class PrPollingService : BackgroundService
             }
             catch (Exception ex)
             {
+                // A failed attempt DID consume the slot: the work was done, it just did not land.
+                reviewed++;
                 _logger.LogError(
                     ex,
                     "Orchestrating PR {PrId} on {Scope} failed; the run is left RetryPending and polling continues.",
@@ -192,7 +314,14 @@ internal sealed class PrPollingService : BackgroundService
             }
         }
 
-        _store.SaveCursor(page.NextCursor);
+        // A truncated pass must NOT advance the cursor: NextCursor points past the WHOLE page, so saving it
+        // here would step over the PRs this cycle deliberately did not review and they would never be seen
+        // again. Leaving it put means the next cycle re-lists the same page; the PRs already reviewed resolve
+        // to existing runs with no stages left, so re-listing costs a lookup rather than a second review.
+        if (!truncated)
+        {
+            _store.SaveCursor(page.NextCursor);
+        }
     }
 
     /// <summary>
