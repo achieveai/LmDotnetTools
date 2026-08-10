@@ -2394,8 +2394,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var guidanceChars = reviewInput.Length - beforeGuidance;
 
         var beforeComments = reviewInput.Length;
-        reviewInput = await PrependExistingCommentsAsync(reviewInput, run, repo, provider, cancellationToken)
-            .ConfigureAwait(false);
+        (reviewInput, var commentFetch) =
+            await PrependExistingCommentsAsync(reviewInput, run, repo, provider, cancellationToken)
+                .ConfigureAwait(false);
         var commentsChars = reviewInput.Length - beforeComments;
 
         // Second-to-last, so it lands just under the CI block at the top of the brief. Same reasoning as CI,
@@ -2421,6 +2422,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // guidance=0 means the repo's own conventions never reached it, and intent=0 means it was asked whether
         // the code is right without ever being told what it was supposed to do. Logged for every run, not just
         // failures. Lengths only, never the text: the title and description are the author's words (EUII).
+        //
+        // existing-comments carries an OUTCOME beside its char count, because on that one item the zero was
+        // never a single state. A brief with no comment block meant "this PR is clean", "the fetch threw",
+        // "no publisher is wired" or "the fetch returned an empty success" — four different situations, two of
+        // them defects, all reported as the same 0. Nothing downstream could separate them, so the rate of the
+        // defects was not merely unknown, it was unmeasurable. The outcome is what makes the zero readable:
+        // Empty is health, Failed and NoPublisher are not.
         //
         // siblings is a COUNT of co-located repositories, not a char delta, because unlike every other item
         // here the block is rendered INSIDE BuildReviewInput and is therefore already part of base. That is
@@ -2451,7 +2459,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             "Run {RunId}: review brief assembled — {TotalChars} chars across {FileCount} changed file(s) "
                 + "[base={BaseChars}, changed-paths={ChangedPathChars} chars naming {ListedPathCount} of "
                 + "them, prior-knowledge={KnowledgeChars}, developer-feedback={FeedbackChars}, "
-                + "repo-guidance={GuidanceChars}, existing-comments={CommentsChars}, ci-status={CiChars}, "
+                + "repo-guidance={GuidanceChars}, existing-comments={CommentsChars} chars "
+                + "(outcome={CommentFetchOutcome}), ci-status={CiChars}, "
                 + "work-items={WorkItemChars} chars naming {WorkItemCount} item(s), "
                 + "siblings={SiblingCount} repo(s) named inside base]. Stated intent: "
                 + "title={TitleChars} chars, description={DescriptionChars} chars, into={TargetBranchKnown}. "
@@ -2466,6 +2475,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             feedbackChars,
             guidanceChars,
             commentsChars,
+            commentFetch,
             ciChars,
             workItemChars,
             workItemCount,
@@ -2482,7 +2492,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         PersistReviewBriefArtifact(run, provider, reviewInput, context);
 
         // Primary review — collected and persisted; never posts here (the Posted stage owns posting).
-        await RunPrimaryReviewAsync(run, provider, reviewInput, context.CheckoutRoot, context.StoreRoot, cancellationToken)
+        await RunPrimaryReviewAsync(
+                run, provider, reviewInput, context.CheckoutRoot, context.StoreRoot, commentFetch, cancellationToken)
             .ConfigureAwait(false);
 
         if (_options.EnableABVariants)
@@ -3497,9 +3508,32 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// </summary>
     private static bool StoreRecordsPriorRound(string? prevHeadSha) => !string.IsNullOrWhiteSpace(prevHeadSha);
 
-    /// <summary>Max existing comments listed in the "already posted" section (bounds the injected size on a PR
-    /// that has accumulated many prior review comments).</summary>
-    private const int MaxExistingCommentsListed = 120;
+    /// <summary>
+    /// Max existing COMMENTS rendered across the whole "already posted" block (bounds the injected size on a PR
+    /// that has accumulated many prior review comments).
+    /// <para>
+    /// Named for what it counts, because the old name did not. <c>MaxExistingCommentsListed</c> read as a limit
+    /// on threads while <see cref="RenderThreads"/> spent it per COMMENT, and on a real PR those two numbers are
+    /// far apart: a survey of 300 completed PRs put the busiest at 113 threads but 201 comments. A ceiling
+    /// chosen against the thread count therefore cuts the conversation off the busiest reviews — which is what
+    /// 120 was doing on 5 of the 9 busiest PRs (max 173 comments), latent only because the repository those
+    /// PRs live in had barely been reviewed yet.
+    /// </para>
+    /// <para>
+    /// 400 clears the observed 201-comment ceiling with room for a PR twice as busy as any seen so far. It is
+    /// NOT a fetch limit: the provider's threads endpoint returns every thread in one response (measured
+    /// against a live 55-thread PR: <c>$top</c>/<c>$skip</c> are ignored on every api-version tried and no
+    /// continuation token is ever returned), so this bounds only how much of what we already hold is spent on
+    /// the prompt. Whatever it drops is announced in-band by <see cref="RenderThreads"/> rather than dropped
+    /// silently.
+    /// </para>
+    /// <para>
+    /// "Across the whole block" is load-bearing on the delta path, which renders TWO sections. Handing each its
+    /// own copy of this number — as the code did — makes one constant mean 400 on three branches and 800 on the
+    /// fourth, so the ceiling an operator reads here is not the one that ran. Both sections now draw from a
+    /// single <see cref="CommentRenderBudget"/>.
+    /// </para></summary>
+    private const int MaxExistingCommentsRendered = 400;
 
     /// <summary>Opening of the "already posted" block, shared by both variants below. Carries the prompt-injection
     /// defense that marks every quoted body as untrusted data — written once so the two variants cannot drift
@@ -3621,14 +3655,85 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         + "### Threads already on this PR — none carrying your marker\n";
 
     /// <summary>
+    /// The heading every no-list outcome renders under, so the three states below and the populated block are
+    /// findable by one search in a stored brief.
+    /// </summary>
+    private const string ExistingCommentsStatusHeading = "## Already-posted comments on this PR — ";
+
+    /// <summary>
+    /// What the brief says when the provider call THREW. Fails open by design — a provider hiccup must never
+    /// cost a review — but the reviewer is told, because failing open silently is a different thing from
+    /// failing open. Until now this exit, the no-publisher exit and the genuinely-comment-free exit produced a
+    /// byte-identical brief, so "this PR has no comments" and "we could not find out" were the same statement
+    /// and no reader could tell which one they were looking at.
+    /// <para>
+    /// Deliberately does NOT tell the reviewer to hold back. The dedup list is an optimization; reviewing is
+    /// the job. What it asks for is the cheap hedge — raise the finding, and phrase it so a duplicate costs a
+    /// reply rather than an argument.
+    /// </para>
+    /// </summary>
+    private const string ExistingCommentsLookupFailedBlock =
+        ExistingCommentsStatusHeading + "LOOKUP FAILED\n\n"
+        + "The daemon could not read this PR's existing review comments: the provider call failed. This is NOT "
+        + "a statement that the PR has none. There may be open findings from other reviewers, and there may be "
+        + "questions addressed to you, that this brief cannot show — treat the absence of a list below as a gap "
+        + "in the daemon's knowledge, not in the PR's history.\n\n"
+        + "Review the diff in full and report what you find. You have no dedup list this run, so if a finding "
+        + "may already have been raised, raise it anyway and say so — a duplicate someone can close with one "
+        + "reply costs far less than a real defect nobody mentions.\n\n";
+
+    /// <summary>
+    /// What the brief says when no <see cref="IReviewCommentPublisher"/> is registered for the run's provider.
+    /// A configuration state rather than a failure, and named as one: the daemon is not able to read this PR's
+    /// comments at all, on any run, until that publisher exists. Distinct from
+    /// <see cref="ExistingCommentsLookupFailedBlock"/> because the two want different operator actions — one is
+    /// "look at the provider", the other is "look at the daemon's own wiring".
+    /// </summary>
+    private const string ExistingCommentsNoPublisherBlock =
+        ExistingCommentsStatusHeading + "NOT AVAILABLE (no publisher)\n\n"
+        + "The daemon has no comment reader configured for this pull request's provider, so it could not look "
+        + "at the PR's existing review comments at all. As above, this says nothing about whether the PR has "
+        + "any: it may carry open findings and questions this brief cannot show.\n\n"
+        + "Review the diff in full and report what you find. With no dedup list, raise a finding you suspect "
+        + "may already exist rather than withholding it.\n\n";
+
+    /// <summary>
+    /// What the brief says when the fetch SUCCEEDED and returned nothing. A positive statement of absence, and
+    /// the reason the other two blocks are worth having: silence used to be this state's rendering as well, so
+    /// a reviewer handed no comment block could not tell a clean PR from a broken lookup. Stated plainly here,
+    /// the two are no longer the same brief.
+    /// <para>
+    /// Carries no dedup rules and no delta framing, because there is nothing to dedup against and no prior
+    /// round of anyone's to measure from. In particular it must never offer the "nothing new" exit: an empty
+    /// comment list is the shape a FIRST review of an untouched PR takes.
+    /// </para>
+    /// </summary>
+    private const string ExistingCommentsNoneBlock =
+        ExistingCommentsStatusHeading + "NONE\n\n"
+        + "The daemon read this pull request's review comments successfully and there are none: no prior "
+        + "findings, no open threads, no questions waiting on you. This is a checked fact, not a missing "
+        + "section — nothing has been withheld from you here.\n\n"
+        + "So there is nothing to de-duplicate against and nothing of yours to measure against. Review the diff "
+        + "in full and report what you find.\n\n";
+
+    /// <summary>
     /// Best-effort prepends a list of the review comments ALREADY on the PR (inline findings + review summaries)
     /// so the reviewer posts only genuinely NEW findings instead of re-posting a full review every run (the
     /// "45 reviews on one PR" bug). Read host-side through the provider's <see cref="IReviewCommentPublisher"/>
     /// (GitHub is always registered; ADO when enabled) so the awareness is deterministic rather than relying on
-    /// the agent to fetch. A fetch failure, a missing publisher, or a PR with no prior comments leaves the input
-    /// unchanged — this must never block a review.
+    /// the agent to fetch. A fetch failure, a missing publisher, or a PR with no prior comments still lets the
+    /// review proceed — this must never block one — but each now SAYS SO in the brief and is reported as a
+    /// distinct <see cref="CommentFetchOutcome"/>.
+    /// <para>
+    /// That last part is the whole point of the return tuple. All three of those exits used to return
+    /// <paramref name="reviewInput"/> unchanged, so a brief with no comment block was four states at once —
+    /// clean PR, empty success, failed fetch, unwired publisher — and the inventory line's
+    /// <c>existing-comments=0</c> collapsed them into one number that could not be read back apart. Two of
+    /// them (failure, no publisher) are defects the daemon should be able to count; one is a healthy PR. A
+    /// number that cannot separate a defect from health is not a measurement.
+    /// </para>
     /// </summary>
-    private async Task<string> PrependExistingCommentsAsync(
+    private async Task<(string ReviewInput, CommentFetchOutcome Outcome)> PrependExistingCommentsAsync(
         string reviewInput,
         ReviewRun run,
         RepoIdentity repo,
@@ -3638,7 +3743,17 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var publisher = _publishers.FirstOrDefault(p => string.Equals(p.Provider, provider, StringComparison.Ordinal));
         if (publisher is null)
         {
-            return reviewInput;
+            // Logged, where it used to be silent. This is a wiring state, not a PR state: it holds for every run
+            // against this provider until someone changes the daemon's registration, so an operator who can see
+            // it once can fix it for the whole fleet.
+            _logger.LogWarning(
+                "Run {RunId}: no comment reader is registered for provider {Provider} ({Registered} registered), "
+                    + "so this PR's existing comments could not be read at all; the reviewer is told so and "
+                    + "proceeds without a dedup list.",
+                run.Id,
+                provider,
+                _publishers.Count == 0 ? "none" : string.Join(", ", _publishers.Select(p => p.Provider)));
+            return (ExistingCommentsNoPublisherBlock + reviewInput, CommentFetchOutcome.NoPublisher);
         }
 
         IReadOnlyList<ExistingReviewComment> existing;
@@ -3651,13 +3766,22 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // Reading existing comments is an enrichment, never a gate: a provider hiccup must not fail the review.
+            // The warning is for the operator; the block prepended below is for the reviewer, and only the second
+            // reaches the party that has to act on the missing list in the next few minutes.
             _logger.LogWarning(ex, "Run {RunId}: listing existing PR comments failed; proceeding without the dedup list.", run.Id);
-            return reviewInput;
+            return (ExistingCommentsLookupFailedBlock + reviewInput, CommentFetchOutcome.Failed);
         }
 
         if (existing.Count == 0)
         {
-            return reviewInput;
+            // The healthy zero, said out loud. Reported at Information because it is not a defect — but it IS
+            // the control that makes the two warnings above readable: without a positive record of the benign
+            // case, a fleet with no failure warnings and a fleet where nobody looks are the same log.
+            _logger.LogInformation(
+                "Run {RunId}: this PR has no existing review comments (the fetch succeeded and returned an "
+                    + "empty list); the reviewer is told so explicitly rather than handed no section.",
+                run.Id);
+            return (ExistingCommentsNoneBlock + reviewInput, CommentFetchOutcome.Empty);
         }
 
         // Authorship census — the inputs to the framing decision below, recorded on EVERY run rather than only
@@ -3776,10 +3900,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                     + "{PriorRuns} prior round(s).",
                 run.Id, existing.Count, threads.Count, priorRuns.PriorReviewCount);
 
-            return CollectOnlyRereviewExistingCommentsGuidance
-                + RenderThreads(threads, MaxExistingCommentsListed)
-                + "\n\n"
-                + reviewInput;
+            return (
+                CollectOnlyRereviewExistingCommentsGuidance
+                    + RenderThreads(threads, new CommentRenderBudget(MaxExistingCommentsRendered))
+                    + "\n\n"
+                    + reviewInput,
+                CommentFetchOutcome.Ok);
         }
 
         if (cutoff is null)
@@ -3795,10 +3921,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                     + "no delta framing and no no-op exit — the reviewer must review the whole diff).",
                 run.Id, existing.Count, threads.Count, BotCommentPrefix);
 
-            return FirstReviewExistingCommentsGuidance
-                + RenderThreads(threads, MaxExistingCommentsListed)
-                + "\n\n"
-                + reviewInput;
+            return (
+                FirstReviewExistingCommentsGuidance
+                    + RenderThreads(threads, new CommentRenderBudget(MaxExistingCommentsRendered))
+                    + "\n\n"
+                    + reviewInput,
+                CommentFetchOutcome.Ok);
         }
 
         bool IsNew(List<ExistingReviewComment> thread) =>
@@ -3813,12 +3941,25 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             run.Id, existing.Count, threads.Count, botAuthored.Count, BotCommentPrefix, cutoff,
             pastThreads.Count, newThreads.Count, newThreads.Sum(t => t.Count));
 
-        return ExistingCommentsGuidance
-            + RenderThreads(pastThreads, MaxExistingCommentsListed)
-            + "\n\n### " + DeltaFramingMarker + " — focus here\n"
-            + RenderThreads(newThreads, MaxExistingCommentsListed)
-            + "\n\n"
-            + reviewInput;
+        // ONE budget for the whole block, drawn on by BOTH sections. This branch used to hand each section its
+        // own copy of the constant, which quietly doubled the ceiling here relative to every other branch.
+        //
+        // The NEW section draws FIRST, and that ordering is the substantive half of the fix. Spending the
+        // budget in render order would let a PR with a long history exhaust it on old threads and render the
+        // delta — the section the guidance above tells the reviewer to focus on — as an omission count. The
+        // sections still PRINT past-then-new; only the claim on the shared allowance is reordered.
+        var budget = new CommentRenderBudget(MaxExistingCommentsRendered);
+        var renderedNew = RenderThreads(newThreads, budget);
+        var renderedPast = RenderThreads(pastThreads, budget);
+
+        return (
+            ExistingCommentsGuidance
+                + renderedPast
+                + "\n\n### " + DeltaFramingMarker + " — focus here\n"
+                + renderedNew
+                + "\n\n"
+                + reviewInput,
+            CommentFetchOutcome.Ok);
     }
 
     /// <summary>
@@ -3866,10 +4007,17 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// <summary>
     /// Renders threads as conversations for the "## Already posted" block: one bullet per thread with its
     /// location + status hint, then an indented line per comment (author, date, body). Stops starting new threads
-    /// once <paramref name="maxComments"/> is reached (a started thread renders whole, so a conversation is never
+    /// once <paramref name="budget"/> is exhausted (a started thread renders whole, so a conversation is never
     /// cut mid-way); the remainder is summarized as a count so the section never runs away.
+    /// <para>
+    /// The budget is passed in rather than taken as a plain max because the delta path renders two sections and
+    /// they must share ONE allowance — see <see cref="MaxExistingCommentsRendered"/>. A caller that renders a
+    /// single section simply hands over a fresh budget.
+    /// </para>
     /// </summary>
-    private static string RenderThreads(IReadOnlyList<List<ExistingReviewComment>> threads, int maxComments)
+    private static string RenderThreads(
+        IReadOnlyList<List<ExistingReviewComment>> threads,
+        CommentRenderBudget budget)
     {
         if (threads.Count == 0)
         {
@@ -3877,7 +4025,6 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         }
 
         var sb = new StringBuilder();
-        var shown = 0;
         var omitted = 0;
         foreach (var thread in threads)
         {
@@ -3886,7 +4033,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 continue;
             }
 
-            if (shown >= maxComments)
+            if (budget.Exhausted)
             {
                 omitted += thread.Count;
                 continue;
@@ -3904,7 +4051,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 // cannot break out of its quoted-data delimiter (see the SECURITY note in ExistingCommentsGuidance).
                 var safeBody = c.Body.Replace("«", "<").Replace("»", ">");
                 _ = sb.Append("    - (").Append(author).Append(when).Append(") «").Append(safeBody).Append("»\n");
-                shown++;
+                budget.Spend();
             }
         }
 
@@ -3916,12 +4063,33 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         return sb.ToString().TrimEnd('\n');
     }
 
+    /// <summary>
+    /// One block's worth of comment-rendering allowance, spent by <see cref="RenderThreads"/> as it goes.
+    /// <para>
+    /// A mutable budget rather than an <c>int</c> max because the delta path renders two sections from ONE
+    /// allowance, and the only alternative — passing each section a number — is what let the cap be applied
+    /// twice. Here a second section cannot get a second allowance without a second <c>new</c>, which is visible
+    /// at the call site.
+    /// </para>
+    /// </summary>
+    private sealed class CommentRenderBudget(int max)
+    {
+        /// <summary>How many more comments may be rendered. Never negative in practice — a started thread is
+        /// allowed to overrun the last comment or two rather than be cut mid-conversation.</summary>
+        public int Remaining { get; private set; } = max;
+
+        public bool Exhausted => Remaining <= 0;
+
+        public void Spend() => Remaining--;
+    }
+
     private async Task RunPrimaryReviewAsync(
         ReviewRun run,
         string provider,
         string reviewInput,
         string? checkoutRoot,
         string? storeRoot,
+        CommentFetchOutcome commentFetch,
         CancellationToken cancellationToken)
     {
         var toolContext = await BuildToolContextAsync(run, cancellationToken).ConfigureAwait(false);
@@ -4030,8 +4198,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // changes where the prior round is, not whether it exists. The second is the SYSTEM prompt, whose
         // is_rereview block states the round and offers this exact sentence (daemon-prompts.yaml v1.2). That
         // block is store-driven, so it is present on a re-review of a PR that has NO comments at all — where
-        // the first channel is not merely absent but impossible, since PrependExistingCommentsAsync returns
-        // early and there is no block to carry a marker. Re-derived from the store rather than threaded, so it
+        // the first channel is not merely absent but impossible, since PrependExistingCommentsAsync renders its
+        // "NONE" block on that path and that block deliberately carries neither framing marker (there is no
+        // thread list for a delta to be measured against). Re-derived from the store rather than threaded, so it
         // is the same fact the prompt itself was built from and cannot disagree with it.
         var briefedAsDelta = CarriesRereviewFraming(reviewInput);
         var promptSaysRereview = StoreRecordsPriorRound(
@@ -4196,10 +4365,14 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             Provider = provider,
             // SubAgentCount carries the same fact to whoever opens this review later: null is "not recorded"
             // (an artifact written before this existed), 0 is the positive claim that nothing backed it.
+            // CommentFetch is the same idea for the dedup list — null is an artifact that predates the field,
+            // and the four named values keep "this PR was clean" apart from "we could not find out", which
+            // on the stored artifact were previously the same absence.
             Payload = JsonSerializer.Serialize(
                 new ReviewArtifactPayload(
                     result.ReviewText, result.RunId, run.VariantId, result.ThreadId,
-                    SubAgentCount: subAgentCount)),
+                    SubAgentCount: subAgentCount,
+                    CommentFetch: commentFetch)),
         });
     }
 
@@ -6269,7 +6442,40 @@ internal sealed record ReviewArtifactPayload(
     DateTimeOffset? ReviewedDeadlineUtc = null,
     ReviewLifecycleIdentity? Lifecycle = null,
     bool ProvisionalComplete = false,
-    int? SubAgentCount = null);
+    int? SubAgentCount = null,
+    CommentFetchOutcome? CommentFetch = null);
+
+/// <summary>
+/// How the existing-comment lookup ended for one run — the four states that
+/// <c>DaemonReviewStageExecutor.PrependExistingCommentsAsync</c> can exit in, kept apart because three of them
+/// used to be the same brief and the same <c>existing-comments=0</c> in the log.
+/// <para>
+/// <see cref="Ok"/> and <see cref="Empty"/> are both healthy; <see cref="Failed"/> and
+/// <see cref="NoPublisher"/> are both defects, and different ones — the first points at the provider, the
+/// second at the daemon's own wiring. Collapsed together, the rate of either is unmeasurable: a fleet where
+/// the fetch never fails and a fleet where nobody looks produce identical numbers.
+/// </para>
+/// <para>
+/// Serialized BY NAME (<see cref="JsonStringEnumConverter"/>) rather than by ordinal, because the consumer is
+/// a person opening a stored artifact months later. <c>"commentFetch": 2</c> tells them nothing and silently
+/// re-points if a member is ever inserted; <c>"commentFetch": "Failed"</c> survives both.
+/// </para>
+/// </summary>
+[JsonConverter(typeof(JsonStringEnumConverter<CommentFetchOutcome>))]
+internal enum CommentFetchOutcome
+{
+    /// <summary>The fetch succeeded and returned at least one comment; the brief carries the thread list.</summary>
+    Ok,
+
+    /// <summary>The fetch succeeded and returned nothing — a genuinely comment-free PR. Healthy.</summary>
+    Empty,
+
+    /// <summary>The provider call threw. The review proceeded without a dedup list and was told so.</summary>
+    Failed,
+
+    /// <summary>No comment reader is registered for the run's provider, so no lookup was attempted.</summary>
+    NoPublisher,
+}
 
 /// <summary>
 /// Everything about a Reviewed lifecycle that must still hold for a checkpoint of it to be resumable: WHERE it

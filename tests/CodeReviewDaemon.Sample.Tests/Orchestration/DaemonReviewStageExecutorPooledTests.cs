@@ -2509,13 +2509,404 @@ public sealed class DaemonReviewStageExecutorPooledTests
         using var fixture = Fixture.CreateS2S();
         var run = fixture.SeedRun();
 
-        // No prior comments seeded → the dedup block must be omitted (a first review has nothing to dedup against).
+        // No prior comments seeded → the dedup block must be omitted (a first review has nothing to dedup
+        // against). What must NOT be omitted is the statement that there were none: silence here used to be
+        // byte-identical to a failed lookup and to an unwired publisher.
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         text.Should().NotContain("Already posted on this PR");
+        text.Should().Contain(
+            "Already-posted comments on this PR — NONE",
+            "an absent section is 'we do not know'; a stated absence is a checked fact, and the reviewer acts "
+                + "very differently on the two");
+    }
+
+    /// <summary>
+    /// FIX 1(c) — the delta path renders TWO sections and used to hand each its own copy of the cap, so one
+    /// constant meant N on three branches and 2N on this one.
+    /// <para>
+    /// The fixture is built so that ONLY the shared-budget reading can fail: neither section on its own
+    /// exceeds the cap, so a per-section cap renders every comment and announces nothing, while a single
+    /// whole-block cap renders exactly the cap and announces the remainder. Asserting the final rendered
+    /// COUNT (rather than "the block is capped") is what makes the two readings distinguishable — a test that
+    /// merely checked the brief contained an omission notice would pass under both.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_spends_one_comment_budget_across_both_delta_sections_not_one_per_section()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+
+        // The bot's own comment sets the cutoff; everything before it is "past", everything after is "new".
+        var cutoff = DateTimeOffset.Parse("2026-07-20T10:00:00Z");
+        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
+            "src/Foo.cs", "1", "[Revobot] CUTOFF-FINDING", "revobot", IsActive: true,
+            PublishedAt: cutoff, ThreadId: "th-cutoff"));
+        foreach (var i in Enumerable.Range(0, PastComments))
+        {
+            fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
+                "src/Past.cs", i.ToString(), $"PAST-{i}", "alice", IsActive: true,
+                PublishedAt: cutoff.AddMinutes(-1 - i), ThreadId: $"th-past-{i}"));
+        }
+
+        foreach (var i in Enumerable.Range(0, NewComments))
+        {
+            fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
+                "src/New.cs", i.ToString(), $"NEW-{i}", "bob", IsActive: true,
+                PublishedAt: cutoff.AddMinutes(1 + i), ThreadId: $"th-new-{i}"));
+        }
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+
+        // The premise, asserted rather than assumed: each section alone is UNDER the cap, so a per-section
+        // cap would drop nothing at all and this test would be measuring an unexercised branch.
+        var seeded = 1 + PastComments + NewComments;
+        PastComments.Should().BeLessThan(RenderedCommentCap);
+        NewComments.Should().BeLessThan(RenderedCommentCap);
+        seeded.Should().BeGreaterThan(RenderedCommentCap, "the whole block must exceed the shared budget");
+
+        CountRenderedComments(text).Should().Be(
+            RenderedCommentCap,
+            "one budget for the block: a per-section cap would have rendered all {0} seeded comments",
+            seeded);
+        text.Should().Contain(
+            $"… and {seeded - RenderedCommentCap} more comment(s) not shown.",
+            "whatever the cap drops is announced with its exact count — a brief that was silently cut reads "
+                + "afterwards exactly like a PR that had nothing more to say");
+    }
+
+    /// <summary>
+    /// The other half of "one budget": WHICH section gets it when there is not enough to go round. Sharing an
+    /// allowance introduces a starvation the two-cap version could not have — spend it in render order and a PR
+    /// with a long history exhausts it on old threads, leaving the delta (the section the guidance directly
+    /// above tells the reviewer to focus on) rendered as an omission count. So the NEW threads claim the budget
+    /// first, and only the remainder goes to the past ones.
+    /// <para>
+    /// Written because the reordering is invisible to the count assertions: with both sections over-subscribed
+    /// the totals come out identical either way, so swapping the two claims kills nothing else in the suite.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_gives_the_new_since_last_review_threads_the_budget_before_the_older_ones()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+
+        // A history long enough to swallow the whole budget on its own, and a small delta behind it.
+        const int CrowdingPastComments = 450;
+        const int SmallDelta = 5;
+        var cutoff = DateTimeOffset.Parse("2026-07-20T10:00:00Z");
+        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
+            "src/Foo.cs", "1", "[Revobot] CUTOFF-FINDING", "revobot", IsActive: true,
+            PublishedAt: cutoff, ThreadId: "th-cutoff"));
+        foreach (var i in Enumerable.Range(0, CrowdingPastComments))
+        {
+            fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
+                "src/Past.cs", i.ToString(), $"PAST-{i}", "alice", IsActive: true,
+                PublishedAt: cutoff.AddMinutes(-1 - i), ThreadId: $"th-past-{i}"));
+        }
+
+        foreach (var i in Enumerable.Range(0, SmallDelta))
+        {
+            fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
+                "src/New.cs", i.ToString(), $"DELTA-COMMENT-{i}", "bob", IsActive: true,
+                PublishedAt: cutoff.AddMinutes(1 + i), ThreadId: $"th-new-{i}"));
+        }
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+
+        // The premise: the history alone over-subscribes the budget, so something must be dropped.
+        CrowdingPastComments.Should().BeGreaterThan(RenderedCommentCap);
+        text.Should().Contain("more comment(s) not shown", "the budget really is over-subscribed here");
+
+        foreach (var i in Enumerable.Range(0, SmallDelta))
+        {
+            text.Should().Contain(
+                $"DELTA-COMMENT-{i}",
+                "every comment new since the last review survives the cap; spending the shared budget in "
+                    + "render order would have handed all of it to the history and dropped the delta entirely");
+        }
+    }
+
+    /// <summary>
+    /// FIX 1(a)/(b) — the cap counts COMMENTS, and its value clears what real PRs carry. A survey of 300
+    /// completed PRs topped out at 113 threads / 201 comments; the old 120 was already under that on 5 of the
+    /// 9 busiest PRs. This pins the ceiling against the observed comment maximum, not the thread maximum,
+    /// because those are the two numbers the old name conflated.
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_renders_every_comment_of_a_pr_as_busy_as_the_busiest_yet_observed()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+
+        // The busiest shape actually measured in the fleet: 201 comments spread over 113 threads.
+        const int ObservedMaxComments = 201;
+        const int ObservedMaxThreads = 113;
+        var start = DateTimeOffset.Parse("2026-07-20T10:00:00Z");
+        foreach (var i in Enumerable.Range(0, ObservedMaxComments))
+        {
+            fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
+                "src/Busy.cs", i.ToString(), $"BUSY-{i}", "alice", IsActive: true,
+                PublishedAt: start.AddMinutes(i), ThreadId: $"th-{i % ObservedMaxThreads}"));
+        }
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+
+        CountRenderedComments(text).Should().Be(
+            ObservedMaxComments,
+            "the busiest PR the fleet has produced must render whole; a cap set against the THREAD count "
+                + "(113) would have silently dropped the rest of the conversation");
+        text.Should().NotContain(
+            "more comment(s) not shown",
+            "nothing was dropped, so nothing is announced");
+    }
+
+    /// <summary>
+    /// The cap on the COLLECT-ONLY re-review branch — added after a surviving mutation. Capping this branch
+    /// alone (and leaving the other two at the real value) changed nothing in the whole suite, because no test
+    /// drove this branch past the cap.
+    /// <para>
+    /// That is the worst of the three branches to have uncovered. Collect-only is the posture every live
+    /// profile runs, so on a PR the daemon has reviewed before this is the branch production actually takes —
+    /// the one whose cap decides what a real reviewer sees, and the one nothing was measuring.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_caps_the_collect_only_rereview_thread_list_and_announces_what_it_dropped()
+    {
+        using var fixture = Fixture.CreateS2SCollectOnly();
+        _ = fixture.SeedPriorCompletedRound();
+        var run = fixture.SeedRun();
+
+        // No comment carries the bot's marker — under collect-only none ever could — and the store records a
+        // completed round, which is what routes this to the notes-delta branch rather than first-review.
+        const int Seeded = 450;
+        var start = DateTimeOffset.Parse("2026-08-06T09:00:00Z");
+        foreach (var i in Enumerable.Range(0, Seeded))
+        {
+            fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
+                "src/Foo.cs", i.ToString(), $"OTHER-AUTHOR-{i}", "alice", IsActive: true,
+                PublishedAt: start.AddMinutes(i), ThreadId: $"th-{i}"));
+        }
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+
+        // The premise: this really is the notes-delta branch, not first-review and not delta.
+        fixture.Logs.Capturing.MessagesAtLevel(LogLevel.Information)
+            .Should().Contain(
+                m => m.Contains($"Run {run.Id}:", StringComparison.Ordinal)
+                    && m.Contains("framing=NOTES_DELTA", StringComparison.Ordinal),
+                "a cap asserted on the wrong branch measures a path production does not take here");
+
+        Seeded.Should().BeGreaterThan(RenderedCommentCap, "the cap must actually bind");
+        CountRenderedComments(text).Should().Be(
+            RenderedCommentCap,
+            "this branch draws on the same single budget as every other one");
+        text.Should().Contain(
+            $"… and {Seeded - RenderedCommentCap} more comment(s) not shown.",
+            "and discloses the drop with the same exact count");
+    }
+
+    /// <summary>
+    /// FIX 2, and the assertion the whole fix exists for: a FAILED lookup and an EMPTY PR must not produce the
+    /// same brief. Both fail open — neither blocks the review — but "this PR has no comments" and "we could
+    /// not find out whether it has any" are different facts, and the reviewer acts on them differently.
+    /// <para>
+    /// The DIFFERENCE assertion is the load-bearing one. "Both contain a marker" stays green if the catch
+    /// block is changed to emit the empty-case marker, which is exactly the regression this guards.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_says_the_comment_lookup_FAILED_in_words_an_empty_pr_would_never_produce()
+    {
+        string failedBrief;
+        using (var failing = Fixture.CreateS2S())
+        {
+            failing.Publisher.ListFailure = new HttpRequestException("provider returned 503");
+            var failedRun = failing.SeedRun();
+            await failing.Executor.ExecuteStageAsync(ReviewStage.ContextReady, failedRun, CancellationToken.None);
+            await failing.Executor.ExecuteStageAsync(ReviewStage.Reviewed, failedRun, CancellationToken.None);
+
+            failing.Publisher.ListCallCount.Should().BeGreaterThan(
+                0,
+                "the premise: the fetch was actually attempted, so this brief degraded for the reason under "
+                    + "test rather than some earlier bail-out");
+            failedBrief = failing.Factory.CreatedAgents.Should().ContainSingle()
+                .Subject.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+
+            failing.Logs.Capturing.MessagesAtLevel(LogLevel.Warning)
+                .Should().Contain(
+                    m => m.Contains($"Run {failedRun.Id}:", StringComparison.Ordinal)
+                        && m.Contains("listing existing PR comments failed", StringComparison.Ordinal),
+                    "the operator-side warning stays — it is the other half, not a replacement");
+        }
+
+        string emptyBrief;
+        using (var empty = Fixture.CreateS2S())
+        {
+            var emptyRun = empty.SeedRun();
+            await empty.Executor.ExecuteStageAsync(ReviewStage.ContextReady, emptyRun, CancellationToken.None);
+            await empty.Executor.ExecuteStageAsync(ReviewStage.Reviewed, emptyRun, CancellationToken.None);
+            emptyBrief = empty.Factory.CreatedAgents.Should().ContainSingle()
+                .Subject.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        }
+
+        failedBrief.Should().NotBeEmpty("a failed lookup must never cost the review itself");
+        emptyBrief.Should().NotBeEmpty();
+        failedBrief.Should().Contain("Already-posted comments on this PR — LOOKUP FAILED");
+        emptyBrief.Should().Contain("Already-posted comments on this PR — NONE");
+
+        // THE assertion. Everything above passes if both paths emit the same marker; only this fails.
+        StatusLineOf(failedBrief).Should().NotBe(
+            StatusLineOf(emptyBrief),
+            "a reviewer handed the same sentence in both cases cannot tell a clean PR from a broken lookup, "
+                + "which is the entire defect");
+    }
+
+    /// <summary>
+    /// The third silent exit: no <c>IReviewCommentPublisher</c> is registered for the run's provider, so no
+    /// lookup is even attempted. Distinct from a failed lookup because the operator action differs — this one
+    /// points at the daemon's own wiring, and it holds for every run against that provider rather than for one.
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_says_no_comment_reader_is_configured_rather_than_rendering_nothing()
+    {
+        using var fixture = Fixture.CreateS2SWithoutCommentPublisher();
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var text = fixture.Factory.CreatedAgents.Should().ContainSingle()
+            .Subject.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        text.Should().Contain(
+            "Already-posted comments on this PR — NOT AVAILABLE (no publisher)",
+            "the reviewer is told the list is missing because nothing could read it, not because the PR is clean");
+        text.Should().NotContain(
+            "LOOKUP FAILED",
+            "nothing failed — nothing was tried, and an operator sent to the provider would find it healthy");
+
+        fixture.Logs.Capturing.MessagesAtLevel(LogLevel.Warning)
+            .Should().Contain(
+                m => m.Contains($"Run {run.Id}:", StringComparison.Ordinal)
+                    && m.Contains("no comment reader is registered", StringComparison.Ordinal),
+                "this exit logged NOTHING at all before; a wiring defect nobody can see is one nobody fixes");
+
+        // Added after a surviving mutation: swapping this exit's outcome to Empty changed nothing in the suite.
+        // Empty is a HEALTHY state and this one is a defect, so a NoPublisher run counted as Empty is the same
+        // collapse the whole outcome exists to undo, reintroduced one level down — where the brief still reads
+        // correctly and only the numbers lie.
+        fixture.Logs.Capturing.MessagesAtLevel(LogLevel.Information)
+            .Where(m => m.Contains($"Run {run.Id}:", StringComparison.Ordinal)
+                && m.Contains("review brief assembled", StringComparison.Ordinal))
+            .Should().ContainSingle()
+            .Which.Should().Contain("outcome=NoPublisher");
+
+        var artifact = fixture.Store.GetArtifacts(run.Id)
+            .Should().ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind).Subject;
+        JsonSerializer.Deserialize<ReviewArtifactPayload>(artifact.Payload)!.CommentFetch.Should().Be(
+            CommentFetchOutcome.NoPublisher,
+            "the stored artifact has to name the wiring state too — the log ages out, the artifact does not");
+    }
+
+    /// <summary>
+    /// The inventory line and the stored artifact both have to carry the outcome, because
+    /// <c>existing-comments=0</c> was four states collapsed into one number — two of them healthy, two of them
+    /// defects — and a number that cannot separate a defect from health is not a measurement.
+    /// </summary>
+    [Theory]
+    [InlineData(false, "Empty")]
+    [InlineData(true, "Failed")]
+    public async Task Reviewed_records_which_of_the_zero_char_comment_outcomes_this_run_hit(
+        bool fetchThrows,
+        string expectedOutcome)
+    {
+        using var fixture = Fixture.CreateS2S();
+        if (fetchThrows)
+        {
+            fixture.Publisher.ListFailure = new HttpRequestException("provider returned 503");
+        }
+
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture.Logs.Capturing.MessagesAtLevel(LogLevel.Information)
+            .Where(m => m.Contains($"Run {run.Id}:", StringComparison.Ordinal)
+                && m.Contains("review brief assembled", StringComparison.Ordinal))
+            .Should().ContainSingle()
+            .Which.Should().Contain(
+                $"outcome={expectedOutcome}",
+                "the char count alone cannot say which of the four states produced it");
+
+        var artifact = fixture.Store.GetArtifacts(run.Id)
+            .Should().ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind).Subject;
+        JsonSerializer.Deserialize<ReviewArtifactPayload>(artifact.Payload)!.CommentFetch.Should().Be(
+            Enum.Parse<CommentFetchOutcome>(expectedOutcome),
+            "whoever opens this review months later reads the artifact, not the log");
+        artifact.Payload.Should().Contain(
+            $"\"{expectedOutcome}\"",
+            "serialized by NAME — an ordinal tells a later reader nothing and re-points silently if a member "
+                + "is ever inserted");
+    }
+
+    /// <summary>The whole-block comment budget the executor renders under. Mirrored here rather than read from
+    /// production: a test that took the constant would pass for any value of it, including the 120 that sat
+    /// under the fleet's observed 201-comment ceiling.</summary>
+    private const int RenderedCommentCap = 400;
+
+    /// <summary>Past/new split for the shared-budget test — each under the cap, the two together over it.</summary>
+    private const int PastComments = 250;
+    private const int NewComments = 250;
+
+    /// <summary>
+    /// How many comments a rendered brief actually contains. Counts the per-comment line prefix
+    /// <c>RenderThreads</c> emits ("    - (author, date) «body»"), which no other part of the brief produces.
+    /// </summary>
+    private static int CountRenderedComments(string brief)
+    {
+        var count = 0;
+        var at = 0;
+        while ((at = brief.IndexOf("\n    - (", at, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            at += 8;
+        }
+
+        return count;
+    }
+
+    /// <summary>The one status line of the existing-comments block, which is what a reviewer reads to learn
+    /// whether the missing list is a fact about the PR or a fact about the daemon.</summary>
+    private static string StatusLineOf(string brief)
+    {
+        const string Heading = "## Already-posted comments on this PR — ";
+        var at = brief.IndexOf(Heading, StringComparison.Ordinal);
+        at.Should().BeGreaterThanOrEqualTo(0, "every no-list outcome renders under the shared heading");
+        var end = brief.IndexOf('\n', at);
+        return end < 0 ? brief[at..] : brief[at..end];
     }
 
     // DELETED (#89): Reviewed_escalates_to_the_bigger_model_then_diff_only_when_the_context_window_overflows
@@ -3912,6 +4303,9 @@ public sealed class DaemonReviewStageExecutorPooledTests
         private readonly string _slotPrefix;
         private readonly bool _shared;
 
+        /// <summary>Whether <see cref="BuildExecutor"/> hands the executor a comment publisher at all.</summary>
+        private readonly bool _wireCommentPublisher;
+
         /// <summary>Whether this fixture's repository is ADO-shaped (three segments, with a Project). Only an
         /// ADO repo can produce a CI block: <c>AdoCiStatusReader.ReadAsync</c> returns <c>Unavailable</c>
         /// without issuing a request when <c>Project</c> is empty, so a GitHub-shaped fixture handed a reader
@@ -3946,6 +4340,11 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// <param name="variantReasoningEffort">Non-null turns the A/B comparison arm ON and sets its
         /// <c>VariantReasoningEffort</c>. That arm is the only bootable Create site passing an effort
         /// unconditionally, so it is the only place a delivered effort is observable.</param>
+        /// <param name="wireCommentPublisher">False builds the executor with an EMPTY publisher list, so the
+        /// run's provider resolves to no comment reader — the "no publisher" degradation. A flag rather than a
+        /// mismatched provider on the run, because provider is not an isolated value here: it also selects the
+        /// posting path and the repo identity's shape, so flipping it would move several things at once and a
+        /// test could then pass for a reason other than the missing publisher.</param>
         private Fixture(
             bool s2s,
             int slots,
@@ -3954,8 +4353,10 @@ public sealed class DaemonReviewStageExecutorPooledTests
             bool shared = false,
             AdoCiStatusReader? ciStatusReader = null,
             string? toolAssistedReasoningEffort = null,
-            string? variantReasoningEffort = null)
+            string? variantReasoningEffort = null,
+            bool wireCommentPublisher = true)
         {
+            _wireCommentPublisher = wireCommentPublisher;
             _db = new TempSqliteDatabase();
             Store = new ReviewStore(_db.ConnectionString);
             // An ADO-shaped repo is not an independent knob: ResolveStoreSubmodulePathAsync matches the
@@ -4101,7 +4502,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 BootRunner,
                 BootFileSystem,
                 _options,
-                [Publisher],
+                _wireCommentPublisher ? [Publisher] : [],
                 Logs,
                 provisioner: Provisioner,
                 slotWorkspace: _slotWorkspace,
@@ -4256,6 +4657,11 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// with the deep-link back to that conversation. <paramref name="slots"/> is how many slot leaves the
         /// fake pool is primed with — &gt;1 lets a test hold two leases at once.</summary>
         public static Fixture CreateS2S(int slots = 1) => new(s2s: true, slots);
+
+        /// <summary>The S2S variant with NO comment publisher registered, so the existing-comment lookup has
+        /// nothing to call. The third degradation path, and the only one no test could previously construct.</summary>
+        public static Fixture CreateS2SWithoutCommentPublisher() =>
+            new(s2s: true, slots: 1, wireCommentPublisher: false);
 
         /// <summary>
         /// The shape every live deployment actually runs: S2S + the shared-object-store WORKTREE layout. It

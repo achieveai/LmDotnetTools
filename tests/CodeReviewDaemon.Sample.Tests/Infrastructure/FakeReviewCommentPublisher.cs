@@ -56,8 +56,34 @@ internal sealed class FakeReviewCommentPublisher : IReviewCommentPublisher
     /// already has prior review comments (the delta-awareness path).</summary>
     public List<ExistingReviewComment> ExistingComments { get; } = [];
 
+    /// <summary>
+    /// When set, <see cref="ListExistingReviewCommentsAsync"/> throws this instead of answering — the provider
+    /// hiccup the executor's catch is written for.
+    /// </summary>
+    /// <remarks>
+    /// Added because the failure path had NO seam and therefore no coverage: every test that reached the
+    /// comment fetch got a successful empty list, so the catch block and the degraded brief it produces were
+    /// unreachable from the test suite. An untestable branch is not a safe branch — it is one whose behaviour
+    /// nobody has ever observed. Deliberately a nullable exception rather than a bool: the test says WHICH
+    /// failure it is simulating, and an exception type that the executor's <c>when</c> filter excludes (say
+    /// <see cref="OperationCanceledException"/>) can be scripted too, so the filter itself is testable.
+    /// </remarks>
+    public Exception? ListFailure { get; set; }
+
+    /// <summary>
+    /// How many times <see cref="ListExistingReviewCommentsAsync"/> was called — including the calls that
+    /// threw. A test asserting on a degraded brief needs to know the fetch was actually ATTEMPTED, otherwise a
+    /// brief that degraded for some unrelated reason reads as coverage of this one.
+    /// </summary>
+    public int ListCallCount { get; private set; }
+
     public Task<IReadOnlyList<ExistingReviewComment>> ListExistingReviewCommentsAsync(
         ReviewCommentTarget target,
-        CancellationToken cancellationToken) =>
-        Task.FromResult<IReadOnlyList<ExistingReviewComment>>([.. ExistingComments]);
+        CancellationToken cancellationToken)
+    {
+        ListCallCount++;
+        return ListFailure is { } failure
+            ? Task.FromException<IReadOnlyList<ExistingReviewComment>>(failure)
+            : Task.FromResult<IReadOnlyList<ExistingReviewComment>>([.. ExistingComments]);
+    }
 }
