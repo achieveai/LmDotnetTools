@@ -13,11 +13,24 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// executor posts on the PR.
 /// <para>
 /// Provision carries <b>no per-request model field</b> (<c>ProvisionConversationRequest</c> is only
-/// <c>{WorkspaceId, ProviderId, ModeId}</c>): the review model is whatever the configured
-/// <see cref="CodeReviewDaemonOptions.LmStreamingProviderId"/> resolves on the review host, so the
-/// per-call <c>modelId</c>/<c>reasoningEffort</c>/<c>toolContext</c> arguments of <see cref="Create"/>
-/// are intentionally not forwarded — the hosted workspace-agent conversation owns model selection, tool
-/// exposure, and the sub-agent catalog. The load-bearing inputs are <c>workspaceId</c> — the per-PR
+/// <c>{WorkspaceId, ProviderId, ModeId, SystemPromptAppendix}</c>) — but on this host a Copilot-discovered
+/// <c>ProviderId</c> <b>IS</b> the model id: the host registers every discovered Copilot model as its own
+/// provider keyed by its raw id, persists the provisioned <c>ProviderId</c> as thread metadata, and later
+/// builds that thread's agent with <c>GenerateReplyOptions.ModelId = copilotModelInfo.Id</c>. So
+/// <see cref="Create"/>'s <c>modelId</c> IS forwarded — as the conversation's provider id, falling back to
+/// <see cref="CodeReviewDaemonOptions.LmStreamingProviderId"/> when the caller names none. Without that
+/// forwarding the overflow-escalation ladder in <c>DaemonReviewStageExecutor</c> re-ran the SAME model it
+/// had just overflowed, on a fresh thread, and called it an escalation.
+/// </para>
+/// <para>
+/// <c>reasoningEffort</c> and <c>toolContext</c> are still <b>not</b> forwarded, and cannot be: the S2S
+/// surface has no carrier for either. Neither <c>ProvisionConversationRequest</c> nor
+/// <c>SendMessageRequest</c> (<c>{Text, SuppressSubAgentSpawning, IdempotencyKey}</c>) has an effort or a
+/// tool field, so there is nowhere to put them; the hosted workspace-agent mode owns tool exposure, the
+/// sub-agent catalog and per-turn thinking effort. Adding a parameter here that the wire cannot carry would
+/// make a dead knob look live, which is worse than one that is visibly dead — so the omission is explicit
+/// and this is the place to start if the host ever grows those fields. The load-bearing inputs are
+/// <c>workspaceId</c> — the per-PR
 /// LmStreaming workspace <see cref="S2SReviewWorkspacePreparer"/> pointed at the daemon's host clone — and
 /// <c>profile.SystemPrompt</c>, which rides provision as the conversation's <b>system prompt appendix</b>
 /// (the host appends it to the workspace-agent mode's own prompt) while the review body rides the sent user
@@ -36,6 +49,7 @@ internal sealed class S2SReviewAgentLoopFactory : IReviewAgentLoopFactory
     private readonly LmStreamingS2SClient _client;
     private readonly CodeReviewDaemonOptions _options;
     private readonly ILoggerFactory _loggerFactory;
+    private readonly ILogger<S2SReviewAgentLoopFactory> _logger;
     private readonly Action<string, string?>? _onConversationMinted;
 
     /// <summary>
@@ -54,7 +68,44 @@ internal sealed class S2SReviewAgentLoopFactory : IReviewAgentLoopFactory
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
+        _logger = _loggerFactory.CreateLogger<S2SReviewAgentLoopFactory>();
         _onConversationMinted = onConversationMinted;
+        WarnIfReviewModelDisagreesWithProvider(_options, _logger);
+    }
+
+    /// <summary>
+    /// Startup guard for the two configuration strings that BOTH mean "the review model" and that nothing
+    /// makes agree: <see cref="CodeReviewDaemonOptions.ReviewModelId"/> — which becomes the run's
+    /// <c>ModelId</c> and is what <c>ReviewProgressReporter</c> prints on the live
+    /// <c>reviewing ({model})</c> line — and <see cref="CodeReviewDaemonOptions.LmStreamingProviderId"/>,
+    /// the conversation's provider id and therefore the model the hosted review actually runs on. They are
+    /// equal in every shipped S2S profile, so the progress line has told the truth only by coincidence; if
+    /// they ever diverge the log names one model while another does the reviewing, and nothing anywhere
+    /// says so. This is a warning rather than a throw because a deployment may legitimately want the two
+    /// split — but it can no longer happen quietly. Logged once, at singleton construction (daemon boot).
+    /// </summary>
+    private static void WarnIfReviewModelDisagreesWithProvider(
+        CodeReviewDaemonOptions options,
+        ILogger logger)
+    {
+        if (string.IsNullOrWhiteSpace(options.ReviewModelId)
+            || string.IsNullOrWhiteSpace(options.LmStreamingProviderId)
+            || string.Equals(
+                options.ReviewModelId,
+                options.LmStreamingProviderId,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        logger.LogWarning(
+            "CodeReviewDaemon:ReviewModelId ({ReviewModelId}) and CodeReviewDaemon:LmStreamingProviderId "
+                + "({LmStreamingProviderId}) disagree, and both mean 'the review model'. ReviewModelId is "
+                + "what the progress line reports and what the hosted conversation is provisioned with; "
+                + "LmStreamingProviderId is only the fallback when a run names no model. Set them to the "
+                + "same id unless the split is deliberate.",
+            options.ReviewModelId,
+            options.LmStreamingProviderId);
     }
 
     public IMultiTurnAgent Create(
@@ -98,10 +149,16 @@ internal sealed class S2SReviewAgentLoopFactory : IReviewAgentLoopFactory
         var title = BuildTitle(profile, reviewWorkspace);
         var recorder = _onConversationMinted;
 
+        // The conversation's provider id IS its model on this host (see the class remarks), so a caller that
+        // names a model gets that model. Blank/absent falls back to the configured provider — which is the
+        // same id in every shipped S2S profile, so the ordinary review is unchanged; this only bites where a
+        // caller deliberately names a different model, i.e. the overflow-escalation ladder.
+        var providerId = string.IsNullOrWhiteSpace(modelId) ? _options.LmStreamingProviderId : modelId;
+
         return new S2SReviewAgent(
             _client,
             reviewWorkspace.WorkspaceId,
-            _options.LmStreamingProviderId,
+            providerId,
             _options.LmStreamingModeId,
             systemPrompt: profile.SystemPrompt,
             title: title,

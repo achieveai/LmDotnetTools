@@ -2,6 +2,7 @@ using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Services.Discovery;
 using LmStreaming.Sample.Tests.TestDoubles;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
 namespace LmStreaming.Sample.Tests.Services.Discovery;
@@ -292,6 +293,73 @@ public sealed class SubAgentModelResolverTests
             .Should()
             .BeFalse("no tier sanctions it, so even a real catalog id is dropped");
     }
+
+    [Fact]
+    public void Appsettings_LadderSanctionsTheModelActuallyInUse_SoItIsNeverRejectedAsUnknown()
+    {
+        // THE regression guard for the whole empty-ladder class. The shipped stub of empty arrays emptied
+        // AvailableModelIds and therefore the IsKnownModel allow-list, so SubAgentManager dropped every
+        // `model` override as "unknown" — including gpt-5.6-luna, the model the deployment was actually
+        // running. A valid, in-use, in-catalog id rejected as unknown cannot be explained by catalog
+        // membership; only an empty allow-list explains it. This test wires the REAL checked-in
+        // appsettings.json through the REAL loader into the REAL resolver, so the id in use must survive.
+        var configuration = new ConfigurationBuilder()
+            .AddJsonFile(SubAgentIntelligenceOptionsTests.AppsettingsPath, optional: false)
+            .Build();
+        var options = SubAgentIntelligenceOptions.Load(
+            configuration,
+            new CapturingLogger<SubAgentIntelligenceOptions>());
+
+        var resolver = CreateResolver(
+            options,
+            new CapturingLogger<SubAgentModelResolver>(),
+            Model(InUseModelId, CopilotModelTransport.Responses),
+            Model("claude-opus-5", CopilotModelTransport.Anthropic),
+            Model("gpt-5.6-terra", CopilotModelTransport.Responses),
+            Model("gpt-5.6-sol", CopilotModelTransport.Responses));
+
+        options.Tiers.Should().NotBeEmpty("an all-empty ladder is what emptied the allow-list");
+        resolver.IsKnownModel(InUseModelId).Should()
+            .BeTrue($"{InUseModelId} is the model in use; the allow-list must never reject it");
+        resolver.AvailableModelIds.Should()
+            .Contain(InUseModelId, "the Agent tool descriptor advertises this menu; an empty menu is what "
+                + "made the parent LLM invent ids like 'gpt-5' and 'sonnet'");
+    }
+
+    [Fact]
+    public void Appsettings_EveryConfiguredTierResolvesToARoutableModel()
+    {
+        // A populated ladder is only useful if each tier actually resolves. Every id named in the shipped
+        // ladder must be present and routable in the discovered catalog, or the tier silently falls back to
+        // the parent model exactly as the empty stub did.
+        var configuration = new ConfigurationBuilder()
+            .AddJsonFile(SubAgentIntelligenceOptionsTests.AppsettingsPath, optional: false)
+            .Build();
+        var options = SubAgentIntelligenceOptions.Load(
+            configuration,
+            new CapturingLogger<SubAgentIntelligenceOptions>());
+        var resolver = CreateResolver(
+            options,
+            new CapturingLogger<SubAgentModelResolver>(),
+            Model(InUseModelId, CopilotModelTransport.Responses),
+            Model("claude-opus-5", CopilotModelTransport.Anthropic),
+            Model("gpt-5.6-terra", CopilotModelTransport.Responses),
+            Model("gpt-5.6-sol", CopilotModelTransport.Responses));
+
+        // Guard against vacuity: with an empty ladder this loop iterates nothing and the test would pass
+        // while asserting precisely nothing — which is the defect it exists to catch.
+        options.Tiers.Should().HaveCount(7, "the shipped ladder maps every supported tier 0-6");
+
+        foreach (var tier in options.Tiers.Keys)
+        {
+            resolver.Resolve(explicitModel: null, tier).Should()
+                .NotBeNull($"tier {tier} is configured, so it must resolve to a routable model");
+        }
+    }
+
+    /// <summary>The Copilot model id this deployment reviews on today. Named once so the guard above reads
+    /// as "the model in use", not as an arbitrary literal.</summary>
+    private const string InUseModelId = "gpt-5.6-luna";
 
     private static SubAgentModelResolver CreateResolver(
         Dictionary<int, string[]> tiers,

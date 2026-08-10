@@ -2567,6 +2567,59 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.Factory.ModelIds[1].Should().Be("gpt-5.6-terra");
     }
 
+    /// <summary>
+    /// The B arm's configured reasoning effort really does cross the factory seam. This is the FIRST test
+    /// anywhere to assert on <c>FakeReviewAgentLoopFactory.ReasoningEfforts</c> — the fixture recorded every
+    /// effort it was handed and nothing ever looked, so the argument could have been dropped at the call site
+    /// without a single test noticing. Deleting <c>_options.VariantReasoningEffort</c> from the B-arm
+    /// <c>Create</c> call must break exactly this.
+    /// </summary>
+    [Fact]
+    public async Task Variant_arm_delivers_the_configured_reasoning_effort_to_the_loop_factory()
+    {
+        // A NON-default value on purpose: VariantReasoningEffort defaults to "", so asserting "" would pass
+        // just as well against an argument that was never passed at all.
+        using var fixture = Fixture.CreateWithVariantReasoningEffort("xhigh");
+        var run = fixture.SeedTrustedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture.Factory.ReasoningEfforts.Should().Contain(
+            "xhigh", "the configured B-arm effort must reach the loop the arm runs on");
+    }
+
+    /// <summary>
+    /// The paired negative, and the more important half: <c>ToolAssistedReasoningEffort</c> is configured,
+    /// non-default, and still arrives as <c>null</c> — because the primary arm gates it on a tool context
+    /// (<c>DaemonReviewStageExecutor</c>: <c>toolContext is not null ? _options.ToolAssistedReasoningEffort :
+    /// null</c>) and <c>BuildToolContextAsync</c> returns null UNCONDITIONALLY whenever
+    /// <c>UseS2SReviewAgent</c> is set — which <c>Program.cs</c> refuses to start without. So the knob cannot
+    /// take effect on any bootable configuration, and the loop-factory boundary is not the only reason:
+    /// this gate is upstream of it and would defeat a fix made there alone.
+    /// <para>
+    /// Asserting the null is deliberate. It pins the live behaviour so the day someone makes the effort
+    /// reachable this test goes red and forces the whole chain to be revisited — including the S2S wire,
+    /// which carries no effort field in either <c>ProvisionConversationRequest</c> or
+    /// <c>SendMessageRequest</c> and therefore cannot deliver one even once the executor supplies it.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Primary_arm_delivers_no_reasoning_effort_because_the_bootable_path_builds_no_tool_context()
+    {
+        using var fixture = Fixture.CreateWithReasoningEffort("xhigh");
+        var run = fixture.SeedTrustedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture.Factory.ToolContexts.Should().NotBeEmpty().And.OnlyContain(
+            context => context == null, "S2S is the only bootable path and it builds no tool context");
+        fixture.Factory.ReasoningEfforts.Should().NotBeEmpty().And.OnlyContain(
+            effort => effort == null,
+            "the configured ToolAssistedReasoningEffort is gated on a tool context that never exists");
+    }
+
     /// <summary>A settled roster of <paramref name="count"/> completed children, so the barrier opens on a run
     /// whose conversation actually carries fanned-out results.</summary>
     private sealed class SettledChildren(int count) : IReviewSubAgentCompletionSource
@@ -3845,13 +3898,21 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// three move together because a reader alone renders nothing (<c>ReadAsync</c> returns
         /// <c>Unavailable</c> for a repo with no Project) and an ADO identity alone leaves the reviewed
         /// submodule unresolvable. Null is the GitHub-only daemon every other pooled test runs.</param>
+        /// <param name="toolAssistedReasoningEffort">Overrides <c>ToolAssistedReasoningEffort</c>. Only useful
+        /// as a NON-default value: the point is to tell a configured effort travelling the seam apart from the
+        /// default coinciding with the expectation.</param>
+        /// <param name="variantReasoningEffort">Non-null turns the A/B comparison arm ON and sets its
+        /// <c>VariantReasoningEffort</c>. That arm is the only bootable Create site passing an effort
+        /// unconditionally, so it is the only place a delivered effort is observable.</param>
         private Fixture(
             bool s2s,
             int slots,
             bool wirePool = true,
             bool? postingAuthorized = null,
             bool shared = false,
-            AdoCiStatusReader? ciStatusReader = null)
+            AdoCiStatusReader? ciStatusReader = null,
+            string? toolAssistedReasoningEffort = null,
+            string? variantReasoningEffort = null)
         {
             _db = new TempSqliteDatabase();
             Store = new ReviewStore(_db.ConnectionString);
@@ -3909,6 +3970,17 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 // run carries a sluggable PrAuthor (SeedRun leaves it null by default), so this changes nothing
                 // for the other cases while keeping the flag from being the reason a real defect goes unseen.
                 EnableReviewFeedbackAgent = true,
+                // Left at the production default unless a test names one. A test that asserts effort delivery
+                // must set a NON-default value, or it cannot tell "the configured effort arrived" from "the
+                // default happened to match".
+                ToolAssistedReasoningEffort = toolAssistedReasoningEffort
+                    ?? new CodeReviewDaemonOptions().ToolAssistedReasoningEffort,
+                // The B arm is the ONE Create site that passes a configured effort UNCONDITIONALLY (the
+                // primary's is gated on a tool context S2S never builds), so it is the only place a test can
+                // observe an effort actually crossing the factory seam on a bootable configuration.
+                EnableABVariants = variantReasoningEffort is not null,
+                VariantReasoningEffort = variantReasoningEffort
+                    ?? new CodeReviewDaemonOptions().VariantReasoningEffort,
             };
             // Only the HOSTED path's turns are durable, and the executor now refuses an S2S review whose loop
             // cannot checkpoint them — so the double has to be resumable on exactly the path production is.
@@ -4090,6 +4162,18 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// then, in 72 tests.
         /// </summary>
         public static Fixture Create() => new(s2s: true, slots: 1);
+
+        /// <summary>A pooled fixture whose <c>ToolAssistedReasoningEffort</c> is a NON-default value, so a test
+        /// can tell a configured effort actually travelling the seam apart from the default coinciding with the
+        /// expectation.</summary>
+        public static Fixture CreateWithReasoningEffort(string effort) =>
+            new(s2s: true, slots: 1, toolAssistedReasoningEffort: effort);
+
+        /// <summary>A pooled fixture with the A/B comparison arm ON and a NON-default
+        /// <c>VariantReasoningEffort</c> — the one bootable path on which a configured effort reaches
+        /// <c>IReviewAgentLoopFactory.Create</c>.</summary>
+        public static Fixture CreateWithVariantReasoningEffort(string effort) =>
+            new(s2s: true, slots: 1, variantReasoningEffort: effort);
 
         /// <summary>
         /// The in-process variant on an ADO-shaped repository, with a REAL <see cref="AdoCiStatusReader"/>
