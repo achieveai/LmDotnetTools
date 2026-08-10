@@ -133,8 +133,8 @@ public sealed class UndrivenTurnRetentionTests
     {
         var logs = new CapturingLogger<ReviewNotesArtifactBuilder>();
         var builder = new ReviewNotesArtifactBuilder(new FakeTranscripts(rootTranscript), logs);
-        var files = await builder.BuildAsync(
-            NewRun(), NewRepo(), "PRs/nova-5505268", NewContext(), CancellationToken.None);
+        var files = (await builder.BuildAsync(
+            NewRun(), NewRepo(), "PRs/nova-5505268", NewContext(), CancellationToken.None)).Files;
 
         var lead = files
             .Single(f => f.RelativePath.Contains("lead-reviewer", StringComparison.Ordinal))

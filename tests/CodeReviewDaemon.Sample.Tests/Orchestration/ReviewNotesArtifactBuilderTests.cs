@@ -146,13 +146,19 @@ public sealed class ReviewNotesArtifactBuilderTests
     private static ReviewNotesArtifactBuilder NewBuilder(IReviewAgentTranscriptSource? transcripts) =>
         new(transcripts, NullLogger.Instance);
 
-    private static Task<IReadOnlyList<ReviewArtifactFile>> BuildAsync(
+    private static Task<ReviewNotesArtifacts> BuildFullAsync(
         ReviewNotesArtifactBuilder builder,
         ReviewNotesArtifactContext context,
         string? shippedReviewBody = null) =>
         builder.BuildAsync(
             NewRun(), NewRepo(), "PRs/lmdotnettools-250", context, CancellationToken.None,
             postedComment: false, shippedReviewBody);
+
+    private static async Task<IReadOnlyList<ReviewArtifactFile>> BuildAsync(
+        ReviewNotesArtifactBuilder builder,
+        ReviewNotesArtifactContext context,
+        string? shippedReviewBody = null) =>
+        (await BuildFullAsync(builder, context, shippedReviewBody)).Files;
 
     private static ReviewArtifactFile Reconciliation(IReadOnlyList<ReviewArtifactFile> files) =>
         files.Single(f => f.RelativePath.EndsWith("PR_Reconciliation_01.md", StringComparison.Ordinal));
@@ -1285,5 +1291,223 @@ public sealed class ReviewNotesArtifactBuilderTests
 
         var brief = files.Single(f => f.RelativePath.EndsWith("PR_Brief_01.md", StringComparison.Ordinal));
         brief.Content.Should().Contain("````", "the fence widens past the longest backtick run inside it");
+    }
+
+    // ---------------------------------------------------------------------------------------------------
+    // The structured findings record. The reconciliation markdown above answers "what happened on this PR";
+    // these answer "what happened across every PR", which is a different question and cannot be asked of
+    // prose. Every assertion here is about the record being COMPLETE and TYPED — a record that quietly holds
+    // fewer findings than the reviewers produced would make a quiet review and a busy one look identical,
+    // which is the exact failure this artifact exists to make visible.
+    // ---------------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Three findings from an architecture reviewer and the same three from a tests reviewer (the fake host
+    /// hands every agent the same transcript), reconciled against a shipped review that carries all three.
+    /// </summary>
+    private const string ThreeFindings =
+        "#### [BLOCKER] High — DI coupling\n"
+        + $"{DiCouplingSite} resolves the module from the container directly.\n"
+        + "\n"
+        + "#### [MEDIUM] — unchecked cast\n"
+        + "src/Foo.cs:10 casts without a test.\n"
+        + "\n"
+        + "#### [LOW] — naming\n"
+        + "src/Bar.cs:77 shadows the field name.\n";
+
+    private const string ThreeShipped =
+        "#### [BLOCKER] High — DI coupling\n"
+        + $"{DiCouplingSite} must be injected.\n"
+        + "\n"
+        + "#### [MEDIUM] — unchecked cast\n"
+        + "src/Foo.cs:10 must be guarded.\n"
+        + "\n"
+        + "#### [LOW] — naming\n"
+        + "src/Bar.cs:77 should be renamed.\n";
+
+    [Fact]
+    public async Task Every_finding_the_extractor_saw_reaches_the_record()
+    {
+        // The round trip, and the only assertion that can fail closed on a silent loss: the parsed count is
+        // taken on a SEPARATE pass over the same text, so a row dropped between extraction and the record
+        // makes the two disagree. (It cannot catch a finding the extractor never saw — that is a different
+        // guarantee, and CountParsed's doc comment says so rather than letting this test imply it.)
+        var builder = NewBuilder(new FakeTranscripts([Entry("TextMessage", ThreeFindings)]));
+
+        var built = await BuildFullAsync(
+            builder,
+            NewContext(Node("agent-1", "architecture"), Node("agent-2", "tests")),
+            shippedReviewBody: ThreeShipped);
+
+        var findings = built.Findings;
+        findings.Compared.Should().BeTrue();
+        findings.ParsedCount.Should().Be(6, "three findings from each of two reviewers");
+        findings.RecordedCount.Should().Be(6);
+        findings.Shortfall.Should().Be(0);
+        findings.Findings.Should().HaveCount(6);
+
+        // And per reviewer, so a shortfall names who it happened to rather than only that it happened.
+        findings.Sources.Should().HaveCount(2);
+        findings.Sources.Should().OnlyContain(s => s.Parsed == 3 && s.Recorded == 3);
+        findings.Sources.Select(s => s.Label).Should().BeEquivalentTo(["architecture", "tests"]);
+    }
+
+    [Fact]
+    public async Task A_finding_is_recorded_with_its_severity_as_tokens_not_only_as_prose()
+    {
+        // Positive control, on a real citation from a live review (DiCouplingSite is the round-01
+        // architecture finding from run 226). Severity has to survive as something a GROUP BY can use;
+        // "[BLOCKER] High" as a string is a phrase, and bucketing on phrases is how a severity distribution
+        // becomes a distribution of typos.
+        var builder = NewBuilder(new FakeTranscripts([Entry("TextMessage", ThreeFindings)]));
+
+        var built = await BuildFullAsync(
+            builder,
+            NewContext(Node("agent-1", "architecture")),
+            shippedReviewBody: ThreeShipped);
+
+        var blocker = built.Findings.Findings.Single(f => f.Location == DiCouplingSite);
+        blocker.Source.Should().Be("architecture", "the row is attributed to the reviewer that raised it");
+        blocker.Template.Should().Be("reviewer", "and to the roster template it ran, so it traces back");
+        blocker.Title.Should().Contain("DI coupling");
+        blocker.Severity.Should().Contain("Blocker");
+        blocker.SeverityTokens.Should().Contain("Blocker");
+        blocker.Outcome.Should().Be("kept");
+        blocker.ShippedTitle.Should().Contain("DI coupling");
+    }
+
+    [Fact]
+    public async Task Findings_bucket_by_severity_without_reparsing_the_prose()
+    {
+        // The whole point: three severities in, three buckets out, from the stored record alone.
+        var builder = NewBuilder(new FakeTranscripts([Entry("TextMessage", ThreeFindings)]));
+
+        var built = await BuildFullAsync(
+            builder,
+            NewContext(Node("agent-1", "architecture")),
+            shippedReviewBody: ThreeShipped);
+
+        var buckets = built.Findings.Findings
+            .SelectMany(f => f.SeverityTokens)
+            .GroupBy(t => t, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal);
+
+        buckets.Should().ContainKey("Blocker").WhoseValue.Should().Be(1);
+        buckets.Should().ContainKey("Medium").WhoseValue.Should().Be(1);
+        buckets.Should().ContainKey("Low").WhoseValue.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task A_severity_change_is_recorded_with_both_sides_of_the_move()
+    {
+        // A demotion is the single most interesting event in a review and the one prose loses first. Both
+        // severities must be on the row, or the record can say a change happened but not what it was.
+        var builder = NewBuilder(new FakeTranscripts(
+        [
+            Entry("TextMessage", $"#### [BLOCKER] High — DI coupling\n{DiCouplingSite} resolves directly.\n"),
+        ]));
+
+        var built = await BuildFullAsync(
+            builder,
+            NewContext(Node("agent-1", "architecture")),
+            shippedReviewBody: $"#### [MEDIUM] — DI coupling\n{DiCouplingSite} is a wiring detail.\n");
+
+        var row = built.Findings.Findings.Should().ContainSingle().Subject;
+        row.Outcome.Should().Be("severity-changed");
+        row.SeverityTokens.Should().Contain("Blocker");
+        row.ShippedSeverity.Should().Contain("Medium");
+    }
+
+    [Fact]
+    public async Task The_record_spells_an_outcome_the_same_way_the_reconciliation_table_does()
+    {
+        // Two serialisations of one list. If they ever disagree about what an outcome is CALLED, a query
+        // written against the artifact and a human reading the table are measuring different things while
+        // both believing they agree.
+        var builder = NewBuilder(new FakeTranscripts([Entry("TextMessage", ThreeFindings)]));
+
+        var built = await BuildFullAsync(
+            builder,
+            NewContext(Node("agent-1", "architecture")),
+            shippedReviewBody: ThreeShipped);
+
+        var table = Reconciliation(built.Files).Content;
+        foreach (var row in built.Findings.Findings)
+        {
+            table.Should().Contain($"`{row.Outcome}`");
+        }
+    }
+
+    [Fact]
+    public async Task A_round_with_no_shipped_review_records_the_absence_rather_than_a_page_of_losses()
+    {
+        // "Not compared" and "not carried" are different facts. The record must be able to say the first
+        // one, because a reader who cannot tell them apart reads an unreconciled round as a total loss —
+        // and, worse, a query that counts rows would report the round as having produced no findings when
+        // the reviewers in fact produced three.
+        var builder = NewBuilder(new FakeTranscripts([Entry("TextMessage", ThreeFindings)]));
+
+        var built = await BuildFullAsync(builder, NewContext(Node("agent-1", "architecture")));
+
+        var findings = built.Findings;
+        findings.Compared.Should().BeFalse();
+        findings.ParsedCount.Should().Be(3, "the reviewer's findings exist whether or not anything shipped");
+        findings.RecordedCount.Should().Be(0);
+        findings.Shortfall.Should().Be(3);
+        findings.Sources.Should().ContainSingle().Which.Parsed.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task A_round_whose_reviewers_found_nothing_records_a_zero_rather_than_no_row()
+    {
+        // The denominator case. An absent record and a record of zero findings are indistinguishable to
+        // anyone querying later, and only one of them means the review was quiet.
+        var builder = NewBuilder(new FakeTranscripts([Entry("TextMessage", "No issues found in this area.")]));
+
+        var built = await BuildFullAsync(
+            builder,
+            NewContext(Node("agent-1", "architecture")),
+            shippedReviewBody: "No blocking issues.\n");
+
+        built.Findings.Round.Should().Be(1);
+        built.Findings.Compared.Should().BeTrue();
+        built.Findings.RecordedCount.Should().Be(0);
+        built.Findings.Shortfall.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Ordinary_review_structure_does_not_inflate_the_finding_count()
+    {
+        // The count is the headline number, so an extractor that over-matches is the failure that makes this
+        // artifact actively misleading: it would report a rich review where there was a terse one, and no
+        // assertion on severity or outcome would notice. Reviewers surround their findings with section
+        // headings and plain bullets, and NEITHER may open a block.
+        //
+        // This test exists because a superset mutation of StartsFinding killed nothing in this class:
+        // StartsFinding is only consulted on heading and top-level list-item lines, and every other fixture
+        // here surrounds its findings with prose body lines, which cannot start a block however wide the
+        // predicate gets. Only a fixture whose non-findings are themselves headings and bullets can see it.
+        var builder = NewBuilder(new FakeTranscripts(
+        [
+            Entry(
+                "TextMessage",
+                "## Summary\n"
+                + "- reviewed the DI wiring and the cast sites\n"
+                + "- ran the tests locally\n"
+                + "\n"
+                + ThreeFindings
+                + "\n"
+                + "### Notes\n"
+                + "- no further concerns\n"),
+        ]));
+
+        var built = await BuildFullAsync(
+            builder,
+            NewContext(Node("agent-1", "architecture")),
+            shippedReviewBody: ThreeShipped);
+
+        built.Findings.ParsedCount.Should().Be(3, "five of the eight structural lines carry no severity");
+        built.Findings.RecordedCount.Should().Be(3);
+        built.Findings.Findings.Select(f => f.Title).Should().NotContain(t => t.Contains("Summary"));
     }
 }
