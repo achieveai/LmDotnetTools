@@ -25,6 +25,20 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     private const string DefaultBranch = "main";
     private const string NotesRelPath = "PRs/github/achieveai-lmdotnettools/151";
 
+    /// <summary>
+    /// What <c>git status --porcelain -b -z</c> actually prepends in the checkout these tests describe.
+    /// The daemon pins the reviewed worktree to an exact commit, so it is DETACHED, and git names that
+    /// <c>HEAD (no branch)</c> rather than a branch. Verified against git 2.53.0 rather than assumed: a clean
+    /// detached checkout answers exactly <c>"## HEAD (no branch)\0"</c>.
+    /// <para>
+    /// Every status fixture below carries it because real git always would. Leaving it out made these
+    /// fixtures describe an output git cannot produce — and once production started requiring the header,
+    /// three of these tests stopped reaching the code they were written to exercise while a fourth kept
+    /// passing for a reason that had nothing to do with its subject.
+    /// </para>
+    /// </summary>
+    private const string DetachedHeader = "## HEAD (no branch)\0";
+
     private readonly string _hostRoot =
         Path.Combine(Path.GetTempPath(), "crd-prep-" + Guid.NewGuid().ToString("N"));
 
@@ -789,7 +803,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
                 new SandboxCommandResult(0, run.HeadSha + "\n", string.Empty))
             .OnArgvContains(
                 $"-C {slot.TargetPath} status --porcelain",
-                new SandboxCommandResult(0, " M src/Leftover.cs\0", string.Empty))
+                new SandboxCommandResult(0, DetachedHeader + " M src/Leftover.cs\0", string.Empty))
             // A genuine edit: the bytes on disk are not the blob the index records for the path.
             .OnArgvContains(
                 "rev-parse :src/Leftover.cs",
@@ -808,7 +822,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
             .Which.Message.Should().Contain("src/Leftover.cs");
         runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().Contain(
             command => command.EndsWith(
-                $"-C {slot.TargetPath} status --porcelain -z --ignore-submodules=all", StringComparison.Ordinal),
+                $"-C {slot.TargetPath} status --porcelain -b -z --ignore-submodules=all", StringComparison.Ordinal),
             "a moved gitlink is not leftover content, and gating on it would fail every submodule-bearing repo");
     }
 
@@ -836,7 +850,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
                 new SandboxCommandResult(0, run.HeadSha + "\n", string.Empty))
             .OnArgvContains(
                 $"-C {slot.TargetPath} status --porcelain",
-                new SandboxCommandResult(0, $" M {NormalizedPath}\0", string.Empty))
+                new SandboxCommandResult(0, DetachedHeader + $" M {NormalizedPath}\0", string.Empty))
             .OnArgvContains(
                 $"rev-parse :{NormalizedPath}",
                 new SandboxCommandResult(0, RecordedBlob + "\n", string.Empty))
@@ -872,7 +886,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
                 new SandboxCommandResult(0, run.HeadSha + "\n", string.Empty))
             .OnArgvContains(
                 $"-C {slot.TargetPath} status --porcelain",
-                new SandboxCommandResult(0, "?? artifacts/agent-scratch.log\0", string.Empty));
+                new SandboxCommandResult(0, DetachedHeader + "?? artifacts/agent-scratch.log\0", string.Empty));
         var preparer = new ReviewSlotPreparer(
             new GitRunner(runner), SeedGitmodules(slot.SharedStorePath), "github", NullLoggerFactory.Instance);
 
@@ -910,7 +924,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
                 new SandboxCommandResult(0, run.HeadSha + "\n", string.Empty))
             .OnArgvContains(
                 $"-C {slot.TargetPath} status --porcelain",
-                new SandboxCommandResult(0, " M src/Unreadable.cs\0", string.Empty))
+                new SandboxCommandResult(0, DetachedHeader + " M src/Unreadable.cs\0", string.Empty))
             .OnArgvContains(
                 "rev-parse :src/Unreadable.cs",
                 new SandboxCommandResult(128, string.Empty, "fatal: path does not exist in the index"));
@@ -960,6 +974,183 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     {
         ReviewSlotPreparer.ParsePorcelainZ(string.Empty).Should().BeEmpty();
         ReviewSlotPreparer.ParsePorcelainZ("\0").Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// THE TRAP IN ADDING <c>-b</c>. The branch header arrives as its own NUL-terminated field and is far
+    /// longer than the four characters the short-field guard drops, so an unmodified parser reads it as code
+    /// <c>##</c> at path <c>HEAD (no branch)</c>: a leftover that is not a file, on every run, in a checkout
+    /// the daemon deliberately keeps detached. The probe meant to confirm cleanliness would then refuse every
+    /// review instead. The exact string is what git 2.53.0 emits, not an approximation of it.
+    /// </summary>
+    [Fact]
+    public void ParsePorcelainZ_DoesNotReadTheBranchHeaderAsALeftoverPath()
+    {
+        ReviewSlotPreparer.ParsePorcelainZ(DetachedHeader).Should().BeEmpty(
+            "a clean detached checkout answers with the header alone, and that is not a dirty path");
+
+        ReviewSlotPreparer.ParsePorcelainZ("## main...origin/main\0").Should().BeEmpty(
+            "the attached form carries upstream tracking info and is just as much not a path");
+
+        var entries = ReviewSlotPreparer.ParsePorcelainZ(DetachedHeader + " M src/Edited.cs\0?? build/out.log\0");
+
+        entries.Should().HaveCount(2, "the header is skipped but everything after it still counts");
+        entries[0].Should().Be((" M", "src/Edited.cs"));
+        entries[1].Should().Be(("??", "build/out.log"));
+    }
+
+    /// <summary>
+    /// The header skip is bounded to the leading field, so it cannot be widened by accident into "ignore any
+    /// record that looks like a comment". A path is still a path wherever it sits and whatever it is called.
+    /// </summary>
+    [Fact]
+    public void ParsePorcelainZ_StillReadsARecordWhosePathBeginsWithTheHeaderPrefix()
+    {
+        var entries = ReviewSlotPreparer.ParsePorcelainZ(DetachedHeader + "?? ## odd name.md\0");
+
+        entries.Should().ContainSingle().Which.Should().Be(("??", "## odd name.md"));
+    }
+
+    /// <summary>
+    /// A rename still consumes its second path field with <c>-b</c> in play — the header must not shift the
+    /// pairing by one and turn the rename SOURCE into an entry of its own.
+    /// </summary>
+    [Fact]
+    public void ParsePorcelainZ_ConsumesARenamesSecondFieldEvenBehindTheBranchHeader()
+    {
+        var entries = ReviewSlotPreparer.ParsePorcelainZ(DetachedHeader + "R  c.txt\0a.txt\0");
+
+        entries.Should().ContainSingle().Which.Should().Be(("R ", "c.txt"));
+    }
+
+    /// <summary>
+    /// The point of the whole change, stated as a property: a probe that RAN and found nothing must be
+    /// distinguishable from a probe whose answer never arrived. Before <c>-b</c> both were the empty string.
+    /// </summary>
+    [Fact]
+    public void ProbeReported_SeparatesACleanAnswerFromNoAnswerAtAll()
+    {
+        ReviewSlotPreparer.ProbeReported(DetachedHeader).Should().BeTrue(
+            "a clean tree still answers, and the header is that answer");
+        ReviewSlotPreparer.ProbeReported(DetachedHeader + " M src/Edited.cs\0").Should().BeTrue();
+
+        ReviewSlotPreparer.ProbeReported(string.Empty).Should().BeFalse(
+            "git cannot produce an empty answer for `status -b`, so this is lost output, not cleanliness");
+        ReviewSlotPreparer.ProbeReported(" M src/Edited.cs\0").Should().BeFalse(
+            "output that lost its header is truncated, and a truncated listing cannot be read as complete");
+    }
+
+    /// <summary>
+    /// The production half of #87, end to end. A git that exits 0 having lost its output is not hypothetical
+    /// here — this daemon measured one (run 200, <c>git rev-parse HEAD</c>, exit 0, no stdout, which no real
+    /// git invocation produces). Under the old command that answer was the empty string, identical to a clean
+    /// tree, so the probe concluded the checkout was verified clean and said so. A dirty tree reaching a
+    /// reviewer as "verified" is the failure this pins: the run may continue on the independently verified
+    /// head, but it must NOT claim a cleanliness it never observed.
+    /// </summary>
+    [Fact]
+    public async Task PrepareAsync_SharedStore_DoesNotClaimACleanTreeWhenTheProbesOutputWasLost()
+    {
+        var slot = CreateSharedSlot();
+        var run = CreateRun();
+        var runner = new FakeSandboxCommandRunner()
+            .OnArgvContains(
+                $"rev-parse --verify origin/{Branch}",
+                new SandboxCommandResult(1, string.Empty, "unknown revision"))
+            .OnArgvContains(
+                $"-C {slot.TargetPath} rev-parse HEAD",
+                new SandboxCommandResult(0, run.HeadSha + "\n", string.Empty))
+            // Exit 0, empty stdout: the shape a lost capture takes. Before `-b` this was ALSO the shape of a
+            // clean tree, which is exactly why it went unnoticed.
+            .OnArgvContains(
+                $"-C {slot.TargetPath} status --porcelain",
+                new SandboxCommandResult(0, string.Empty, string.Empty));
+        using var logs = new CapturingLoggerFactory();
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.SharedStorePath), "github", logs);
+
+        var act = async () => await preparer.PrepareAsync(
+            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
+            CancellationToken.None);
+
+        await act.Should().NotThrowAsync(
+            "the head was independently verified, so an unanswered probe is not grounds for refusing the run");
+
+        logs.Capturing.MessagesAtLevel(LogLevel.Information).Should().NotContain(
+            m => m.Contains("verified clean", StringComparison.Ordinal),
+            "claiming verification from a probe that returned nothing is the defect itself");
+        logs.Capturing.MessagesAtLevel(LogLevel.Warning).Should().Contain(
+            m => m.Contains("returned no branch header", StringComparison.Ordinal),
+            "and the run must say out loud that it could not tell");
+    }
+
+    /// <summary>
+    /// The other direction, and the one that makes the test above mean something. A probe that genuinely ran
+    /// against a genuinely clean tree DOES claim it — so "no clean claim" is evidence about the probe rather
+    /// than a message this code never emits.
+    /// </summary>
+    [Fact]
+    public async Task PrepareAsync_SharedStore_ClaimsACleanTreeWhenTheProbeActuallyAnswered()
+    {
+        var slot = CreateSharedSlot();
+        var run = CreateRun();
+        var runner = new FakeSandboxCommandRunner()
+            .OnArgvContains(
+                $"rev-parse --verify origin/{Branch}",
+                new SandboxCommandResult(1, string.Empty, "unknown revision"))
+            .OnArgvContains(
+                $"-C {slot.TargetPath} rev-parse HEAD",
+                new SandboxCommandResult(0, run.HeadSha + "\n", string.Empty))
+            // A clean tree, as real git reports one under `-b`: the header and nothing else.
+            .OnArgvContains(
+                $"-C {slot.TargetPath} status --porcelain",
+                new SandboxCommandResult(0, DetachedHeader, string.Empty));
+        using var logs = new CapturingLoggerFactory();
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.SharedStorePath), "github", logs);
+
+        var act = async () => await preparer.PrepareAsync(
+            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
+            CancellationToken.None);
+
+        await act.Should().NotThrowAsync();
+        logs.Capturing.MessagesAtLevel(LogLevel.Information).Should().Contain(
+            m => m.Contains("verified clean", StringComparison.Ordinal),
+            "a probe that answered 'nothing dirty' is exactly when the clean claim is earned");
+    }
+
+    /// <summary>
+    /// The command carries <c>-b</c>. Pinned separately from the behaviour above because the behaviour is
+    /// reachable from a fixture whatever the real command says — this is what ties the fix to the flag that
+    /// makes it work against a real git.
+    /// </summary>
+    [Fact]
+    public async Task PrepareAsync_SharedStore_AsksGitForTheBranchHeaderSoASuccessCannotBeSilent()
+    {
+        var slot = CreateSharedSlot();
+        var run = CreateRun();
+        var runner = new FakeSandboxCommandRunner()
+            .OnArgvContains(
+                $"rev-parse --verify origin/{Branch}",
+                new SandboxCommandResult(1, string.Empty, "unknown revision"))
+            .OnArgvContains(
+                $"-C {slot.TargetPath} rev-parse HEAD",
+                new SandboxCommandResult(0, run.HeadSha + "\n", string.Empty))
+            .OnArgvContains(
+                $"-C {slot.TargetPath} status --porcelain",
+                new SandboxCommandResult(0, DetachedHeader, string.Empty));
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.SharedStorePath), "github", NullLoggerFactory.Instance);
+
+        await preparer.PrepareAsync(
+            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
+            CancellationToken.None);
+
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().Contain(
+            command => command.EndsWith(
+                $"-C {slot.TargetPath} status --porcelain -b -z --ignore-submodules=all",
+                StringComparison.Ordinal),
+            "without -b a clean tree answers with the empty string and a successful probe carries no evidence");
     }
 
     /// <summary>

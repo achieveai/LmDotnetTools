@@ -22,10 +22,18 @@ namespace CodeReviewDaemon.Sample.Workspace.Sandbox;
 /// </para>
 /// <para>
 /// That leaves exactly one way to delete a file some other fetch is still writing: a second fetch into the
-/// SAME object store, started after our snapshot. It cannot happen — the caller holds the per-store lock
-/// for the duration, which is the same invariant <c>gc.autoDetach=false</c> relies on. The scope is
-/// narrowed twice more for cheapness rather than safety: only pack-writing verbs snapshot at all, and only
-/// the object stores reachable from the command's own working directory are ever examined.
+/// SAME object store, started after our snapshot. An earlier version of this comment asserted that it
+/// "cannot happen" because the caller holds the per-store lock. That claim is TRUE of the one call path it
+/// was written about (<see cref="ReviewSlotPreparer"/> takes <c>SharedStoreLocks</c> around its fetches) and
+/// UNVERIFIED of the dozen others that reach a pack-writing verb — several of which run against their own
+/// clone with no lock involved at all. Safety here rests on a lock nobody has proved global, so it does not
+/// rest on it any more: a candidate is also required to be held open by NO process. See
+/// <see cref="OpenTempPackPaths"/>. The two conditions are ANDed, so the guard can only ever spare a file,
+/// never condemn one.
+/// </para>
+/// <para>
+/// The scope is narrowed twice more for cheapness rather than safety: only pack-writing verbs snapshot at
+/// all, and only the object stores reachable from the command's own working directory are ever examined.
 /// </para>
 /// </summary>
 internal static class OrphanedPackSweeper
@@ -48,6 +56,10 @@ internal static class OrphanedPackSweeper
     /// level per path segment (<c>modules/repos/Nova/modules/…</c>), so a handful of levels covers every
     /// real layout while a cycle through a symlink cannot run away.</summary>
     private const int MaxModuleDepth = 12;
+
+    /// <summary>Where the open-descriptor evidence lives. A constant so the one test that has to prove the
+    /// guard degrades safely on a platform without it has something to name.</summary>
+    private const string ProcRoot = "/proc";
 
     /// <summary>
     /// Records the temp packs already present, so a later sweep can tell OUR abandoned write from one that
@@ -95,12 +107,29 @@ internal static class OrphanedPackSweeper
 
         try
         {
+            // Collected ONCE per sweep rather than per candidate: the scan walks every readable process's
+            // descriptor table, which is cheap in absolute terms but not cheap enough to repeat. Deferred
+            // until a candidate actually exists so the overwhelmingly common "killed command wrote nothing"
+            // case pays nothing for it.
+            IReadOnlySet<string>? openNow = null;
+
             foreach (var packDirectory in PackDirectories(workingDirectory))
             {
                 foreach (var file in TempPackFiles(packDirectory))
                 {
                     if (preexisting.Contains(file))
                     {
+                        continue;
+                    }
+
+                    openNow ??= OpenTempPackPaths();
+                    if (openNow.Contains(file))
+                    {
+                        // Someone is still writing it. That is a live fetch, not our abandoned one, and
+                        // deleting it would corrupt an operation that is going to succeed.
+                        logger.LogInformation(
+                            "Leaving git temp pack '{Path}' alone: another process still holds it open.",
+                            file);
                         continue;
                     }
 
@@ -163,6 +192,107 @@ internal static class OrphanedPackSweeper
         }
     }
 
+    /// <summary>
+    /// Temp pack paths that some process still has OPEN, and so must not be deleted whatever the snapshot
+    /// says. This is the difference between "abandoned" and "being written", and it was measured rather than
+    /// assumed: a clone frozen mid-write shows exactly one holder for its <c>tmp_pack_*</c> in
+    /// <c>/proc/&lt;pid&gt;/fd</c>, and the same file after its writer is killed shows none.
+    /// <para>
+    /// KNOWN LIMITS, because this guard is worth exactly what it can see. It is LINUX-ONLY — there is no
+    /// <c>/proc</c> on Windows or macOS, where this returns empty and the sweep falls back to the snapshot
+    /// rule alone. It can only read descriptor tables the daemon has permission to read, so a fetch run by a
+    /// DIFFERENT user is invisible; that is acceptable here only because every git process this class can
+    /// abandon a pack for is one the daemon spawned itself. And it is a point-in-time sample: a fetch that
+    /// opens the file microseconds after the scan is not seen. The snapshot rule is what covers that, which
+    /// is why both conditions are required rather than either.
+    /// </para>
+    /// <para>
+    /// Failure in any direction yields the EMPTY set, never a partial one treated as complete — an
+    /// unreadable process must not be read as "nobody holds this".  Empty means the snapshot rule decides
+    /// alone, which is the behaviour that shipped before this guard existed.
+    /// </para>
+    /// </summary>
+    private static IReadOnlySet<string> OpenTempPackPaths()
+    {
+        var open = new HashSet<string>(StringComparer.Ordinal);
+
+        if (!Directory.Exists(ProcRoot))
+        {
+            return open;
+        }
+
+        string[] processDirectories;
+        try
+        {
+            processDirectories = Directory.GetDirectories(ProcRoot);
+        }
+        catch (Exception)
+        {
+            return open;
+        }
+
+        foreach (var processDirectory in processDirectories)
+        {
+            // /proc holds plenty that is not a process — `self`, `net`, `sys`. Only the numeric ones have a
+            // descriptor table.
+            var pid = Path.GetFileName(processDirectory);
+            if (pid.Length == 0 || !char.IsAsciiDigit(pid[0]))
+            {
+                continue;
+            }
+
+            FileSystemInfo[] descriptors;
+            try
+            {
+                descriptors = new DirectoryInfo(Path.Combine(processDirectory, "fd")).GetFileSystemInfos();
+            }
+            catch (Exception)
+            {
+                // Not ours to read, or the process exited between the listing and this call. Both are
+                // ordinary on a machine running anything else.
+                continue;
+            }
+
+            foreach (var descriptor in descriptors)
+            {
+                string? target;
+                try
+                {
+                    target = descriptor.LinkTarget;
+                }
+                catch (Exception)
+                {
+                    continue;
+                }
+
+                // Only temp packs are ever candidates, so carrying every open socket and log file of every
+                // process on the box in this set would be waste. Note an unlinked-but-open file reads back
+                // as "<path> (deleted)" and correctly fails this exact-prefix test on the FILE NAME.
+                if (target is not null && IsTempPackName(Path.GetFileName(target)))
+                {
+                    _ = open.Add(target);
+                }
+            }
+        }
+
+        return open;
+    }
+
+    /// <summary>Whether a file name is one of the temp files <c>index-pack</c> writes. The single place the
+    /// prefix rule lives, so the sweep and the open-handle scan cannot drift apart on what counts.</summary>
+    private static bool IsTempPackName(string name)
+    {
+        foreach (var prefix in S_tempPrefixes)
+        {
+            if (name.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>Temp pack files directly inside one pack directory. Not recursive: git writes them beside
     /// the packs they will become, never below.</summary>
     private static IEnumerable<string> TempPackFiles(string packDirectory)
@@ -179,14 +309,9 @@ internal static class OrphanedPackSweeper
 
         foreach (var entry in entries)
         {
-            var name = Path.GetFileName(entry);
-            foreach (var prefix in S_tempPrefixes)
+            if (IsTempPackName(Path.GetFileName(entry)))
             {
-                if (name.StartsWith(prefix, StringComparison.Ordinal))
-                {
-                    yield return entry;
-                    break;
-                }
+                yield return entry;
             }
         }
     }

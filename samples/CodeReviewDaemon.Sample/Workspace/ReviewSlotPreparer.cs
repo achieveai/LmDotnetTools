@@ -1312,9 +1312,17 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
                 + $"{run.HeadSha}; refusing to review a tree that is not the pull request.");
         }
 
+        // `-b` is what makes a SUCCESSFUL probe say so. Without it a clean tree answers with the empty
+        // string, which is byte-for-byte what a probe that never ran produces — and this daemon has already
+        // measured a git command exiting 0 with its output silently lost (run 200, `git rev-parse HEAD`
+        // returning nothing, which no real git invocation does). Under that failure the check below sees no
+        // leftovers, concludes the tree is clean, and logs that it VERIFIED it — a positive claim about a
+        // probe whose answer never arrived. With `-b` git always emits a branch header first, so "clean"
+        // carries evidence and "nothing came back" is a state this code can recognise instead of mistaking
+        // for success.
         var status = await _git
             .RunAsync(
-                ["-C", targetDir, "status", "--porcelain", "-z", "--ignore-submodules=all"],
+                ["-C", targetDir, "status", "--porcelain", "-b", "-z", "--ignore-submodules=all"],
                 targetDir,
                 cancellationToken)
             .ConfigureAwait(false);
@@ -1327,8 +1335,23 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
             return;
         }
 
+        var statusOutput = status.Stdout ?? string.Empty;
+        if (!ProbeReported(statusOutput))
+        {
+            // Exit 0 with no branch header. git cannot produce that for `status -b`, so the answer was lost
+            // in transit rather than being an answer of "clean". Treated exactly like a probe that failed to
+            // run — the head SHA was independently verified above, so the run may continue, but it continues
+            // WITHOUT the clean claim it has not earned.
+            _logger.LogWarning(
+                "Run {RunId}: the leftovers probe on '{TargetDir}' exited 0 but returned no branch header, so "
+                    + "its output did not survive. That is indistinguishable from a probe that never ran and "
+                    + "is NOT being read as a clean tree. Proceeding on the verified head alone.",
+                run.Id, targetDir);
+            return;
+        }
+
         var (leftovers, normalized) = await PartitionLeftoversAsync(
-                ParsePorcelainZ(status.Stdout ?? string.Empty), targetDir, cancellationToken)
+                ParsePorcelainZ(statusOutput), targetDir, cancellationToken)
             .ConfigureAwait(false);
 
         if (normalized.Count > 0)
@@ -1445,13 +1468,36 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
     }
 
     /// <summary>
-    /// Parses <c>status --porcelain -z</c> into (two-letter code, path) pairs.
+    /// Whether the probe's output is the answer of a git that actually ran. <c>status --porcelain -b</c>
+    /// always emits a branch header, so its ABSENCE means the output was lost rather than that the tree was
+    /// clean — the two are otherwise the same empty string, which is the whole reason <c>-b</c> is passed.
+    /// </summary>
+    internal static bool ProbeReported(string stdout) =>
+        stdout.StartsWith(BranchHeaderPrefix, StringComparison.Ordinal);
+
+    /// <summary>
+    /// What <c>-b</c> prepends. Two '#' is not a status code — porcelain codes are drawn from
+    /// <c> MADRCU?!</c> — so this prefix cannot collide with a real entry, and a path that merely CONTAINS
+    /// "## " still arrives behind its own two-character code and is unaffected.
+    /// </summary>
+    private const string BranchHeaderPrefix = "## ";
+
+    /// <summary>
+    /// Parses <c>status --porcelain -b -z</c> into (two-letter code, path) pairs.
     /// </summary>
     /// <remarks>
     /// The NUL-delimited form is used rather than the newline one because porcelain v1 QUOTES any path with a
     /// space, quote or non-ASCII byte in it, and a path that arrives quoted would never match the index entry
     /// the classifier below looks up. Rename and copy records carry a second path field, which is consumed
     /// with the record it belongs to so it is not mistaken for an entry of its own.
+    /// <para>
+    /// The <c>-b</c> branch header is skipped, and skipping it is load-bearing rather than tidy. It arrives as
+    /// its own NUL-terminated field and is long enough to clear the short-field guard, so without this it
+    /// would be read as code <c>##</c> at path <c>HEAD (no branch)</c> — a leftover that is not a file, on
+    /// every single run, in a checkout the daemon deliberately keeps DETACHED. That turns a probe meant to
+    /// confirm cleanliness into one that refuses every review. Verified against git 2.53.0: a clean detached
+    /// checkout answers exactly <c>"## HEAD (no branch)\0"</c>.
+    /// </para>
     /// </remarks>
     internal static IReadOnlyList<(string Code, string Path)> ParsePorcelainZ(string stdout)
     {
@@ -1459,6 +1505,13 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         var fields = stdout.Split('\0');
         for (var i = 0; i < fields.Length; i++)
         {
+            // Only the leading field can be the branch header; git emits it first and once. Bounding the skip
+            // to index 0 keeps a real path that happens to start "## " reachable.
+            if (i == 0 && fields[i].StartsWith(BranchHeaderPrefix, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
             // "XY path" — anything shorter is the empty tail after the final delimiter.
             if (fields[i].Length < 4)
             {

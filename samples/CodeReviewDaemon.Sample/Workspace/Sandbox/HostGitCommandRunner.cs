@@ -333,6 +333,16 @@ internal sealed class HostGitCommandRunner : ISandboxCommandRunner
                 started.Elapsed.TotalSeconds,
                 S_drainDeadline.TotalSeconds);
 
+            // NOT swept, and that is a decision rather than an omission. 125 is the one outcome where a
+            // descendant of this command is known to be ALIVE — that is what the exit code MEANS — so the
+            // sweep would be running against a live process by construction. The open-handle guard covers
+            // most of that, but not the window between `index-pack` closing its finished temp pack and
+            // renaming it into place: for those microseconds the file has no holder and is absent from the
+            // snapshot, so it reads as an orphan and would be deleted after it had been written
+            // successfully. Against that the expected gain is close to zero — git itself has already
+            // exited here, so its pack was either renamed or cleaned up, and the realistic pipe-holder is a
+            // helper git waits for (ssh, a credential helper, a hook) rather than something writing a pack.
+            // A narrow sweep that misses a rare orphan beats a broad one that can corrupt a good fetch.
             return new SandboxCommandResult(
                 125,
                 capturedStdout,
@@ -487,6 +497,24 @@ internal sealed class HostGitCommandRunner : ISandboxCommandRunner
     /// nothing is indistinguishable from a sweep that never runs, which is exactly how the original leak
     /// stayed invisible until it filled the disk.
     /// </summary>
+    /// <summary>
+    /// Removes the temp packs this command abandoned, and says how much that reclaimed.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately NOT gated behind <c>CodeReviewDaemonOptions.EnableObjectStoreMaintenance</c>, and that
+    /// is the opposite of what it looks like. That flag governs <c>repack</c>, <c>gc</c> and the <c>gc.*</c>
+    /// config writes — commands that rewrite an object store IN PLACE, which the owner's standing
+    /// instruction puts off limits. It defaults to false and is set in no appsettings file, so it is false
+    /// everywhere the daemon actually runs. Gating this behind it would therefore not make the sweep
+    /// cautious, it would make it DEAD, and the leak it exists to stop is the one that already took the
+    /// filesystem read-only.
+    /// <para>
+    /// The grant is narrower than the flag and this stays inside it: the only files removed are temp files
+    /// OUR OWN killed command created and abandoned within this method's own window. No real pack can be
+    /// reached — not by an unusual name, not by a race — because the prefix rule and the pre-command
+    /// snapshot are both required, and neither is configurable.
+    /// </para>
+    /// </remarks>
     private void SweepAbandonedPacks(string? workingDirectory, IReadOnlySet<string>? preexisting, string verb)
     {
         if (preexisting is null)
