@@ -166,7 +166,11 @@ internal sealed class S2SReviewAgentLoopFactory : IReviewAgentLoopFactory
             onConversationMinted: recorder is null ? null : minted => recorder(minted, title),
             // A resumed review rejoins the conversation it already minted: no second provision, no second
             // retention row, no second deep-link. Null (the common case) provisions lazily as before.
-            existingThreadId: resumeHostedThreadId);
+            existingThreadId: resumeHostedThreadId,
+            // The operator's configured model for the review sub-agents. Conversation-scoped, so it only
+            // takes effect on a conversation this call actually provisions; a RESUMED review keeps whatever
+            // the original provision set, which is correct — its sub-agent tree already exists.
+            subAgentModelId: _options.SubAgentModelId);
     }
 
     /// <summary>

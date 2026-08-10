@@ -2358,6 +2358,17 @@ public sealed class SubAgentManager : IAsyncDisposable
             return new SubAgentModelRouting(effectiveModelId, spawnTier, "spawn-tier");
         }
 
+        // The operator's conversation-wide default, ABOVE the template's own frontmatter. See
+        // SubAgentOptions.DefaultSubAgentModelId for why that ordering: the template is authored in a
+        // workspace the operator does not control, so letting it win would silently override the model the
+        // operator configured and pays for. Reported under its own label because "the configured model won"
+        // and "nothing was configured, so the child inherited the parent" were previously indistinguishable
+        // in the record — which is exactly how this knob stayed inert without anyone noticing.
+        if (!string.IsNullOrWhiteSpace(_options.DefaultSubAgentModelId))
+        {
+            return new SubAgentModelRouting(effectiveModelId, null, "conversation-default");
+        }
+
         if (template.IsModelExplicitlySelected)
         {
             return new SubAgentModelRouting(effectiveModelId, null, "template-model");
@@ -2416,7 +2427,22 @@ public sealed class SubAgentManager : IAsyncDisposable
             && _options.TierModelResolver is { } tierResolver
                 ? tierResolver(tier)
                 : null;
-        var effectiveModel = !string.IsNullOrWhiteSpace(modelOverride) ? modelOverride : tierResolvedModel;
+
+        // The operator's conversation-wide default applies only when THIS SPAWN named neither a model nor a
+        // resolvable tier. Folding it into effectiveModel is what places it above the template: everything
+        // downstream (ResolveSubAgentOptions' model inheritance, the plain path's transport-correct provider
+        // choice) already treats effectiveModel as "the model chosen for this spawn", so the ordering
+        // spawn-model > spawn-tier > conversation-default > template > parent falls out of one assignment
+        // rather than a second, separately-maintained ladder.
+        var conversationDefaultModel =
+            string.IsNullOrWhiteSpace(modelOverride)
+            && tierResolvedModel is null
+            && !string.IsNullOrWhiteSpace(_options.DefaultSubAgentModelId)
+                ? _options.DefaultSubAgentModelId
+                : null;
+        var effectiveModel = !string.IsNullOrWhiteSpace(modelOverride)
+            ? modelOverride
+            : tierResolvedModel ?? conversationDefaultModel;
 
         if (TestAgentFactoryOverride != null)
         {
@@ -2445,8 +2471,14 @@ public sealed class SubAgentManager : IAsyncDisposable
                 var modelId = string.IsNullOrWhiteSpace(defaultOptions?.ModelId)
                     ? null
                     : defaultOptions.ModelId;
+                // The conversation default counts as an explicit selection HERE and only here: the
+                // characteristics factory hands back the parent agent unchanged unless one of these two flags
+                // is set, so without it the operator's configured model would be resolved, threaded all the
+                // way down, and then silently dropped in favour of the parent's — inert again, one layer
+                // deeper and harder to see.
                 var modelExplicitlySelected =
                     !string.IsNullOrWhiteSpace(modelOverride)
+                    || conversationDefaultModel is not null
                     || template.IsModelExplicitlySelected;
                 // A per-spawn tier that resolved to a concrete model counts as a tier-resolved model for
                 // this spawn (in addition to a template that was itself tier-authored), so the
@@ -2456,8 +2488,19 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // own (parent-model reuse). A template that lowered its Effort keeps that value; one that
                 // pins or tier-resolves a model is left un-nudged — "less thinking or a different model"
                 // overrides the inherited floor (see SubAgentOptions.InheritedEffort).
+                //
+                // A CONVERSATION DEFAULT is deliberately excluded from that suppression, which is why this
+                // cannot reuse modelExplicitlySelected above. The floor is dropped for a per-spawn or
+                // per-template choice because something made a deliberate, task-specific decision to run
+                // this child differently. An operator setting one model for every sub-agent in the
+                // conversation has expressed no such per-task intent — they changed WHICH model reviews,
+                // not how hard it thinks — and InheritedEffort is the abstract, re-shaped-per-child-model
+                // knob (unlike InheritedReasoning), so carrying it across to a different model is safe.
+                // Suppressing it here would quietly trade a model upgrade for an effort downgrade.
                 var effectiveEffort = template.Effort
-                    ?? (modelExplicitlySelected || isModelTierResolved
+                    ?? (!string.IsNullOrWhiteSpace(modelOverride)
+                        || template.IsModelExplicitlySelected
+                        || isModelTierResolved
                         ? null
                         : _options.InheritedEffort);
                 var provider = characteristicsFactory(

@@ -603,13 +603,208 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
         legacyFactoryCalls.Should().Be(1);
     }
 
+    // ---- The conversation-wide default sub-agent model (daemon SubAgentModelId) ----
+    // These pin the rung it occupies: spawn-model > spawn-tier > conversation-default > template-model >
+    // template-tier > parent. Every one of them uses the CHARACTERISTICS path, because that is the path a
+    // hosted review conversation's sub-agents actually take; a plain-path-only test would pass while the
+    // real spawns kept inheriting the parent.
+
+    [Fact]
+    public async Task SpawnAsync_ConversationDefaultModel_IsWhatTheSubAgentActuallyRunsOn()
+    {
+        // The test that would have caught the original defect: the value is set to something OTHER than the
+        // parent model, and the assertion is on what reached the provider — not on what the option holds.
+        SubAgentCharacteristics? receivedCharacteristics = null;
+        var providerAgent = CreateRespondingAgent();
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () => throw new InvalidOperationException("Legacy factory should not run."),
+            CharacteristicsAgentFactory = characteristics =>
+            {
+                receivedCharacteristics = characteristics;
+                return new SubAgentProviderAgent(providerAgent.Object, ImmutableDictionary<string, object?>.Empty);
+            },
+        };
+        await using var manager = CreateManager(
+            template,
+            parentModelId: "orchestrator-model",
+            defaultSubAgentModelId: "configured-reviewer-model"
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task");
+
+        receivedCharacteristics.Should().NotBeNull();
+        receivedCharacteristics!.ModelId
+            .Should()
+            .Be(
+                "configured-reviewer-model",
+                "the operator configured this model for sub-agents, so it is the one the child must run"
+            );
+        receivedCharacteristics.IsModelExplicitlySelected
+            .Should()
+            .BeTrue(
+                "the characteristics factory hands back the PARENT agent unless a model was explicitly "
+                    + "selected, so a false here would silently discard the configured model"
+            );
+
+        var snapshot = manager.ListAgents().Should().ContainSingle().Subject;
+        snapshot.GetType().GetProperty("ModelSelectionSource")!.GetValue(snapshot)
+            .Should()
+            .Be(
+                "conversation-default",
+                "an operator has to be able to tell 'the configured model won' from 'nothing was configured "
+                    + "and the child inherited the parent' — those two were indistinguishable before"
+            );
+    }
+
+    [Fact]
+    public async Task SpawnAsync_ExplicitSpawnModel_StillOutranksTheConversationDefault()
+    {
+        SubAgentCharacteristics? receivedCharacteristics = null;
+        var providerAgent = CreateRespondingAgent();
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () => throw new InvalidOperationException("Legacy factory should not run."),
+            CharacteristicsAgentFactory = characteristics =>
+            {
+                receivedCharacteristics = characteristics;
+                return new SubAgentProviderAgent(providerAgent.Object, ImmutableDictionary<string, object?>.Empty);
+            },
+        };
+        await using var manager = CreateManager(
+            template,
+            parentModelId: "orchestrator-model",
+            defaultSubAgentModelId: "configured-reviewer-model"
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task", model: "spawn-chosen-model");
+
+        receivedCharacteristics!.ModelId
+            .Should()
+            .Be(
+                "spawn-chosen-model",
+                "a per-spawn model is the parent agent deciding at dispatch time for THIS task; the "
+                    + "conversation default is a standing preference and must yield to it"
+            );
+
+        var snapshot = manager.ListAgents().Should().ContainSingle().Subject;
+        snapshot.GetType().GetProperty("ModelSelectionSource")!.GetValue(snapshot).Should().Be("spawn-model");
+    }
+
+    [Fact]
+    public async Task SpawnAsync_SpawnTier_StillOutranksTheConversationDefault()
+    {
+        SubAgentCharacteristics? receivedCharacteristics = null;
+        var providerAgent = CreateRespondingAgent();
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () => throw new InvalidOperationException("Legacy factory should not run."),
+            CharacteristicsAgentFactory = characteristics =>
+            {
+                receivedCharacteristics = characteristics;
+                return new SubAgentProviderAgent(providerAgent.Object, ImmutableDictionary<string, object?>.Empty);
+            },
+        };
+        await using var manager = CreateManager(
+            template,
+            parentModelId: "orchestrator-model",
+            tierModelResolver: tier => tier == 5 ? "tier-5-model" : null,
+            defaultSubAgentModelId: "configured-reviewer-model"
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task", modelIntelligence: 5);
+
+        receivedCharacteristics!.ModelId.Should().Be("tier-5-model");
+
+        var snapshot = manager.ListAgents().Should().ContainSingle().Subject;
+        snapshot.GetType().GetProperty("ModelSelectionSource")!.GetValue(snapshot).Should().Be("spawn-tier");
+    }
+
+    [Fact]
+    public async Task SpawnAsync_ConversationDefault_OutranksTheTemplatesOwnDeclaredModel()
+    {
+        // The half of the ordering that is a genuine judgement rather than an obvious one. The template's
+        // markdown is authored in a workspace the operator does not edit and the daemon cannot read, so a
+        // template-declared model winning here would silently override the model the operator pays for.
+        SubAgentCharacteristics? receivedCharacteristics = null;
+        var providerAgent = CreateRespondingAgent();
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () => throw new InvalidOperationException("Legacy factory should not run."),
+            DefaultOptions = new GenerateReplyOptions { ModelId = "template-declared-model" },
+            IsModelExplicitlySelected = true,
+            CharacteristicsAgentFactory = characteristics =>
+            {
+                receivedCharacteristics = characteristics;
+                return new SubAgentProviderAgent(providerAgent.Object, ImmutableDictionary<string, object?>.Empty);
+            },
+        };
+        await using var manager = CreateManager(
+            template,
+            parentModelId: "orchestrator-model",
+            defaultSubAgentModelId: "configured-reviewer-model"
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task");
+
+        receivedCharacteristics!.ModelId.Should().Be("configured-reviewer-model");
+
+        var snapshot = manager.ListAgents().Should().ContainSingle().Subject;
+        snapshot.GetType().GetProperty("ModelSelectionSource")!.GetValue(snapshot)
+            .Should().Be("conversation-default");
+    }
+
+    [Fact]
+    public async Task SpawnAsync_ConversationDefault_KeepsTheInheritedEffortFloor()
+    {
+        // A per-spawn or per-template model choice suppresses the inherited reasoning floor, because
+        // something made a deliberate per-task decision to run this child differently. A conversation-wide
+        // operator default expresses no such per-task intent — it changes WHICH model reviews, not how hard
+        // it thinks — so the floor survives. Without this, configuring a stronger model would quietly buy a
+        // model upgrade at the price of an effort downgrade, which can be a net loss.
+        SubAgentCharacteristics? receivedCharacteristics = null;
+        var providerAgent = CreateRespondingAgent();
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () => throw new InvalidOperationException("Legacy factory should not run."),
+            CharacteristicsAgentFactory = characteristics =>
+            {
+                receivedCharacteristics = characteristics;
+                return new SubAgentProviderAgent(providerAgent.Object, ImmutableDictionary<string, object?>.Empty);
+            },
+        };
+        await using var manager = CreateManager(
+            template,
+            parentModelId: "orchestrator-model",
+            inheritedEffort: ReasoningEffort.High,
+            defaultSubAgentModelId: "configured-reviewer-model"
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task");
+
+        receivedCharacteristics!.ModelId.Should().Be("configured-reviewer-model");
+        receivedCharacteristics.Effort
+            .Should()
+            .Be(
+                ReasoningEffort.High,
+                "InheritedEffort is the abstract floor that is re-shaped per child model, so it carries "
+                    + "safely to a different model; dropping it here would trade the model upgrade away"
+            );
+    }
+
     private SubAgentManager CreateManager(
         SubAgentTemplate template,
         string? parentModelId = null,
         ReasoningEffort? inheritedEffort = null,
         ImmutableDictionary<string, object?>? inheritedReasoning = null,
         Func<int, string?>? tierModelResolver = null,
-        Func<string, IStreamingAgent>? tierAgentFactory = null
+        Func<string, IStreamingAgent>? tierAgentFactory = null,
+        string? defaultSubAgentModelId = null
     )
     {
         var options = new SubAgentOptions
@@ -619,6 +814,7 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
             InheritedReasoning = inheritedReasoning,
             TierModelResolver = tierModelResolver,
             TierAgentFactory = tierAgentFactory,
+            DefaultSubAgentModelId = defaultSubAgentModelId,
         };
 
         return new SubAgentManager(

@@ -99,16 +99,34 @@ internal sealed class LmStreamingS2SClient
     /// <summary>
     /// Provisions a new conversation thread and returns its server-minted thread id.
     /// <paramref name="systemPromptAppendix"/> is the review profile's system prompt: provision carries no
-    /// model or tool overrides, so it is the ONLY channel by which the daemon's review methodology, output
-    /// contract and sub-agent-dispatch instructions reach the hosted agent. The host appends it to the
-    /// workspace-agent mode's own prompt (additive, not a replacement). A null/blank value is sent as
-    /// <c>null</c>, which the host treats the same as absent.
+    /// per-turn model or tool overrides, so it is the only channel by which the daemon's review methodology,
+    /// output contract and sub-agent-dispatch instructions COULD reach the hosted agent.
+    /// <para>
+    /// <b>Today they do not.</b> The host stores this value in thread metadata under
+    /// <c>sample.systemPromptAppendix</c> and never reads it back:
+    /// <c>SystemPromptAugmenter.AppendCallerInstructions</c> — the only function that can apply an appendix
+    /// to a prompt — has zero production callers, and the host composes its prompt from the mode alone. So
+    /// the review runs under the generic workspace-agent prompt, which is precisely the state
+    /// <c>S2SReviewAgentLoopFactory</c>'s own ArgumentException was written to prevent. Do not restate the
+    /// old claim that "the host appends it to the mode's prompt (additive, not a replacement)" until there
+    /// is a reader; that sentence stood here while nothing read the value. Tracked as #49.
+    /// </para>
+    /// A null/blank value is sent as <c>null</c>, which the host treats the same as absent.
+    /// <para>
+    /// <paramref name="subAgentModelId"/> is the model every sub-agent spawned in this conversation runs on
+    /// unless the spawn names its own. It is conversation-scoped rather than per-turn because the host builds
+    /// its sub-agent options once per thread, when the agent is created. Optional and additive: a host that
+    /// predates the field ignores it and every child inherits the parent model, which is the behavior this
+    /// call had before — so unlike the spawn-suppression and idempotency flags below, there is nothing to
+    /// acknowledge and no contract to fail. Blank is sent as <c>null</c>.
+    /// </para>
     /// </summary>
     public async Task<string> ProvisionAsync(
         string workspaceId,
         string providerId,
         string modeId,
         string? systemPromptAppendix,
+        string? subAgentModelId,
         CancellationToken ct)
     {
         var body = await SendReadAsync(
@@ -122,6 +140,7 @@ internal sealed class LmStreamingS2SClient
                 SystemPromptAppendix = string.IsNullOrWhiteSpace(systemPromptAppendix)
                     ? null
                     : systemPromptAppendix,
+                SubAgentModelId = string.IsNullOrWhiteSpace(subAgentModelId) ? null : subAgentModelId,
             },
             ct);
         return ReadStringProperty(body, "threadId");

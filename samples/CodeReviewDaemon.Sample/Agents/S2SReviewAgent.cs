@@ -55,6 +55,7 @@ internal sealed class S2SReviewAgent
     private readonly string _providerId;
     private readonly string _modeId;
     private readonly string? _systemPrompt;
+    private readonly string? _subAgentModelId;
     private readonly string? _title;
     private readonly TimeSpan _pollInterval;
     private readonly TimeSpan _pollMaxInterval;
@@ -95,7 +96,8 @@ internal sealed class S2SReviewAgent
         TimeSpan? terminalConfirmDelay = null,
         TimeSpan? interruptedGrace = null,
         Action<string>? onConversationMinted = null,
-        string? existingThreadId = null)
+        string? existingThreadId = null,
+        string? subAgentModelId = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
@@ -105,6 +107,7 @@ internal sealed class S2SReviewAgent
         _providerId = providerId;
         _modeId = modeId;
         _systemPrompt = systemPrompt;
+        _subAgentModelId = subAgentModelId;
         _title = title;
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _onConversationMinted = onConversationMinted;
@@ -295,17 +298,22 @@ internal sealed class S2SReviewAgent
         }
 
         var threadId = await _client
-            .ProvisionAsync(_workspaceId, _providerId, _modeId, _systemPrompt, ct)
+            .ProvisionAsync(_workspaceId, _providerId, _modeId, _systemPrompt, _subAgentModelId, ct)
             .ConfigureAwait(false);
         _threadId = threadId;
         _logger.LogInformation(
             "Provisioned S2S review conversation {ThreadId} (workspace {WorkspaceId}, provider {ProviderId}, "
-                + "mode {ModeId}, system prompt {SystemPromptChars} chars).",
+                + "mode {ModeId}, system prompt {SystemPromptChars} chars, sub-agent model {SubAgentModelId}).",
             threadId,
             _workspaceId,
             _providerId,
             _modeId,
-            _systemPrompt?.Length ?? 0);
+            _systemPrompt?.Length ?? 0,
+            // What was ASKED for, at the only moment the daemon can ask. Which rung actually won per spawn is
+            // a separate, host-side fact and arrives back on each sub-agent's modelSelectionSource — the two
+            // are logged separately on purpose, because "we configured sol" and "the child ran sol" were
+            // exactly the claims that got conflated while this knob drove nothing.
+            string.IsNullOrWhiteSpace(_subAgentModelId) ? "(inherit parent)" : _subAgentModelId);
 
         // The run-scoped checkpoint comes FIRST and is deliberately NOT guarded: from this line on there is a
         // hosted conversation that will fan out a sub-agent tree, and a caller that cannot record its identity

@@ -763,6 +763,84 @@ public class ConversationsControllerTests
     }
 
     [Fact]
+    public async Task Provision_PersistsTheSubAgentModel_AndTheAgentBuildReadsItBack()
+    {
+        // The round trip is the point. Asserting only that the property was STORED would pass even if
+        // nothing ever read it back — which is precisely the state this knob and its sibling
+        // SystemPromptAppendix were both in: accepted at provision, driving nothing. So the assertion goes
+        // through ConversationSubAgentModel.ReadAsync, the same call the agent build makes.
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var workspaceStore = new Mock<IWorkspaceStore>();
+        workspaceStore.Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TestWorkspace("ws-1"));
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal();
+
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            workspaceStore: workspaceStore.Object,
+            providerRegistry: registry);
+
+        var result = await controller.Provision(
+            new ProvisionConversationRequest
+            {
+                WorkspaceId = "ws-1",
+                ProviderId = "test",
+                ModeId = SystemChatModes.DefaultModeId,
+                SubAgentModelId = "gpt-5.6-sol",
+            },
+            CancellationToken.None);
+
+        var threadId = Assert
+            .IsType<ProvisionConversationResponse>(Assert.IsType<OkObjectResult>(result).Value)
+            .ThreadId;
+
+        var readBack = await ConversationSubAgentModel.ReadAsync(store, threadId, CancellationToken.None);
+        readBack.Should().Be(
+            "gpt-5.6-sol",
+            "the model the caller configured at provision must be the one the agent build resolves");
+    }
+
+    [Fact]
+    public async Task Provision_WithoutASubAgentModel_LeavesEveryChildOnTheInheritedModel()
+    {
+        // The default path, and the one that must stay unchanged: every conversation the UI creates, and
+        // every conversation provisioned before this field existed, reads back as "no conversation
+        // default" rather than as a blank model id.
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var workspaceStore = new Mock<IWorkspaceStore>();
+        workspaceStore.Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TestWorkspace("ws-1"));
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal();
+
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            workspaceStore: workspaceStore.Object,
+            providerRegistry: registry);
+
+        var result = await controller.Provision(
+            new ProvisionConversationRequest
+            {
+                WorkspaceId = "ws-1",
+                ProviderId = "test",
+                ModeId = SystemChatModes.DefaultModeId,
+            },
+            CancellationToken.None);
+
+        var threadId = Assert
+            .IsType<ProvisionConversationResponse>(Assert.IsType<OkObjectResult>(result).Value)
+            .ThreadId;
+
+        var readBack = await ConversationSubAgentModel.ReadAsync(store, threadId, CancellationToken.None);
+        readBack.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Provision_ReturnsNotFound_WhenWorkspaceMissing()
     {
         var store = new InMemoryConversationStore();

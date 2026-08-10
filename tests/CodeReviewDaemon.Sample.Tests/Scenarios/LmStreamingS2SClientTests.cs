@@ -42,16 +42,22 @@ public sealed class LmStreamingS2SClientTests
             http, s2sSecret: "s2s-secret", sandboxAppId: "codereview-daemon", sandboxAppKey: "sbx-key");
 
         var threadId = await client.ProvisionAsync(
-            "ws-1", "openai", "workspace-agent", "REVIEW METHODOLOGY", CancellationToken.None);
+            "ws-1", "openai", "workspace-agent", "REVIEW METHODOLOGY", "gpt-5.6-sol", CancellationToken.None);
 
         threadId.Should().Be("thread-abc123");
         var recorded = handler.Requests.Should().ContainSingle().Subject;
         recorded.Body.Should().Contain("\"workspaceId\":\"ws-1\"")
             .And.Contain("\"providerId\":\"openai\"")
             .And.Contain("\"modeId\":\"workspace-agent\"")
-            // The review profile's system prompt is the ONLY channel for the daemon's methodology, sub-agent
-            // dispatch instruction and output contract — provision carries no model or tool overrides.
-            .And.Contain("\"systemPromptAppendix\":\"REVIEW METHODOLOGY\"");
+            // The review profile's system prompt is the only channel that COULD carry the daemon's
+            // methodology, sub-agent dispatch instruction and output contract — provision carries no
+            // per-turn model or tool overrides. This asserts the daemon SENDS it. It does not assert the
+            // host applies it, and today the host does not: the value is stored in thread metadata and
+            // never read back (#49). Do not read a green here as "the methodology reached the agent".
+            .And.Contain("\"systemPromptAppendix\":\"REVIEW METHODOLOGY\"")
+            // The configured sub-agent model rides the same call. Provision is the only moment it can be
+            // set: the host builds a thread's sub-agent options once, when it creates the agent.
+            .And.Contain("\"subAgentModelId\":\"gpt-5.6-sol\"");
         // The sandbox binds to whatever app id the daemon forwards — both passthrough headers must ride the call.
         recorded.SbxAppId.Should().Be("codereview-daemon");
         recorded.SbxAppKey.Should().Be("sbx-key");
@@ -67,13 +73,35 @@ public sealed class LmStreamingS2SClientTests
         var client = new LmStreamingS2SClient(http, s2sSecret: null, sandboxAppId: null, sandboxAppKey: null);
 
         _ = await client.ProvisionAsync(
-            "ws-1", "openai", "workspace-agent", systemPromptAppendix: null, CancellationToken.None);
+            "ws-1", "openai", "workspace-agent",
+            systemPromptAppendix: null, subAgentModelId: null, CancellationToken.None);
 
         var recorded = handler.Requests.Should().ContainSingle().Subject;
         recorded.SbxAppId.Should().BeNull();
         recorded.SbxAppKey.Should().BeNull();
         // A caller with no instructions sends an explicit null, which the host treats as absent.
         recorded.Body.Should().Contain("\"systemPromptAppendix\":null");
+        // Same for an unconfigured sub-agent model: an explicit null, never an empty string. A host that
+        // stored "" would then hand every spawn a blank model id instead of leaving it to inherit.
+        recorded.Body.Should().Contain("\"subAgentModelId\":null");
+    }
+
+    [Fact]
+    public async Task ProvisionAsync_sends_a_blank_sub_agent_model_as_null_rather_than_an_empty_string()
+    {
+        // CodeReviewDaemonOptions.SubAgentModelId defaults to "" — not null — so the unconfigured daemon
+        // hits this path on every provision, and it is the path that must not put "" on the wire.
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-y\"}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, s2sSecret: null, sandboxAppId: null, sandboxAppKey: null);
+
+        _ = await client.ProvisionAsync(
+            "ws-1", "openai", "workspace-agent",
+            systemPromptAppendix: null, subAgentModelId: "   ", CancellationToken.None);
+
+        handler.Requests.Should().ContainSingle().Subject.Body
+            .Should().Contain("\"subAgentModelId\":null");
     }
 
     [Fact]
