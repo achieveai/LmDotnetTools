@@ -704,7 +704,32 @@ public class ConversationsController(
             // the default null matches. Here the entry is created WITH this caller's credential, so
             // omitting it would compare a non-null app id against null and raise a bogus
             // SandboxCredentialConflictException against the very caller that owns the thread.
-            agent = (await agentPool.EnsureCurrentAgentAsync(threadId, callerCredential, ct)).Agent;
+            var refresh = await agentPool.EnsureCurrentAgentAsync(threadId, callerCredential, ct);
+            if (refresh.Status == MultiTurnAgentPool.AgentRefreshStatus.RefreshDeferred)
+            {
+                // RefreshDeferred means the pooled entry has an ACTIVE run, so the refresh could not
+                // swap it: EnsureCurrentAgentAsync hands back that same old agent, still bound to the
+                // superseded session. Dispatching on it would queue this turn into a session the
+                // migration's retirement grace is about to destroy. The WebSocket path can tell an
+                // already-connected client to stand by (it emits this same
+                // "sandbox_session_refresh_deferred" name); REST is one-shot, so it answers with the
+                // 503 its sibling transient failures above use. Retrying after the active run ends
+                // takes the normal refresh path.
+                logger.LogWarning(
+                    "SendMessage for thread {ThreadId} deferred: sandbox session refresh is blocked by an active run",
+                    threadId);
+                return StatusCode(
+                    StatusCodes.Status503ServiceUnavailable,
+                    new
+                    {
+                        error = "sandbox_session_refresh_deferred",
+                        code = "sandbox_session_refresh_deferred",
+                        detail = "The conversation's sandbox session is being replaced and its current run must finish first. Retry shortly.",
+                        threadId
+                    });
+            }
+
+            agent = refresh.Agent;
         }
         catch (ProviderUnavailableException ex)
         {

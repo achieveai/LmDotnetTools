@@ -635,6 +635,33 @@ describe('WorkspaceSelector edit form plugin selection', () => {
   });
 
   /**
+   * The EDIT form carries its own copy of the predicate (`editPluginsBlocked` over
+   * `editMarketplaces`). A copy-paste that read the CREATE form's marketplaces instead would leave
+   * the create-side tests above green while the edit form — where a stored selection can actually be
+   * narrowed and saved — stayed unguarded. This pins the edit side to its own enabled set.
+   *
+   * Mutation proving non-vacuity: point `editPluginsBlocked` at `createMarketplaces` -> RED, because
+   * the create form's marketplaces are empty here and nothing would be blocked.
+   */
+  it('disables edit-form plugin toggling when one of ITS enabled marketplaces is errored', async () => {
+    catalog.value = {
+      selected: ['demo', 'broken'],
+      marketplaces: [
+        { alias: 'demo', error: null, plugins: [plugin('toolkit')] },
+        { alias: 'broken', error: 'clone failed: timeout', plugins: [] },
+      ],
+      capabilities: { pluginFiltering: true },
+    };
+    const withBroken: Workspace[] = [{ ...editable[0], marketplaces: ['demo', 'broken'] }];
+
+    const wrapper = mountSelector({ workspaces: withBroken });
+    await openEditForm(wrapper, 'ws-user');
+
+    const toolkit = wrapper.get<HTMLInputElement>('[data-testid="workspace-edit-plugin-demo-toolkit"]');
+    expect(toolkit.element.disabled).toBe(true);
+  });
+
+  /**
    * Seeding + the CAS token. RED if the token is not threaded through: without `pluginsRevision`
    * the backend treats the update as revision-omitted and rejects it against the sentinel -1, so
    * every genuine selection change would 409.
@@ -1189,6 +1216,66 @@ describe('WorkspaceSelector marketplace plugin load errors', () => {
     await nextTick();
     expect(wrapper.find('[data-testid="workspace-create-plugins-error-demo"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="workspace-create-plugins-demo"]').exists()).toBe(true);
+  });
+
+  /**
+   * Saying so is necessary but NOT sufficient. The notice tells the user the marketplace could not be
+   * listed; it does not stop a save from silently narrowing their plugin set. Toggling a plugin of the
+   * HEALTHY marketplace materializes the legacy `null` through `allPluginsOf`, which enumerates
+   * `m.plugins` — empty for the errored one — so the saved explicit list omits every plugin of
+   * `broken`, and keeps omitting them after its catalog recovers.
+   *
+   * ONE predicate (`createPluginsBlocked`) is enforced at TWO points: the checkbox is disabled, and
+   * `toggleCreatePlugin` returns early. They are proven separately below because either alone keeps
+   * this case green — a single test covering both cannot fail when only one is removed.
+   *
+   * Mutation proving non-vacuity: `:disabled="false && createPluginsBlocked"` -> RED here.
+   */
+  it('disables plugin toggling while an enabled marketplace could not be listed', async () => {
+    const wrapper = mountSelector();
+    await openCreateForm(wrapper);
+
+    await wrapper.get('[data-testid="workspace-create-marketplace-demo"]').trigger('change');
+    await wrapper.get('[data-testid="workspace-create-marketplace-broken"]').trigger('change');
+    await nextTick();
+
+    // The healthy marketplace's checkbox still renders — inert, not hidden, so the user can see what
+    // they would be choosing while the adjacent notice explains why they cannot yet.
+    const box = wrapper.get('[data-testid="workspace-create-plugin-demo-toolkit"]');
+    expect((box.element as HTMLInputElement).disabled).toBe(true);
+    expect(wrapper.get('[data-testid="workspace-create-plugins-error-broken"]').text()).toContain(
+      'would drop'
+    );
+  });
+
+  /**
+   * The second enforcement point, proven with the disabled attribute deliberately bypassed: a native
+   * `dispatchEvent` reaches the handler even on a disabled input (Vue Test Utils' own `trigger()`
+   * skips it, which is why this case cannot use it). Without the early return the legacy `null` would
+   * materialize into a list built only from what enumerated — dropping `broken`'s plugins.
+   *
+   * Mutation proving non-vacuity: remove `if (createPluginsBlocked.value) return;` from
+   * `toggleCreatePlugin` -> RED, the payload becomes an explicit list instead of `null`.
+   */
+  it('keeps the legacy null selection when a blocked plugin toggle is dispatched anyway', async () => {
+    const wrapper = mountSelector();
+    await openCreateForm(wrapper);
+
+    await wrapper.get('[data-testid="workspace-create-name"]').setValue('Errored');
+    await wrapper.get('[data-testid="workspace-create-marketplace-demo"]').trigger('change');
+    await wrapper.get('[data-testid="workspace-create-marketplace-broken"]').trigger('change');
+    await nextTick();
+
+    const box = wrapper.get('[data-testid="workspace-create-plugin-demo-toolkit"]');
+    box.element.dispatchEvent(new Event('change'));
+    await nextTick();
+
+    await wrapper.get('[data-testid="workspace-create-form"]').trigger('submit');
+    await nextTick();
+
+    const payload = wrapper.emitted('create-workspace')![0][0] as CreatePayload;
+    // The legacy "all plugins" state survives instead of a list that silently omits `broken`.
+    expect(payload.pluginSelection).toBeNull();
   });
 });
 

@@ -120,6 +120,26 @@ function allPluginsOf(marketplaceIds: string[]): PluginRef[] {
 }
 
 /**
+ * Whether any ENABLED marketplace failed to list its plugins. This blocks plugin toggling, and the
+ * reason is subtle: `allPluginsOf` builds the materialized selection out of `m.plugins`, and a
+ * marketplace whose catalog failed carries `plugins: []`. Materializing the legacy `null` while one
+ * is errored would therefore write down an explicit list that OMITS every plugin of that
+ * marketplace — silently narrowing the workspace's plugin set to whatever happened to enumerate,
+ * and keeping it narrowed after the catalog recovers. A disabled checkbox (next to the existing
+ * per-marketplace error) is honest; a save that quietly drops plugins is not.
+ *
+ * Marketplace-only edits stay available while this is true: `submitEdit` omits `pluginSelection`
+ * when it has not changed, and the backend's four-state contract leaves the stored selection alone.
+ */
+function hasErroredEnabledMarketplace(marketplaceIds: string[]): boolean {
+  const enabled = new Set(marketplaceIds);
+  return availableMarketplaces.value.some((m) => enabled.has(m.id) && m.error);
+}
+
+const createPluginsBlocked = computed(() => hasErroredEnabledMarketplace(createMarketplaces.value));
+const editPluginsBlocked = computed(() => hasErroredEnabledMarketplace(editMarketplaces.value));
+
+/**
  * Whether a plugin checkbox renders checked. A `null` selection means the workspace expressed no
  * preference, which the gateway reads as "all plugins of the enabled marketplaces" — so every box
  * is checked, truthfully. Plugins of a marketplace that is not enabled are never on.
@@ -327,6 +347,9 @@ function toggleCreateMarketplace(id: string): void {
 }
 
 function toggleCreatePlugin(marketplace: string, plugin: string): void {
+  // Belt-and-suspenders behind the disabled checkbox: never materialize a selection that would
+  // silently omit an unlistable marketplace's plugins. See hasErroredEnabledMarketplace.
+  if (createPluginsBlocked.value) return;
   createPluginSelection.value = togglePluginIn(
     createPluginSelection.value,
     createMarketplaces.value,
@@ -414,6 +437,9 @@ function toggleEditMarketplace(id: string): void {
 }
 
 function toggleEditPlugin(marketplace: string, plugin: string): void {
+  // Belt-and-suspenders behind the disabled checkbox: never materialize a selection that would
+  // silently omit an unlistable marketplace's plugins. See hasErroredEnabledMarketplace.
+  if (editPluginsBlocked.value) return;
   editPluginSelection.value = togglePluginIn(
     editPluginSelection.value,
     editMarketplaces.value,
@@ -700,8 +726,9 @@ watch(
                   class="plugin-load-error"
                   :data-testid="`workspace-create-plugins-error-${m.id}`"
                 >
-                  Plugins could not be listed for this marketplace, so they cannot be selected
-                  individually.
+                  Plugins could not be listed for this marketplace, so plugin selection is disabled
+                  for this workspace until it loads — saving a selection now would drop this
+                  marketplace's plugins.
                 </div>
                 <div
                   v-if="pluginFilteringEnabled && createMarketplaces.includes(m.id) && m.plugins.length > 0"
@@ -714,6 +741,7 @@ watch(
                       data-plugin-checkbox="true"
                       :data-testid="`workspace-create-plugin-${m.id}-${p}`"
                       :checked="isPluginChecked(createPluginSelection, createMarketplaces, m.id, p)"
+                      :disabled="createPluginsBlocked"
                       @change="toggleCreatePlugin(m.id, p)"
                     />
                     <span>{{ p }}</span>
@@ -819,8 +847,9 @@ watch(
                   class="plugin-load-error"
                   :data-testid="`workspace-edit-plugins-error-${m.id}`"
                 >
-                  Plugins could not be listed for this marketplace, so they cannot be selected
-                  individually.
+                  Plugins could not be listed for this marketplace, so plugin selection is disabled
+                  for this workspace until it loads — saving a selection now would drop this
+                  marketplace's plugins.
                 </div>
                 <div
                   v-if="pluginFilteringEnabled && editMarketplaces.includes(m.id) && m.plugins.length > 0"
@@ -833,6 +862,7 @@ watch(
                       data-plugin-checkbox="true"
                       :data-testid="`workspace-edit-plugin-${m.id}-${p}`"
                       :checked="isPluginChecked(editPluginSelection, editMarketplaces, m.id, p)"
+                      :disabled="editPluginsBlocked"
                       @change="toggleEditPlugin(m.id, p)"
                     />
                     <span>{{ p }}</span>
