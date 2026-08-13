@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using AchieveAi.LmDotnetTools.Sandbox;
 
 namespace LmStreaming.Sample.Tests.Services;
 
@@ -124,6 +125,138 @@ public class SandboxSessionRegistryRecreateOnGateway404Tests
         registry.TryGetSessionById(results[0].SessionId, out _).Should().BeTrue();
     }
 
+    [Fact]
+    public async Task GetOrCreateLiveSessionAsync_SessionGone_ReloadsWorkspaceRef_BeforeRecreating()
+    {
+        // The WorkspaceRef a long-lived agent holds was captured when the agent was built. If the
+        // workspace's marketplaces/plugins changed since, recreating from that captured ref silently
+        // resurrects the OLD configuration — the user's edit appears to have been thrown away. The
+        // recreate must therefore re-read current workspace config first.
+        var reloadCalls = 0;
+        var (registry, calls) = CreateRegistry(reloadWorkspaceRef: (workspaceId, _) =>
+        {
+            reloadCalls++;
+            return Task.FromResult<WorkspaceRef?>(new WorkspaceRef(
+                workspaceId,
+                DirectoryRelPath: null,
+                Marketplaces: ["official"],
+                PluginSelection: [new SandboxPluginRef("official", "code-review")]));
+        });
+        var staleRef = new WorkspaceRef("ws-1", DirectoryRelPath: null, Marketplaces: ["superpowers"]);
+
+        _ = await registry.GetOrCreateSessionAsync(staleRef);
+        calls.Evict("sess-1");
+        var live = await registry.GetOrCreateLiveSessionAsync(staleRef);
+
+        live.SessionId.Should().Be("sess-2");
+        reloadCalls.Should().Be(1);
+        calls.PostBodies.Should().HaveCount(2);
+        // NOTE: `Equal` on a string collection is `params string[]` — a trailing "because" argument
+        // would be read as an extra EXPECTED ELEMENT, not a reason. Rationale stays in comments.
+        // First create used the captured ref; the recreate must use CURRENT workspace config.
+        ReadMarketplaces(calls.PostBodies[0]).Should().Equal("superpowers");
+        ReadMarketplaces(calls.PostBodies[1]).Should().Equal("official");
+        using var recreate = JsonDocument.Parse(calls.PostBodies[1]);
+        recreate.RootElement.GetProperty("pluginSelection")[0].GetProperty("plugin").GetString()
+            .Should().Be("code-review");
+    }
+
+    [Fact]
+    public async Task GetOrCreateLiveSessionAsync_NoReloadCallbackConfigured_FallsBackToOriginalRef()
+    {
+        // Every existing construction site passes no callback. Those must keep the prior behaviour
+        // exactly — recreate from the ref the caller handed in — rather than losing the selection.
+        var (registry, calls) = CreateRegistry();
+        var workspaceRef = new WorkspaceRef("ws-1", DirectoryRelPath: null, Marketplaces: ["superpowers"]);
+
+        _ = await registry.GetOrCreateSessionAsync(workspaceRef);
+        calls.Evict("sess-1");
+        var live = await registry.GetOrCreateLiveSessionAsync(workspaceRef);
+
+        live.SessionId.Should().Be("sess-2");
+        ReadMarketplaces(calls.PostBodies[1]).Should().Equal("superpowers");
+    }
+
+    [Fact]
+    public async Task GetOrCreateLiveSessionAsync_SessionStillAlive_DoesNotReloadWorkspaceRef()
+    {
+        // NON-VACUITY GUARD for the reload fix. The reload belongs to the RECREATE path only. If it
+        // leaked into the first resolve, this registry would hit the workspace store on every single
+        // turn — and the two tests above would still pass, because both of them recreate. Only this
+        // test can tell the scoped fix from the unscoped one.
+        var reloadCalls = 0;
+        var (registry, calls) = CreateRegistry(reloadWorkspaceRef: (workspaceId, _) =>
+        {
+            reloadCalls++;
+            return Task.FromResult<WorkspaceRef?>(new WorkspaceRef(workspaceId));
+        });
+        var workspaceRef = new WorkspaceRef("ws-1", DirectoryRelPath: null, Marketplaces: ["superpowers"]);
+
+        _ = await registry.GetOrCreateSessionAsync(workspaceRef);
+        var live = await registry.GetOrCreateLiveSessionAsync(workspaceRef); // never evicted ⇒ still alive
+
+        live.SessionId.Should().Be("sess-1");
+        calls.PostCount.Should().Be(1);
+        reloadCalls.Should().Be(0, "a live session is never recreated, so nothing needs reloading");
+    }
+
+    [Fact]
+    public async Task GetOrCreateLiveSessionAsync_ReloadReturnsNull_FallsBackToOriginalRef()
+    {
+        // A workspace deleted between capture and recreate returns null. Falling back to the captured
+        // ref keeps the session recoverable; treating null as "no marketplaces" would strip the
+        // agent's tools on a race that is not the user's doing.
+        var (registry, calls) = CreateRegistry(
+            reloadWorkspaceRef: (_, _) => Task.FromResult<WorkspaceRef?>(null));
+        var workspaceRef = new WorkspaceRef("ws-1", DirectoryRelPath: null, Marketplaces: ["superpowers"]);
+
+        _ = await registry.GetOrCreateSessionAsync(workspaceRef);
+        calls.Evict("sess-1");
+        var live = await registry.GetOrCreateLiveSessionAsync(workspaceRef);
+
+        live.SessionId.Should().Be("sess-2");
+        ReadMarketplaces(calls.PostBodies[1]).Should().Equal("superpowers");
+    }
+
+    [Fact]
+    public async Task GetOrCreateLiveSessionAsync_ReloadThrows_StillRecreatesFromTheCapturedRef()
+    {
+        // The reload reads the workspace store, which reads a FILE — corrupt JSON or a concurrent
+        // atomic-replace makes it throw for real. By the time it runs, the dead session has ALREADY
+        // been invalidated, so letting the failure escape would leave the caller with no session at
+        // all: strictly worse than the stale-config outcome the reload exists to avoid. Degrade to
+        // the captured ref instead.
+        var (registry, calls) = CreateRegistry(
+            reloadWorkspaceRef: (_, _) => throw new InvalidOperationException("workspace store is corrupt"));
+        var workspaceRef = new WorkspaceRef("ws-1", DirectoryRelPath: null, Marketplaces: ["superpowers"]);
+
+        _ = await registry.GetOrCreateSessionAsync(workspaceRef);
+        calls.Evict("sess-1");
+        var live = await registry.GetOrCreateLiveSessionAsync(workspaceRef);
+
+        live.SessionId.Should().Be("sess-2");
+        ReadMarketplaces(calls.PostBodies[1]).Should().Equal("superpowers");
+    }
+
+    [Fact]
+    public async Task GetOrCreateLiveSessionAsync_ReloadCancelled_PropagatesInsteadOfRecreating()
+    {
+        // NON-VACUITY GUARD for the test above. A blanket `catch (Exception)` would also swallow a
+        // cancellation and press on with a gateway create that was already abandoned. The exception
+        // filter excluding OperationCanceledException is what separates "the store failed, degrade"
+        // from "this work was cancelled, stop" — and only this test can tell the two apart.
+        var (registry, calls) = CreateRegistry(
+            reloadWorkspaceRef: (_, _) => throw new OperationCanceledException());
+        var workspaceRef = new WorkspaceRef("ws-1", DirectoryRelPath: null, Marketplaces: ["superpowers"]);
+
+        _ = await registry.GetOrCreateSessionAsync(workspaceRef);
+        calls.Evict("sess-1");
+        var act = async () => await registry.GetOrCreateLiveSessionAsync(workspaceRef);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        calls.PostCount.Should().Be(1, "an abandoned recreate must not create a second gateway session");
+    }
+
     private static IReadOnlyList<string> ReadMarketplaces(string body)
     {
         using var doc = JsonDocument.Parse(body);
@@ -131,7 +264,8 @@ public class SandboxSessionRegistryRecreateOnGateway404Tests
     }
 
     private static (SandboxSessionRegistry Registry, CallLog Calls) CreateRegistry(
-        HttpStatusCode? livenessStatusOverride = null)
+        HttpStatusCode? livenessStatusOverride = null,
+        Func<string, CancellationToken, Task<WorkspaceRef?>>? reloadWorkspaceRef = null)
     {
         var calls = new CallLog();
 
@@ -198,7 +332,8 @@ public class SandboxSessionRegistryRecreateOnGateway404Tests
             auth,
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
-                NullLogger<SessionSecretStore>.Instance));
+                NullLogger<SessionSecretStore>.Instance),
+            reloadWorkspaceRef: reloadWorkspaceRef);
 
         return (registry, calls);
     }

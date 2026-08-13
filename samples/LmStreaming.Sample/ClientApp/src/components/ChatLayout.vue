@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onBeforeUnmount, provide } from 'vue';
+import { computed, ref, nextTick, onMounted, onBeforeUnmount, provide } from 'vue';
 import { useConversations } from '@/composables/useConversations';
 import { useChat, getDisplayText } from '@/composables/useChat';
 import { useChatModes } from '@/composables/useChatModes';
@@ -7,6 +7,7 @@ import { useProviders } from '@/composables/useProviders';
 import { useWorkspaces } from '@/composables/useWorkspaces';
 import { egressDialogRequest, closeEgressDialog } from '@/composables/useEgressAuth';
 import { updateConversationMetadata } from '@/api/conversationsApi';
+import { WorkspaceRevisionConflictError } from '@/api/workspacesApi';
 import type { ChatModeCreateUpdate } from '@/types/chatMode';
 import type { WorkspaceCreate, WorkspaceUpdate } from '@/types/workspace';
 import ConversationSidebar from './ConversationSidebar.vue';
@@ -275,16 +276,29 @@ const lockedWorkspaceId = computed<string | null>(() => {
   return conversation?.workspace ?? null;
 });
 
+/**
+ * TERMINAL reasons the workspace selector is unusable. `disabled` makes WorkspaceSelector tear its
+ * dropdown down, so only conditions that will not reverse on their own belong here.
+ *
+ * `workspacesLoading` is deliberately NOT one of them, and the distinction is load-bearing: the
+ * post-409 conflict path reloads the list, so the flag flips true and back WHILE the user's edit
+ * form is open and this component is on its way to re-seed it and show the conflict message. Folding
+ * it in here unmounted the form first, so `reseedEditForm()` bailed and `showFormError()` wrote to
+ * nothing — the save silently failed with no visible error (F6). Blocking interaction during a
+ * reload is still correct (the list is momentarily stale); that is what the separate `is-loading`
+ * prop does, without the teardown.
+ */
 const workspaceSelectorDisabled = computed(
   () => workspaceGateway?.value?.available === false
-    || workspacesLoading.value
     || chatLoading.value
     || isSending.value
     || isSwitchingMode.value
 );
 
 function handleSelectWorkspace(workspaceId: string): void {
-  if (workspaceSelectorDisabled.value || lockedWorkspaceId.value) {
+  // `workspacesLoading` re-added explicitly: acting on a list that is mid-refresh is unsafe even
+  // though it is not a teardown reason.
+  if (workspaceSelectorDisabled.value || workspacesLoading.value || lockedWorkspaceId.value) {
     return;
   }
   selectWorkspace(workspaceId);
@@ -306,6 +320,15 @@ async function handleUpdateWorkspace(workspaceId: string, data: WorkspaceUpdate)
     workspaceSelectorRef.value?.closeForm();
   } catch (e) {
     const message = e instanceof Error ? e.message : 'Failed to update workspace';
+    if (e instanceof WorkspaceRevisionConflictError) {
+      // updateWorkspace has already re-listed, so the next save would carry a FRESH compare-and-swap
+      // token while the form still held the pre-conflict selection — one more click would pass CAS
+      // and silently overwrite whoever changed it. Re-seed the form from the refreshed workspace so
+      // the pending change is dropped rather than the other writer's. `await nextTick()` first: the
+      // refreshed list reaches the child as a prop only after the parent re-renders.
+      await nextTick();
+      workspaceSelectorRef.value?.reseedEditForm();
+    }
     workspaceSelectorRef.value?.showFormError(message);
   }
 }

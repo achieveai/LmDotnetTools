@@ -70,7 +70,7 @@ public sealed partial class SandboxClient
         {
             var selected = SelectNonNullOrThrow(payload.Selected, static alias => alias, operation, statusCode);
             var marketplaceEntries = SelectNonNullOrThrow(payload.Marketplaces, dto => ToEntry(dto, operation, statusCode), operation, statusCode);
-            return new SandboxMarketplaceCatalog(selected, marketplaceEntries);
+            return new SandboxMarketplaceCatalog(selected, marketplaceEntries, payload.Capabilities?.PluginFiltering);
         }
         catch (ArgumentException ex)
         {

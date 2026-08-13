@@ -149,8 +149,14 @@ public sealed partial class SandboxClient
             Discovery: request.Discovery is { } discovery
                 ? new DiscoveryDto(new DiscoveryWebhookDto(discovery.WebhookUrl, discovery.WebhookAuth))
                 : null,
-            Marketplaces: request.Marketplaces.Count > 0 ? [.. request.Marketplaces] : null
+            Marketplaces: request.Marketplaces.Count > 0 ? [.. request.Marketplaces] : null,
+            // Tri-state passthrough: null stays null (field omitted by RestOptions' WhenWritingNull),
+            // an empty selection is sent as an explicit empty array.
+            PluginSelection: request.PluginSelection is null ? null : [.. request.PluginSelection.Select(ToPluginRefDto)]
         );
+
+    private static PluginRefDto ToPluginRefDto(SandboxPluginRef pluginRef) =>
+        new(pluginRef.Marketplace, pluginRef.Plugin);
 
     private static AuthProviderDto ToDto(SandboxAuthProvider provider) =>
         new(provider.Id, provider.Type, provider.Endpoint, provider.GatewayAuth, provider.CacheTtlSeconds, provider.RequiredScopes);
@@ -175,8 +181,27 @@ public sealed partial class SandboxClient
             dto.Volumes?.Workspace?.ContainerPath,
             dto.Volumes?.Workspace?.Id,
             dto.Status,
-            ToInventory(dto.Inventory)
+            ToInventory(dto.Inventory),
+            ToPluginResolution(dto.PluginResolution)
         );
+
+    /// <summary>
+    /// Maps the gateway's plugin-resolution block. An absent block maps to <see langword="null"/>
+    /// rather than a "not supported" resolution: "the gateway never reported one" is a strictly
+    /// weaker claim than "the gateway said it does not support filtering".
+    /// </summary>
+    private static SandboxPluginResolution? ToPluginResolution(PluginResolutionDto? dto) =>
+        dto is null
+            ? null
+            : new SandboxPluginResolution(
+                dto.Supported,
+                // Tri-state: a missing "requested" array stays null, it does not become [].
+                dto.Requested?.Select(ToPluginRef).ToArray(),
+                dto.Effective?.Select(ToPluginRef).ToArray(),
+                dto.Failed?.Select(ToPluginRef).ToArray()
+            );
+
+    private static SandboxPluginRef ToPluginRef(PluginRefDto dto) => new(dto.Marketplace, dto.Plugin);
 
     /// <summary>
     /// Maps the gateway's inventory block, dropping items whose kind or id is missing rather than

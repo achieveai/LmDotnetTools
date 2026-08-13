@@ -37,8 +37,20 @@ export interface CatalogMarketplace {
   plugins: CatalogPlugin[];
 }
 
+/**
+ * What the gateway advertises it can do. A `null`/absent flag means the gateway reported no
+ * capability block at all ("unknown") and stays distinguishable from an explicit `false` — but both
+ * FAIL CLOSED on the client: unknown is not permission.
+ */
+export interface MarketplaceCapabilities {
+  /** Whether the gateway honours a per-plugin selection. Only `true` enables the per-plugin UI. */
+  pluginFiltering?: boolean | null;
+}
+
 export interface MarketplaceCatalog {
   /** Aliases the gateway actually resolved for the request. */
   selected: string[];
   marketplaces: CatalogMarketplace[];
+  /** Optional so a response from a backend that predates capability advertisement still parses. */
+  capabilities?: MarketplaceCapabilities | null;
 }

@@ -684,12 +684,27 @@ public class ConversationsController(
         IMultiTurnAgent agent;
         try
         {
-            agent = agentPool.GetOrCreateAgent(
+            _ = agentPool.GetOrCreateAgent(
                 threadId,
                 mode,
                 requestedProviderId: null,
                 requestResponseDumpFileName: null,
                 callerCredential: callerCredential);
+
+            // A pooled agent can outlive the sandbox session it was bound to — a workspace
+            // plugin-selection change replaces the session underneath it. GetOrCreateAgent returns
+            // whatever is pooled, session-liveness unexamined, so dispatching straight off it would
+            // send this turn into a destroyed session. The WebSocket setup path solves this by
+            // DISCARDING the GetOrCreateAgent result and taking the agent off the refresh instead
+            // (ChatWebSocketManager, connection setup); REST/S2S is the same one-shot situation and
+            // gets the same treatment, so both entry points agree on what "current" means.
+            //
+            // callerCredential must be threaded through even though the WebSocket call omits it:
+            // that path never passes a credential to GetOrCreateAgent, so its entries hold none and
+            // the default null matches. Here the entry is created WITH this caller's credential, so
+            // omitting it would compare a non-null app id against null and raise a bogus
+            // SandboxCredentialConflictException against the very caller that owns the thread.
+            agent = (await agentPool.EnsureCurrentAgentAsync(threadId, callerCredential, ct)).Agent;
         }
         catch (ProviderUnavailableException ex)
         {

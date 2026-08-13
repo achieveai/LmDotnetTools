@@ -27,4 +27,23 @@ public static class MarketplaceAliases
 
         return aliases.Length > 0 ? aliases : null;
     }
+
+    /// <summary>
+    /// Resolves the marketplace aliases a workspace actually runs under: its own selection when it
+    /// enables any, otherwise the configured global default parsed from
+    /// <paramref name="configuredDefault"/>. Returns <c>null</c> — never an empty list — when neither
+    /// supplies anything, meaning "omit the field and let the gateway apply its own default set".
+    /// </summary>
+    /// <remarks>
+    /// An EMPTY workspace selection means "this workspace names no preference", NOT "this workspace
+    /// enables nothing". Those read alike and behave oppositely, so the rule has exactly one owner
+    /// here and two callers: the sandbox-create path, which builds the session, and the workspace
+    /// plugin-selection validator, which decides whether a selection is legal. Duplicating it let
+    /// them disagree — the validator narrowed an explicit selection to an empty enabled set and
+    /// rejected every plugin the session it was validating would have loaded quite happily.
+    /// </remarks>
+    public static IReadOnlyList<string>? ResolveEffective(
+        IReadOnlyList<string>? workspaceMarketplaces,
+        string? configuredDefault) =>
+        workspaceMarketplaces is { Count: > 0 } ? workspaceMarketplaces : Parse(configuredDefault);
 }

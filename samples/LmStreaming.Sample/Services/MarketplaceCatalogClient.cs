@@ -100,7 +100,12 @@ public sealed class MarketplaceCatalogClient : IMarketplaceCatalogClient
         }
     }
 
-    private static MarketplaceCatalog Map(SandboxMarketplaceCatalog catalog) =>
+    /// <summary>
+    /// Projects the SDK's catalog onto the app's own shape, including the gateway's advertised
+    /// capabilities. Internal (not private) so the capability passthrough can be unit-tested
+    /// without standing up an HTTP stub.
+    /// </summary>
+    internal static MarketplaceCatalog Map(SandboxMarketplaceCatalog catalog) =>
         new(
             catalog.Selected,
             [
@@ -122,5 +127,8 @@ public sealed class MarketplaceCatalogClient : IMarketplaceCatalogClient
                     )
                 ),
             ]
-        );
+        )
+        {
+            Capabilities = new MarketplaceCapabilities(catalog.PluginFilteringSupported),
+        };
 }

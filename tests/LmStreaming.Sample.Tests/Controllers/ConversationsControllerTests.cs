@@ -905,6 +905,74 @@ public class ConversationsControllerTests
     }
 
     [Fact]
+    public async Task SendMessage_DispatchesToRefreshedAgent_WhenSandboxSessionWasReplaced()
+    {
+        // A workspace plugin-selection migration replaces the sandbox session underneath a pooled
+        // agent. GetOrCreateAgent hands back whatever is pooled without examining session liveness,
+        // so the REST/S2S turn must be dispatched off EnsureCurrentAgentAsync — exactly as the
+        // WebSocket setup path does — or it lands in a destroyed session.
+        //
+        // This cannot be built on CreatePool(): that helper wires no liveSessionResolver, so the
+        // refresh always short-circuits to Current and the test would pass against either
+        // implementation. The pool below supplies the two things the pool's liveness check needs —
+        // a staged binding and a resolver — so a replacement genuinely occurs.
+        var store = new InMemoryConversationStore();
+        var threadId = "thread-send-refresh";
+        var credential = new SandboxCredential("owner", "key");
+        var created = new List<FakeMultiTurnAgent>();
+
+        await using var pool = new MultiTurnAgentPool(
+            context =>
+            {
+                // The first entry is bound to a session the registry no longer serves; every later
+                // entry is built against the live one. The refresh therefore fires exactly once, and
+                // the replacement it produces is itself current.
+                var sessionId = created.Count == 0 ? "sess-stale" : "sess-live";
+                var agent = new FakeMultiTurnAgent(context.ThreadId);
+                created.Add(agent);
+                return new MultiTurnAgentPool.AgentCreationResult(agent)
+                {
+                    StagedBinding = new SandboxEstablishedBinding(
+                        new WorkspaceRef("workspace-1"),
+                        credential,
+                        credential,
+                        sessionId),
+                };
+            },
+            providerRegistry: null,
+            conversationStore: null,
+            NullLogger<MultiTurnAgentPool>.Instance,
+            liveSessionResolver: (_, _) => Task.FromResult(
+                new SandboxSession("workspace-1", "sess-live", "workspace", "/workspace")));
+
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty
+                    .SetItem(MultiTurnAgentPool.ModePropertyKey, SystemChatModes.DefaultModeId),
+            });
+
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var result = await controller.SendMessage(
+            threadId,
+            new SendMessageRequest { Text = "hello" },
+            CancellationToken.None);
+
+        Assert.IsType<AcceptedResult>(result);
+
+        // Identity, not just a status code: a 202 alone is returned on both sides of this behaviour.
+        // Two creations prove the stale entry was rebuilt, and SendCount proves the turn was handed
+        // to the REBUILT agent rather than the stale one GetOrCreateAgent returned.
+        created.Should().HaveCount(2, "the stale entry must be rebuilt before the turn is dispatched");
+        created[0].SendCount.Should().Be(0, "the turn must not reach the agent bound to the replaced session");
+        created[1].SendCount.Should().Be(1, "the refreshed agent is the one that must receive the turn");
+    }
+
+    [Fact]
     public async Task SendMessage_Returns503_WhenQueueFull()
     {
         var store = new InMemoryConversationStore();

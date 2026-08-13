@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using AchieveAi.LmDotnetTools.Sandbox;
 using LmStreaming.Sample.Services;
 
 namespace LmStreaming.Sample.Tests.Services;
@@ -158,6 +159,26 @@ public class MarketplaceCatalogClientTests
         var act = async () => await client.GetCatalogAsync();
 
         await act.Should().ThrowAsync<MarketplaceCatalogUnavailableException>();
+    }
+
+    [Fact]
+    public void Map_PropagatesPluginFilteringSupported_IntoCapabilities()
+    {
+        var sdkCatalog = new SandboxMarketplaceCatalog(["official"], [], pluginFilteringSupported: true);
+
+        var mapped = MarketplaceCatalogClient.Map(sdkCatalog);
+
+        mapped.Capabilities.PluginFiltering.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Map_NullPluginFilteringSupported_PropagatesAsNull()
+    {
+        var sdkCatalog = new SandboxMarketplaceCatalog(["official"], []);
+
+        var mapped = MarketplaceCatalogClient.Map(sdkCatalog);
+
+        mapped.Capabilities.PluginFiltering.Should().BeNull();
     }
 
     private static HttpResponseMessage Ok(string json) =>

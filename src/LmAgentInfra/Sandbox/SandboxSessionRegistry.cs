@@ -41,7 +41,23 @@ public sealed record SubAgentSessionBinding(
 /// requested at creation time.</param>
 /// <param name="HostPath">Absolute host path of the mounted workspace (long-path <c>\\?\</c>
 /// prefix stripped) — the path the model uses for absolute-path file tools.</param>
-public sealed record SandboxSession(string WorkspaceId, string SessionId, string WorkspaceRelPath, string HostPath);
+/// <param name="PluginResolution">How the gateway resolved this session's plugin selection, exactly
+/// as it reported at creation. <see langword="null"/> when the gateway reported no resolution block
+/// at all — a strictly weaker claim than a resolution saying filtering is unsupported, and the two
+/// must never be conflated by the capability gate above this layer.</param>
+/// <param name="Marketplaces">The marketplace aliases this session was actually created with, AFTER
+/// the global-config fallback was applied — not the raw request. Recorded so a later recreate of the
+/// same session (today: a plugin-selection migration) can reproduce its marketplace scope instead of
+/// re-deriving it from whatever the global default happens to be by then. <see langword="null"/> when
+/// the create omitted the field and let the gateway pick its own default.</param>
+public sealed record SandboxSession(
+    string WorkspaceId,
+    string SessionId,
+    string WorkspaceRelPath,
+    string HostPath,
+    SandboxPluginResolution? PluginResolution = null,
+    IReadOnlyList<string>? Marketplaces = null
+);
 
 /// <summary>
 /// Identifies the workspace a sandbox session is being requested for: the logical
@@ -52,10 +68,20 @@ public sealed record SandboxSession(string WorkspaceId, string SessionId, string
 /// when non-empty they drive the sandbox-create selection, otherwise the global
 /// <see cref="SandboxGatewayOptions.Marketplaces"/> default applies.
 /// </summary>
+/// <param name="Id">Logical workspace key; part of the session-cache key.</param>
+/// <param name="DirectoryRelPath">Workspace directory leaf to mount, or null for the configured default.</param>
+/// <param name="Marketplaces">Marketplace aliases this workspace enables.</param>
+/// <param name="PluginSelection">Which plugins, within the selected marketplaces, the session may
+/// load. TRI-STATE and load-bearing: <see langword="null"/> means "no explicit selection — the
+/// gateway loads all plugins" (every legacy workspace), an EMPTY list means "explicitly none", and a
+/// non-empty list means exactly that subset. Never collapse null to empty on the way to the wire —
+/// doing so silently disables every plugin for every workspace that never opted in.</param>
 public sealed record WorkspaceRef(
     string Id,
     string? DirectoryRelPath = null,
-    IReadOnlyList<string>? Marketplaces = null);
+    IReadOnlyList<string>? Marketplaces = null,
+    IReadOnlyList<SandboxPluginRef>? PluginSelection = null
+);
 
 /// <summary>
 /// A conversation's sandbox-established binding: the exact <see cref="WorkspaceRef"/> and creating
@@ -140,7 +166,7 @@ public sealed record SandboxSessionResolution(
 /// or a caller and the interactive UI default) never collide on one shared session.
 /// </para>
 /// </remarks>
-public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSink, IWorkspaceFileBrowser
+public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSink, IWorkspaceFileBrowser
 {
     /// <summary>
     /// Logical id of the default workspace, which maps to the configured
@@ -266,6 +292,29 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
     private readonly PredefinedKeyRegistry? _predefinedKeys;
     private readonly SandboxCredential _defaultCredential;
     private readonly MultiTurnLifecycleServices _lifecycle;
+
+    /// <summary>
+    /// Re-reads a workspace's CURRENT configuration just before a session is recreated after the
+    /// gateway forgot it. Null (every construction site that does not own a workspace store) keeps
+    /// the pre-existing behaviour of recreating from the caller's captured ref. See the constructor's
+    /// <c>reloadWorkspaceRef</c> parameter for why the captured ref is not good enough.
+    /// </summary>
+    private readonly Func<string, CancellationToken, Task<WorkspaceRef?>>? _reloadWorkspaceRef;
+
+    /// <summary>
+    /// TEST-ONLY seam, fired inside <c>CreateSessionAsync</c> after the gateway has created the remote
+    /// session but BEFORE its secret is persisted. Null in production, and the only cost on that path
+    /// is a null check.
+    /// </summary>
+    /// <remarks>
+    /// That window is bounded on both sides by non-yielding statements, so a cancellation can never be
+    /// landed in it from outside — yet it is exactly the window whose rollback (best-effort destroy of
+    /// the just-created remote session plus removal of the two map entries this attempt added) has no
+    /// other way to be exercised. Cancelling before the call only proves nothing was created; only a
+    /// hook here proves the created session is torn down again.
+    /// </remarks>
+    internal Func<SandboxSession, Task>? AfterGatewayCreateBeforeSecretPersistForTest;
+
     private bool _disposed;
 
     /// <summary>
@@ -349,6 +398,13 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
     /// agent loops were given: the sequence allocator inside it owns the producer epoch, and a
     /// registry with its own allocator would number its sandbox streams under an epoch no subscriber
     /// could line up with the thread streams beside them.</param>
+    /// <param name="reloadWorkspaceRef">Optional hook used ONLY when a session has to be recreated
+    /// after the gateway forgot it, to re-read the workspace's CURRENT configuration first. A
+    /// long-lived agent holds the <see cref="WorkspaceRef"/> it was built with; recreating from that
+    /// captured value would resurrect the marketplace/plugin selection as it stood then and make a
+    /// user's later edit look discarded. Returning <see langword="null"/> (workspace deleted) and
+    /// passing no hook at all both fall back to the caller's ref, which is the pre-existing
+    /// behaviour every other construction site keeps.</param>
     public SandboxSessionRegistry(
         SandboxGatewayLifetime gateway,
         SandboxGatewayOptions options,
@@ -357,7 +413,8 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
         AuthOptions authOptions,
         SessionSecretStore sessionSecretStore,
         PredefinedKeyRegistry? predefinedKeys = null,
-        MultiTurnLifecycleServices? lifecycle = null
+        MultiTurnLifecycleServices? lifecycle = null,
+        Func<string, CancellationToken, Task<WorkspaceRef?>>? reloadWorkspaceRef = null
     )
     {
         _gateway = gateway ?? throw new ArgumentNullException(nameof(gateway));
@@ -368,6 +425,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
         _sessionSecretStore = sessionSecretStore ?? throw new ArgumentNullException(nameof(sessionSecretStore));
         _predefinedKeys = predefinedKeys;
         _lifecycle = lifecycle ?? MultiTurnLifecycleServices.Disabled;
+        _reloadWorkspaceRef = reloadWorkspaceRef;
         // Non-null default even when no key is configured: contextless paths (liveness/destroy on
         // a session with no side-table entry) always resolve to a credential, never null. An empty
         // AppKey is exactly the keyless AUTH_ENFORCE=off dev path.
@@ -901,7 +959,43 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
         );
 
         await InvalidateSessionAsync((workspaceId, effectiveCredential.AppId), session).ConfigureAwait(false);
-        return await GetOrCreateSessionAsync(effectiveRef, ct, effectiveCredential).ConfigureAwait(false);
+
+        // Re-read current workspace configuration before recreating. `effectiveRef` is whatever the
+        // caller captured when its agent was built, which may be minutes or hours stale: recreating
+        // from it would silently restore the marketplace/plugin selection as it stood back then and
+        // make the user's later edit look like it was thrown away. No hook, a workspace that has since
+        // been deleted (null), or a store that FAILS all fall back to the captured ref — recoverable
+        // beats empty. Scoped deliberately to this recreate path: the healthy-session fast path above
+        // returns without ever touching the store.
+        WorkspaceRef? reloaded = null;
+        if (_reloadWorkspaceRef is not null)
+        {
+            try
+            {
+                reloaded = await _reloadWorkspaceRef(workspaceId, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // The invalidate above has ALREADY committed, so letting a reload failure escape would
+                // leave the caller with no session at all — strictly worse than the stale-config outcome
+                // this reload exists to avoid. The store reads a file (corrupt JSON, a concurrent
+                // atomic-replace) so throwing is a real, reachable state, not a theoretical one.
+                // A cancellation is NOT swallowed: it means this work was abandoned, so pressing on
+                // would create a gateway session nobody is waiting for.
+                _logger.LogWarning(
+                    ex,
+                    "Failed to reload workspace {WorkspaceId} while recreating an evicted session; "
+                        + "recreating from the captured ref instead.",
+                    workspaceId
+                );
+            }
+        }
+
+        // Pin the id: the recreate must land on the SAME (workspaceId, appId) partition that was just
+        // invalidated, whatever id the store happens to echo back.
+        var refreshedRef = reloaded is null ? effectiveRef : reloaded with { Id = workspaceId };
+
+        return await GetOrCreateSessionAsync(refreshedRef, ct, effectiveCredential).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -1020,8 +1114,11 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
     /// <see cref="_unreportedCreations"/> is the one per-session-id collection deliberately left alone.
     /// It holds a fact that already happened — this session WAS created — and the caller that is
     /// awaiting the creation drains it moments later regardless of what happens here. Evicting it would
-    /// be the only way to lose a true event, and it cannot leak: every stashed entry has an awaiting
-    /// caller by construction.
+    /// be the only way to lose a true event, and it cannot leak: every stashed entry has a caller that
+    /// drains it by construction — <see cref="AwaitAndEvictOnFailureAsync"/> for a cached resolve, and
+    /// <see cref="CreatePluginSelectionCandidateAsync"/> for a plugin-selection candidate, which has no
+    /// cache slot and so cannot go through the former. Any future create path that bypasses both MUST
+    /// call <see cref="PublishPendingCreationAsync"/> itself.
     /// </remarks>
     private async Task EvictSessionStateAsync(SandboxSession session)
     {
@@ -1111,9 +1208,11 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
         var discovery = BuildDiscovery(sessionSecret);
         // Per-workspace marketplace selection wins; fall back to the global config default when the
         // workspace enables none. Either way `null` means "omit the field, gateway picks its default".
-        var marketplaces = workspaceRef.Marketplaces is { Count: > 0 }
-            ? workspaceRef.Marketplaces
-            : MarketplaceAliases.Parse(_options.Marketplaces);
+        // Shared with the workspace plugin-selection validator so a selection can never be rejected
+        // against a different set than the session it gates is about to be created with.
+        var marketplaces = MarketplaceAliases.ResolveEffective(
+            workspaceRef.Marketplaces,
+            _options.Marketplaces);
         // The effective credential for this creation: caller-supplied (M2 per-caller passthrough) or
         // the process-wide default (M1 behavior, still the only path for the daemon and any other
         // contextless caller).
@@ -1127,7 +1226,11 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
             marketplaces,
             authProviders,
             network,
-            discovery
+            discovery,
+            // Tri-state passthrough — NOT `?? []`. Null must stay null so the field is omitted and the
+            // gateway applies its legacy "all plugins" default; an empty list is a deliberate
+            // "load none" that has to reach the wire as an explicit empty array.
+            workspaceRef.PluginSelection
         );
 
         _logger.LogInformation(
@@ -1240,7 +1343,19 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
             }
 
             var hostPath = StripLongPathPrefix(info.WorkspaceContainerPath ?? string.Empty);
-            var session = new SandboxSession(workspaceId, info.SessionId, workspaceRelPath, hostPath);
+            // Carry the gateway's OWN resolution (not an echo of what was requested): it may have
+            // dropped ids or reported that it cannot filter at all, and callers above need to see
+            // what actually loaded. Null when the gateway reported no block.
+            var session = new SandboxSession(
+                workspaceId,
+                info.SessionId,
+                workspaceRelPath,
+                hostPath,
+                info.PluginResolution,
+                // The EFFECTIVE list resolved above, so a replacement session can be created with the
+                // same marketplace scope without re-reading the global default.
+                marketplaces
+            );
 
             // The gateway session now exists remotely. Publish its maps and persist its secret as one
             // unit: if ANY step fails (e.g. SaveAsync throws or is cancelled), the remote session and
@@ -1258,6 +1373,12 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
                 // destroy, discovery) resolve the SAME credential via CredentialFor, not the process
                 // default (relevant once M2 lets callers create under a per-caller credential).
                 _sessionCredentials[session.SessionId] = effectiveCredential;
+                // Test-only: lets a test land a cancellation in the create→persist window, which is
+                // otherwise unreachable from outside. No-op (one null check) in production.
+                if (AfterGatewayCreateBeforeSecretPersistForTest is { } afterCreateHook)
+                {
+                    await afterCreateHook(session).ConfigureAwait(false);
+                }
                 // Persist BEFORE returning: a webhook call for this session id must never race ahead of
                 // its secret hitting disk. On failure the catch below tears the half-built session down
                 // rather than leaving a session whose webhooks can never authenticate.
@@ -1942,6 +2063,11 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
     /// Returns a snapshot of the thread ids currently registered against
     /// <paramref name="sessionId"/>. Empty when nothing is registered (no exception). The
     /// returned list is a copy — callers can safely iterate it without holding a registry lock.
+    /// <para>
+    /// This is the ROUTING view and is not exhaustive: it omits conversations known only through an
+    /// established binding. Deciding whether a session is still in use — an idle wait, a retirement —
+    /// requires <see cref="GetBoundThreads"/> instead.
+    /// </para>
     /// </summary>
     public IReadOnlyList<string> GetThreads(string sessionId)
     {
@@ -1954,6 +2080,46 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
         return _sessionThreads.TryGetValue(sessionId, out var set)
             ? [.. set.Keys]
             : [];
+    }
+
+    /// <summary>
+    /// Returns every conversation thread bound to <paramref name="sessionId"/> by EITHER index: the
+    /// <c>_sessionThreads</c> routing map (see <see cref="GetThreads"/>) or a published
+    /// <see cref="SandboxEstablishedBinding"/> naming this session. Empty when nothing is bound.
+    /// <para>
+    /// The union is the point. <c>_sessionThreads</c> is populated only when sub-agent options are
+    /// present, so a plain workspace-mode conversation can hold a live session while appearing
+    /// nowhere in <see cref="GetThreads"/>. Any caller that asks "is anyone still using this
+    /// session?" and consults only <see cref="GetThreads"/> therefore gets a <em>false negative</em> —
+    /// and because a thread absent from the pool is idle by definition, that false negative reads as
+    /// "idle", which is precisely the answer that lets a session be torn down out from under a
+    /// running turn.
+    /// </para>
+    /// <para>
+    /// Use this for lifecycle decisions (idle waits, retirement). <see cref="GetThreads"/> remains
+    /// correct for its own callers, which route gateway callbacks to the threads registered for
+    /// routing — a deliberately narrower question.
+    /// </para>
+    /// </summary>
+    internal IReadOnlyList<string> GetBoundThreads(string sessionId)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (string.IsNullOrWhiteSpace(sessionId))
+        {
+            return [];
+        }
+
+        var threads = new HashSet<string>(GetThreads(sessionId), StringComparer.Ordinal);
+
+        foreach (var binding in _establishedBindings)
+        {
+            if (string.Equals(binding.Value.SessionId, sessionId, StringComparison.Ordinal))
+            {
+                _ = threads.Add(binding.Key);
+            }
+        }
+
+        return [.. threads];
     }
 
     /// <summary>

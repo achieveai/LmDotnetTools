@@ -11,6 +11,25 @@ namespace LmStreaming.Sample.Models;
 public sealed record MarketplaceCatalog(
     [property: JsonPropertyName("selected")] IReadOnlyList<string> Selected,
     [property: JsonPropertyName("marketplaces")] IReadOnlyList<CatalogMarketplace> Marketplaces
+)
+{
+    /// <summary>
+    /// What the gateway advertises it can do. Modelled as an <c>init</c> property rather than a
+    /// third positional parameter so the many existing construction sites keep compiling; it is
+    /// non-nullable and defaults to "all capabilities unknown", which callers must treat as
+    /// fail-closed (unknown is not permission).
+    /// </summary>
+    [JsonPropertyName("capabilities")]
+    public MarketplaceCapabilities Capabilities { get; init; } = new(null);
+}
+
+/// <summary>
+/// Gateway capability advertisement. A <see langword="null"/> flag means the gateway reported no
+/// capability block at all ("unknown") and must stay distinguishable from an explicit
+/// <see langword="false"/>, even though both fail closed.
+/// </summary>
+public sealed record MarketplaceCapabilities(
+    [property: JsonPropertyName("pluginFiltering")] bool? PluginFiltering
 );
 
 /// <summary>One marketplace alias and the plugins it exposes (or an <see cref="Error"/> if it

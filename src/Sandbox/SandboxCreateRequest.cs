@@ -31,12 +31,21 @@ public sealed class SandboxCreateRequest
     /// <summary>Discovery webhook settings to attach, or <c>null</c> to omit the field entirely.</summary>
     public SandboxDiscoverySettings? Discovery { get; }
 
+    /// <summary>
+    /// Explicit plugin selection for this sandbox, defensively copied at construction. Tri-state:
+    /// <c>null</c> = the caller expressed no preference (legacy "all plugins"), an empty list =
+    /// explicitly no plugins, and a non-empty list = an explicit subset. Unlike
+    /// <see cref="Marketplaces"/>, <c>null</c> is NEVER collapsed to an empty list.
+    /// </summary>
+    public IReadOnlyList<SandboxPluginRef>? PluginSelection { get; }
+
     public SandboxCreateRequest(
         string workspace,
         IReadOnlyList<string>? marketplaces = null,
         IReadOnlyList<SandboxAuthProvider>? authProviders = null,
         IReadOnlyList<SandboxNetworkRule>? networkRules = null,
-        SandboxDiscoverySettings? discovery = null
+        SandboxDiscoverySettings? discovery = null,
+        IReadOnlyList<SandboxPluginRef>? pluginSelection = null
     )
     {
         // Null is rejected but an EMPTY string is a valid workspace leaf (the gateway's root) — this
@@ -48,5 +57,8 @@ public sealed class SandboxCreateRequest
         AuthProviders = authProviders is null ? [] : [.. authProviders];
         NetworkRules = networkRules is null ? [] : [.. networkRules];
         Discovery = discovery;
+        // Unlike Marketplaces/AuthProviders/NetworkRules, null and [] are semantically different here
+        // (tri-state plugin selection): null must stay null, not collapse to an empty list.
+        PluginSelection = pluginSelection is null ? null : [.. pluginSelection];
     }
 }

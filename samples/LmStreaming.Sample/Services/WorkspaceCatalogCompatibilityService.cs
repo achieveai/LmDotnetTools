@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using LmStreaming.Sample.Models;
 
 namespace LmStreaming.Sample.Services;
@@ -21,16 +22,27 @@ public sealed class WorkspaceCatalogCompatibilityService
 {
     private static readonly TimeSpan CacheDuration = TimeSpan.FromSeconds(30);
     private readonly IMarketplaceCatalogClient _client;
+    private readonly SandboxGatewayOptions _gatewayOptions;
     private readonly TimeProvider _timeProvider;
     private readonly object _sync = new();
     private Task<CatalogSnapshot>? _refresh;
     private CatalogSnapshot? _cached;
 
+    /// <param name="client">Gateway marketplace catalog reader.</param>
+    /// <param name="gatewayOptions">
+    /// Required, not optional: it supplies the configured default marketplace list that an empty
+    /// workspace selection falls back to. Defaulting it to <c>null</c> would let a deployment that
+    /// HAS configured defaults silently validate against the wrong (unnarrowed) set — the failure
+    /// mode would be accepting plugins the session then refuses, which is worse than a compile error.
+    /// </param>
+    /// <param name="timeProvider">Clock for the catalog cache; defaults to the system clock.</param>
     public WorkspaceCatalogCompatibilityService(
         IMarketplaceCatalogClient client,
+        SandboxGatewayOptions gatewayOptions,
         TimeProvider? timeProvider = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
+        _gatewayOptions = gatewayOptions ?? throw new ArgumentNullException(nameof(gatewayOptions));
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
@@ -87,6 +99,82 @@ public sealed class WorkspaceCatalogCompatibilityService
 
     public async Task ValidateForSessionAsync(Workspace workspace, CancellationToken ct = default) =>
         await ValidateResultAsync(await EvaluateAsync(workspace, ct));
+
+    /// <summary>
+    /// Validates an explicit, non-null plugin selection against the current catalog. A <c>null</c>
+    /// <paramref name="pluginSelection"/> (legacy-all) is always valid and never touches the catalog —
+    /// only explicit selections are checked, per spec Section 8's fail-closed rule.
+    /// </summary>
+    /// <param name="marketplaces">
+    /// The marketplace aliases selected on the workspace being mutated, or an EMPTY list to mean "no
+    /// preference", which resolves to the configured global default exactly as session creation does.
+    /// Every selected plugin must sit under one of the resolved aliases: the cached catalog is
+    /// deliberately fetched UNFILTERED (see <see cref="RefreshAsync"/>) and is shared process-wide, so
+    /// a plugin identity can be known to the gateway while belonging to a marketplace this workspace
+    /// does not run under. Membership of the catalog alone is therefore not sufficient.
+    /// </param>
+    /// <param name="pluginSelection">
+    /// The explicit selection to validate, or <c>null</c> for the legacy "all plugins" behaviour.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <exception cref="GatewayPluginFilteringUnsupportedException">
+    /// The gateway does not advertise plugin filtering, or advertises nothing at all (unknown is not
+    /// permission).
+    /// </exception>
+    /// <exception cref="UnsupportedWorkspacePluginsException">
+    /// One or more selected plugins are absent from the catalog, or sit under a marketplace not listed
+    /// in <paramref name="marketplaces"/>. Both causes share one exception because the caller's remedy
+    /// is identical: pick from the reported set.
+    /// </exception>
+    public async Task ValidatePluginsForMutationAsync(
+        IReadOnlyList<string> marketplaces,
+        IReadOnlyList<PluginRef>? pluginSelection,
+        CancellationToken ct = default)
+    {
+        if (pluginSelection is null)
+        {
+            return;
+        }
+
+        var snapshot = await GetCatalogAsync(ct).ConfigureAwait(false);
+
+        if (snapshot.PluginFilteringSupported != true)
+        {
+            throw new GatewayPluginFilteringUnsupportedException();
+        }
+
+        // Narrow the shared, unfiltered catalog to the aliases THIS workspace actually runs under.
+        // Doing it here rather than at fetch time keeps the process-wide 30s cache single-flight and
+        // lets EvaluateAsync keep reporting the gateway's full alias list. The narrowed set is also
+        // what the failure reports, so the error never offers back a plugin it just rejected.
+        //
+        // "Actually runs under" is NOT `marketplaces` verbatim: an empty workspace list means "names
+        // no preference", and the session-create path resolves it to the configured global default.
+        // Reading it as "enables nothing" made `selectable` empty and rejected EVERY plugin. Both
+        // sides go through MarketplaceAliases.ResolveEffective so they cannot drift apart again.
+        var effective = MarketplaceAliases.ResolveEffective(marketplaces, _gatewayOptions.Marketplaces);
+        IReadOnlyList<PluginRef> selectable;
+        if (effective is null)
+        {
+            // Nothing configured anywhere, so the gateway applies its own default marketplaces to the
+            // session. The cached catalog was fetched unfiltered, which is that same full set — it is
+            // already the correct selectable universe and narrowing it further would invent a limit
+            // the session would not honour.
+            selectable = snapshot.AvailablePlugins;
+        }
+        else
+        {
+            var enabled = new HashSet<string>(effective, StringComparer.Ordinal);
+            selectable = [.. snapshot.AvailablePlugins.Where(p => enabled.Contains(p.Marketplace))];
+        }
+
+        var unsupported = pluginSelection.Where(p => !selectable.Contains(p)).ToArray();
+
+        if (unsupported.Length > 0)
+        {
+            throw new UnsupportedWorkspacePluginsException(unsupported, selectable);
+        }
+    }
 
     private static Task ValidateResultAsync(WorkspaceCompatibilityResult result)
     {
@@ -154,11 +242,23 @@ public sealed class WorkspaceCatalogCompatibilityService
                 .Select(x => x.Alias)
                 .Distinct(StringComparer.Ordinal)
                 .ToArray();
-            return new CatalogSnapshot(true, aliases, null, _timeProvider.GetUtcNow());
+            var availablePlugins = catalog.Marketplaces
+                .SelectMany(m => m.Plugins.Select(p => new PluginRef(m.Alias, p.Name)))
+                .ToArray();
+            return new CatalogSnapshot(
+                true,
+                aliases,
+                null,
+                _timeProvider.GetUtcNow(),
+                availablePlugins,
+                catalog.Capabilities.PluginFiltering
+            );
         }
         catch (MarketplaceCatalogUnavailableException ex)
         {
-            return new CatalogSnapshot(false, [], ex.Message, _timeProvider.GetUtcNow());
+            // An unreachable gateway advertises nothing, so the capability stays null and any explicit
+            // plugin selection fails closed rather than being validated against an empty catalog.
+            return new CatalogSnapshot(false, [], ex.Message, _timeProvider.GetUtcNow(), [], null);
         }
     }
 
@@ -166,7 +266,9 @@ public sealed class WorkspaceCatalogCompatibilityService
         bool Available,
         IReadOnlyList<string> Aliases,
         string? Error,
-        DateTimeOffset FetchedAt
+        DateTimeOffset FetchedAt,
+        IReadOnlyList<PluginRef> AvailablePlugins,
+        bool? PluginFilteringSupported
     );
 }
 
@@ -189,4 +291,43 @@ public sealed class WorkspaceGatewayCatalogUnavailableException : InvalidOperati
 {
     public WorkspaceGatewayCatalogUnavailableException(string message)
         : base(message) { }
+}
+
+/// <summary>
+/// Thrown when a workspace's explicit plugin selection references a plugin that is not selectable for
+/// that workspace — either absent from the gateway catalog outright, or present but under a
+/// marketplace the workspace has not enabled.
+/// </summary>
+public sealed class UnsupportedWorkspacePluginsException : Exception
+{
+    /// <summary>Creates a new <see cref="UnsupportedWorkspacePluginsException"/>.</summary>
+    /// <param name="unsupportedPlugins">The rejected plugins, in the order they were selected.</param>
+    /// <param name="availablePlugins">
+    /// The plugins the workspace could legally have picked — already narrowed to the marketplaces it
+    /// effectively runs under, NOT the gateway's full catalog. Narrowed deliberately: an unnarrowed
+    /// list would offer back the very plugin this exception just rejected.
+    /// </param>
+    public UnsupportedWorkspacePluginsException(
+        IReadOnlyList<PluginRef> unsupportedPlugins,
+        IReadOnlyList<PluginRef> availablePlugins)
+        : base($"Unsupported plugins: {string.Join(", ", unsupportedPlugins.Select(p => $"{p.Marketplace}/{p.Plugin}"))}")
+    {
+        UnsupportedPlugins = unsupportedPlugins;
+        AvailablePlugins = availablePlugins;
+    }
+
+    /// <summary>The rejected plugins.</summary>
+    public IReadOnlyList<PluginRef> UnsupportedPlugins { get; }
+
+    /// <summary>The selectable plugins, narrowed to the workspace's enabled marketplaces.</summary>
+    public IReadOnlyList<PluginRef> AvailablePlugins { get; }
+}
+
+/// <summary>Thrown when an explicit plugin selection is supplied but the gateway does not (or is not known to) support plugin filtering.</summary>
+public sealed class GatewayPluginFilteringUnsupportedException : Exception
+{
+    public GatewayPluginFilteringUnsupportedException()
+        : base("The gateway does not support plugin filtering; an explicit plugin selection cannot be applied.")
+    {
+    }
 }

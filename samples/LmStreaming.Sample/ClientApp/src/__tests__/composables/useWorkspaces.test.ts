@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useWorkspaces } from '@/composables/useWorkspaces';
+import { WorkspaceRevisionConflictError } from '@/api/workspacesApi';
 
 const fetchMock = vi.fn();
 vi.stubGlobal('fetch', fetchMock);
@@ -73,5 +74,71 @@ describe('useWorkspaces gateway-scoped state', () => {
     state.selectWorkspace('bad');
 
     expect(state.selectedWorkspaceId.value).toBeNull();
+  });
+});
+
+describe('useWorkspaces plugin-selection conflicts', () => {
+  beforeEach(() => fetchMock.mockReset());
+
+  const conflict = () =>
+    Promise.resolve({
+      ok: false,
+      status: 409,
+      statusText: 'Conflict',
+      json: async () => ({
+        error: 'stale',
+        code: 'workspace_revision_conflict',
+        expectedRevision: 1,
+        actualRevision: 4,
+      }),
+    });
+
+  /**
+   * RED if `updateWorkspace` stops re-listing on conflict (drop the `loadWorkspaces()` call in the
+   * `WorkspaceRevisionConflictError` branch): only the initial load + the failed PUT would be
+   * observed, so a retry would replay the same stale revision forever.
+   */
+  it('refreshes the workspace list after a 409 so a retry carries the current revision', async () => {
+    fetchMock
+      .mockReturnValueOnce(response({ gateway, workspaces: [{ ...workspace('repo'), pluginsRevision: 1 }] }))
+      .mockReturnValueOnce(conflict())
+      .mockReturnValueOnce(response({ gateway, workspaces: [{ ...workspace('repo'), pluginsRevision: 4 }] }));
+    const state = useWorkspaces();
+    await state.loadWorkspaces();
+
+    const error = await state
+      .updateWorkspace('repo', { marketplaces: [], pluginSelection: [], pluginsRevision: 1 })
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(WorkspaceRevisionConflictError);
+    // The refresh actually happened: three fetches (load, failed PUT, re-load) and the revision the
+    // form will now read back is the server's current one.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(state.workspaces.value[0].pluginsRevision).toBe(4);
+    // Actionable, not a bare code — this string is what ChatLayout hands to showFormError().
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('changed elsewhere');
+    // ...and it states the consequence the user actually experiences: ChatLayout re-seeds the open
+    // form from the refreshed workspace (the only way to stop the next click clobbering the other
+    // writer through a now-valid CAS token), which DISCARDS their pending change. A message that
+    // only said the list was "refreshed" would leave that discard silent.
+    expect((error as Error).message).toContain('discarded');
+    expect((error as Error).message).toContain('re-apply');
+  });
+
+  it('does not silently retry the update after a conflict', async () => {
+    fetchMock
+      .mockReturnValueOnce(response({ gateway, workspaces: [workspace('repo')] }))
+      .mockReturnValueOnce(conflict())
+      .mockReturnValueOnce(response({ gateway, workspaces: [workspace('repo')] }));
+    const state = useWorkspaces();
+    await state.loadWorkspaces();
+
+    await state
+      .updateWorkspace('repo', { marketplaces: [], pluginSelection: [], pluginsRevision: 1 })
+      .catch(() => undefined);
+
+    const puts = fetchMock.mock.calls.filter((call) => call[1]?.method === 'PUT');
+    expect(puts).toHaveLength(1);
   });
 });

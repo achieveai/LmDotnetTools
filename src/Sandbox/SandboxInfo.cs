@@ -44,13 +44,22 @@ public sealed class SandboxInfo
     /// </summary>
     public SandboxInventory Inventory { get; }
 
+    /// <summary>
+    /// How the gateway resolved this sandbox's requested plugin selection, or <see langword="null"/>
+    /// when the gateway did not report one. Unlike <see cref="Inventory"/> this is NEVER defaulted:
+    /// <see langword="null"/> is a distinct, stronger "capability unknown" signal than a resolution
+    /// whose <see cref="SandboxPluginResolution.Supported"/> flag is false.
+    /// </summary>
+    public SandboxPluginResolution? PluginResolution { get; }
+
     public SandboxInfo(
         string sessionId,
         string? containerId = null,
         string? workspaceContainerPath = null,
         long? workspaceMountId = null,
         string? status = null,
-        SandboxInventory? inventory = null
+        SandboxInventory? inventory = null,
+        SandboxPluginResolution? pluginResolution = null
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
@@ -63,5 +72,6 @@ public sealed class SandboxInfo
         // field, or any non-create result (ListAsync never reports one) — still answers the
         // question, so a caller never has to distinguish "no items" from "no field".
         Inventory = inventory ?? SandboxInventory.Unavailable(SandboxInventory.NoInventoryReported);
+        PluginResolution = pluginResolution;
     }
 }

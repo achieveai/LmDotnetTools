@@ -9,6 +9,7 @@ import {
   listWorkspaces,
   createWorkspace as apiCreateWorkspace,
   updateWorkspace as apiUpdateWorkspace,
+  WorkspaceRevisionConflictError,
 } from '@/api/workspacesApi';
 
 const DEFAULT_WORKSPACE_ID = 'default';
@@ -104,7 +105,19 @@ export function useWorkspaces() {
   }
 
   /**
-   * Updates a workspace's marketplaces, then reloads the catalog.
+   * Updates a workspace's marketplaces and/or plugin selection, then reloads the catalog.
+   *
+   * A revision conflict (HTTP 409) means someone else changed the selection between our read and
+   * our write, so our `pluginsRevision` is stale. We reload the catalog — that is what makes a
+   * retry carry the CURRENT revision instead of replaying the same doomed one. Deliberately NOT
+   * retried automatically: re-submitting against a selection we never showed the user would
+   * silently overwrite their change.
+   *
+   * The reload alone is not sufficient, and on its own is actively dangerous: it refreshes the CAS
+   * token while the open form still holds the pre-conflict selection, so one further click would
+   * pass compare-and-swap and clobber the other writer. The caller MUST also re-seed the form from
+   * the refreshed workspace (ChatLayout does, via `reseedEditForm`), which is why the message below
+   * says the pending change was discarded rather than merely that the list was refreshed.
    */
   async function updateWorkspace(id: string, dto: WorkspaceUpdate): Promise<Workspace> {
     try {
@@ -112,6 +125,19 @@ export function useWorkspaces() {
       await loadWorkspaces();
       return workspace;
     } catch (e) {
+      if (e instanceof WorkspaceRevisionConflictError) {
+        await loadWorkspaces();
+        const refreshed = new WorkspaceRevisionConflictError(
+          'This workspace was changed elsewhere, so your plugin selection was not saved. '
+            + 'The form has been reloaded with the current selection and your pending change was '
+            + 'discarded — re-apply it and save again.',
+          e.expectedRevision,
+          e.actualRevision
+        );
+        error.value = refreshed.message;
+        console.error('Failed to update workspace:', e);
+        throw refreshed;
+      }
       error.value = e instanceof Error ? e.message : 'Failed to update workspace';
       console.error('Failed to update workspace:', e);
       throw e;
