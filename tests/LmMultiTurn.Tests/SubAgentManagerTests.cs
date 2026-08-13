@@ -819,8 +819,42 @@ public class SubAgentManagerTests : IAsyncLifetime
         // the caller-supplied name, so resolve it once via ListAgents now that the child is registered.
         var agentId = _manager!.ListAgents().Single(a => a.Name == "color-agent").AgentId;
 
+        // The deferred registry is populated DURING the run, so seeing tc_color above only proves the
+        // child parked — not that the monitor has yet dequeued that run's RunCompletedMessage and
+        // classified it. Wait for the descendant-question notification, which HandleRunCompletionAsync
+        // emits from inside the awaiting-question branch itself: its arrival is the only observable
+        // proof that the parked completion was processed AND deliberately left the latch unresolved.
+        // Answering before it would also be answering earlier than any real client can — the
+        // notification is precisely how a client learns the question exists (#246) — and would race
+        // the monitor's own pending-question probe, which reads the registry live: an answer that
+        // lands first empties the registry, and the parked run is then misread as genuinely terminal
+        // and settled with the "(no text response)" placeholder this test exists to forbid.
+        await WaitForConditionAsync(
+            () =>
+            {
+                try
+                {
+                    _parentMock.Verify(
+                        p => p.SendAsync(
+                            It.Is<List<IMessage>>(msgs =>
+                                msgs.Count == 1
+                                && ContainsDescendantQuestionNotification(msgs[0], agentId, "test-agent")),
+                            It.IsAny<string?>(),
+                            It.IsAny<string?>(),
+                            It.IsAny<CancellationToken>()),
+                        Times.AtLeastOnce);
+                    return true;
+                }
+                catch
+                {
+                    return false;
+                }
+            },
+            TimeSpan.FromSeconds(10));
+
         // Assert (lifecycle): the foreground caller must still be blocked — NOT resolved with a
-        // placeholder — while the question is outstanding.
+        // placeholder — while the question is outstanding. Non-vacuous now: the wait above proves the
+        // monitor already handled the parked run's completion and chose not to settle it.
         foregroundTask.IsCompleted.Should().BeFalse(
             "a foreground spawn parked on its own pending question must keep blocking for the real "
                 + "answer, not settle immediately with a '(no text response)' placeholder");
