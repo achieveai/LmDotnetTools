@@ -151,7 +151,7 @@ public class McpFunctionProviderServerTests : IAsyncLifetime
     public async Task CallTool_GetWeather_Should_Return_Weather_Data()
     {
         // Arrange
-        var arguments = new Dictionary<string, object>
+        var arguments = new Dictionary<string, object?>
         {
             ["city"] = "London",
             ["unit"] = "celsius"
@@ -176,7 +176,7 @@ public class McpFunctionProviderServerTests : IAsyncLifetime
     public async Task CallTool_CalculatorAdd_Should_Return_Sum()
     {
         // Arrange
-        var arguments = new Dictionary<string, object>
+        var arguments = new Dictionary<string, object?>
         {
             ["a"] = 15.5,
             ["b"] = 24.5
@@ -202,7 +202,7 @@ public class McpFunctionProviderServerTests : IAsyncLifetime
     public async Task CallTool_CalculatorMultiply_Should_Return_Product()
     {
         // Arrange
-        var arguments = new Dictionary<string, object>
+        var arguments = new Dictionary<string, object?>
         {
             ["a"] = 6.0,
             ["b"] = 7.0
@@ -231,7 +231,7 @@ public class McpFunctionProviderServerTests : IAsyncLifetime
         {
             File.WriteAllText(testFilePath, "Test content");
 
-            var arguments = new Dictionary<string, object>
+            var arguments = new Dictionary<string, object?>
             {
                 ["path"] = testFilePath
             };
@@ -262,7 +262,7 @@ public class McpFunctionProviderServerTests : IAsyncLifetime
     public async Task CallTool_WithInvalidTool_Should_Return_Error()
     {
         // Arrange
-        var arguments = new Dictionary<string, object>();
+        var arguments = new Dictionary<string, object?>();
 
         // Act
         var result = await _client!.CallToolAsync("non_existent_tool", arguments);
@@ -287,13 +287,13 @@ public class McpFunctionProviderServerTests : IAsyncLifetime
         port.Should().BeGreaterThan(0, "server should have been assigned a port");
 
         // Verify port is in use while server is running
-        IsPortAvailable(port.Value).Should().BeFalse("port should be in use while server is running");
+        IsPortAvailable(port!.Value).Should().BeFalse("port should be in use while server is running");
 
         // Act
         await server.DisposeAsync();
 
         // Assert - verify port is released after disposal
-        IsPortAvailable(port.Value).Should().BeTrue("port should be available after disposal");
+        IsPortAvailable(port!.Value).Should().BeTrue("port should be available after disposal");
 
         _output.WriteLine($"✓ Server on port {port} disposed cleanly and port was released");
     }
