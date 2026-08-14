@@ -15,6 +15,18 @@ import {
 const DEFAULT_WORKSPACE_ID = 'default';
 
 /**
+ * How many times `settleCatalog` follows the chain of superseding loads before giving up.
+ *
+ * The loop only iterates when a load is superseded WHILE being awaited, so it converges the moment
+ * one load completes as the newest. It is bounded anyway because a caller that keeps starting loads
+ * would otherwise keep it alive indefinitely and hang whatever is waiting on it. Five is well past
+ * anything this UI produces: the load triggers are mount, the post-409 reload, and the
+ * post-mutation reload, so three overlapping loads is already pathological and five tolerates four
+ * consecutive supersessions.
+ */
+const MAX_CATALOG_SETTLE_WAITS = 5;
+
+/**
  * Composable that loads the workspace catalog and tracks the user's currently
  * selected workspace for the next new conversation.
  *
@@ -44,6 +56,12 @@ export function useWorkspaces() {
   let loadGeneration = 0;
 
   /**
+   * The most recently STARTED load. Paired with `loadGeneration` this is what lets a caller wait for
+   * the load that will actually win rather than merely its own — see `settleCatalog`.
+   */
+  let newestLoad: Promise<void> = Promise.resolve();
+
+  /**
    * Workspace currently chosen for the next new conversation.
    */
   const selectedWorkspace = computed(() =>
@@ -53,8 +71,21 @@ export function useWorkspaces() {
   /**
    * Loads the workspace catalog. Keeps the current selection if it still exists,
    * otherwise falls back to the default workspace (or the first available).
+   *
+   * The returned promise means "this call finished", NOT "this call applied its response": a
+   * superseded load resolves having written nothing. A caller that must read settled state has to
+   * follow up with `settleCatalog()`.
    */
-  async function loadWorkspaces(): Promise<void> {
+  function loadWorkspaces(): Promise<void> {
+    const load = runLoad();
+    // Assigned synchronously, in the same tick in which `runLoad` bumped `loadGeneration` (an async
+    // function body runs up to its first await before returning), so the generation counter and this
+    // handle can never disagree about which load is newest.
+    newestLoad = load;
+    return load;
+  }
+
+  async function runLoad(): Promise<void> {
     const generation = ++loadGeneration;
     isLoading.value = true;
     error.value = null;
@@ -90,6 +121,32 @@ export function useWorkspaces() {
         isLoading.value = false;
       }
     }
+  }
+
+  /**
+   * Waits until the newest load has applied its response, and reports whether it got there.
+   *
+   * `await loadWorkspaces()` only says your own request finished. If a newer load superseded it,
+   * nothing was written and the state you then read is whatever was there before — for the 409 path
+   * that is the pre-conflict list, complete with the stale `pluginsRevision` the conflict was about.
+   * So follow the chain: wait for the newest load, and if a newer one started while waiting, wait
+   * for that one too. Because each pass waits on a load that has already started, a list superseded
+   * twice still converges.
+   *
+   * Returns false if `MAX_CATALOG_SETTLE_WAITS` passes are spent without converging, so the
+   * caller degrades deliberately instead of waiting forever.
+   */
+  async function settleCatalog(): Promise<boolean> {
+    for (let attempt = 0; attempt < MAX_CATALOG_SETTLE_WAITS; attempt++) {
+      const generation = loadGeneration;
+      await newestLoad;
+      // No newer load started while we waited, so the one we awaited was still the latest when it
+      // completed — which is exactly the condition under which it applied its response.
+      if (loadGeneration === generation) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -147,6 +204,15 @@ export function useWorkspaces() {
    * pass compare-and-swap and clobber the other writer. The caller MUST also re-seed the form from
    * the refreshed workspace (ChatLayout does, via `reseedEditForm`), which is why the message below
    * says the pending change was discarded rather than merely that the list was refreshed.
+   *
+   * That hand-off only works if the data is actually refreshed by the time we throw, and awaiting
+   * our own reload does not establish that: a newer load started meanwhile supersedes ours, ours
+   * applies nothing, and the caller re-seeds from the very pre-conflict data the conflict was about
+   * — so the retry submits the same stale revision and conflicts again. Hence `settleCatalog()`:
+   * we do not resolve until the load that wins has applied. If the catalog never settles we still
+   * surface the conflict rather than hang; the form may then be re-seeded from a superseded list,
+   * which fails closed (the next save carries an OLD revision, so CAS rejects it and the user sees
+   * this same conflict again) rather than passing CAS on a token it never showed them.
    */
   async function updateWorkspace(id: string, dto: WorkspaceUpdate): Promise<Workspace> {
     try {
@@ -156,6 +222,12 @@ export function useWorkspaces() {
     } catch (e) {
       if (e instanceof WorkspaceRevisionConflictError) {
         await loadWorkspaces();
+        if (!(await settleCatalog())) {
+          console.warn(
+            'Workspace catalog did not settle after a revision conflict; the form may be re-seeded '
+              + 'from a superseded list. The next save will conflict again rather than overwrite.'
+          );
+        }
         const refreshed = new WorkspaceRevisionConflictError(
           'This workspace was changed elsewhere, so your plugin selection was not saved. '
             + 'The form has been reloaded with the current selection and your pending change was '

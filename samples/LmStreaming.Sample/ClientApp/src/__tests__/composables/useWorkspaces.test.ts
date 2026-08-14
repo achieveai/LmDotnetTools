@@ -21,6 +21,25 @@ const workspace = (id: string, compatibility: 'compatible' | 'incompatible' | 'u
   unsupportedMarketplaces: compatibility === 'incompatible' ? ['old'] : [],
 });
 
+/**
+ * Named function with a void return, NOT `beforeEach(() => fetchMock.mockReset())`: `mockReset()`
+ * returns the mock itself, and Vitest treats a function returned from `beforeEach` as a TEARDOWN
+ * callback — so that concise form calls `fetch()` after every test and awaits what it returns,
+ * which hangs the whole file for the hook timeout as soon as one test leaves a deferred response
+ * installed.
+ */
+function resetFetch(): void {
+  fetchMock.mockReset();
+}
+
+/**
+ * Drains the microtask queue AND one timer turn, so anything that was going to settle on the
+ * responses released so far already has. Placing one of these between two releases is what stops a
+ * concurrency test passing by accident: without it both responses land in the same drain, and an
+ * implementation that reads state too early still happens to read the right value.
+ */
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
 /** A fetch whose response the test releases by hand, so requests can be settled out of order. */
 function deferred() {
   let release!: (body: unknown) => void;
@@ -31,7 +50,7 @@ function deferred() {
 }
 
 describe('useWorkspaces gateway-scoped state', () => {
-  beforeEach(() => fetchMock.mockReset());
+  beforeEach(resetFetch);
 
   it('loads the envelope and selects compatible Default', async () => {
     fetchMock.mockReturnValue(response({ gateway, workspaces: [workspace('default'), workspace('repo')] }));
@@ -87,7 +106,7 @@ describe('useWorkspaces gateway-scoped state', () => {
 });
 
 describe('useWorkspaces plugin-selection conflicts', () => {
-  beforeEach(() => fetchMock.mockReset());
+  beforeEach(resetFetch);
 
   const conflict = () =>
     Promise.resolve({
@@ -150,6 +169,142 @@ describe('useWorkspaces plugin-selection conflicts', () => {
     const puts = fetchMock.mock.calls.filter((call) => call[1]?.method === 'PUT');
     expect(puts).toHaveLength(1);
   });
+
+  /**
+   * The reload the 409 branch performs can be superseded, and then it applies NOTHING. Awaiting it
+   * is therefore not enough: `updateWorkspace` would reject while the list still held the
+   * pre-conflict `pluginsRevision`, ChatLayout would `reseedEditForm()` from that stale data, the
+   * winning load would land afterwards with nobody left to re-seed the form, and the user's retry
+   * would submit the revision that already conflicted.
+   *
+   * The assertion is taken AT REJECTION TIME, not afterwards, because that is the instant the caller
+   * re-seeds from. Note the `flush()` between the two releases: it is what makes this test
+   * non-vacuous. Releasing both back to back lets the winner apply in the same microtask drain in
+   * which the broken code rejects, so the broken code sees the winning revision by luck and passes.
+   * The flush parks the run at exactly the moment the broken code has rejected and the winner has
+   * not yet answered.
+   */
+  it('does not reject the conflict until the winning load has applied', async () => {
+    const supersededReload = deferred();
+    const winningLoad = deferred();
+    fetchMock
+      .mockReturnValueOnce(response({ gateway, workspaces: [{ ...workspace('repo'), pluginsRevision: 1 }] }))
+      .mockReturnValueOnce(conflict())
+      .mockReturnValueOnce(supersededReload.promise)
+      .mockReturnValueOnce(winningLoad.promise);
+    const state = useWorkspaces();
+    await state.loadWorkspaces();
+
+    let revisionAtRejection: number | undefined;
+    const update = state
+      .updateWorkspace('repo', { marketplaces: [], pluginSelection: [], pluginsRevision: 1 })
+      .catch((e: unknown) => {
+        revisionAtRejection = state.workspaces.value[0].pluginsRevision;
+        return e;
+      });
+
+    // The PUT has failed and the 409 branch's reload is in flight; supersede it.
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    const newerLoad = state.loadWorkspaces();
+
+    // The superseded reload answers first, carrying the revision the conflict was about, and
+    // everything that was going to settle on it settles now.
+    supersededReload.release({ gateway, workspaces: [{ ...workspace('repo'), pluginsRevision: 1 }] });
+    await flush();
+
+    // Only now does the winner answer with the revision a retry must carry.
+    winningLoad.release({ gateway, workspaces: [{ ...workspace('repo'), pluginsRevision: 9 }] });
+    await newerLoad;
+
+    expect(await update).toBeInstanceOf(WorkspaceRevisionConflictError);
+    expect(revisionAtRejection).toBe(9);
+  });
+
+  /**
+   * Converging once is not enough: the wait must follow the chain. Here the 409's reload is
+   * superseded, and the load that supersedes it is superseded in turn, so a fix that waits exactly
+   * one step further still re-seeds the form from a list nobody applied.
+   */
+  it('follows a chain of supersessions until one load actually applies', async () => {
+    const first = deferred();
+    const second = deferred();
+    const third = deferred();
+    fetchMock
+      .mockReturnValueOnce(response({ gateway, workspaces: [{ ...workspace('repo'), pluginsRevision: 1 }] }))
+      .mockReturnValueOnce(conflict())
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+      .mockReturnValueOnce(third.promise);
+    const state = useWorkspaces();
+    await state.loadWorkspaces();
+
+    let revisionAtRejection: number | undefined;
+    const update = state
+      .updateWorkspace('repo', { marketplaces: [], pluginSelection: [], pluginsRevision: 1 })
+      .catch((e: unknown) => {
+        revisionAtRejection = state.workspaces.value[0].pluginsRevision;
+        return e;
+      });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+
+    // Supersede the 409's own reload, then let it answer and everything settle on it.
+    const secondLoad = state.loadWorkspaces();
+    first.release({ gateway, workspaces: [{ ...workspace('repo'), pluginsRevision: 1 }] });
+    await flush();
+
+    // Supersede its successor too, before that one answers: a one-step wait stops here, on a list
+    // nobody applied.
+    const thirdLoad = state.loadWorkspaces();
+    second.release({ gateway, workspaces: [{ ...workspace('repo'), pluginsRevision: 4 }] });
+    await flush();
+
+    third.release({ gateway, workspaces: [{ ...workspace('repo'), pluginsRevision: 12 }] });
+    await Promise.all([secondLoad, thirdLoad]);
+
+    expect(await update).toBeInstanceOf(WorkspaceRevisionConflictError);
+    expect(revisionAtRejection).toBe(12);
+  });
+
+  /**
+   * The bound. If loads keep starting, following the chain never converges — and an unbounded wait
+   * inside `updateWorkspace` means ChatLayout's `catch` never runs, so the form stays open over a
+   * failed save with no error shown and no way to know it failed. Give up after a fixed number of
+   * passes and still surface the conflict.
+   *
+   * Against an unbounded implementation this test does not fail an assertion, it TIMES OUT — the
+   * `await update` never settles. That is the defect, so it is the right failure.
+   */
+  it('gives up after a bounded number of supersessions and still surfaces the conflict', async () => {
+    const pending: ReturnType<typeof deferred>[] = [];
+    fetchMock
+      .mockReturnValueOnce(response({ gateway, workspaces: [{ ...workspace('repo'), pluginsRevision: 1 }] }))
+      .mockReturnValueOnce(conflict())
+      .mockImplementation(() => {
+        const next = deferred();
+        pending.push(next);
+        return next.promise;
+      });
+    const state = useWorkspaces();
+    await state.loadWorkspaces();
+
+    const update = state
+      .updateWorkspace('repo', { marketplaces: [], pluginSelection: [], pluginsRevision: 1 })
+      .catch((e: unknown) => e);
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+
+    // Every time the awaited load answers, a newer one has already started: the chain never settles.
+    // More rounds than the bound, so the wait must be what stops, not the test.
+    const started: Promise<void>[] = [];
+    for (let round = 0; round < 8; round++) {
+      started.push(state.loadWorkspaces());
+      pending[round].release({ gateway, workspaces: [{ ...workspace('repo'), pluginsRevision: 1 }] });
+      await flush();
+    }
+
+    expect(await update).toBeInstanceOf(WorkspaceRevisionConflictError);
+    pending[8]?.release({ gateway, workspaces: [{ ...workspace('repo'), pluginsRevision: 1 }] });
+    await Promise.all(started);
+  });
 });
 
 /**
@@ -162,7 +317,7 @@ describe('useWorkspaces plugin-selection conflicts', () => {
  * test that resolves them in order passes either way.
  */
 describe('useWorkspaces concurrent load ordering', () => {
-  beforeEach(() => fetchMock.mockReset());
+  beforeEach(resetFetch);
 
   it('ignores a stale response that lands after a newer one', async () => {
     const first = deferred();
@@ -279,7 +434,7 @@ describe('useWorkspaces concurrent load ordering', () => {
  * workspace that `useChat` will then submit as the workspace for the next conversation.
  */
 describe('useWorkspaces created-workspace selection', () => {
-  beforeEach(() => fetchMock.mockReset());
+  beforeEach(resetFetch);
 
   const create = () => ({ name: 'new', marketplaces: [] });
 
