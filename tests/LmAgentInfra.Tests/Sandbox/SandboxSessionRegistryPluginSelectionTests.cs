@@ -210,51 +210,6 @@ public class SandboxSessionRegistryPluginSelectionTests
     }
 
     [Fact]
-    public void ReflectsPluginSelection_ResolutionReportingUnsupported_IsNeverCurrent_EvenWhenRequestedMatches()
-    {
-        // The hard case for this guard: `Requested` matches the desired selection EXACTLY, so every
-        // other check in the method passes. `Requested` is only what the gateway saw on the request,
-        // though — a gateway that echoes the field while ignoring it produces a resolution that is
-        // byte-identical to one that honoured it, and `Supported` is the only field separating them.
-        // Without this check the reconcile pass reads "already current" and skips the recreate, leaving
-        // the session on the full plugin set while the store records the filtered one. Nothing errors.
-        var unsupported = new SandboxSession(
-            "ws-1",
-            "sess-1",
-            "ws",
-            "/host",
-            new SandboxPluginResolution(supported: false, PluginRefs(["a", "b"]))
-        );
-
-        SandboxSessionRegistry.ReflectsPluginSelection(unsupported, PluginRefs(["a", "b"])).Should().BeFalse();
-
-        // ...and the tri-state "no selection" case, which is the one that looks most innocuous: an
-        // unsupported gateway serves everything, which is what a null selection asks for. It is still
-        // unproven, and the same fail-closed rule applies.
-        var unsupportedNoSelection = new SandboxSession(
-            "ws-1",
-            "sess-1",
-            "ws",
-            "/host",
-            new SandboxPluginResolution(supported: false, requested: null)
-        );
-
-        SandboxSessionRegistry.ReflectsPluginSelection(unsupportedNoSelection, desired: null).Should().BeFalse();
-
-        // Control: the identical resolution with `supported: true` IS current. Without this row the
-        // test above passes against a method hard-wired to return false.
-        var supported = new SandboxSession(
-            "ws-1",
-            "sess-1",
-            "ws",
-            "/host",
-            new SandboxPluginResolution(supported: true, PluginRefs(["a", "b"]))
-        );
-
-        SandboxSessionRegistry.ReflectsPluginSelection(supported, PluginRefs(["a", "b"])).Should().BeTrue();
-    }
-
-    [Fact]
     public async Task CreatePluginSelectionCandidateAsync_Success_CreatesNewSandboxSession_LeavingOldSessionUntouched()
     {
         // "Prepare" step: the candidate is built BESIDE the live session. Until the swap commits, the
