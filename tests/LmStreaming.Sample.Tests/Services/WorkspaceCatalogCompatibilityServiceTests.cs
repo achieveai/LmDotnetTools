@@ -92,6 +92,52 @@ public sealed class WorkspaceCatalogCompatibilityServiceTests
     }
 
     [Fact]
+    public async Task ValidatePluginsForMutationAsync_NullElement_ThrowsMalformed_BeforeAnyCatalogCall()
+    {
+        // `PluginRef` is a reference type, so `"pluginSelection": [null]` deserializes to a null
+        // ELEMENT despite the non-nullable annotation. A null can never match anything selectable,
+        // so it used to reach UnsupportedWorkspacePluginsException — whose message formatter
+        // dereferences it, turning invalid input into a 500 instead of a controlled 400.
+        var (service, stub) = CreateServiceWithStub(catalogAvailable: false);
+
+        var act = async () => await service.ValidatePluginsForMutationAsync(
+            ["official"],
+            [null!]
+        );
+
+        var thrown = await act.Should().ThrowAsync<MalformedWorkspacePluginSelectionException>();
+        thrown.Which.Indexes.Should().Equal([0]);
+
+        // The answer must not depend on the gateway: this stub's catalog is offline, and reaching it
+        // would have thrown WorkspaceGatewayCatalogUnavailableException instead. Zero calls is what
+        // proves the rejection is deterministic client-side, not a lucky ordering.
+        stub.CallCount.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData("", "code-review")]
+    [InlineData("   ", "code-review")]
+    [InlineData("official", "")]
+    [InlineData("official", "   ")]
+    public async Task ValidatePluginsForMutationAsync_BlankFields_ThrowMalformed(
+        string marketplace,
+        string plugin)
+    {
+        // A blank field is unreadable for the same reason a null element is: there is no reference to
+        // compare against a catalog. Rejecting it here keeps "" out of the persisted selection, where
+        // it would otherwise be sent to the gateway as a real plugin name.
+        var (service, stub) = CreateServiceWithStub(catalogAvailable: false);
+
+        var act = async () => await service.ValidatePluginsForMutationAsync(
+            ["official"],
+            [new PluginRef(marketplace, plugin)]
+        );
+
+        await act.Should().ThrowAsync<MalformedWorkspacePluginSelectionException>();
+        stub.CallCount.Should().Be(0);
+    }
+
+    [Fact]
     public async Task ValidatePluginsForMutationAsync_GatewayDoesNotSupportPluginFiltering_ThrowsGatewayPluginFilteringUnsupported()
     {
         var service = CreateService(pluginFilteringSupported: false);

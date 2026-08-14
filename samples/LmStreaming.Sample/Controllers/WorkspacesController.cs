@@ -99,6 +99,20 @@ public sealed class WorkspacesController(
                 }
             );
         }
+        catch (MalformedWorkspacePluginSelectionException ex)
+        {
+            // Deliberately BEFORE the unsupported-plugins catch: an unreadable entry is a bad
+            // request in its own right, not a plugin the gateway happens not to offer, and it
+            // previously escaped as a 500 from the message formatter of the exception below.
+            return BadRequest(
+                new
+                {
+                    error = ex.Message,
+                    code = "malformed_plugin_selection",
+                    malformedIndexes = ex.Indexes,
+                }
+            );
+        }
         catch (UnsupportedWorkspacePluginsException ex)
         {
             return BadRequest(
@@ -165,6 +179,20 @@ public sealed class WorkspacesController(
                     code = "unsupported_marketplaces",
                     unsupportedMarketplaces = ex.UnsupportedMarketplaces,
                     availableMarketplaces = ex.AvailableMarketplaces,
+                }
+            );
+        }
+        catch (MalformedWorkspacePluginSelectionException ex)
+        {
+            // Deliberately BEFORE the unsupported-plugins catch: an unreadable entry is a bad
+            // request in its own right, not a plugin the gateway happens not to offer, and it
+            // previously escaped as a 500 from the message formatter of the exception below.
+            return BadRequest(
+                new
+                {
+                    error = ex.Message,
+                    code = "malformed_plugin_selection",
+                    malformedIndexes = ex.Indexes,
                 }
             );
         }

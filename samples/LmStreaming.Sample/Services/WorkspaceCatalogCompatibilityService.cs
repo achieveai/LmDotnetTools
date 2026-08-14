@@ -136,6 +136,32 @@ public sealed class WorkspaceCatalogCompatibilityService
             return;
         }
 
+        // Reject malformed entries FIRST, before the catalog is even fetched. `PluginRef` is a
+        // reference type, so a body like `"pluginSelection": [null]` deserializes to a null ELEMENT
+        // regardless of the non-nullable annotation — and a null (or blank-field) entry can never
+        // match anything in `selectable`, so it lands in `unsupported` and the exception's own
+        // message formatter dereferences it. That turned invalid input into a 500 instead of the
+        // controlled 400 the caller can act on. Checking here rather than at the catalog step also
+        // makes the answer deterministic: malformed input is a client error whatever the gateway is
+        // doing, so it must not depend on the catalog being reachable or on plugin filtering being
+        // supported.
+        var malformed = new List<int>();
+        for (var index = 0; index < pluginSelection.Count; index++)
+        {
+            var candidate = pluginSelection[index];
+            if (candidate is null
+                || string.IsNullOrWhiteSpace(candidate.Marketplace)
+                || string.IsNullOrWhiteSpace(candidate.Plugin))
+            {
+                malformed.Add(index);
+            }
+        }
+
+        if (malformed.Count > 0)
+        {
+            throw new MalformedWorkspacePluginSelectionException(malformed);
+        }
+
         var snapshot = await GetCatalogAsync(ct).ConfigureAwait(false);
 
         if (snapshot.PluginFilteringSupported != true)
@@ -321,6 +347,29 @@ public sealed class UnsupportedWorkspacePluginsException : Exception
 
     /// <summary>The selectable plugins, narrowed to the workspace's enabled marketplaces.</summary>
     public IReadOnlyList<PluginRef> AvailablePlugins { get; }
+}
+
+/// <summary>
+/// Thrown when a plugin selection carries an entry that is not a usable reference at all — a null
+/// element, or one with a blank marketplace or plugin name. Distinct from
+/// <see cref="UnsupportedWorkspacePluginsException"/>, which reports well-formed references the
+/// gateway does not offer: this one says the request itself could not be read, so there is nothing
+/// to compare against a catalog and no gateway call worth making.
+/// </summary>
+public sealed class MalformedWorkspacePluginSelectionException : Exception
+{
+    /// <summary>Creates a new <see cref="MalformedWorkspacePluginSelectionException"/>.</summary>
+    /// <param name="indexes">Positions in the submitted selection that could not be read.</param>
+    public MalformedWorkspacePluginSelectionException(IReadOnlyList<int> indexes)
+        : base(
+            "Plugin selection contains entries that are null or have a blank marketplace or plugin "
+                + $"name, at index: {string.Join(", ", indexes)}.")
+    {
+        Indexes = indexes;
+    }
+
+    /// <summary>Positions in the submitted selection that could not be read.</summary>
+    public IReadOnlyList<int> Indexes { get; }
 }
 
 /// <summary>Thrown when an explicit plugin selection is supplied but the gateway does not (or is not known to) support plugin filtering.</summary>
