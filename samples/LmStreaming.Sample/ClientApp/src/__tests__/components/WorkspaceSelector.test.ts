@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils';
 import { nextTick } from 'vue';
 import WorkspaceSelector from '@/components/WorkspaceSelector.vue';
+import { listMarketplaces } from '@/api/marketplacesApi';
 import type { Workspace } from '@/types/workspace';
 
 // The selector now sources its marketplace options from the gateway catalog. Mock the API so the
@@ -1480,5 +1481,100 @@ describe('WorkspaceSelector blocks form interaction during a transient refresh',
       { marketplace: 'demo', plugin: 'toolkit' },
       { marketplace: 'demo', plugin: 'extras' },
     ]);
+  });
+});
+
+/**
+ * The catalog is fetched on mount AND whenever a create/edit form opens, so two requests are easily
+ * in flight at once. These resolve them OUT OF ORDER — the mount request lands last — because that
+ * is the only ordering that tells a sequenced implementation from an unsequenced one.
+ *
+ * What makes this more than cosmetic: the response sets `pluginFilteringEnabled`, which decides
+ * whether the plugin UI renders and whether the next submit carries a `pluginSelection` key at all.
+ * A stale response therefore changes the PAYLOAD, not just the paint.
+ */
+describe('WorkspaceSelector concurrent catalog load ordering', () => {
+  beforeEach(() => {
+    vi.mocked(listMarketplaces).mockReset();
+  });
+
+  afterEach(() => {
+    // Hand the shared module mock back to the default the rest of the file relies on.
+    vi.mocked(listMarketplaces).mockImplementation(async () => catalog.value as never);
+  });
+
+  function deferredCatalog() {
+    let release!: (value: unknown) => void;
+    const promise = new Promise((resolve) => {
+      release = resolve;
+    });
+    return { promise, release };
+  }
+
+  it('ignores a stale catalog response that lands after a newer one', async () => {
+    const mountLoad = deferredCatalog();
+    const formLoad = deferredCatalog();
+    vi.mocked(listMarketplaces)
+      .mockReturnValueOnce(mountLoad.promise as never)
+      .mockReturnValueOnce(formLoad.promise as never);
+
+    const wrapper = mountSelector();
+    await openDropdown(wrapper);
+    await wrapper.get('[data-testid="workspace-create-open"]').trigger('click');
+    await nextTick();
+
+    // The form's request answers first, advertising plugin filtering.
+    formLoad.release(filteringCatalog);
+    await flushPromises();
+    await nextTick();
+
+    // Enable the marketplace so its plugin list renders — that list is the visible proof of
+    // `pluginFilteringEnabled`, which is the field the stale response would flip.
+    await wrapper.get('[data-testid="workspace-create-marketplace-demo"]').trigger('change');
+    await nextTick();
+    expect(wrapper.find('[data-testid="workspace-create-plugin-demo-toolkit"]').exists()).toBe(true);
+
+    // The mount request lands afterwards with a catalog that has no capability block — the "older
+    // gateway" shape. Applying it would tear the plugin UI out from under the open form and drop
+    // pluginSelection from the next submit.
+    mountLoad.release(uncapableCatalog);
+    await flushPromises();
+    await nextTick();
+
+    expect(wrapper.find('[data-testid="workspace-create-marketplace-demo"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="workspace-create-plugin-demo-toolkit"]').exists()).toBe(true);
+  });
+
+  it('ignores a stale catalog rejection that lands after a newer success', async () => {
+    let failMount!: (e: Error) => void;
+    const mountLoad = new Promise((_, reject) => {
+      failMount = reject;
+    });
+    const formLoad = deferredCatalog();
+    vi.mocked(listMarketplaces)
+      .mockReturnValueOnce(mountLoad as never)
+      .mockReturnValueOnce(formLoad.promise as never);
+
+    const wrapper = mountSelector();
+    await openDropdown(wrapper);
+    await wrapper.get('[data-testid="workspace-create-open"]').trigger('click');
+    await nextTick();
+
+    formLoad.release(filteringCatalog);
+    await flushPromises();
+    await nextTick();
+
+    await wrapper.get('[data-testid="workspace-create-marketplace-demo"]').trigger('change');
+    await nextTick();
+    expect(wrapper.find('[data-testid="workspace-create-plugin-demo-toolkit"]').exists()).toBe(true);
+
+    // The stale catch would blank availableMarketplaces and clear pluginFilteringEnabled, emptying
+    // a form the user is looking at.
+    failMount(new Error('stale catalog failure'));
+    await flushPromises();
+    await nextTick();
+
+    expect(wrapper.find('[data-testid="workspace-create-marketplace-demo"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="workspace-create-plugin-demo-toolkit"]').exists()).toBe(true);
   });
 });

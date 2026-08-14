@@ -31,6 +31,19 @@ export function useWorkspaces() {
   const error = ref<string | null>(null);
 
   /**
+   * Monotonic id of the most recently STARTED load. Concurrent `loadWorkspaces()` calls are routine
+   * — a mount racing a post-409 reload, or two reloads from overlapping mutations — and responses
+   * can arrive in any order. Without this, a slow earlier request that lands last overwrites the
+   * newer list and, worse, the newer `pluginsRevision`; the next edit then submits a stale revision
+   * and fails with a conflict the user cannot explain.
+   *
+   * Every write below is gated on still being the latest, INCLUDING the `isLoading` reset: a stale
+   * response clearing the flag would advertise "settled" while the newest request is still in
+   * flight, which is exactly the window the form-interaction guards depend on.
+   */
+  let loadGeneration = 0;
+
+  /**
    * Workspace currently chosen for the next new conversation.
    */
   const selectedWorkspace = computed(() =>
@@ -42,10 +55,12 @@ export function useWorkspaces() {
    * otherwise falls back to the default workspace (or the first available).
    */
   async function loadWorkspaces(): Promise<void> {
+    const generation = ++loadGeneration;
     isLoading.value = true;
     error.value = null;
     try {
       const response = await listWorkspaces();
+      if (generation !== loadGeneration) return;
       gateway.value = response.gateway ?? null;
       workspaces.value = Array.isArray(response.workspaces) ? response.workspaces : [];
 
@@ -64,13 +79,16 @@ export function useWorkspaces() {
         selectedWorkspaceId.value = initial;
       }
     } catch (e) {
+      if (generation !== loadGeneration) return;
       workspaces.value = [];
       gateway.value = null;
       selectedWorkspaceId.value = null;
       error.value = e instanceof Error ? e.message : 'Failed to load workspaces';
       console.error('Failed to load workspaces:', e);
     } finally {
-      isLoading.value = false;
+      if (generation === loadGeneration) {
+        isLoading.value = false;
+      }
     }
   }
 

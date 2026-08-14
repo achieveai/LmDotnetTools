@@ -82,9 +82,19 @@ const marketplacesUnavailable = ref(false);
  */
 const pluginFilteringEnabled = ref(false);
 
+/**
+ * Monotonic id of the most recently STARTED catalog load. This runs on mount AND on every
+ * create/edit form open, so two are easily in flight at once. An earlier response landing last would
+ * repaint the plugin options and — through `pluginFilteringEnabled` — change whether the very next
+ * submit carries a `pluginSelection` key at all. Ordering the writes is not optional here.
+ */
+let marketplaceGeneration = 0;
+
 async function loadAvailableMarketplaces(): Promise<void> {
+  const generation = ++marketplaceGeneration;
   try {
     const catalog = await listMarketplaces();
+    if (generation !== marketplaceGeneration) return;
     availableMarketplaces.value = catalog.marketplaces.map((m) => ({
       id: m.alias,
       displayName: m.alias,
@@ -96,6 +106,7 @@ async function loadAvailableMarketplaces(): Promise<void> {
     pluginFilteringEnabled.value = catalog.capabilities?.pluginFiltering === true;
     marketplacesUnavailable.value = false;
   } catch (e) {
+    if (generation !== marketplaceGeneration) return;
     availableMarketplaces.value = [];
     pluginFilteringEnabled.value = false;
     marketplacesUnavailable.value = e instanceof MarketplaceGatewayUnavailableError;

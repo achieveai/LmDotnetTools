@@ -142,3 +142,122 @@ describe('useWorkspaces plugin-selection conflicts', () => {
     expect(puts).toHaveLength(1);
   });
 });
+
+/**
+ * Two loads in flight at once is the normal case, not an exotic one: a mount racing a post-409
+ * reload, or two reloads from overlapping mutations. Responses can land in any order, so every write
+ * is gated on still being the latest load.
+ *
+ * These tests resolve the requests DELIBERATELY OUT OF ORDER — the first request completes last —
+ * which is the only ordering that distinguishes a guarded implementation from an unguarded one. A
+ * test that resolves them in order passes either way.
+ */
+describe('useWorkspaces concurrent load ordering', () => {
+  beforeEach(() => fetchMock.mockReset());
+
+  /** A fetch whose response the test releases by hand. */
+  function deferred() {
+    let release!: (body: unknown) => void;
+    const promise = new Promise((resolve) => {
+      release = (body) => resolve({ ok: true, status: 200, statusText: 'OK', json: async () => body });
+    });
+    return { promise, release };
+  }
+
+  it('ignores a stale response that lands after a newer one', async () => {
+    const first = deferred();
+    const second = deferred();
+    fetchMock.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const state = useWorkspaces();
+
+    const firstLoad = state.loadWorkspaces();
+    const secondLoad = state.loadWorkspaces();
+
+    // Newer request answers first and wins.
+    second.release({ gateway, workspaces: [workspace('default'), workspace('fresh')] });
+    await secondLoad;
+    expect(state.workspaces.value.map((w) => w.id)).toEqual(['default', 'fresh']);
+
+    // The older one lands afterwards carrying a list that is no longer true. It must not be applied.
+    first.release({ gateway, workspaces: [workspace('default'), workspace('stale')] });
+    await firstLoad;
+
+    expect(state.workspaces.value.map((w) => w.id)).toEqual(['default', 'fresh']);
+  });
+
+  /**
+   * The failure mode with teeth: the stale response carries an older `pluginsRevision`. Applying it
+   * makes the next edit submit a revision the server has already moved past, and the user gets a
+   * conflict with nothing on screen to explain it.
+   */
+  it('keeps the newer pluginsRevision when a stale response arrives last', async () => {
+    const first = deferred();
+    const second = deferred();
+    fetchMock.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const state = useWorkspaces();
+
+    const firstLoad = state.loadWorkspaces();
+    const secondLoad = state.loadWorkspaces();
+
+    second.release({ gateway, workspaces: [{ ...workspace('default'), pluginsRevision: 9 }] });
+    await secondLoad;
+
+    first.release({ gateway, workspaces: [{ ...workspace('default'), pluginsRevision: 4 }] });
+    await firstLoad;
+
+    expect(state.workspaces.value[0].pluginsRevision).toBe(9);
+  });
+
+  /**
+   * `isLoading` is gated too. A stale response clearing it would advertise "settled" while the
+   * newest request is still in flight — and that flag is what the workspace form's interaction
+   * guards key off, so the user would be handed back a form over a list still being replaced.
+   */
+  it('does not clear isLoading when a stale response settles before the newest request', async () => {
+    const first = deferred();
+    const second = deferred();
+    fetchMock.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const state = useWorkspaces();
+
+    const firstLoad = state.loadWorkspaces();
+    const secondLoad = state.loadWorkspaces();
+    expect(state.isLoading.value).toBe(true);
+
+    first.release({ gateway, workspaces: [workspace('default')] });
+    await firstLoad;
+
+    expect(state.isLoading.value).toBe(true);
+
+    second.release({ gateway, workspaces: [workspace('default')] });
+    await secondLoad;
+
+    expect(state.isLoading.value).toBe(false);
+  });
+
+  /**
+   * A stale FAILURE is the worst of the three: its catch clears the workspace list and the selection
+   * outright, so an older request failing after a newer one succeeded would blank a healthy UI.
+   */
+  it('ignores a stale rejection that lands after a newer success', async () => {
+    let failFirst!: (e: Error) => void;
+    const first = new Promise((_, reject) => {
+      failFirst = reject;
+    });
+    const second = deferred();
+    fetchMock.mockReturnValueOnce(first).mockReturnValueOnce(second.promise);
+    const state = useWorkspaces();
+
+    const firstLoad = state.loadWorkspaces();
+    const secondLoad = state.loadWorkspaces();
+
+    second.release({ gateway, workspaces: [workspace('default'), workspace('fresh')] });
+    await secondLoad;
+
+    failFirst(new Error('stale network failure'));
+    await firstLoad;
+
+    expect(state.workspaces.value.map((w) => w.id)).toEqual(['default', 'fresh']);
+    expect(state.selectedWorkspaceId.value).toBe('default');
+    expect(state.error.value).toBeNull();
+  });
+});
