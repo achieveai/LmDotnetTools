@@ -46,6 +46,111 @@ public class WorkspacePluginSelectionServiceTests
     /// </summary>
     internal static readonly PluginRef OtherPlugin = new("extra", "beta");
 
+    /// <summary>
+    /// The service is a SINGLETON and the workspace id is caller-supplied, so a gate allocated for an
+    /// id that does not exist is a permanent leak — gates are never removed and a
+    /// <c>SemaphoreSlim</c> is never disposed.
+    /// </summary>
+    /// <remarks>
+    /// This asserts the allocation count directly rather than any observable behaviour, and it has to:
+    /// a request for an unknown workspace throws the same KeyNotFoundException from the same place
+    /// whether or not it leaked a gate on the way out. There is no black-box symptom to assert until
+    /// the process runs out of memory.
+    /// </remarks>
+    [Fact]
+    public async Task UnknownWorkspaceIds_DoNotAllocateGates()
+    {
+        await using var h = CreateHarness();
+        var workspace = await SeedWorkspaceAsync(h, ["official"]);
+
+        // A real update allocates exactly one gate, for a workspace that exists.
+        _ = await h.Service.ApplyPluginSelectionUpdateAsync(
+            workspace.Id,
+            Update(["official"], [SelectedPlugin], revision: 0)
+        );
+        h.Service.AllocatedWorkspaceGateCount.Should().Be(1);
+
+        // Unique ids that name nothing. Each is rejected — but the rejection lives inside the gated
+        // section, so an implementation that takes the gate first allocates on exactly this path.
+        for (var i = 0; i < 25; i++)
+        {
+            var act = () =>
+                h.Service.ApplyPluginSelectionUpdateAsync(
+                    $"no-such-workspace-{i}",
+                    Update(["official"], [SelectedPlugin], revision: 0)
+                );
+
+            _ = await act.Should().ThrowAsync<KeyNotFoundException>();
+        }
+
+        h.Service.AllocatedWorkspaceGateCount
+            .Should()
+            .Be(1, "only the workspace that actually exists may hold a gate");
+    }
+
+    /// <summary>
+    /// A fault that is not the gateway's must not be reported as the gateway's. The controller maps
+    /// <see cref="SandboxSessionReplacementFailedException"/> to 502, which is a claim ABOUT THE
+    /// GATEWAY — so wrapping an InvalidOperationException from a bug in this service sends whoever
+    /// reads the 502 to the wrong system, with the stack trace that names the real fault buried as an
+    /// inner exception.
+    /// </summary>
+    [Fact]
+    public async Task AnUnexpectedFailureDuringCandidateCreation_KeepsItsOwnIdentity()
+    {
+        await using var h = CreateHarness();
+        var workspace = await SeedWorkspaceAsync(h, ["official"]);
+        _ = await SeedSessionAsync(h, workspace, "app-a");
+
+        // One seeded session already used create #1, so the candidate is create #2.
+        h.Gateway.CreateThrowsAfter = 1;
+        h.Gateway.CreateThrows = new InvalidOperationException("a bug in the migration path");
+
+        var act = () =>
+            h.Service.ApplyPluginSelectionUpdateAsync(
+                workspace.Id,
+                Update(["official"], [SelectedPlugin], revision: 0)
+            );
+
+        var thrown = await act.Should().ThrowExactlyAsync<InvalidOperationException>();
+        thrown.Which.Message.Should().Be("a bug in the migration path");
+    }
+
+    /// <summary>
+    /// The cleanup obligation is independent of the classification. Narrowing which exceptions get
+    /// wrapped must not narrow which ones get cleaned up after — a candidate abandoned here is a live
+    /// gateway container nothing references, for the life of the process.
+    /// </summary>
+    [Fact]
+    public async Task AnUnexpectedFailureStillAbortsTheCandidatesAlreadyBuilt()
+    {
+        await using var h = CreateHarness();
+        var workspace = await SeedWorkspaceAsync(h, ["official"]);
+        var originals = new[]
+        {
+            (await SeedSessionAsync(h, workspace, "app-a")).SessionId,
+            (await SeedSessionAsync(h, workspace, "app-b")).SessionId,
+        };
+
+        // Two seeded sessions used creates #1-#2; let the first candidate (#3) be built, then break
+        // the second with a fault that is not the gateway's.
+        h.Gateway.CreateThrowsAfter = originals.Length + 1;
+        h.Gateway.CreateThrows = new InvalidOperationException("boom");
+
+        var act = () =>
+            h.Service.ApplyPluginSelectionUpdateAsync(
+                workspace.Id,
+                Update(["official"], [SelectedPlugin], revision: 0)
+            );
+
+        _ = await act.Should().ThrowExactlyAsync<InvalidOperationException>();
+
+        var built = h.Gateway.CreatedSessionIds.Except(originals).ToArray();
+        built.Should().NotBeEmpty("the first candidate must have been created before the second failed");
+        h.Gateway.DeletedSessionIds.Should().BeEquivalentTo(built, "every candidate built must be torn down");
+        h.Gateway.DeletedSessionIds.Should().NotIntersectWith(originals, "the originals are still serving");
+    }
+
     [Fact]
     public async Task StaleRevision_IsRejectedBeforeAnyCandidateIsCreated()
     {
@@ -1427,6 +1532,21 @@ public class WorkspacePluginSelectionServiceTests
         private TaskCompletionSource? _createGate;
         private int _creates;
 
+        /// <summary>
+        /// When set, a create THROWS this instead of answering. Distinct from
+        /// <c>failCreateAfter</c>, which returns HTTP 500 and so becomes a SandboxException — a
+        /// genuine downstream failure. This models the other kind: a fault that is not evidence about
+        /// the gateway at all, which must not be re-labelled as one.
+        /// </summary>
+        public Exception? CreateThrows { get; set; }
+
+        /// <summary>
+        /// How many creates answer normally before <see cref="CreateThrows"/> starts firing. Mirrors
+        /// <c>failCreateAfter</c> so a test can let the seeded sessions — and any number of candidates —
+        /// be built first, which is what makes "the ones already built were torn down" assertable.
+        /// </summary>
+        public int CreateThrowsAfter { get; set; }
+
         /// <summary>Session ids the gateway actually handed out, in create order.</summary>
         public IReadOnlyList<string> CreatedSessionIds
         {
@@ -1618,6 +1738,11 @@ public class WorkspacePluginSelectionServiceTests
             }
 
             var ordinal = Interlocked.Increment(ref _creates);
+            if (CreateThrows is { } injected && ordinal > CreateThrowsAfter)
+            {
+                throw injected;
+            }
+
             if (ordinal > failCreateAfter)
             {
                 lock (_gate)

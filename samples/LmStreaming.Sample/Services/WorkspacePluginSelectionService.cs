@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
+using AchieveAi.LmDotnetTools.Sandbox;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -80,11 +81,28 @@ public sealed class WorkspacePluginSelectionService : IWorkspacePluginSelectionS
     /// no candidates" true rather than merely "a stale request cleans up after itself".
     /// </para>
     /// <para>
-    /// Entries are never removed: a workspace count is small and bounded, whereas evicting a gate
-    /// that another caller is about to await is a genuine race for no real gain.
+    /// Entries are never removed, and that is only safe because a gate is allocated exclusively for a
+    /// workspace that EXISTS — see the admission check in
+    /// <see cref="ApplyPluginSelectionUpdateAsync"/>. Evicting a gate another caller is about to await is a
+    /// genuine race for no real gain, so the bound has to come from admission instead.
+    /// </para>
+    /// <para>
+    /// The bound is not incidental. This service is a singleton and the key is caller-supplied, so
+    /// without that check a request naming a workspace that does not exist would allocate a
+    /// <see cref="SemaphoreSlim"/> that is never removed and never disposed — and the rejection for an
+    /// unknown id happens INSIDE the gate, so it would allocate on exactly the path that fails. A loop
+    /// over unique ids would then grow this dictionary for the life of the process.
     /// </para>
     /// </summary>
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _workspaceGates = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Number of per-workspace gates currently allocated. Exists so a test can assert the bound
+    /// directly: the defect being guarded against is unbounded GROWTH, and growth is not observable
+    /// from any behaviour this service exposes — a request for an unknown workspace fails identically
+    /// whether or not it leaked a gate on the way out.
+    /// </summary>
+    internal int AllocatedWorkspaceGateCount => _workspaceGates.Count;
 
     private readonly IWorkspaceStore _store;
     private readonly WorkspaceCatalogCompatibilityService _compatibility;
@@ -182,6 +200,20 @@ public sealed class WorkspacePluginSelectionService : IWorkspacePluginSelectionS
 
         Workspace updated;
         PostCommitWork work;
+
+        // Admission check: never allocate a gate for a workspace that does not exist. The key is
+        // caller-supplied and gates are never removed, so allocating first would let unknown ids grow
+        // `_workspaceGates` without bound — and since the unknown-id rejection lives inside
+        // MigrateAsync, i.e. inside the gate, it would allocate precisely on the failing path.
+        //
+        // Deliberately NOT atomic with the gated work below, and it does not need to be: this only
+        // decides whether a gate may be created. MigrateAsync repeats the lookup under the gate and
+        // remains the authority, so a workspace deleted in between still produces the same
+        // KeyNotFoundException from the same place it always did.
+        if (await _store.GetAsync(workspaceId, ct) is null)
+        {
+            throw new KeyNotFoundException($"Workspace '{workspaceId}' not found.");
+        }
 
         var gate = _workspaceGates.GetOrAdd(workspaceId, _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(ct);
@@ -319,7 +351,9 @@ public sealed class WorkspacePluginSelectionService : IWorkspacePluginSelectionS
         catch (Exception ex)
         {
             // Nothing is published yet, so the old sessions are still serving and the store is
-            // unchanged. All that is owed is deleting the candidates already built.
+            // unchanged. All that is owed is deleting the candidates already built. This runs for
+            // EVERY exception, including the ones rethrown unwrapped below — the cleanup obligation
+            // does not depend on how the failure is classified.
             await AbortAllAsync(candidates);
 
             // A caller who cancelled must see a cancellation, not a gateway failure: reporting
@@ -330,7 +364,30 @@ public sealed class WorkspacePluginSelectionService : IWorkspacePluginSelectionS
                 throw;
             }
 
-            throw new SandboxSessionReplacementFailedException(workspaceId, ex);
+            // Only a genuine downstream failure becomes a replacement failure, because the controller
+            // maps that to 502 — a claim about the GATEWAY. A NullReferenceException or an
+            // ObjectDisposedException from a bug in this service is not evidence about the gateway at
+            // all, and dressing it as one sends the operator to the wrong system while the stack trace
+            // that names the real fault is buried as an inner exception. Anything unrecognised keeps
+            // its own identity and surfaces as a 500, which is the honest answer for "we broke".
+            //
+            // SandboxSessionUnavailableException derives from InvalidOperationException, so the order
+            // of these checks is load-bearing in the other direction too: it is matched here on its own
+            // name, and a PLAIN InvalidOperationException — the shape a bug takes — does not match it.
+            if (
+                ex
+                is SandboxSessionUnavailableException
+                    or SandboxSessionRestartTimeoutException
+                    or SandboxException
+                    or HttpRequestException
+                    or TimeoutException
+                    or OperationCanceledException
+            )
+            {
+                throw new SandboxSessionReplacementFailedException(workspaceId, ex);
+            }
+
+            throw;
         }
 
         Workspace updated;
