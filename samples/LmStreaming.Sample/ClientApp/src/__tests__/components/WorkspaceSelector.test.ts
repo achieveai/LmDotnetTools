@@ -1337,3 +1337,148 @@ describe('WorkspaceSelector transient loading vs terminal disabled', () => {
     expect(wrapper.find('.dropdown-menu').exists()).toBe(false);
   });
 });
+
+/**
+ * A refetch in flight is TRANSIENT: it flips true and back inside one user operation (the 409
+ * conflict path awaits `loadWorkspaces()` before it reseeds the form and shows its error). That is
+ * why these tests assert the form is STILL MOUNTED — the transient flag may block interaction, but
+ * the moment it tears the form down it destroys the very handler that raised it, and the user's
+ * edit is discarded with nothing rendered. Teardown stays keyed off the terminal set alone.
+ *
+ * They also assert on rendered DOM and emitted events rather than on spies: a spy records a call
+ * whether or not the subtree still exists, so a spy-based version of this suite is green against a
+ * torn-down form.
+ */
+describe('WorkspaceSelector blocks form interaction during a transient refresh', () => {
+  const editable: Workspace[] = [
+    {
+      id: 'ws-user',
+      name: 'My Project',
+      directoryRelPath: 'my-project',
+      marketplaces: ['demo'],
+      isSystemDefined: false,
+      createdAt: 0,
+      updatedAt: 0,
+      pluginSelection: [{ marketplace: 'demo', plugin: 'toolkit' }],
+      pluginsRevision: 7,
+    },
+  ];
+
+  beforeEach(() => {
+    catalog.value = filteringCatalog;
+  });
+
+  it('disables create-form controls while isLoading and drops a submit attempted in that window', async () => {
+    const wrapper = mountSelector();
+    await openDropdown(wrapper);
+    await wrapper.get('[data-testid="workspace-create-open"]').trigger('click');
+    await nextTick();
+    await wrapper.get('[data-testid="workspace-create-name"]').setValue('Demo Workspace');
+    await nextTick();
+
+    await wrapper.setProps({ isLoading: true });
+    await nextTick();
+
+    const marketplace = wrapper.get<HTMLInputElement>('[data-testid="workspace-create-marketplace-demo"]');
+    expect(marketplace.element.disabled).toBe(true);
+    expect(
+      wrapper.get<HTMLButtonElement>('[data-testid="workspace-create-submit"]').element.disabled
+    ).toBe(true);
+
+    // The handlers guard independently of the attribute: a submit dispatched despite the disabled
+    // button (Enter in a text field, a stale event) must still be dropped.
+    await wrapper.get('[data-testid="workspace-create-form"]').trigger('submit');
+    await nextTick();
+    expect(wrapper.emitted('create-workspace')).toBeFalsy();
+
+    // The form is still there — blocked, not dismantled.
+    expect(wrapper.find('[data-testid="workspace-create-form"]').exists()).toBe(true);
+  });
+
+  it('disables edit-form controls while isLoading and drops a submit attempted in that window', async () => {
+    const wrapper = mountSelector({ workspaces: editable });
+    await openEditForm(wrapper, 'ws-user');
+
+    await wrapper.setProps({ isLoading: true });
+    await nextTick();
+
+    expect(
+      wrapper.get<HTMLInputElement>('[data-testid="workspace-edit-marketplace-demo"]').element.disabled
+    ).toBe(true);
+    expect(
+      wrapper.get<HTMLInputElement>('[data-testid="workspace-edit-plugin-demo-extras"]').element.disabled
+    ).toBe(true);
+    expect(
+      wrapper.get<HTMLButtonElement>('[data-testid="workspace-edit-submit"]').element.disabled
+    ).toBe(true);
+
+    await wrapper.get('[data-testid="workspace-edit-form"]').trigger('submit');
+    await nextTick();
+    expect(wrapper.emitted('update-workspace')).toBeFalsy();
+
+    expect(wrapper.find('[data-testid="workspace-edit-form"]').exists()).toBe(true);
+  });
+
+  /**
+   * A toggle applied mid-refresh would be written back against a revision the user never saw. The
+   * checkbox is disabled, but the handler must refuse too — `change` still fires from a programmatic
+   * dispatch, and the emitted payload is what actually reaches the server.
+   */
+  it('ignores a plugin toggle dispatched while isLoading, leaving the selection intact', async () => {
+    const wrapper = mountSelector({ workspaces: editable });
+    await openEditForm(wrapper, 'ws-user');
+
+    await wrapper.setProps({ isLoading: true });
+    await nextTick();
+    await wrapper.get('[data-testid="workspace-edit-plugin-demo-extras"]').trigger('change');
+    await nextTick();
+
+    // Clearing the transient flag must restore the form to exactly the state it was blocked in —
+    // not to a state that absorbed the blocked toggle.
+    await wrapper.setProps({ isLoading: false });
+    await nextTick();
+
+    expect(
+      wrapper.get<HTMLInputElement>('[data-testid="workspace-edit-plugin-demo-extras"]').element.checked
+    ).toBe(false);
+
+    await wrapper.get('[data-testid="workspace-edit-form"]').trigger('submit');
+    await nextTick();
+
+    const emitted = wrapper.emitted('update-workspace');
+    expect(emitted).toBeTruthy();
+    expect((emitted![0][1] as UpdatePayload).pluginSelection).toBeUndefined();
+  });
+
+  /**
+   * The whole point of blocking rather than tearing down: once the refetch settles, the same form
+   * the user was typing into is still usable. RED if the transient flag ever reaches the teardown
+   * watcher.
+   */
+  it('restores full interaction once the transient refresh settles', async () => {
+    const wrapper = mountSelector({ workspaces: editable });
+    await openEditForm(wrapper, 'ws-user');
+
+    await wrapper.setProps({ isLoading: true });
+    await nextTick();
+    await wrapper.setProps({ isLoading: false });
+    await nextTick();
+
+    expect(wrapper.find('[data-testid="workspace-edit-form"]').exists()).toBe(true);
+    expect(
+      wrapper.get<HTMLInputElement>('[data-testid="workspace-edit-marketplace-demo"]').element.disabled
+    ).toBe(false);
+
+    await wrapper.get('[data-testid="workspace-edit-plugin-demo-extras"]').trigger('change');
+    await nextTick();
+    await wrapper.get('[data-testid="workspace-edit-form"]').trigger('submit');
+    await nextTick();
+
+    const emitted = wrapper.emitted('update-workspace');
+    expect(emitted).toBeTruthy();
+    expect((emitted![0][1] as UpdatePayload).pluginSelection).toEqual([
+      { marketplace: 'demo', plugin: 'toolkit' },
+      { marketplace: 'demo', plugin: 'extras' },
+    ]);
+  });
+});

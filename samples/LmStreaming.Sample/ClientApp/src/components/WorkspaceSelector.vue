@@ -136,8 +136,16 @@ function hasErroredEnabledMarketplace(marketplaceIds: string[]): boolean {
   return availableMarketplaces.value.some((m) => enabled.has(m.id) && m.error);
 }
 
-const createPluginsBlocked = computed(() => hasErroredEnabledMarketplace(createMarketplaces.value));
-const editPluginsBlocked = computed(() => hasErroredEnabledMarketplace(editMarketplaces.value));
+// `interactionBlocked` folds in here too: a refetch in flight means the catalog and the workspace
+// revision under this form are both being replaced, so a toggle applied now would be written back
+// against state the user never saw. Blocking is the TRANSIENT response — the form stays mounted and
+// the watcher that tears it down still keys off the terminal set only. See the note at that watcher.
+const createPluginsBlocked = computed(
+  () => interactionBlocked.value || hasErroredEnabledMarketplace(createMarketplaces.value)
+);
+const editPluginsBlocked = computed(
+  () => interactionBlocked.value || hasErroredEnabledMarketplace(editMarketplaces.value)
+);
 
 /**
  * Whether a plugin checkbox renders checked. A `null` selection means the workspace expressed no
@@ -337,6 +345,7 @@ function onDirectoryInput(): void {
 }
 
 function toggleCreateMarketplace(id: string): void {
+  if (interactionBlocked.value) return;
   const idx = createMarketplaces.value.indexOf(id);
   if (idx >= 0) {
     createMarketplaces.value.splice(idx, 1);
@@ -364,7 +373,7 @@ function resetCreatePlugins(): void {
 }
 
 function submitCreate(): void {
-  if (submitting.value) return;
+  if (submitting.value || interactionBlocked.value) return;
   formError.value = null;
   const name = createName.value.trim();
   if (!name) {
@@ -427,6 +436,7 @@ function reseedEditForm(): void {
 }
 
 function toggleEditMarketplace(id: string): void {
+  if (interactionBlocked.value) return;
   const idx = editMarketplaces.value.indexOf(id);
   if (idx >= 0) {
     editMarketplaces.value.splice(idx, 1);
@@ -454,7 +464,7 @@ function resetEditPlugins(): void {
 }
 
 function submitEdit(): void {
-  if (submitting.value) return;
+  if (submitting.value || interactionBlocked.value) return;
   formError.value = null;
   if (!editWorkspaceId.value) return;
   const payload: WorkspaceUpdate = { marketplaces: [...editMarketplaces.value] };
@@ -712,6 +722,7 @@ watch(
                     type="checkbox"
                     :data-testid="`workspace-create-marketplace-${m.id}`"
                     :checked="createMarketplaces.includes(m.id)"
+                    :disabled="interactionBlocked"
                     :indeterminate.prop="isMarketplaceIndeterminate(createPluginSelection, createMarketplaces, m)"
                     @change="toggleCreateMarketplace(m.id)"
                   />
@@ -773,7 +784,7 @@ watch(
               type="submit"
               class="btn-primary"
               data-testid="workspace-create-submit"
-              :disabled="submitting"
+              :disabled="submitting || interactionBlocked"
             >
               Create
             </button>
@@ -833,6 +844,7 @@ watch(
                     type="checkbox"
                     :data-testid="`workspace-edit-marketplace-${m.id}`"
                     :checked="editMarketplaces.includes(m.id)"
+                    :disabled="interactionBlocked"
                     :indeterminate.prop="isMarketplaceIndeterminate(editPluginSelection, editMarketplaces, m)"
                     @change="toggleEditMarketplace(m.id)"
                   />
@@ -894,7 +906,7 @@ watch(
               type="submit"
               class="btn-primary"
               data-testid="workspace-edit-submit"
-              :disabled="submitting"
+              :disabled="submitting || interactionBlocked"
             >
               Save
             </button>
