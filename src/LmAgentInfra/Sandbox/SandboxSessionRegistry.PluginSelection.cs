@@ -246,6 +246,16 @@ public sealed partial class SandboxSessionRegistry
             return false;
         }
 
+        // A resolution that reports filtering unsupported cannot prove anything about the plugin set
+        // this session actually serves — `Requested` is only what the gateway SAW, not what it applied.
+        // A gateway that echoes the request while ignoring it therefore looks byte-identical to one
+        // that honoured it, and the only field telling them apart is this one. Same fail-closed rule
+        // the caller states: no proof means stale, and the cost of being wrong is one extra recreate.
+        if (!resolution.Supported)
+        {
+            return false;
+        }
+
         var requested = resolution.Requested;
 
         // Tri-state short-circuit: "unset" is a distinct state from "empty", so a null on either side
