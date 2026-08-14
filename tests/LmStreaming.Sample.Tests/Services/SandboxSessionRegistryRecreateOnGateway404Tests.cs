@@ -257,6 +257,72 @@ public class SandboxSessionRegistryRecreateOnGateway404Tests
         calls.PostCount.Should().Be(1, "an abandoned recreate must not create a second gateway session");
     }
 
+    [Fact]
+    public async Task GetOrCreateLiveSessionAsync_ReloadCancelled_LeavesTheExistingSessionInPlace()
+    {
+        // Companion to the test above, which stays green whichever side of the invalidate the reload
+        // sits on and therefore cannot see this. Because the reload now runs FIRST, an abandoned
+        // recreate tears nothing down: the caller keeps the session it had, instead of being left
+        // mid-teardown with its session already evicted and no replacement built. That is an
+        // improvement the reorder happens to buy, and an unasserted improvement is one tidy-up away
+        // from being silently undone.
+        var (registry, calls) = CreateRegistry(
+            reloadWorkspaceRef: (_, _) => throw new OperationCanceledException());
+        var workspaceRef = new WorkspaceRef("ws-1", DirectoryRelPath: null, Marketplaces: ["superpowers"]);
+
+        var original = await registry.GetOrCreateSessionAsync(workspaceRef);
+        calls.Evict("sess-1");
+        var act = async () => await registry.GetOrCreateLiveSessionAsync(workspaceRef);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        registry.TryGetSessionById(original.SessionId, out _).Should().BeTrue(
+            "a cancelled reload must not leave the per-session state of a session it never replaced evicted");
+        (await registry.GetOrCreateSessionAsync(workspaceRef)).SessionId.Should().Be(
+            original.SessionId, "the cache entry survives, so a later resolve reuses it rather than creating");
+        calls.PostCount.Should().Be(1, "nothing was recreated, so nothing new was created either");
+    }
+
+    [Fact]
+    public async Task GetOrCreateLiveSessionAsync_ConcurrentCreateDuringReload_DoesNotDiscardTheReloadedRef()
+    {
+        // The reload is I/O, so it is a WINDOW. Run while the (workspaceId, appId) slot is empty, a
+        // concurrent caller still holding the OLD ref publishes its own session into that slot, and
+        // the recreate then resolves THAT session instead of building one from what was just
+        // reloaded — the user's edit silently undone by the very path that exists to apply it.
+        // Reading the store before vacating the slot is what prevents it: while the slot is still
+        // occupied the concurrent caller gets a cache hit and publishes nothing.
+        SandboxSession? observedInsideReload = null;
+        SandboxSessionRegistry? registry = null;
+        var staleRef = new WorkspaceRef("ws-1", DirectoryRelPath: null, Marketplaces: ["superpowers"]);
+
+        // A second caller arrives mid-reload carrying the ref it captured long ago.
+        Func<string, CancellationToken, Task<WorkspaceRef?>> reload = async (workspaceId, _) =>
+        {
+            observedInsideReload = await registry!.GetOrCreateSessionAsync(staleRef);
+            return new WorkspaceRef(workspaceId, DirectoryRelPath: null, Marketplaces: ["official"]);
+        };
+
+        var (built, calls) = CreateRegistry(reloadWorkspaceRef: reload);
+        registry = built;
+
+        _ = await registry.GetOrCreateSessionAsync(staleRef);
+        calls.Evict("sess-1");
+        var live = await registry.GetOrCreateLiveSessionAsync(staleRef);
+
+        // Asserted out HERE, never inside the lambda: the reload's catch swallows every
+        // non-cancellation exception, so an assertion that failed in there would be swallowed whole
+        // and this test would pass having proved nothing.
+        observedInsideReload.Should().NotBeNull("the concurrent caller must actually have run");
+        observedInsideReload!.SessionId.Should().Be(
+            "sess-1",
+            "the slot must still hold the session being replaced while the store is read, so a "
+                + "concurrent caller gets a cache hit instead of publishing a stale-ref session into "
+                + "an empty slot");
+        calls.PostCount.Should().Be(2, "the concurrent caller hit the cache, so only the recreate created");
+        live.SessionId.Should().Be("sess-2");
+        ReadMarketplaces(calls.PostBodies[^1]).Should().Equal("official");
+    }
+
     private static IReadOnlyList<string> ReadMarketplaces(string body)
     {
         using var doc = JsonDocument.Parse(body);

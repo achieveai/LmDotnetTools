@@ -958,15 +958,26 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             workspaceId
         );
 
-        await InvalidateSessionAsync((workspaceId, effectiveCredential.AppId), session).ConfigureAwait(false);
-
-        // Re-read current workspace configuration before recreating. `effectiveRef` is whatever the
-        // caller captured when its agent was built, which may be minutes or hours stale: recreating
-        // from it would silently restore the marketplace/plugin selection as it stood back then and
-        // make the user's later edit look like it was thrown away. No hook, a workspace that has since
-        // been deleted (null), or a store that FAILS all fall back to the captured ref — recoverable
-        // beats empty. Scoped deliberately to this recreate path: the healthy-session fast path above
-        // returns without ever touching the store.
+        // Re-read current workspace configuration BEFORE invalidating anything. `effectiveRef` is
+        // whatever the caller captured when its agent was built, which may be minutes or hours stale:
+        // recreating from it would silently restore the marketplace/plugin selection as it stood back
+        // then and make the user's later edit look like it was thrown away. No hook, a workspace that
+        // has since been deleted (null), or a store that FAILS all fall back to the captured ref —
+        // recoverable beats empty. Scoped deliberately to this recreate path: the healthy-session fast
+        // path above returns without ever touching the store.
+        //
+        // THE ORDER IS LOAD-BEARING; do not tidy this back below the invalidate. The reload is I/O —
+        // a file read plus a parse of the whole workspace catalog — and any I/O between the removal of
+        // the cache entry and the recreate is a window in which a concurrent caller can publish its
+        // own session into the empty (workspaceId, appId) slot. The recreate below then resolves that
+        // caller's session instead of building one from what was just reloaded, so the freshly read
+        // configuration is discarded and the user's edit is lost exactly as if it had never happened.
+        // Reading first means there is nothing left to lose by the time the slot is vacated.
+        //
+        // This NARROWS the window; it does not close it. What remains is the removal itself plus the
+        // secret-store delete inside InvalidateSessionAsync, and a creation landing in there still
+        // wins the slot and still carries a stale ref. Closing it needs a workspace-scoped admission
+        // gate, which is tracked separately — see issue #288.
         WorkspaceRef? reloaded = null;
         if (_reloadWorkspaceRef is not null)
         {
@@ -976,12 +987,15 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                // The invalidate above has ALREADY committed, so letting a reload failure escape would
-                // leave the caller with no session at all — strictly worse than the stale-config outcome
-                // this reload exists to avoid. The store reads a file (corrupt JSON, a concurrent
-                // atomic-replace) so throwing is a real, reachable state, not a theoretical one.
+                // Nothing has been torn down yet, so a reload failure costs the caller nothing: the
+                // live session is untouched and the recreate below simply proceeds from the captured
+                // ref, which is the same fallback a missing hook or a deleted workspace takes. The
+                // store reads a file (corrupt JSON, a concurrent atomic-replace) so throwing is a
+                // real, reachable state, not a theoretical one.
                 // A cancellation is NOT swallowed: it means this work was abandoned, so pressing on
-                // would create a gateway session nobody is waiting for.
+                // would create a gateway session nobody is waiting for. Because this now runs before
+                // the invalidate, that propagation also leaves the existing session in place rather
+                // than abandoning the caller mid-teardown with its session already evicted.
                 _logger.LogWarning(
                     ex,
                     "Failed to reload workspace {WorkspaceId} while recreating an evicted session; "
@@ -990,6 +1004,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 );
             }
         }
+
+        await InvalidateSessionAsync((workspaceId, effectiveCredential.AppId), session).ConfigureAwait(false);
 
         // Pin the id: the recreate must land on the SAME (workspaceId, appId) partition that was just
         // invalidated, whatever id the store happens to echo back.
