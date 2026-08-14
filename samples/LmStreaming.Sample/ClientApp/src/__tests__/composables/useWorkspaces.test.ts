@@ -21,6 +21,15 @@ const workspace = (id: string, compatibility: 'compatible' | 'incompatible' | 'u
   unsupportedMarketplaces: compatibility === 'incompatible' ? ['old'] : [],
 });
 
+/** A fetch whose response the test releases by hand, so requests can be settled out of order. */
+function deferred() {
+  let release!: (body: unknown) => void;
+  const promise = new Promise((resolve) => {
+    release = (body) => resolve({ ok: true, status: 200, statusText: 'OK', json: async () => body });
+  });
+  return { promise, release };
+}
+
 describe('useWorkspaces gateway-scoped state', () => {
   beforeEach(() => fetchMock.mockReset());
 
@@ -155,15 +164,6 @@ describe('useWorkspaces plugin-selection conflicts', () => {
 describe('useWorkspaces concurrent load ordering', () => {
   beforeEach(() => fetchMock.mockReset());
 
-  /** A fetch whose response the test releases by hand. */
-  function deferred() {
-    let release!: (body: unknown) => void;
-    const promise = new Promise((resolve) => {
-      release = (body) => resolve({ ok: true, status: 200, statusText: 'OK', json: async () => body });
-    });
-    return { promise, release };
-  }
-
   it('ignores a stale response that lands after a newer one', async () => {
     const first = deferred();
     const second = deferred();
@@ -259,5 +259,100 @@ describe('useWorkspaces concurrent load ordering', () => {
     expect(state.workspaces.value.map((w) => w.id)).toEqual(['default', 'fresh']);
     expect(state.selectedWorkspaceId.value).toBe('default');
     expect(state.error.value).toBeNull();
+  });
+});
+
+/**
+ * `createWorkspace` selects what it just created — but `await loadWorkspaces()` resolving is NOT a
+ * promise that the created workspace is selectable. Two distinct ways it is not, covered separately
+ * below, because they are different bugs behind the same line:
+ *
+ *  (a) the reload was SUPERSEDED and applied nothing, so the catalog on screen is a different
+ *      load's, chosen without any knowledge of the new workspace;
+ *  (b) the reload applied normally, but the catalog it applied does not list the new workspace, or
+ *      lists it as incompatible with the gateway.
+ *
+ * Either way an unconditional `selectedWorkspaceId.value = workspace.id` overwrites the selection
+ * the winning load reconciled with one that breaks that load's invariant. The reviewer's reported
+ * symptom — `selectedWorkspace` going null — only happens in the ABSENT case; in the incompatible
+ * case the computed matches on id alone, so it stays non-null and the UI shows a usable-looking
+ * workspace that `useChat` will then submit as the workspace for the next conversation.
+ */
+describe('useWorkspaces created-workspace selection', () => {
+  beforeEach(() => fetchMock.mockReset());
+
+  const create = () => ({ name: 'new', marketplaces: [] });
+
+  /**
+   * (a) Superseded reload. Resolved deliberately out of order: the NEWER load answers first and
+   * wins, and the reload `createWorkspace` is awaiting lands afterwards carrying a catalog that does
+   * list the new workspace — but that response is discarded, so it cannot justify the selection.
+   */
+  it('does not select the created workspace when its reload was superseded', async () => {
+    const supersededReload = deferred();
+    const winningLoad = deferred();
+    fetchMock
+      .mockReturnValueOnce(response({ gateway, workspaces: [workspace('default')] }))
+      .mockReturnValueOnce(response(workspace('new')))
+      .mockReturnValueOnce(supersededReload.promise)
+      .mockReturnValueOnce(winningLoad.promise);
+    const state = useWorkspaces();
+    await state.loadWorkspaces();
+
+    const created = state.createWorkspace(create());
+    // Wait for the POST to have completed and the reload to be in flight before racing it.
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    const newerLoad = state.loadWorkspaces();
+
+    // The newer load answers first and wins; its catalog has no 'new'.
+    winningLoad.release({ gateway, workspaces: [workspace('default')] });
+    await newerLoad;
+
+    // The superseded reload lands last. It "knows" about 'new', but it applied nothing.
+    supersededReload.release({ gateway, workspaces: [workspace('default'), workspace('new')] });
+    await created;
+
+    expect(state.workspaces.value.map((w) => w.id)).toEqual(['default']);
+    expect(state.selectedWorkspaceId.value).toBe('default');
+  });
+
+  /**
+   * (b) The reload applied, and the catalog it applied marks the new workspace incompatible. This is
+   * the worse of the two symptoms: the selection is non-null and renders a name, so nothing on
+   * screen says the workspace cannot be used.
+   */
+  it('does not select a created workspace the applied catalog marks incompatible', async () => {
+    fetchMock
+      .mockReturnValueOnce(response({ gateway, workspaces: [workspace('default')] }))
+      .mockReturnValueOnce(response(workspace('new')))
+      .mockReturnValueOnce(response({
+        gateway,
+        workspaces: [workspace('default'), workspace('new', 'incompatible')],
+      }));
+    const state = useWorkspaces();
+    await state.loadWorkspaces();
+
+    await state.createWorkspace(create());
+
+    expect(state.selectedWorkspaceId.value).toBe('default');
+    // The invariant that matters, stated directly: whatever is selected is usable.
+    expect(state.selectedWorkspace.value?.compatibility).toBe('compatible');
+  });
+
+  /**
+   * The positive control. Without it, simply never selecting anything would satisfy both tests
+   * above, and `createWorkspace` would silently stop doing the one thing it exists to do.
+   */
+  it('selects the created workspace when the applied catalog lists it as compatible', async () => {
+    fetchMock
+      .mockReturnValueOnce(response({ gateway, workspaces: [workspace('default')] }))
+      .mockReturnValueOnce(response(workspace('new')))
+      .mockReturnValueOnce(response({ gateway, workspaces: [workspace('default'), workspace('new')] }));
+    const state = useWorkspaces();
+    await state.loadWorkspaces();
+
+    await state.createWorkspace(create());
+
+    expect(state.selectedWorkspaceId.value).toBe('new');
   });
 });

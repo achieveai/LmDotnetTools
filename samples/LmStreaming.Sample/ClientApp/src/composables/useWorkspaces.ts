@@ -108,12 +108,23 @@ export function useWorkspaces() {
 
   /**
    * Creates a new workspace, reloads the catalog, and selects the new entry.
+   *
+   * Selection goes through `selectWorkspace` rather than assigning the id directly, because
+   * `await loadWorkspaces()` resolving does NOT mean the created workspace is selectable. The reload
+   * may have been superseded by a newer load and applied nothing, or the catalog that did win may
+   * not list the new workspace at all (another writer removed it) or may mark it incompatible with
+   * the gateway. Assigning the id unconditionally in those cases would overwrite the selection the
+   * winning load just reconciled with one that violates the invariant that load maintains — and the
+   * damage is not cosmetic: `selectedWorkspaceId` is what ChatLayout hands to `useChat` as the
+   * workspace for the next conversation, so an incompatible id is submitted to the backend.
+   * Reusing `selectWorkspace` keeps exactly one definition of "selectable"; when it declines, the
+   * reconciled selection stands.
    */
   async function createWorkspace(dto: WorkspaceCreate): Promise<Workspace> {
     try {
       const workspace = await apiCreateWorkspace(dto);
       await loadWorkspaces();
-      selectedWorkspaceId.value = workspace.id;
+      selectWorkspace(workspace.id);
       return workspace;
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to create workspace';
