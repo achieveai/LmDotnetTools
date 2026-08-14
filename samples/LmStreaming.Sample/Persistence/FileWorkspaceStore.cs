@@ -223,7 +223,30 @@ public sealed class FileWorkspaceStore : IWorkspaceStore
         try
         {
             var json = await File.ReadAllTextAsync(_workspacesFilePath, ct);
-            return JsonSerializer.Deserialize<List<Workspace>>(json, JsonOptions) ?? [];
+            var loaded = JsonSerializer.Deserialize<List<Workspace>>(json, JsonOptions) ?? [];
+
+            // A null ENTRY is damage, not a value to repair: there is no workspace there to normalize.
+            // Reported as a corrupt catalog (which every action already maps to 503) rather than
+            // skipped, because silently dropping it would make a truncated or half-written file look
+            // like a successful deletion — the one failure mode a workspace store must never fake.
+            var nullEntry = loaded.FindIndex(static w => w is null);
+            if (nullEntry >= 0)
+            {
+                throw new WorkspaceCatalogCorruptException(
+                    _workspacesFilePath,
+                    $"the entry at index {nullEntry} is null"
+                );
+            }
+
+            // A null MARKETPLACES member, in contrast, has an unambiguous repair, and it needs one.
+            // `Workspace.Marketplaces` is non-nullable and carries an `= []` initializer, so it reads
+            // as though a null cannot survive deserialization. It can: nullable reference annotations
+            // are a compile-time analysis and enforce nothing here, so an explicit `"marketplaces":
+            // null` in the file is written straight into the member. Both WRITE paths above already
+            // normalize with `?? []`; without the same normalization on the way back in, one such
+            // entry made EVERY reader throw — including the catalog listing, so the UI could not load
+            // and no API call could repair the file that broke it.
+            return [.. loaded.Select(static w => w.Marketplaces is null ? w with { Marketplaces = [] } : w)];
         }
         catch (JsonException ex)
         {

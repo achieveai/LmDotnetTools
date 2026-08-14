@@ -1,6 +1,13 @@
 
+using System.Net;
+using System.Text;
 using LmStreaming.Sample.Services;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 namespace LmStreaming.Sample.Tests.Controllers;
 
@@ -339,6 +346,270 @@ public class WorkspacesControllerTests
 
         bad.Value!.GetType().GetProperty("error").Should().NotBeNull();
     }
+
+    #region Explicit JSON null on a non-nullable member
+
+    // These go over real HTTP rather than calling the action directly, because the whole question is
+    // what MODEL BINDING produces. A direct `controller.Update(id, new WorkspaceUpdate
+    // { Marketplaces = null! })` proves only that the action mishandles a null it was handed; nothing
+    // but a real request proves a null can be handed to it in the first place.
+
+    /// <summary>
+    /// The three payload shapes a client can send for <c>marketplaces</c> on an update, driven through
+    /// the live pipeline. Omitted and explicit-<c>null</c> deliberately do NOT agree, and the
+    /// difference is worth keeping.
+    /// <para>
+    /// Omitted leaves the <c>= []</c> initializer standing, which the store then applies as a
+    /// replacement set — an update that names no marketplaces clears them. Explicit <c>null</c> is
+    /// refused with a 400 by MVC's implicit-required convention for non-nullable reference-type
+    /// members, before the action runs at all. Keeping that refusal is the safer half of the pair:
+    /// <c>marketplaces</c> on an update is a REPLACEMENT set, so reading a stray <c>null</c> as
+    /// "clear them" would let a client that emitted one by accident wipe a live workspace's
+    /// marketplaces and be told nothing. <see cref="WorkspaceCreate"/> can afford to be lenient
+    /// (and is, via <c>?? []</c>) because a workspace being created has nothing to wipe.
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("{}", HttpStatusCode.OK)]
+    [InlineData(/*lang=json,strict*/ "{\"marketplaces\":[]}", HttpStatusCode.OK)]
+    [InlineData(/*lang=json,strict*/ "{\"marketplaces\":null}", HttpStatusCode.BadRequest)]
+    public async Task Put_MarketplacesOmittedEmptyOrExplicitNull(string body, HttpStatusCode expected)
+    {
+        await using var app = await HttpApp.StartAsync();
+        var created = await app.Store.CreateAsync(new WorkspaceCreate { Name = "Proj", Marketplaces = ["x"] });
+
+        var response = await app.PutAsync($"/api/workspaces/{created.Id}", body);
+
+        response.StatusCode.Should().Be(expected);
+        // The refused row must leave the workspace exactly as it was: a 400 that had already
+        // half-applied the update would be worse than the 200 it replaced.
+        string[] expectedMarketplaces = expected == HttpStatusCode.OK ? [] : ["x"];
+        (await app.Store.GetAsync(created.Id))!.Marketplaces.Should().BeEquivalentTo(expectedMarketplaces);
+    }
+
+    /// <summary>
+    /// Positive control for the theory above. An empty marketplace list is always compatible, so every
+    /// accepted row there would still pass under a mutation that skipped validation entirely. This one
+    /// proves the request reaches the compatibility check and can still be refused on its merits.
+    /// </summary>
+    [Fact]
+    public async Task Put_MarketplacesUnsupported_StillReturns400()
+    {
+        await using var app = await HttpApp.StartAsync();
+        var created = await app.Store.CreateAsync(new WorkspaceCreate { Name = "Proj" });
+
+        var response = await app.PutAsync(
+            $"/api/workspaces/{created.Id}",
+            /*lang=json,strict*/ "{\"marketplaces\":[\"not-a-real-alias\"]}");
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("unsupported_marketplaces");
+    }
+
+    /// <summary>
+    /// A null ELEMENT inside a present array is a separate binding outcome from a null array, and it
+    /// reaches a different line: the alias loop in <c>EvaluateAsync</c> hashes and compares each entry.
+    /// Pinned as a 400 rather than a 500 so the element case cannot regress silently while the array
+    /// case is guarded.
+    /// </summary>
+    [Fact]
+    public async Task Put_MarketplacesWithNullElement_Returns400NotServerError()
+    {
+        await using var app = await HttpApp.StartAsync();
+        var created = await app.Store.CreateAsync(new WorkspaceCreate { Name = "Proj" });
+
+        var response = await app.PutAsync(
+            $"/api/workspaces/{created.Id}",
+            /*lang=json,strict*/ "{\"marketplaces\":[null]}");
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    /// <summary>
+    /// The create path already normalized with <c>?? []</c>, so this is a characterization test, not a
+    /// regression fixed here. It exists so the two mutation entry points are pinned to the same
+    /// behaviour: a future edit that drops the <c>??</c> on create reds this rather than shipping the
+    /// defect on the sibling endpoint.
+    /// </summary>
+    [Fact]
+    public async Task Post_MarketplacesExplicitNull_Succeeds()
+    {
+        await using var app = await HttpApp.StartAsync();
+
+        var response = await app.PostAsync(
+            "/api/workspaces",
+            /*lang=json,strict*/ "{\"name\":\"Fresh\",\"marketplaces\":null}");
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+        (await ReadViewAsync(response)).Marketplaces.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The real, reachable instance of the same trap, and the one this commit fixes. The store's
+    /// WRITE paths normalize with <c>?? []</c>; its READ path did not, so an explicit
+    /// <c>"marketplaces": null</c> in <c>workspaces.json</c> deserialized straight into the
+    /// non-nullable member and every reader threw. The listing is the worst of them: one bad entry
+    /// made the whole catalog unreadable, so the UI could not load and no API call could repair it.
+    /// </summary>
+    [Fact]
+    public async Task Get_PersistedNullMarketplaces_ListsNormalizedInsteadOfFailing()
+    {
+        await using var app = await HttpApp.StartAsync();
+        var created = await app.Store.CreateAsync(new WorkspaceCreate { Name = "Proj" });
+        await app.CorruptCatalogAsync(json => json.Replace(
+            "\"marketplaces\": []", "\"marketplaces\": null", StringComparison.Ordinal));
+
+        var response = await app.Client.GetAsync("/api/workspaces");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var entry = doc.RootElement.GetProperty("workspaces").EnumerateArray()
+            .Should().ContainSingle(w => w.GetProperty("id").GetString() == created.Id).Subject;
+        entry.GetProperty("marketplaces").EnumerateArray().Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// Same defect through the single-workspace read, which reaches the identical evaluation from a
+    /// different action. Pinned separately because a guard placed in <c>List</c> alone would leave
+    /// this one throwing.
+    /// </summary>
+    [Fact]
+    public async Task Get_PersistedNullMarketplaces_ReadsBackAsEmptyList()
+    {
+        await using var app = await HttpApp.StartAsync();
+        var created = await app.Store.CreateAsync(new WorkspaceCreate { Name = "Proj" });
+        await app.CorruptCatalogAsync(json => json.Replace(
+            "\"marketplaces\": []", "\"marketplaces\": null", StringComparison.Ordinal));
+
+        var response = await app.Client.GetAsync($"/api/workspaces/{created.Id}");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await ReadViewAsync(response)).Marketplaces.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A null ENTRY is a different kind of damage and gets a different answer. There is no workspace
+    /// there to normalize, so it is reported as a corrupt catalog (503) rather than dropped: silently
+    /// skipping it would make a truncated or half-written file look like a successful deletion.
+    /// </summary>
+    [Fact]
+    public async Task Get_PersistedNullCatalogEntry_Returns503RatherThanFailing()
+    {
+        await using var app = await HttpApp.StartAsync();
+        _ = await app.Store.CreateAsync(new WorkspaceCreate { Name = "Proj" });
+        await app.CorruptCatalogAsync(_ => "[null]");
+
+        var response = await app.Client.GetAsync("/api/workspaces");
+
+        response.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("workspace_catalog_unavailable");
+    }
+
+    private static async Task<WorkspaceView> ReadViewAsync(HttpResponseMessage response)
+    {
+        var json = await response.Content.ReadAsStringAsync();
+        return JsonSerializer.Deserialize<WorkspaceView>(json, JsonSerializerOptions.Web)
+            ?? throw new InvalidOperationException($"Response was not a workspace view: {json}");
+    }
+
+    /// <summary>
+    /// Minimal in-process <see cref="TestServer"/> hosting the real <see cref="WorkspacesController"/>
+    /// as an application part, so requests flow through real routing, real <c>[FromBody]</c> binding
+    /// and the real MVC JSON options. Booting all of <c>Program</c> is deliberately avoided — its
+    /// startup does blocking I/O (MCP clients, sandbox/session spawn) that adds nothing to the binding
+    /// path under test, matching <see cref="ContextDiscoveryWebhookHttpTests"/>.
+    /// </summary>
+    private sealed class HttpApp : IAsyncDisposable
+    {
+        private readonly IHost _host;
+
+        private HttpApp(IHost host, HttpClient client, FileWorkspaceStore store, string dir)
+        {
+            _host = host;
+            Client = client;
+            Store = store;
+            Dir = dir;
+        }
+
+        public HttpClient Client { get; }
+        public FileWorkspaceStore Store { get; }
+        public string Dir { get; }
+
+        /// <summary>
+        /// Rewrites <c>workspaces.json</c> underneath the running store, which is how a hand-edited,
+        /// externally-written or half-written catalog reaches the read path. Nothing in the app can
+        /// produce these shapes through its own writers — that is precisely why the read path was
+        /// trusted and why the damage only shows up on the way back in.
+        /// </summary>
+        public async Task CorruptCatalogAsync(Func<string, string> rewrite)
+        {
+            var file = Path.Combine(Dir, "workspaces.json");
+            var json = await File.ReadAllTextAsync(file);
+            var rewritten = rewrite(json);
+            rewritten.Should().NotBe(json, "the rewrite must actually change the catalog on disk");
+            await File.WriteAllTextAsync(file, rewritten);
+        }
+
+        public static async Task<HttpApp> StartAsync()
+        {
+            var dir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+            var store = new FileWorkspaceStore(dir, null);
+            var compatibility = new WorkspaceCatalogCompatibilityService(
+                new SupportedCatalogClient(),
+                new SandboxGatewayOptions()
+            );
+            var identity = GatewayWorkspaceCatalogIdentity.Create("http://gateway:3000", "sample");
+
+            var host = await new HostBuilder()
+                .ConfigureWebHost(webBuilder =>
+                {
+                    webBuilder.UseTestServer();
+                    webBuilder.ConfigureServices(services =>
+                    {
+                        _ = services.AddControllers()
+                            .AddApplicationPart(typeof(WorkspacesController).Assembly);
+                        _ = services.AddSingleton<IWorkspaceStore>(store);
+                        _ = services.AddSingleton(compatibility);
+                        _ = services.AddSingleton(identity);
+                        // Same reasoning as Build(): a stub that throws if touched, so "an ordinary
+                        // marketplace edit silently migrated" cannot pass as green.
+                        _ = services.AddSingleton<IWorkspacePluginSelectionService>(
+                            new StubPluginSelection(new NotSupportedException("migration must not run"))
+                        );
+                    });
+                    webBuilder.Configure(appBuilder =>
+                    {
+                        appBuilder.UseRouting();
+                        _ = appBuilder.UseEndpoints(endpoints => endpoints.MapControllers());
+                    });
+                })
+                .StartAsync();
+
+            return new HttpApp(host, host.GetTestClient(), store, dir);
+        }
+
+        public Task<HttpResponseMessage> PutAsync(string path, string json) => SendAsync(HttpMethod.Put, path, json);
+
+        public Task<HttpResponseMessage> PostAsync(string path, string json) => SendAsync(HttpMethod.Post, path, json);
+
+        private async Task<HttpResponseMessage> SendAsync(HttpMethod method, string path, string json)
+        {
+            using var request = new HttpRequestMessage(method, path)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json"),
+            };
+            return await Client.SendAsync(request);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            Client.Dispose();
+            await _host.StopAsync();
+            _host.Dispose();
+        }
+    }
+
+    #endregion
 
     private sealed class SupportedCatalogClient(bool? pluginFiltering = null, params string[] pluginsUnderX)
         : IMarketplaceCatalogClient

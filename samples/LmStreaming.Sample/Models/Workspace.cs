@@ -97,6 +97,15 @@ public record WorkspaceUpdate
     /// <summary>
     /// Replacement set of plugin marketplaces for the workspace.
     /// </summary>
+    /// <remarks>
+    /// Deliberately NOT nullable, unlike <see cref="WorkspaceCreate.Marketplaces"/>. The annotation is
+    /// load-bearing rather than decorative: MVC's implicit-required convention for non-nullable
+    /// reference-type members is what turns an explicit <c>"marketplaces": null</c> into a 400 before
+    /// the action runs. Widening it to <c>IReadOnlyList&lt;string&gt;?</c> "for consistency with
+    /// create" would silently make that null bindable, and this is a REPLACEMENT set — a client that
+    /// emitted a stray null would then wipe a live workspace's marketplaces and be told nothing.
+    /// Create can afford the leniency because a workspace being created has nothing to wipe.
+    /// </remarks>
     public IReadOnlyList<string> Marketplaces { get; init; } = [];
 
     /// <summary>
