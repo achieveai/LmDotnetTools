@@ -181,7 +181,7 @@ public sealed partial class SandboxClient
             dto.Volumes?.Workspace?.ContainerPath,
             dto.Volumes?.Workspace?.Id,
             dto.Status,
-            ToInventory(dto.Inventory),
+            ToInventory(dto.Inventory, operation, statusCode),
             ToPluginResolution(dto.PluginResolution, operation, statusCode)
         );
 
@@ -254,20 +254,44 @@ public sealed partial class SandboxClient
     private static SandboxPluginRef ToPluginRef(PluginRefDto dto) => new(dto.Marketplace, dto.Plugin);
 
     /// <summary>
-    /// Maps the gateway's inventory block, dropping items whose kind or id is missing rather than
-    /// materializing a half-identified entry. An absent block maps to <see langword="null"/> so
+    /// Maps the gateway's inventory block. An absent block maps to <see langword="null"/> so
     /// <see cref="SandboxInfo"/> supplies its "gateway reported none" default — distinct from a
     /// present block that reports <c>unavailable</c> with the gateway's own reason.
     /// </summary>
-    private static SandboxInventory? ToInventory(SandboxInventoryDto? dto)
+    /// <remarks>
+    /// A malformed ELEMENT and a malformed FIELD are treated differently here, deliberately:
+    /// <list type="bullet">
+    /// <item>
+    /// A <see langword="null"/> array element is a malformed payload and raises
+    /// <see cref="SandboxErrorKind.Protocol"/>, like every other null collection element this client
+    /// reads. There is no partial item to salvage — the gateway sent a hole where an object belongs,
+    /// which is a defect in the response itself, and unguarded it dereferences to a
+    /// <see cref="NullReferenceException"/> that escapes this SDK's exception contract entirely.
+    /// </item>
+    /// <item>
+    /// An item whose kind or id is missing/blank is DROPPED, not thrown, because a partially
+    /// populated inventory is a tolerated shape: the inventory is a report of what the session
+    /// happens to have loaded, so one unidentifiable entry does not invalidate the rest, and
+    /// materializing a half-identified item would put an entry with no usable identity in front of
+    /// callers.
+    /// </item>
+    /// </list>
+    /// This is the opposite of <see cref="ToPluginRefs"/>, which throws on a blank field — and the
+    /// difference is intended, not an oversight to be harmonized away. A plugin resolution reports
+    /// what the caller's own explicit selection resolved to, so a malformed entry means the answer
+    /// to "what did my selection do" cannot be trusted and silently dropping it would understate the
+    /// selection. An inventory answers "what is loaded", where a best-effort list is still useful.
+    /// Both behaviours are pinned by tests; changing either is a contract change, not a cleanup.
+    /// </remarks>
+    private static SandboxInventory? ToInventory(SandboxInventoryDto? dto, string operation, int statusCode)
     {
         if (dto is null)
         {
             return null;
         }
 
-        var items = dto
-            .Items?.Where(i => !string.IsNullOrWhiteSpace(i.Kind) && !string.IsNullOrWhiteSpace(i.Id))
+        var items = SelectNonNullOrThrow(dto.Items, static item => item, $"the inventory of {operation}", statusCode)
+            .Where(i => !string.IsNullOrWhiteSpace(i.Kind) && !string.IsNullOrWhiteSpace(i.Id))
             .Select(i => new SandboxInventoryItem(i.Kind!, i.Id!, i.Version))
             .ToList();
 

@@ -155,11 +155,44 @@ public class SandboxClientInventoryTests
                 {"kind":"plugin","id":"development"},
                 {"kind":"skill"},
                 {"id":"orphan"},
-                {"kind":"  ","id":"blank-kind"}
+                {"kind":"  ","id":"blank-kind"},
+                {"kind":null,"id":"explicit-null-kind"}
             ]}
             """);
 
+        // The last entry lands on the same `null` Kind as the omitted-field entry above it — an
+        // explicit JSON null and an absent member are indistinguishable once the record's parameter
+        // is bound — so it adds no coverage the others lack. It is spelled out because it is the
+        // shape a "make the two paths consistent" edit reaches for first (the plugin-resolution
+        // path THROWS on exactly this), and the payload should show that this array does not.
+        // The rule: a malformed FIELD drops, only a malformed ELEMENT throws. See ToInventory.
         info.Inventory.Items.Should().ContainSingle().Which.Id.Should().Be("development");
+    }
+
+    /// <summary>
+    /// The other half of that rule. A <c>null</c> ARRAY ELEMENT is not a droppable item — there is
+    /// no item to inspect — and unguarded it dereferences to a <see cref="NullReferenceException"/>
+    /// that escapes the SDK's exception contract on an otherwise successful 2xx response.
+    /// </summary>
+    [Fact]
+    public async Task CreateAsync_InventoryWithNullArrayElement_ThrowsProtocolNamingTheInventory()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Post,
+            "/api/v1/sandboxes",
+            CreateResponse("""
+                "inventory":{"status":"confirmed","items":[{"kind":"plugin","id":"development"},null]}
+                """)
+        );
+
+        var thrown = await Record.ExceptionAsync(() => client.CreateAsync(new SandboxCreateRequest("my-workspace")));
+
+        thrown.Should().BeOfType<SandboxException>("a malformed 2xx payload is a protocol defect, not an unhandled NullReferenceException");
+        var sandboxException = (SandboxException)thrown;
+        sandboxException.Kind.Should().Be(SandboxErrorKind.Protocol);
+        sandboxException.StatusCode.Should().Be(200);
+        sandboxException.Message.Should().Contain("inventory", "the message has to say which of the response's arrays was malformed");
     }
 
     [Fact]
