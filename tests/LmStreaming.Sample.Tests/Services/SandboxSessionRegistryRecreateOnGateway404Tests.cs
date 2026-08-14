@@ -318,7 +318,13 @@ public class SandboxSessionRegistryRecreateOnGateway404Tests
             "the slot must still hold the session being replaced while the store is read, so a "
                 + "concurrent caller gets a cache hit instead of publishing a stale-ref session into "
                 + "an empty slot");
-        calls.PostCount.Should().Be(2, "the concurrent caller hit the cache, so only the recreate created");
+
+        // The count below is the SAME under the broken ordering — there the second POST is the
+        // concurrent caller's stale-ref create and the recreate becomes the cache hit — so it is a
+        // supporting assertion that no THIRD session appeared, not a witness for the fix. Verified by
+        // hoisting it above the session-id assertion under the reverted ordering: it stayed green.
+        // The session-id assertion above is the one that discriminates, which is why it comes first.
+        calls.PostCount.Should().Be(2, "the arrange-phase create and the recreate — the concurrent caller added none");
         live.SessionId.Should().Be("sess-2");
         ReadMarketplaces(calls.PostBodies[^1]).Should().Equal("official");
     }
