@@ -486,6 +486,119 @@ public class SandboxClientLifecycleTests
         info.PluginResolution.Should().BeNull();
     }
 
+    #region Malformed plugin-resolution entries on a 2xx response
+
+    /// <summary>
+    /// The wire DTOs model a plugin ref's <c>marketplace</c>/<c>plugin</c> as non-nullable
+    /// <see langword="string"/>, but nothing enforces that at deserialization: the SDK's
+    /// <see cref="Wire.SandboxJson.RestOptions"/> does not set <c>RespectNullableAnnotations</c>, so
+    /// System.Text.Json writes a JSON <c>null</c> straight into a non-nullable member, and a JSON
+    /// <c>null</c> ARRAY ELEMENT deserializes to a null reference in the list. A semantically-invalid
+    /// 2xx body therefore reaches the mapper intact, and each of these cases would otherwise leave
+    /// this SDK as a raw <see cref="NullReferenceException"/> or <see cref="ArgumentException"/> —
+    /// the same class of leak already closed for the marketplace-preview and discovered-items paths.
+    /// </summary>
+    private static async Task<Exception> CreateWithResolutionAsync(string resolutionJson)
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Post,
+            "/api/v1/sandboxes",
+            """
+            {"session_id":"sess-1","container_id":"container-1",
+             "volumes":{"workspace":{"container_path":"/workspace","read_only":false}},
+             "pluginResolution":
+            """
+                + resolutionJson
+                + "}"
+        );
+
+        return await Record.ExceptionAsync(() => client.CreateAsync(new SandboxCreateRequest("ws")));
+    }
+
+    [Fact]
+    public async Task CreateAsync_PluginResolutionWithNullArrayElement_ThrowsProtocolNamingTheArray()
+    {
+        var thrown = await CreateWithResolutionAsync("""{"supported":true,"effective":[null]}""");
+
+        thrown.Should().BeOfType<SandboxException>("a malformed 2xx payload is a protocol defect, not an unhandled NullReferenceException");
+        var sandboxException = (SandboxException)thrown;
+        sandboxException.Kind.Should().Be(SandboxErrorKind.Protocol);
+        sandboxException.Message.Should().Contain("effective", "a bare 'malformed response' leaves the next reader to bisect three arrays");
+    }
+
+    [Fact]
+    public async Task CreateAsync_PluginResolutionEntryWithNullField_ThrowsProtocolNamingTheArray()
+    {
+        var thrown = await CreateWithResolutionAsync("""{"supported":true,"requested":[{"marketplace":null,"plugin":"code-review"}]}""");
+
+        thrown.Should().BeOfType<SandboxException>("SandboxPluginRef's own guard throws ArgumentNullException, which is not this SDK's error contract");
+        var sandboxException = (SandboxException)thrown;
+        sandboxException.Kind.Should().Be(SandboxErrorKind.Protocol);
+        sandboxException.Message.Should().Contain("requested");
+    }
+
+    [Fact]
+    public async Task CreateAsync_PluginResolutionEntryWithBlankField_ThrowsProtocolNamingTheArray()
+    {
+        var thrown = await CreateWithResolutionAsync("""{"supported":true,"failed":[{"marketplace":"official","plugin":"   "}]}""");
+
+        thrown.Should().BeOfType<SandboxException>("a whitespace-only plugin id is as unusable as a missing one");
+        var sandboxException = (SandboxException)thrown;
+        sandboxException.Kind.Should().Be(SandboxErrorKind.Protocol);
+        sandboxException.Message.Should().Contain("failed");
+    }
+
+    /// <summary>
+    /// The positive control. Without it, a guard that rejected every entry — or one that dropped
+    /// them all — would satisfy every negative test above while destroying the feature.
+    /// </summary>
+    [Fact]
+    public async Task CreateAsync_WellFormedPluginResolution_StillParsesEveryArray()
+    {
+        var thrown = await CreateWithResolutionAsync(
+            """
+            {"supported":true,
+             "requested":[{"marketplace":"official","plugin":"code-review"},{"marketplace":"official","plugin":"docs"}],
+             "effective":[{"marketplace":"official","plugin":"code-review"}],
+             "failed":[{"marketplace":"official","plugin":"docs"}]}
+            """
+        );
+
+        thrown.Should().BeNull("a well-formed payload must not be rejected by the malformed-entry guards");
+    }
+
+    /// <summary>
+    /// Same well-formed payload, read back through the public model. Kept separate from the
+    /// no-throw control above so a regression tells you WHICH of the two broke.
+    /// </summary>
+    [Fact]
+    public async Task CreateAsync_WellFormedPluginResolution_SurfacesEveryEntryVerbatim()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Post,
+            "/api/v1/sandboxes",
+            """
+            {"session_id":"sess-1","container_id":"container-1",
+             "volumes":{"workspace":{"container_path":"/workspace","read_only":false}},
+             "pluginResolution":{"supported":true,
+               "requested":[{"marketplace":"official","plugin":"code-review"},{"marketplace":"official","plugin":"docs"}],
+               "effective":[{"marketplace":"official","plugin":"code-review"}],
+               "failed":[{"marketplace":"official","plugin":"docs"}]}}
+            """
+        );
+
+        var info = await client.CreateAsync(new SandboxCreateRequest("ws"));
+
+        info.PluginResolution!.Requested.Should().HaveCount(2);
+        info.PluginResolution.Requested![1].Plugin.Should().Be("docs");
+        info.PluginResolution.Effective.Should().ContainSingle(r => r.Marketplace == "official" && r.Plugin == "code-review");
+        info.PluginResolution.Failed.Should().ContainSingle(r => r.Plugin == "docs");
+    }
+
+    #endregion
+
     /// <summary>An <see cref="HttpContent"/> that declares a large <c>Content-Length</c> without allocating any bytes, to exercise the pre-read size guard.</summary>
     private sealed class OversizedContent : HttpContent
     {
