@@ -178,14 +178,17 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
 
         public override async ValueTask DisposeAsync()
         {
-            if (_disposed)
-            {
-                return;
-            }
-
-            _disposed = true;
+            // Deliberately does NOT set _disposed here before delegating: DbConnection's default
+            // DisposeAsync() implementation calls the synchronous Dispose(), which virtually
+            // dispatches back to THIS type's Dispose(bool) override on the very same instance. If
+            // _disposed were already true at that point, that reentrant call's own guard would
+            // short-circuit and skip base.Dispose(disposing) entirely -- meaning the underlying
+            // SqliteConnection's native handle would never actually be closed or returned to the
+            // pool, silently leaking it for the lifetime of this (GC-tracked) object. Dispose(bool)
+            // already sets _disposed and releases the semaphore exactly once; letting that call own
+            // both keeps this override a thin, idempotent forward rather than a second, competing
+            // disposal path.
             await base.DisposeAsync().ConfigureAwait(false);
-            _ = _semaphore.Release();
         }
     }
 }
