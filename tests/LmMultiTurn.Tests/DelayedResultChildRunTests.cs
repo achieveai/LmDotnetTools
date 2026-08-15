@@ -463,17 +463,38 @@ public class DelayedResultChildRunTests
     /// </remarks>
     private sealed class Harness : IAsyncDisposable
     {
+        /// <summary>
+        /// How long a wait here may block before it reports a hang instead of continuing to hope.
+        /// </summary>
+        /// <remarks>
+        /// Every wait below returns on a signal, so this bound is never reached on a run that works
+        /// and its size does not trade against flakiness — it exists only so a genuine deadlock
+        /// fails readably rather than hanging the suite. It is deliberately far larger than any
+        /// observed duration (the whole class runs in about a second) because the one thing a
+        /// backstop must not do is fire on a loaded machine and be read as a behavioural failure.
+        /// </remarks>
+        private static readonly TimeSpan WaitBudget = TimeSpan.FromSeconds(30);
+
         private readonly CancellationTokenSource _cts = new();
         private readonly TaskCompletionSource<bool> _firstRunCompleted = new();
         private readonly List<string> _completedRunIds = [];
         private readonly Lock _gate = new();
+
+        /// <summary>One permit per provider call, released once that call's bookkeeping is visible.</summary>
+        private readonly SemaphoreSlim _providerCalled = new(0);
+
+        /// <summary>One permit per run-completed message the subscription has recorded.</summary>
+        private readonly SemaphoreSlim _runCompleted = new(0);
+
+        private readonly int _deferredAtStart;
         private int _providerCallCount;
 
-        private Harness(MultiTurnAgentLoop loop, IConversationStore store, string threadId)
+        private Harness(MultiTurnAgentLoop loop, IConversationStore store, string threadId, int deferredAtStart)
         {
             Loop = loop;
             Store = store;
             ThreadId = threadId;
+            _deferredAtStart = deferredAtStart;
         }
 
         public MultiTurnAgentLoop Loop { get; }
@@ -523,34 +544,61 @@ public class DelayedResultChildRunTests
                 store: store,
                 lifecycleServices: services);
 
-            var harness = new Harness(loop, store, threadId);
+            var harness = new Harness(loop, store, threadId, toolCallIds.Count);
             SetupProvider(mockAgent, toolCallIds, harness);
 
             _ = loop.RunAsync(harness._cts.Token);
             harness.Observe();
 
             await loop.SendAsync([new TextMessage { Text = "Go", Role = Role.User }]);
-            await harness._firstRunCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await harness._firstRunCompleted.Task.WaitAsync(WaitBudget);
 
             var pending = await loop.GetDeferredToolCallsAsync();
             pending.Should().HaveCount(toolCallIds.Count, "the harness starts from a fully parked run");
             return harness;
         }
 
-        /// <summary>Waits until the provider has been called <paramref name="count"/> times.</summary>
+        /// <summary>
+        /// Waits until the provider has been called <paramref name="count"/> times and the runs
+        /// those calls belong to have finished publishing.
+        /// </summary>
+        /// <remarks>
+        /// Both halves wait on the event they need rather than on a clock, which is the whole point
+        /// of the rewrite. The first half consumes a permit released by the provider mock itself,
+        /// so it returns the instant the call lands; the version before it sampled a counter every
+        /// 20ms against a 5s wall clock and failed once in CI having seen a single call, which on a
+        /// two-core runner says the poll was starved rather than that the loop misbehaved. The
+        /// second half waits for exactly the number of run-completed messages the resolves imply,
+        /// replacing a fixed 150ms sleep: a sleep long enough to be safe is dead time on every run
+        /// and still not safe on the run that matters.
+        /// </remarks>
         public async Task WaitForProviderCallsAsync(int count)
         {
-            var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
-            while (ProviderCallCount < count && DateTimeOffset.UtcNow < deadline)
+            // Permits accumulate, so a call that landed before this method was entered is still
+            // counted — the wait cannot miss a signal by arriving after it.
+            for (var seen = 0; seen < count; seen++)
             {
-                await Task.Delay(20);
+                (await _providerCalled.WaitAsync(WaitBudget))
+                    .Should()
+                    .BeTrue(
+                        $"the provider should have been called {count} times, but call {seen + 1} "
+                            + $"never arrived within {WaitBudget}");
             }
 
             ProviderCallCount.Should().BeGreaterThanOrEqualTo(count);
 
-            // The continuation's own completion trails its provider call; give it room to publish so
-            // an assertion on run-completed events is not racing the loop that emits them.
-            await Task.Delay(150);
+            // One completion for the originating run, plus one per resolve that actually committed.
+            // Derived rather than guessed: a resolve the store refused stays deferred and starts no
+            // child run, so it must not be waited for.
+            var expectedCompletions = 1 + (_deferredAtStart - (await Loop.GetDeferredToolCallsAsync()).Count);
+            for (var seen = 0; seen < expectedCompletions; seen++)
+            {
+                (await _runCompleted.WaitAsync(WaitBudget))
+                    .Should()
+                    .BeTrue(
+                        $"{expectedCompletions} run(s) should have completed, but completion "
+                            + $"{seen + 1} never arrived within {WaitBudget}");
+            }
         }
 
         public static FunctionRegistry BuildRegistry(params string[] toolCallIds) =>
@@ -596,25 +644,34 @@ public class DelayedResultChildRunTests
                         Interlocked.Increment(ref harness._providerCallCount);
                     }
 
+                    IAsyncEnumerable<IMessage> reply;
                     if (call == 1)
                     {
-                        return Task.FromResult(ToAsyncEnumerable(
+                        reply = ToAsyncEnumerable(
                             [.. toolCallIds.Select(id => new ToolCallMessage
                             {
                                 FunctionName = ToolNameFor(id),
                                 FunctionArgs = "{}",
                                 ToolCallId = id,
                                 Role = Role.Assistant,
-                            })]));
+                            })]);
                     }
-
-                    if (harness != null && call == 2)
+                    else
                     {
-                        harness.SecondRequest = [.. msgs];
+                        if (harness != null && call == 2)
+                        {
+                            harness.SecondRequest = [.. msgs];
+                        }
+
+                        reply = ToAsyncEnumerable(
+                            [new TextMessage { Text = "all done", Role = Role.Assistant }]);
                     }
 
-                    return Task.FromResult(ToAsyncEnumerable(
-                        [new TextMessage { Text = "all done", Role = Role.Assistant }]));
+                    // Released last, after everything this call records. A waiter that woke on the
+                    // counter alone could observe the call and read a SecondRequest not yet
+                    // assigned; releasing here both orders the two and publishes the write.
+                    harness?._providerCalled.Release();
+                    return Task.FromResult(reply);
                 });
         }
 
@@ -648,6 +705,10 @@ public class DelayedResultChildRunTests
                         {
                             OriginatingRunId = completed.CompletedRunId;
                         }
+
+                        // Released after the recording, so a waiter that wakes on it sees the run
+                        // it woke for already in the list.
+                        _runCompleted.Release();
                     }
                 }
                 catch (OperationCanceledException)
@@ -666,6 +727,11 @@ public class DelayedResultChildRunTests
             await _cts.CancelAsync();
             await Loop.DisposeAsync();
             _cts.Dispose();
+
+            // The two semaphores are deliberately not disposed. Both are released from work that
+            // outlives this call — the subscription pump and the provider mock — so disposing them
+            // would trade a clean teardown for an ObjectDisposedException on a background task.
+            // Neither ever allocates a wait handle, so there is nothing to leak.
         }
 
         private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(

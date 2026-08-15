@@ -4,7 +4,15 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
-    <IsTestProject>true</IsTestProject>
+    <!-- This suite needs Playwright's Chromium download and a built client SPA, which only
+         .github/workflows/playwright-e2e.yml provides (it installs browsers, then runs this
+         project directly). The solution-wide `dotnet test` in scripts/ci-test.ps1 has neither,
+         where every browser-driving test failed in ~300ms on a missing executable.
+         Defaulting to true keeps `dotnet test` on this project working for developers and for
+         the dedicated workflow; only the solution-wide run passes false. The project still
+         COMPILES in the solution build either way, so these tests cannot silently rot. -->
+    <RunBrowserE2ETests Condition="'$(RunBrowserE2ETests)' == ''">true</RunBrowserE2ETests>
+    <IsTestProject>$(RunBrowserE2ETests)</IsTestProject>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
   </PropertyGroup>

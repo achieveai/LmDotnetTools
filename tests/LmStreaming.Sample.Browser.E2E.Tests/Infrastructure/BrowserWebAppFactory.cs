@@ -353,7 +353,7 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
             var factoryTempDirectory = Directory.GetParent(_conversationPath)?.FullName;
             if (!string.IsNullOrWhiteSpace(factoryTempDirectory) && Directory.Exists(factoryTempDirectory))
             {
-                Directory.Delete(factoryTempDirectory, recursive: true);
+                TryDeleteFactoryTempDirectory(factoryTempDirectory);
             }
         }
         finally
@@ -366,6 +366,75 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
             // Base dispose is null-safe on its internal _server/_host, so calling it is fine
             // even though its EnsureServer path threw during startup.
             base.Dispose(disposing);
+        }
+    }
+
+    /// <summary>
+    /// Deletes the factory's temp directory, tolerating a writer that outlived the host stop.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The host stop above is bounded at 5 seconds so a long-lived WebSocket cannot wedge teardown,
+    /// and a stop that exceeds it is swallowed. That is deliberate, but it means teardown can reach
+    /// this point while a background handler — a daemon run mid-conversation, most often — is still
+    /// appending under <c>conversations/</c>.
+    /// </para>
+    /// <para>
+    /// A recursive delete is not atomic: it enumerates, deletes the children it saw, then removes the
+    /// now-supposedly-empty parent. A file created between those two steps makes the final step throw
+    /// <see cref="IOException"/> "Directory not empty" — even though every file that existed at
+    /// enumeration time was deleted. Retrying is the fix that matches that shape, because the writer
+    /// is finishing, not restarting.
+    /// </para>
+    /// <para>
+    /// If it still will not go, the failure is SWALLOWED, and that is the point: this runs in
+    /// <see cref="Dispose"/>, after the test's assertions have already passed. Letting a temp-directory
+    /// cleanup failure surface turns a green test red for a reason that has nothing to do with what it
+    /// asserted — which is exactly how this was first seen on CI, as a passing deep-link test reported
+    /// as failed. The directory is under the OS temp root and is reclaimed there.
+    /// </para>
+    /// </remarks>
+    /// <param name="path">Directory to remove.</param>
+    /// <param name="delete">
+    /// Seam for the delete itself. Defaults to <see cref="Directory.Delete(string, bool)"/>; a test
+    /// substitutes it because the interesting cases — a transient failure that clears, and one that
+    /// never does — cannot be provoked portably. Holding a file handle blocks removal on Windows and
+    /// does not on Linux, so an OS-level reproduction would assert different things on the two
+    /// platforms, and this runs on both.
+    /// </param>
+    internal static void TryDeleteFactoryTempDirectory(string path, Action<string>? delete = null)
+    {
+        delete ??= static target => Directory.Delete(target, recursive: true);
+
+        const int Attempts = 5;
+        for (var attempt = 1; attempt <= Attempts; attempt++)
+        {
+            try
+            {
+                delete(path);
+                return;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                // Someone else won the race to remove it. That is the desired end state.
+                return;
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                if (attempt == Attempts)
+                {
+                    // Deliberately not rethrown — see the remarks. Reported so a genuine leak is still
+                    // visible in the test output rather than silently normal.
+                    Console.WriteLine(
+                        $"[BrowserWebAppFactory] Could not remove temp directory '{path}' after "
+                            + $"{Attempts} attempts ({e.GetType().Name}: {e.Message}). Leaving it for the "
+                            + "OS temp reclaim; the test result is unaffected."
+                    );
+                    return;
+                }
+
+                Thread.Sleep(TimeSpan.FromMilliseconds(100 * attempt));
+            }
         }
     }
 }

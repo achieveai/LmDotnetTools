@@ -70,10 +70,13 @@ internal sealed class ManualTimeProvider(DateTimeOffset start) : TimeProvider
                 }
 
                 _utcNow = next.DueAt!.Value;
-                next.DueAt =
-                    next.Period > TimeSpan.Zero && next.Period != Timeout.InfiniteTimeSpan
-                        ? _utcNow + next.Period
-                        : null;
+                var periodic =
+                    next.Period > TimeSpan.Zero && next.Period != Timeout.InfiniteTimeSpan;
+                next.DueAt = periodic ? _utcNow + next.Period : null;
+                // A fired one-shot is no longer scheduled for anything; a periodic one is now armed
+                // for its period. Kept in step with DueAt so WaitForTimerAsync can never match a
+                // timer that already fired.
+                next.ScheduledDelay = periodic ? next.Period : null;
                 due = next;
             }
 
@@ -82,19 +85,32 @@ internal sealed class ManualTimeProvider(DateTimeOffset start) : TimeProvider
     }
 
     /// <summary>
-    /// Completes once a timer is pending whose due time falls inside the given band. The band is how
-    /// a test names <em>which</em> timer it means: a retry backoff and an attempt timeout are both
-    /// pending at once and are told apart only by how far out they are.
+    /// Completes once a timer is pending that was <em>scheduled</em> with a delay inside the given
+    /// band. The band is how a test names <em>which</em> timer it means: a retry backoff and an
+    /// attempt timeout are both pending at once and are told apart only by how far out they are.
     /// </summary>
+    /// <remarks>
+    /// The band is matched against the delay the timer was armed with, NOT against
+    /// <c>DueAt - _utcNow</c>, and that distinction is load-bearing. <see cref="Advance"/> fires a
+    /// due timer at its own due time and then keeps moving the clock on to the caller's target, but
+    /// the callback's continuation arms the next timer from another thread — so whether the new
+    /// timer's remaining time is measured from the fire instant or from the (later) target is a race
+    /// between that continuation and <see cref="Advance"/>'s next lock acquisition. Any overshoot
+    /// subtracts from the remaining time: advancing a full second past a backoff that came due at
+    /// 600 ms shrinks a legitimately-scheduled 1.2 s retry to 800 ms, which no longer falls in the
+    /// [1 s, 2 s] band its test names. The condition then never holds, and before the wait was
+    /// bounded that stalled the testhost until `dotnet test` aborted the entire run.
+    /// </remarks>
     internal Task WaitForTimerAsync(TimeSpan earliestDueIn, TimeSpan latestDueIn) =>
         _timerGate.WaitAsync(() =>
         {
             lock (_sync)
             {
                 return _timers.Any(timer =>
-                    timer.DueAt is { } dueAt
-                    && dueAt - _utcNow >= earliestDueIn
-                    && dueAt - _utcNow <= latestDueIn
+                    timer.DueAt is not null
+                    && timer.ScheduledDelay is { } delay
+                    && delay >= earliestDueIn
+                    && delay <= latestDueIn
                 );
             }
         });
@@ -104,7 +120,9 @@ internal sealed class ManualTimeProvider(DateTimeOffset start) : TimeProvider
         lock (_sync)
         {
             timer.Period = period;
-            timer.DueAt = dueTime == Timeout.InfiniteTimeSpan ? null : _utcNow + dueTime;
+            var disarmed = dueTime == Timeout.InfiniteTimeSpan;
+            timer.DueAt = disarmed ? null : _utcNow + dueTime;
+            timer.ScheduledDelay = disarmed ? null : dueTime;
         }
 
         _timerGate.Signal();
@@ -116,6 +134,7 @@ internal sealed class ManualTimeProvider(DateTimeOffset start) : TimeProvider
         lock (_sync)
         {
             timer.DueAt = null;
+            timer.ScheduledDelay = null;
             _ = _timers.Remove(timer);
         }
     }
@@ -124,6 +143,13 @@ internal sealed class ManualTimeProvider(DateTimeOffset start) : TimeProvider
         : ITimer
     {
         internal DateTimeOffset? DueAt { get; set; }
+
+        /// <summary>
+        /// The delay this timer was last armed with — the value <c>Change</c> was called with, not a
+        /// remaining time. Null once it has fired (one-shot) or been disarmed. See
+        /// <see cref="WaitForTimerAsync"/> for why the two must not be conflated.
+        /// </summary>
+        internal TimeSpan? ScheduledDelay { get; set; }
 
         internal TimeSpan Period { get; set; } = Timeout.InfiniteTimeSpan;
 

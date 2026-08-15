@@ -417,9 +417,22 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var act = async () => await queuedSpawn;
         _ = await act.Should().ThrowAsync<OperationCanceledException>();
 
-        // The pump retires the admission before it unblocks the caller's await (see
-        // SubAgentManager.CancelQueuedSpawn), so both halves are already reclaimed by the time the
-        // cancellation has been observed above — nothing here is racing the pump.
+        // Observing the cancellation does NOT imply the reclaim has run. The caller is released by
+        // `await queued.StateReady.Task.WaitAsync(ct)` (SubAgentManager.cs:631), and WaitAsync(ct)
+        // throws the instant the CALLER's token fires — it does not wait on the pump. The reclaim
+        // lives in CancelQueuedSpawn, which the pump reaches on a separately scheduled continuation
+        // off its own gate-cancellation path. So the two are genuinely concurrent, and an earlier
+        // version of this test asserted immediately here and flaked under solution-wide parallel
+        // load (never alone), because the assertion could win the race against the pump.
+        //
+        // Wait for the reclaim rather than assuming an ordering that does not exist. This does not
+        // weaken the test: WaitForConditionAsync returns on timeout without throwing, so a reclaim
+        // that never happens still fails the assertion below — it just no longer fails a reclaim
+        // that happened a few microseconds late. CancelQueuedSpawn retires before it cancels the
+        // caller, so capacity reaching 1 also implies the directory row has been retired.
+        await WaitForConditionAsync(
+            () => root.Directory.Capacity.InUse == 1, TimeSpan.FromSeconds(5));
+
         root.Directory.Capacity.InUse.Should().Be(
             1, "the cancelled spawn's root-wide lease must come back, not stay charged forever");
 
@@ -1756,6 +1769,20 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
             _ = _received.TrySetResult(message);
             return ValueTask.FromResult(
                 new AgentDeliveryOutcome(AgentDeliveryDisposition.Delivered));
+        }
+    }
+
+    /// <summary>
+    /// Polls <paramref name="condition"/> until it holds or <paramref name="timeout"/> elapses.
+    /// Returns rather than throwing on timeout, so the caller's assertion — not this helper —
+    /// reports the failure, with its own message intact.
+    /// </summary>
+    private static async Task WaitForConditionAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (!condition() && DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(25);
         }
     }
 

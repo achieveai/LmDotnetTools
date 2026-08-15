@@ -359,4 +359,49 @@ public class SandboxClientCatalogTests
         items[0].Kind.Should().Be("future_kind_v2");
         items[0].Name.Should().BeNull();
     }
+
+    [Fact]
+    public async Task PreviewMarketplacesAsync_ResponseWithCapabilities_ParsesPluginFilteringSupported()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Get,
+            "/api/v1/marketplaces/preview",
+            """{"selected":["official"],"marketplaces":[],"capabilities":{"pluginFiltering":true}}"""
+        );
+
+        var catalog = await client.PreviewMarketplacesAsync(["official"]);
+
+        catalog.PluginFilteringSupported.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task PreviewMarketplacesAsync_ResponseWithoutCapabilities_LeavesPluginFilteringSupportedNull()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Get,
+            "/api/v1/marketplaces/preview",
+            """{"selected":["official"],"marketplaces":[]}"""
+        );
+
+        var catalog = await client.PreviewMarketplacesAsync(["official"]);
+
+        catalog.PluginFilteringSupported.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task PreviewMarketplacesAsync_CapabilitiesWithFalsePluginFiltering_ParsesAsFalse_NotNull()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Get,
+            "/api/v1/marketplaces/preview",
+            """{"selected":["official"],"marketplaces":[],"capabilities":{"pluginFiltering":false}}"""
+        );
+
+        var catalog = await client.PreviewMarketplacesAsync(["official"]);
+
+        catalog.PluginFilteringSupported.Should().BeFalse();
+    }
 }

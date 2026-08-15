@@ -15,7 +15,7 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
 /// Creates agents on-demand and reuses them for the same thread.
 /// Supports mode-aware agent creation with customizable system prompts and tool filtering.
 /// </summary>
-public sealed class MultiTurnAgentPool : IAsyncDisposable
+public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProbe
 {
     /// <summary>
     /// Property key in <see cref="ThreadMetadata.Properties"/> that stores the provider

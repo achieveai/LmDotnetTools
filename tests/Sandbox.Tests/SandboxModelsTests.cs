@@ -161,4 +161,95 @@ public class SandboxModelsTests
 
         act.Should().Throw<ArgumentException>();
     }
+
+    [Theory]
+    [InlineData("", "plugin")]
+    [InlineData("marketplace", "")]
+    public void SandboxPluginRef_BlankRequiredField_Throws(string marketplace, string plugin)
+    {
+        var act = () => new SandboxPluginRef(marketplace, plugin);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void SandboxPluginRef_ValidFields_ExposesThem()
+    {
+        var pluginRef = new SandboxPluginRef("official", "code-review");
+
+        pluginRef.Marketplace.Should().Be("official");
+        pluginRef.Plugin.Should().Be("code-review");
+    }
+
+    [Fact]
+    public void SandboxPluginRef_NullMarketplace_Throws()
+    {
+        var act = () => new SandboxPluginRef(null!, "code-review");
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void SandboxCreateRequest_OmittedPluginSelection_IsNullNotEmpty()
+    {
+        var request = new SandboxCreateRequest("ws");
+
+        request.PluginSelection.Should().BeNull();
+    }
+
+    [Fact]
+    public void SandboxCreateRequest_ExplicitEmptyPluginSelection_StaysEmpty_NotNull()
+    {
+        var request = new SandboxCreateRequest("ws", pluginSelection: []);
+
+        request.PluginSelection.Should().NotBeNull();
+        request.PluginSelection.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void SandboxCreateRequest_PluginSelection_IsDefensivelyCopied()
+    {
+        var refs = new List<SandboxPluginRef> { new("official", "code-review") };
+        var request = new SandboxCreateRequest("ws", pluginSelection: refs);
+
+        refs.Add(new SandboxPluginRef("official", "other"));
+
+        request.PluginSelection.Should().HaveCount(1);
+    }
+
+    [Fact]
+    public void SandboxInfo_OmittedPluginResolution_IsNull()
+    {
+        var info = new SandboxInfo("sess-1");
+
+        info.PluginResolution.Should().BeNull();
+    }
+
+    [Fact]
+    public void SandboxPluginResolution_ExposesFields()
+    {
+        var resolution = new SandboxPluginResolution(
+            supported: true,
+            requested: [new SandboxPluginRef("official", "code-review")],
+            effective: [new SandboxPluginRef("official", "code-review")],
+            failed: []
+        );
+
+        resolution.Supported.Should().BeTrue();
+        resolution.Requested.Should().ContainSingle();
+        resolution.Failed.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void SandboxPluginResolution_NullRequested_StaysNull_NotEmpty()
+    {
+        var resolution = new SandboxPluginResolution(
+            supported: true,
+            requested: null,
+            effective: [],
+            failed: []
+        );
+
+        resolution.Requested.Should().BeNull();
+    }
 }

@@ -458,7 +458,18 @@ try
         // as "the producer restarted" every time a session was created. Null unless a Lifecycle flag
         // is set, in which case the registry falls back to MultiTurnLifecycleServices.Disabled and
         // publishes nothing — the pre-#227 behavior.
-        sp.GetService<MultiTurnLifecycleServices>()
+        sp.GetService<MultiTurnLifecycleServices>(),
+        // Re-reads the workspace when a session has to be RECREATED (gateway 404). The ref an agent
+        // captured at build time can be arbitrarily stale; without this the recreate resurrects the
+        // marketplaces/plugins the workspace had back then and the user's edit looks discarded.
+        // Resolved lazily inside the callback because IWorkspaceStore is registered further down.
+        async (workspaceId, ct) =>
+        {
+            var workspace = await sp.GetRequiredService<IWorkspaceStore>()
+                .GetAsync(workspaceId, ct)
+                .ConfigureAwait(false);
+            return workspace is null ? null : BuildWorkspaceRef(workspaceId, workspace);
+        }
     ));
 
     // The registry also implements the narrow file-browser surface the FileBrowserController depends on
@@ -882,10 +893,7 @@ try
                         : workspaceId;
                     var workspaceStore = sp.GetRequiredService<IWorkspaceStore>();
                     var workspace = workspaceStore.GetAsync(effectiveWorkspaceId).GetAwaiter().GetResult();
-                    var workspaceRef = new WorkspaceRef(
-                        effectiveWorkspaceId,
-                        workspace?.DirectoryRelPath,
-                        workspace?.Marketplaces);
+                    var workspaceRef = BuildWorkspaceRef(effectiveWorkspaceId, workspace);
                     if (workspace is not null)
                     {
                         try
@@ -933,6 +941,17 @@ try
                         callerCredential,
                         sandboxSession.SessionId
                     );
+                    // Register this agent's threadId against the session HERE — at the one boundary every
+                    // sandbox-backed conversation passes through — rather than further down beside the
+                    // subagent binding, which several provider branches (Copilot chief among them) return
+                    // before ever reaching. Two things read this index and both are silently wrong when a
+                    // thread is missing from it: the context-discovery webhook fans a context_file delivery
+                    // out to the registered threads, and WorkspacePluginSelectionService.WaitForIdleAsync
+                    // asks it which threads to check for an in-flight run — an unregistered thread reads as
+                    // "idle", so a plugin-selection migration would tear down a session mid-turn.
+                    // RegisterThread is idempotent, and mode-switch recreations preserve threadId by design
+                    // (and don't fire the pool's ThreadRemoved event), so this registration survives them.
+                    sandboxRegistry.RegisterThread(sandboxSession.SessionId, threadId);
                     // Workspace Agent gets the full file/shell tool surface; Workflow Author mode only
                     // gets the narrower Read/Grep/Skill slice wired below — the suffix text must match
                     // what each mode's agent actually has, or the model will confidently claim tools
@@ -1603,12 +1622,6 @@ try
 subAgentFactory,
                             characteristicsAgentFactory);
                         sharedSubAgentSource = binding.Source;
-
-                        // Register this agent's threadId against the session so the
-                        // context-discovery webhook can fan a context_file delivery out to it.
-                        // Mode-switch recreations preserve threadId by design (and don't fire
-                        // the pool's ThreadRemoved event), so this registration survives them.
-                        sandboxRegistry.RegisterThread(sandboxSession.SessionId, threadId);
                     }
 
                     // Declared before construction so the trigger-options closure below can read the
@@ -2001,6 +2014,29 @@ subAgentFactory,
 
         return pool;
     });
+
+    // Workspace plugin-selection migration (prepare-then-replace). Two narrow registrations:
+    //
+    // 1. The pool is the only component that knows whether a thread has a run in progress, but it is
+    //    sealed and enormous, so the migration depends on the one-method IAgentRunActivityProbe it
+    //    actually needs — same alias pattern as IWorkspaceFileBrowser above, and the reason the
+    //    migration's tests can substitute an activity fake without a real agent pool.
+    // 2. The service itself is built by hand rather than by constructor injection because its two
+    //    trailing timeout parameters are optional; the built-in container does not honour default
+    //    parameter values and would reject the constructor outright.
+    _ = builder.Services.AddSingleton<IAgentRunActivityProbe>(sp => sp.GetRequiredService<MultiTurnAgentPool>());
+    _ = builder.Services.AddSingleton<IWorkspacePluginSelectionService>(sp => new WorkspacePluginSelectionService(
+        sp.GetRequiredService<IWorkspaceStore>(),
+        sp.GetRequiredService<WorkspaceCatalogCompatibilityService>(),
+        sp.GetRequiredService<SandboxSessionRegistry>(),
+        sp.GetRequiredService<IAgentRunActivityProbe>(),
+        sandboxOptions,
+        // Named so the timing parameters between here and the logger keep their defaults. The logger
+        // is the only channel for this service's post-commit residuals — a retirement grace that
+        // expired with a run still live, and a reconcile pass that could not finish — none of which
+        // fail the request, so without it they would be invisible in production.
+        logger: sp.GetRequiredService<ILogger<WorkspacePluginSelectionService>>()
+    ));
 
     // Register the ChatWebSocketManager and the live-connection registry that lets backend
     // services (e.g. deferred auth) push out-of-band frames to connected chat clients.
@@ -3854,4 +3890,49 @@ public partial class Program
 
         return null;
     }
+
+    /// <summary>
+    ///     Builds the sandbox <see cref="WorkspaceRef"/> for a workspace, mapping every persisted
+    ///     field the gateway needs at create time — directory, marketplaces and plugin selection.
+    ///     <para>
+    ///     This exists as ONE function on purpose. The same mapping is needed at two points that are
+    ///     far apart in this file: the first create for a new conversation, and the reload callback
+    ///     that rebuilds the ref when a session has to be recreated after a gateway 404. While those
+    ///     were two independent expressions they drifted — the first-create copy omitted the plugin
+    ///     selection entirely, so a fresh conversation opened with the gateway's legacy "load every
+    ///     plugin" default and only picked up the workspace's real selection if its session happened
+    ///     to be recreated later. Adding a field to <see cref="WorkspaceRef"/> must now touch one
+    ///     place, and both paths get it.
+    ///     </para>
+    ///     <para>
+    ///     <paramref name="workspace"/> is nullable because the first-create path resolves an id that
+    ///     may have no stored workspace (the implicit "default"). That case yields a bare ref, which
+    ///     is exactly the pre-existing behaviour: every optional field falls back to its own default.
+    ///     </para>
+    /// </summary>
+    internal static WorkspaceRef BuildWorkspaceRef(string workspaceId, LmStreaming.Sample.Models.Workspace? workspace) =>
+        new(
+            workspaceId,
+            workspace?.DirectoryRelPath,
+            workspace?.Marketplaces,
+            ToSandboxPluginRefs(workspace?.PluginSelection)
+        );
+
+    /// <summary>
+    ///     Maps the app's persisted <see cref="LmStreaming.Sample.Models.PluginRef"/> list to the
+    ///     Sandbox SDK's plugin refs for a sandbox-create request.
+    ///     <para>
+    ///     The null/empty distinction is load-bearing and must survive this mapping:
+    ///     <see langword="null"/> means "no explicit selection" — the gateway applies its legacy
+    ///     "load every plugin" default — while an empty list is a deliberate "load none". Collapsing
+    ///     null to an empty list here would silently disable every plugin for every workspace that
+    ///     has never used the picker.
+    ///     </para>
+    /// </summary>
+    private static IReadOnlyList<AchieveAi.LmDotnetTools.Sandbox.SandboxPluginRef>? ToSandboxPluginRefs(
+        IReadOnlyList<LmStreaming.Sample.Models.PluginRef>? selection
+    ) =>
+        selection is null
+            ? null
+            : [.. selection.Select(p => new AchieveAi.LmDotnetTools.Sandbox.SandboxPluginRef(p.Marketplace, p.Plugin))];
 }

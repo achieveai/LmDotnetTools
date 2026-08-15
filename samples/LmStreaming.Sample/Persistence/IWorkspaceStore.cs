@@ -41,5 +41,13 @@ public interface IWorkspaceStore
     /// <returns>The updated workspace.</returns>
     /// <exception cref="KeyNotFoundException">Thrown if the workspace is not found.</exception>
     /// <exception cref="InvalidOperationException">Thrown if the workspace is system-defined.</exception>
+    /// <exception cref="WorkspaceRevisionConflictException">
+    /// <paramref name="dto"/> sets an explicit <c>PluginSelection</c> and either omits
+    /// <c>PluginsRevision</c> entirely, or supplies one that does not match the workspace's current
+    /// revision. Compare-and-swap is MANDATORY for any explicit plugin-selection change, so an omitted
+    /// revision is rejected exactly like a stale one — it is reported with
+    /// <c>ExpectedRevision == -1</c> (a sentinel no real revision can equal) so callers can still tell
+    /// "omitted" from "stale". Marketplace-only updates never check the revision.
+    /// </exception>
     Task<Workspace> UpdateAsync(string id, WorkspaceUpdate dto, CancellationToken ct = default);
 }

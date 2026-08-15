@@ -27,7 +27,7 @@ public sealed partial class SandboxClient
         }
 
         var payload = await ReadSandboxResponseOrThrowAsync(response, "sandbox creation", ct).ConfigureAwait(false);
-        var info = ToSandboxInfo(payload);
+        var info = ToSandboxInfo(payload, "sandbox creation", (int)response.StatusCode);
         SeedWorkspaceMountId(info);
         return info;
     }
@@ -55,7 +55,7 @@ public sealed partial class SandboxClient
         }
 
         var payload = await ReadSandboxResponseOrThrowAsync(response, $"sandbox '{sessionId}'", ct).ConfigureAwait(false);
-        var info = ToSandboxInfo(payload);
+        var info = ToSandboxInfo(payload, $"sandbox '{sessionId}'", (int)response.StatusCode);
         SeedWorkspaceMountId(info);
         return info;
     }
@@ -149,8 +149,14 @@ public sealed partial class SandboxClient
             Discovery: request.Discovery is { } discovery
                 ? new DiscoveryDto(new DiscoveryWebhookDto(discovery.WebhookUrl, discovery.WebhookAuth))
                 : null,
-            Marketplaces: request.Marketplaces.Count > 0 ? [.. request.Marketplaces] : null
+            Marketplaces: request.Marketplaces.Count > 0 ? [.. request.Marketplaces] : null,
+            // Tri-state passthrough: null stays null (field omitted by RestOptions' WhenWritingNull),
+            // an empty selection is sent as an explicit empty array.
+            PluginSelection: request.PluginSelection is null ? null : [.. request.PluginSelection.Select(ToPluginRefDto)]
         );
+
+    private static PluginRefDto ToPluginRefDto(SandboxPluginRef pluginRef) =>
+        new(pluginRef.Marketplace, pluginRef.Plugin);
 
     private static AuthProviderDto ToDto(SandboxAuthProvider provider) =>
         new(provider.Id, provider.Type, provider.Endpoint, provider.GatewayAuth, provider.CacheTtlSeconds, provider.RequiredScopes);
@@ -168,31 +174,124 @@ public sealed partial class SandboxClient
             rule.Priority
         );
 
-    private static SandboxInfo ToSandboxInfo(CreateSandboxResponseDto dto) =>
+    private static SandboxInfo ToSandboxInfo(CreateSandboxResponseDto dto, string operation, int statusCode) =>
         new(
             dto.SessionId,
             dto.ContainerId,
             dto.Volumes?.Workspace?.ContainerPath,
             dto.Volumes?.Workspace?.Id,
             dto.Status,
-            ToInventory(dto.Inventory)
+            ToInventory(dto.Inventory, operation, statusCode),
+            ToPluginResolution(dto.PluginResolution, operation, statusCode)
         );
 
     /// <summary>
-    /// Maps the gateway's inventory block, dropping items whose kind or id is missing rather than
-    /// materializing a half-identified entry. An absent block maps to <see langword="null"/> so
+    /// Maps the gateway's plugin-resolution block. An absent block maps to <see langword="null"/>
+    /// rather than a "not supported" resolution: "the gateway never reported one" is a strictly
+    /// weaker claim than "the gateway said it does not support filtering".
+    /// </summary>
+    private static SandboxPluginResolution? ToPluginResolution(PluginResolutionDto? dto, string operation, int statusCode) =>
+        dto is null
+            ? null
+            : new SandboxPluginResolution(
+                dto.Supported,
+                // Tri-state: a missing "requested" array stays null, it does not become [].
+                ToPluginRefs(dto.Requested, "requested", operation, statusCode),
+                ToPluginRefs(dto.Effective, "effective", operation, statusCode),
+                ToPluginRefs(dto.Failed, "failed", operation, statusCode)
+            );
+
+    /// <summary>
+    /// Maps one plugin-ref array, rejecting a malformed entry as
+    /// <see cref="SandboxErrorKind.Protocol"/> rather than letting it leave the SDK raw.
+    /// </summary>
+    /// <remarks>
+    /// Same rationale as <c>PreviewMarketplacesAsync</c>/<c>ListDiscoveredItemsAsync</c>, and it
+    /// applies here for the same reason: <see cref="PluginRefDto"/> models marketplace/plugin as
+    /// non-nullable <see langword="string"/>, but <see cref="SandboxJson.RestOptions"/> does not set
+    /// <c>RespectNullableAnnotations</c>, so System.Text.Json writes a JSON <c>null</c> into either
+    /// one without complaint, and a <c>null</c> ARRAY ELEMENT survives into the list. Unguarded, the
+    /// first leaves <see cref="SandboxPluginRef"/>'s constructor as an <see cref="ArgumentException"/>
+    /// and the second dereferences to a <see cref="NullReferenceException"/> — a protocol defect
+    /// surfacing as an unhandled fault instead of a classified gateway failure.
+    ///
+    /// <paramref name="field"/> names the offending array in the message. All three are the same
+    /// shape, so "malformed plugin resolution" alone would leave the next reader to bisect which of
+    /// requested/effective/failed the gateway got wrong.
+    ///
+    /// A <see langword="null"/> array is NOT an error and is passed through as
+    /// <see langword="null"/> — <c>requested</c> is tri-state, and
+    /// <see cref="SandboxPluginResolution"/> normalizes effective/failed to empty itself.
+    /// </remarks>
+    private static IReadOnlyList<SandboxPluginRef>? ToPluginRefs(
+        IReadOnlyList<PluginRefDto>? refs,
+        string field,
+        string operation,
+        int statusCode
+    )
+    {
+        if (refs is null)
+        {
+            return null;
+        }
+
+        var entries = SelectNonNullOrThrow(refs, static entry => entry, $"the '{field}' plugin list of {operation}", statusCode);
+        try
+        {
+            return [.. entries.Select(ToPluginRef)];
+        }
+        catch (ArgumentException ex)
+        {
+            throw new SandboxException(
+                SandboxErrorKind.Protocol,
+                $"Sandbox gateway returned a plugin resolution whose '{field}' list has an entry with a missing or invalid marketplace/plugin for {operation}.",
+                statusCode,
+                ex
+            );
+        }
+    }
+
+    private static SandboxPluginRef ToPluginRef(PluginRefDto dto) => new(dto.Marketplace, dto.Plugin);
+
+    /// <summary>
+    /// Maps the gateway's inventory block. An absent block maps to <see langword="null"/> so
     /// <see cref="SandboxInfo"/> supplies its "gateway reported none" default — distinct from a
     /// present block that reports <c>unavailable</c> with the gateway's own reason.
     /// </summary>
-    private static SandboxInventory? ToInventory(SandboxInventoryDto? dto)
+    /// <remarks>
+    /// A malformed ELEMENT and a malformed FIELD are treated differently here, deliberately:
+    /// <list type="bullet">
+    /// <item>
+    /// A <see langword="null"/> array element is a malformed payload and raises
+    /// <see cref="SandboxErrorKind.Protocol"/>, like every other null collection element this client
+    /// reads. There is no partial item to salvage — the gateway sent a hole where an object belongs,
+    /// which is a defect in the response itself, and unguarded it dereferences to a
+    /// <see cref="NullReferenceException"/> that escapes this SDK's exception contract entirely.
+    /// </item>
+    /// <item>
+    /// An item whose kind or id is missing/blank is DROPPED, not thrown, because a partially
+    /// populated inventory is a tolerated shape: the inventory is a report of what the session
+    /// happens to have loaded, so one unidentifiable entry does not invalidate the rest, and
+    /// materializing a half-identified item would put an entry with no usable identity in front of
+    /// callers.
+    /// </item>
+    /// </list>
+    /// This is the opposite of <see cref="ToPluginRefs"/>, which throws on a blank field — and the
+    /// difference is intended, not an oversight to be harmonized away. A plugin resolution reports
+    /// what the caller's own explicit selection resolved to, so a malformed entry means the answer
+    /// to "what did my selection do" cannot be trusted and silently dropping it would understate the
+    /// selection. An inventory answers "what is loaded", where a best-effort list is still useful.
+    /// Both behaviours are pinned by tests; changing either is a contract change, not a cleanup.
+    /// </remarks>
+    private static SandboxInventory? ToInventory(SandboxInventoryDto? dto, string operation, int statusCode)
     {
         if (dto is null)
         {
             return null;
         }
 
-        var items = dto
-            .Items?.Where(i => !string.IsNullOrWhiteSpace(i.Kind) && !string.IsNullOrWhiteSpace(i.Id))
+        var items = SelectNonNullOrThrow(dto.Items, static item => item, $"the inventory of {operation}", statusCode)
+            .Where(i => !string.IsNullOrWhiteSpace(i.Kind) && !string.IsNullOrWhiteSpace(i.Id))
             .Select(i => new SandboxInventoryItem(i.Kind!, i.Id!, i.Version))
             .ToList();
 

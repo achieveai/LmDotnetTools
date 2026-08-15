@@ -14,7 +14,15 @@ internal sealed record CreateSandboxRequestDto(
     [property: JsonPropertyName("auth_providers")] IReadOnlyList<AuthProviderDto>? AuthProviders,
     [property: JsonPropertyName("network")] NetworkDto? Network,
     [property: JsonPropertyName("discovery")] DiscoveryDto? Discovery,
-    [property: JsonPropertyName("marketplaces")] IReadOnlyList<string>? Marketplaces
+    [property: JsonPropertyName("marketplaces")] IReadOnlyList<string>? Marketplaces,
+    // Deliberately camelCase "pluginSelection", NOT "plugins": the gateway's sandbox-create contract
+    // already reserves the top-level "plugins" key for volume/plugin MOUNT data.
+    [property: JsonPropertyName("pluginSelection")] IReadOnlyList<PluginRefDto>? PluginSelection = null
+);
+
+internal sealed record PluginRefDto(
+    [property: JsonPropertyName("marketplace")] string Marketplace,
+    [property: JsonPropertyName("plugin")] string Plugin
 );
 
 internal sealed record AppRefDto([property: JsonPropertyName("id")] string Id);
@@ -62,7 +70,19 @@ internal sealed record CreateSandboxResponseDto(
     // null rather than being defaulted to a guess — the SDK reports what the gateway said, and an
     // invented status would be indistinguishable from a reported one.
     [property: JsonPropertyName("status")] string? Status = null,
-    [property: JsonPropertyName("inventory")] SandboxInventoryDto? Inventory = null
+    [property: JsonPropertyName("inventory")] SandboxInventoryDto? Inventory = null,
+    [property: JsonPropertyName("pluginResolution")] PluginResolutionDto? PluginResolution = null
+);
+
+/// <summary>
+/// How the gateway resolved the request's plugin selection. <c>requested</c> is tri-state and must
+/// never be collapsed to an empty list — an absent field means "no explicit selection was made".
+/// </summary>
+internal sealed record PluginResolutionDto(
+    [property: JsonPropertyName("supported")] bool Supported,
+    [property: JsonPropertyName("requested")] IReadOnlyList<PluginRefDto>? Requested,
+    [property: JsonPropertyName("effective")] IReadOnlyList<PluginRefDto>? Effective,
+    [property: JsonPropertyName("failed")] IReadOnlyList<PluginRefDto>? Failed
 );
 
 /// <summary>
@@ -143,7 +163,13 @@ internal sealed record DiscoveredItemsResponseDto(
 
 internal sealed record MarketplaceCatalogDto(
     [property: JsonPropertyName("selected")] IReadOnlyList<string>? Selected,
-    [property: JsonPropertyName("marketplaces")] IReadOnlyList<MarketplaceEntryDto>? Marketplaces
+    [property: JsonPropertyName("marketplaces")] IReadOnlyList<MarketplaceEntryDto>? Marketplaces,
+    [property: JsonPropertyName("capabilities")] CapabilitiesDto? Capabilities = null
+);
+
+/// <summary>Gateway capability advertisement. An absent block leaves every flag <see langword="null"/> ("unknown").</summary>
+internal sealed record CapabilitiesDto(
+    [property: JsonPropertyName("pluginFiltering")] bool? PluginFiltering
 );
 
 internal sealed record MarketplaceEntryDto(

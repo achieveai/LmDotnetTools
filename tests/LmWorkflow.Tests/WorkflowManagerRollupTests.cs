@@ -75,7 +75,19 @@ public class WorkflowManagerRollupTests
         gate.SetResult();
         _ = await manager.WaitAsync("wf-list", Timeout);
 
+        // WaitAsync can answer straight from the handle the moment Completion resolves — BEFORE the completion
+        // observer writes entry.TerminalSnapshot — and ListRuns reads ONLY that snapshot, deliberately reporting
+        // "running" while (in its own words) "the completion handoff is mid-flight". So WaitAsync returning a
+        // terminal result does not imply ListRuns has caught up; poll for the handoff instead of assuming it.
+        // Mirrors TryGetRunLoop_ReturnsLiveLoop_WhileRunning_ThenFalseWhenReleased below, which polls for the
+        // same handoff. Without this the test passes on a fast machine and fails under CI load.
         var done = manager.ListRuns().Should().ContainSingle().Subject;
+        for (var attempt = 0; attempt < 100 && done.Status == "running"; attempt++)
+        {
+            await Task.Delay(20);
+            done = manager.ListRuns().Should().ContainSingle().Subject;
+        }
+
         done.Status.Should().Be("completed");
         done.CurrentNodeId.Should().Be("t");
     }

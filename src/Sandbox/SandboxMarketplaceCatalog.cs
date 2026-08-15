@@ -13,10 +13,22 @@ public sealed class SandboxMarketplaceCatalog
     /// <summary>One entry per resolved marketplace, defensively copied at construction.</summary>
     public IReadOnlyList<SandboxMarketplaceEntry> Marketplaces { get; }
 
-    public SandboxMarketplaceCatalog(IReadOnlyList<string>? selected, IReadOnlyList<SandboxMarketplaceEntry>? marketplaces)
+    /// <summary>
+    /// Whether the gateway advertises per-plugin filtering, or <see langword="null"/> when it
+    /// reported no capability block at all. Never defaulted: <see langword="null"/> ("unknown") must
+    /// stay distinguishable from an explicit <see langword="false"/>.
+    /// </summary>
+    public bool? PluginFilteringSupported { get; }
+
+    public SandboxMarketplaceCatalog(
+        IReadOnlyList<string>? selected,
+        IReadOnlyList<SandboxMarketplaceEntry>? marketplaces,
+        bool? pluginFilteringSupported = null
+    )
     {
         Selected = selected is null ? [] : [.. selected];
         Marketplaces = marketplaces is null ? [] : [.. marketplaces];
+        PluginFilteringSupported = pluginFilteringSupported;
     }
 }
 

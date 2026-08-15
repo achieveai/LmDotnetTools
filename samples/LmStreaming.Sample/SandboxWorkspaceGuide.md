@@ -183,6 +183,64 @@ Each discovered plugin's **skills** (its `skills/<name>/SKILL.md`) and **MCP ser
 > whose `.mcp.json` omits it are loaded **skills-only** with a warning
 > (`Failed to parse .mcp.json — using empty mcp_servers`); their skills still work.
 
+### Choosing plugins per workspace (chat UI)
+
+`PluginsDirs` decides which marketplaces *exist*. A **workspace** decides which of them, and which
+individual plugins inside them, are actually enabled for its sandbox sessions. Both are edited from
+the header **Workspace** dropdown: `+ New workspace`, or the ✎ button next to a user-defined
+workspace.
+
+Each marketplace listed in the form has a checkbox, and — when the gateway supports it — a nested,
+indented list of its plugins with a checkbox each. The badge next to a marketplace name is its
+plugin count. Ticking a marketplace's own box enables the marketplace; the nested boxes narrow it
+down to a subset.
+
+**The three states of a plugin selection.** A workspace's plugin selection is *tri-state*, and the
+difference between the first two is the one that bites:
+
+| State | What the form looks like | What the sandbox gets |
+| --- | --- | --- |
+| **No preference** (the default, and what every workspace created before this feature has) | Every plugin box under an enabled marketplace is ticked, and the **Use all plugins** link is absent | **All** plugins of the enabled marketplaces — *including plugins added to those marketplaces later* |
+| **A subset** | Some boxes ticked; the marketplace's own box shows a dash (indeterminate) | Exactly the ticked plugins, and nothing else — a plugin added to the marketplace later is **not** picked up until you tick it |
+| **None** | Every plugin box under the enabled marketplaces is unticked | **No** plugins at all, even though the marketplaces are still enabled |
+
+"No preference" and "None" are genuinely different: the first means *everything*, the second means
+*nothing*. Unticking a plugin for the first time converts "no preference" into an explicit subset —
+the remaining plugins are written down as they stand at that moment, which is why the workspace
+stops inheriting future additions. The **Use all plugins** link (shown once the selection is
+explicit) is the only way back to "no preference"; unticking every box gives you "None", not the
+default.
+
+**Editing a live workspace.** Changing an explicit selection recreates the workspace's sandbox
+sessions, because the gateway fixes a session's plugin set when the session is created. The save
+waits (briefly) for in-flight runs to go idle first. A save that leaves the plugin selection
+**unchanged** — renaming nothing, just toggling a marketplace, or clicking Save with no edit at all —
+does **not** touch the selection and does **not** recreate any session; only a save that actually
+changes which plugins are ticked pays that cost. Two further outcomes are surfaced inline in the
+form:
+
+- **"This workspace was changed elsewhere…"** — someone else saved a selection between your opening
+  the editor and your clicking Save, so your save was rejected rather than silently overwriting
+  theirs. The form is then reloaded with **their** selection and **your pending change is
+  discarded** — re-apply it and save again. (The discard is deliberate: the workspace list is
+  re-read as part of handling the conflict, so a second click on an un-reloaded form would carry a
+  valid token and quietly overwrite the other person's change.)
+- **"These plugins are not available in the selected marketplaces…"** — a chosen plugin is not
+  published by any enabled marketplace (typically after a marketplace was reconfigured on the
+  server). Untick the named plugins, or re-enable the marketplace that provides them.
+
+If the gateway does not advertise plugin filtering, the nested plugin lists are hidden entirely and
+the form behaves exactly as it did before — marketplace-level selection only. This is deliberate:
+an unknown capability is treated as "unsupported", never as "supported". An edit made in that mode
+leaves any stored plugin selection untouched rather than clearing it.
+
+A marketplace the gateway could **not** list (clone failure, bad path — see `error` in
+`GET /api/marketplaces`) shows *"Plugins could not be listed for this marketplace"* instead of an
+empty plugin list, because the two look identical otherwise. Take it seriously: converting the
+workspace to an explicit subset while such a marketplace is enabled writes down the plugins of every
+*other* marketplace and leaves this one's out, so it will run none of them once the gateway
+recovers. Fix the marketplace first, or leave the selection on "no preference".
+
 ### Discovered sub-agent model and reasoning options
 
 Markdown sub-agents may optionally add either or both of these frontmatter fields:

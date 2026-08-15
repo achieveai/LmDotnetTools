@@ -232,4 +232,92 @@ public class FileWorkspaceStoreTests
 
         fetched!.Marketplaces.Should().Equal("m1", "m2");
     }
+
+    [Fact]
+    public async Task UpdateAsync_OmittedPluginSelection_LeavesExistingSelectionUnchanged()
+    {
+        var store = new FileWorkspaceStore(NewTempDir());
+        var created = await store.CreateAsync(new WorkspaceCreate { Name = "Proj", PluginSelection = [new PluginRef("official", "code-review")] });
+
+        var updated = await store.UpdateAsync(created.Id, new WorkspaceUpdate { Marketplaces = ["a"] });
+
+        updated.PluginSelection.Should().ContainSingle(p => p.Plugin == "code-review");
+        updated.PluginsRevision.Should().Be(created.PluginsRevision);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_ExplicitNullPluginSelection_ClearsToLegacyAll_AndBumpsRevision()
+    {
+        var store = new FileWorkspaceStore(NewTempDir());
+        var created = await store.CreateAsync(new WorkspaceCreate { Name = "Proj", PluginSelection = [new PluginRef("official", "code-review")] });
+
+        var updated = await store.UpdateAsync(
+            created.Id,
+            new WorkspaceUpdate { Marketplaces = [], PluginSelection = new Optional<IReadOnlyList<PluginRef>?>(null), PluginsRevision = created.PluginsRevision }
+        );
+
+        updated.PluginSelection.Should().BeNull();
+        updated.PluginsRevision.Should().Be(created.PluginsRevision + 1);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_ExplicitEmptyPluginSelection_SetsToNone_AndBumpsRevision()
+    {
+        var store = new FileWorkspaceStore(NewTempDir());
+        var created = await store.CreateAsync(new WorkspaceCreate { Name = "Proj" });
+
+        var updated = await store.UpdateAsync(
+            created.Id,
+            new WorkspaceUpdate { Marketplaces = [], PluginSelection = new Optional<IReadOnlyList<PluginRef>?>([]), PluginsRevision = created.PluginsRevision }
+        );
+
+        updated.PluginSelection.Should().NotBeNull();
+        updated.PluginSelection.Should().BeEmpty();
+        updated.PluginsRevision.Should().Be(created.PluginsRevision + 1);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_StalePluginsRevision_ThrowsRevisionConflict()
+    {
+        var store = new FileWorkspaceStore(NewTempDir());
+        var created = await store.CreateAsync(new WorkspaceCreate { Name = "Proj" });
+        _ = await store.UpdateAsync(
+            created.Id,
+            new WorkspaceUpdate { Marketplaces = [], PluginSelection = new Optional<IReadOnlyList<PluginRef>?>([]), PluginsRevision = created.PluginsRevision }
+        );
+
+        var act = async () => await store.UpdateAsync(
+            created.Id,
+            new WorkspaceUpdate { Marketplaces = [], PluginSelection = new Optional<IReadOnlyList<PluginRef>?>(null), PluginsRevision = created.PluginsRevision }
+        );
+
+        await act.Should().ThrowAsync<WorkspaceRevisionConflictException>();
+    }
+
+    [Fact]
+    public async Task UpdateAsync_MarketplaceOnlyUpdate_DoesNotRequireOrCheckPluginsRevision()
+    {
+        var store = new FileWorkspaceStore(NewTempDir());
+        var created = await store.CreateAsync(new WorkspaceCreate { Name = "Proj" });
+
+        var updated = await store.UpdateAsync(created.Id, new WorkspaceUpdate { Marketplaces = ["a"] });
+
+        updated.Marketplaces.Should().Equal("a");
+    }
+
+    [Fact]
+    public async Task UpdateAsync_ExplicitPluginSelection_MissingRevision_ThrowsRevisionConflict()
+    {
+        var store = new FileWorkspaceStore(NewTempDir());
+        var created = await store.CreateAsync(new WorkspaceCreate { Name = "Proj" });
+
+        // PluginSelection is explicitly set but PluginsRevision is omitted (null) — CAS is
+        // mandatory for any explicit selection change, so this must reject, not silently overwrite.
+        var act = async () => await store.UpdateAsync(
+            created.Id,
+            new WorkspaceUpdate { Marketplaces = [], PluginSelection = new Optional<IReadOnlyList<PluginRef>?>([]) }
+        );
+
+        await act.Should().ThrowAsync<WorkspaceRevisionConflictException>();
+    }
 }

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 
@@ -48,9 +49,12 @@ public class WeatherTool : IFunctionProvider
         };
     }
 
-    private async Task<string> GetWeatherAsync(string argumentsJson)
+    private async Task<ToolHandlerResult> GetWeatherAsync(
+        string argumentsJson,
+        ToolCallContext context,
+        CancellationToken cancellationToken)
     {
-        await Task.Delay(100); // Simulate async operation
+        await Task.Delay(100, cancellationToken); // Simulate async operation
 
         var args = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argumentsJson);
         var city = args?["city"].GetString() ?? "Unknown";
@@ -71,7 +75,7 @@ public class WeatherTool : IFunctionProvider
             humidity = 65
         };
 
-        return JsonSerializer.Serialize(result);
+        return ToolHandlerResult.FromText(JsonSerializer.Serialize(result));
     }
 }
 
@@ -112,13 +116,13 @@ public class CalculatorTool : IFunctionProvider
                 },
                 ReturnType = typeof(double)
             },
-            Handler = async (args) =>
+            Handler = async (args, context, cancellationToken) =>
             {
                 await Task.CompletedTask;
                 var parsed = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(args);
                 var a = parsed?["a"].GetDouble() ?? 0;
                 var b = parsed?["b"].GetDouble() ?? 0;
-                return JsonSerializer.Serialize(new { result = a + b });
+                return ToolHandlerResult.FromText(JsonSerializer.Serialize(new { result = a + b }));
             },
             ProviderName = ProviderName
         };
@@ -150,13 +154,13 @@ public class CalculatorTool : IFunctionProvider
                 },
                 ReturnType = typeof(double)
             },
-            Handler = async (args) =>
+            Handler = async (args, context, cancellationToken) =>
             {
                 await Task.CompletedTask;
                 var parsed = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(args);
                 var a = parsed?["a"].GetDouble() ?? 0;
                 var b = parsed?["b"].GetDouble() ?? 0;
-                return JsonSerializer.Serialize(new { result = a * b });
+                return ToolHandlerResult.FromText(JsonSerializer.Serialize(new { result = a * b }));
             },
             ProviderName = ProviderName
         };
@@ -198,7 +202,10 @@ public class FileInfoTool : IFunctionProvider
         };
     }
 
-    private async Task<string> GetFileInfoAsync(string argumentsJson)
+    private async Task<ToolHandlerResult> GetFileInfoAsync(
+        string argumentsJson,
+        ToolCallContext context,
+        CancellationToken cancellationToken)
     {
         await Task.CompletedTask;
 
@@ -207,12 +214,13 @@ public class FileInfoTool : IFunctionProvider
 
         if (string.IsNullOrWhiteSpace(path))
         {
-            return JsonSerializer.Serialize(new { error = "Path is required" });
+            return ToolHandlerResult.FromText(JsonSerializer.Serialize(new { error = "Path is required" }));
         }
 
         if (!File.Exists(path))
         {
-            return JsonSerializer.Serialize(new { error = $"File not found: {path}" });
+            return ToolHandlerResult.FromText(
+                JsonSerializer.Serialize(new { error = $"File not found: {path}" }));
         }
 
         var fileInfo = new FileInfo(path);
@@ -226,6 +234,6 @@ public class FileInfoTool : IFunctionProvider
             extension = fileInfo.Extension
         };
 
-        return JsonSerializer.Serialize(result);
+        return ToolHandlerResult.FromText(JsonSerializer.Serialize(result));
     }
 }

@@ -5,6 +5,10 @@ import ChatLayout from '@/components/ChatLayout.vue';
 import SubAgentListPanel from '@/components/SubAgentListPanel.vue';
 import { SUBMIT_CLIENT_TOOL_RESULT, type ClientToolSubmitFn } from '@/composables/useClientToolSubmit';
 import { GO_TO_AGENT_TAB, type GoToAgentTab } from '@/composables/useConversationTabs';
+import {
+  UnsupportedPluginsError,
+  WorkspaceRevisionConflictError,
+} from '@/api/workspacesApi';
 
 interface ConversationSummary {
   threadId: string;
@@ -42,9 +46,20 @@ const sharedMocks = vi.hoisted(() => ({
   // submitClientToolResult above — ChatLayout must bind THIS one to SubAgentTranscript's prop so a
   // descendant's answer submits over the focused child connection, not the root.
   submitToFocusedChild: vi.fn(async () => ({ status: 'acked' as const, duplicate: false })),
+  // Workspace create/update, routed through sharedMocks so a test can make them REJECT with the
+  // typed errors workspacesApi throws, and assert what the parent's catch forwards to the child.
+  createWorkspace: vi.fn(async () => {}),
+  updateWorkspace: vi.fn(async () => {}),
+  // The WorkspaceSelector methods ChatLayout reaches through its template ref.
+  showFormError: vi.fn(),
+  closeForm: vi.fn(),
+  reseedEditForm: vi.fn(),
   // Captures the thread-id getter ChatLayout passes to useSubAgentPanel, so a test can assert the
   // start-gating (the getter returns null until the conversation has a sidebar entry).
   subAgentThreadGetter: null as (() => string | null) | null,
+  // When true, the useWorkspaces mock below delegates to the REAL composable instead of the stub,
+  // so a test can drive the genuine loadWorkspaces/isLoading/409 chain with only `fetch` faked.
+  useRealWorkspaces: false,
 }));
 
 vi.mock('@/composables/useConversations', async () => {
@@ -172,16 +187,26 @@ vi.mock('@/composables/useProviders', async () => {
 
 vi.mock('@/composables/useWorkspaces', async () => {
   const { ref } = await import('vue');
+  const actual =
+    await vi.importActual<typeof import('@/composables/useWorkspaces')>(
+      '@/composables/useWorkspaces'
+    );
   return {
-    useWorkspaces: () => ({
-      workspaces: ref([]),
-      selectedWorkspaceId: ref<string | null>('default'),
-      isLoading: ref(false),
-      loadWorkspaces: vi.fn(async () => {}),
-      selectWorkspace: sharedMocks.selectWorkspace,
-      createWorkspace: vi.fn(async () => {}),
-      updateWorkspace: vi.fn(async () => {}),
-    }),
+    // Most tests here only care that ChatLayout calls the right function, so they get a flat stub.
+    // The conflict-visibility test needs the REAL composable — its `isLoading` flip during the
+    // post-409 reload is the whole mechanism under test, and a stub cannot reproduce it honestly.
+    useWorkspaces: () =>
+      sharedMocks.useRealWorkspaces
+        ? actual.useWorkspaces()
+        : {
+            workspaces: ref([]),
+            selectedWorkspaceId: ref<string | null>('default'),
+            isLoading: ref(false),
+            loadWorkspaces: vi.fn(async () => {}),
+            selectWorkspace: sharedMocks.selectWorkspace,
+            createWorkspace: sharedMocks.createWorkspace,
+            updateWorkspace: sharedMocks.updateWorkspace,
+          },
   };
 });
 
@@ -841,5 +866,541 @@ describe('ChatLayout binds SubAgentTranscript to the focused-child submit (#246 
     await injectedSubmit?.('call-1', '{"answers":[]}', false);
     expect(sharedMocks.submitToFocusedChild).toHaveBeenCalledWith('call-1', '{"answers":[]}', false);
     expect(sharedMocks.submitClientToolResult).not.toHaveBeenCalled();
+  });
+});
+
+// The workspace form has NO global error banner: the parent catches and the child renders
+// (handleCreateWorkspace / handleUpdateWorkspace -> workspaceSelectorRef.value?.showFormError).
+// Both new typed failures — HTTP 409 workspace_revision_conflict and HTTP 400 unsupported_plugins —
+// must arrive at the child with their actionable detail intact. Two ways that silently breaks:
+//   * the catch extracts the wrong property (e.g. `e.name`) or falls back to its generic string, so
+//     the user sees "Failed to update workspace" and the plugin names / staleness hint are gone;
+//   * `workspaceSelectorRef.value` is null, in which case `?.` makes the ENTIRE call vanish without
+//     throwing — so these tests assert POSITIVELY that showFormError was called, never merely that
+//     nothing threw. An assertion phrased as "did not throw" would pass vacuously in exactly the
+//     case it is meant to catch.
+describe('ChatLayout surfaces workspace plugin-selection failures inline', () => {
+  // Options-API stub, deliberately NOT `<script setup>`: the template ref then resolves to the
+  // public instance proxy, so `methods` are reachable the same way the real component's
+  // defineExpose'd showFormError/closeForm are.
+  const WorkspaceSelectorStub = defineComponent({
+    emits: ['create-workspace', 'update-workspace'],
+    methods: {
+      showFormError(message: string) {
+        sharedMocks.showFormError(message);
+      },
+      closeForm() {
+        sharedMocks.closeForm();
+      },
+      reseedEditForm() {
+        sharedMocks.reseedEditForm();
+      },
+    },
+    template: `<div>
+      <button data-test="ws-create" @click="$emit('create-workspace', { name: 'New WS', marketplaces: ['demo'] })"></button>
+      <button data-test="ws-update" @click="$emit('update-workspace', 'ws-user', { marketplaces: ['demo'], pluginSelection: [], pluginsRevision: 1 })"></button>
+    </div>`,
+  });
+
+  const mountLayout = () =>
+    mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          ChatInput: true,
+          WorkspaceSelector: WorkspaceSelectorStub,
+        },
+      },
+    });
+
+  beforeEach(() => {
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.modesLoading = false;
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [{ threadId: 'thread-1' }];
+    sharedMocks.createWorkspace.mockReset();
+    sharedMocks.updateWorkspace.mockReset();
+    sharedMocks.showFormError.mockReset();
+    sharedMocks.closeForm.mockReset();
+    sharedMocks.reseedEditForm.mockReset();
+  });
+
+  const conflictMessage =
+    'This workspace was changed elsewhere, so your plugin selection was not saved. '
+    + 'The form has been reloaded with the current selection and your pending change was '
+    + 'discarded — re-apply it and save again.';
+
+  /**
+   * RED when the catch's message extraction is mutated (verified: `e.message` -> `e.name` yields
+   * "WorkspaceRevisionConflictError", and hard-coding the generic fallback yields "Failed to update
+   * workspace" — both fail the substring assertions below).
+   */
+  it('routes a 409 revision conflict to the inline form error with the staleness hint intact', async () => {
+    sharedMocks.updateWorkspace.mockRejectedValueOnce(
+      new WorkspaceRevisionConflictError(conflictMessage, 1, 4)
+    );
+
+    const wrapper = mountLayout();
+    await flushPromises();
+    await wrapper.get('[data-test="ws-update"]').trigger('click');
+    await flushPromises();
+
+    // Positive assertion: the optional-chained call actually happened (the ref resolved).
+    expect(sharedMocks.showFormError).toHaveBeenCalledTimes(1);
+    const message = sharedMocks.showFormError.mock.calls[0][0] as string;
+    expect(message).toContain('changed elsewhere');
+    expect(message).toContain('discarded');
+    // The form stays open so the message is visible and the user can re-apply.
+    expect(sharedMocks.closeForm).not.toHaveBeenCalled();
+  });
+
+  /**
+   * F2 (lost update). The composable's 409 branch reloads the workspace list, which hands the NEXT
+   * save a fresh CAS token. If the open form still holds the pre-conflict selection at that point,
+   * one more click passes compare-and-swap and silently overwrites whatever the other writer stored.
+   * The parent must therefore re-seed the form from the refreshed workspace before it shows the
+   * error — and the message it shows must say the pending change was dropped.
+   *
+   * Mutation proving non-vacuity: delete `workspaceSelectorRef.value?.reseedEditForm()` from
+   * ChatLayout's `handleUpdateWorkspace` catch -> RED here (0 calls), everything else green.
+   */
+  it('re-seeds the edit form from the refreshed workspace after a 409, before showing the error', async () => {
+    sharedMocks.updateWorkspace.mockRejectedValueOnce(
+      new WorkspaceRevisionConflictError(conflictMessage, 1, 4)
+    );
+
+    const wrapper = mountLayout();
+    await flushPromises();
+    await wrapper.get('[data-test="ws-update"]').trigger('click');
+    await flushPromises();
+
+    expect(sharedMocks.reseedEditForm).toHaveBeenCalledTimes(1);
+    // Order matters: re-seeding after showFormError would clear nothing, but re-seeding must not
+    // wipe the error either — the message is what makes the discard honest rather than silent.
+    expect(
+      sharedMocks.reseedEditForm.mock.invocationCallOrder[0]
+    ).toBeLessThan(sharedMocks.showFormError.mock.invocationCallOrder[0]);
+  });
+
+  /**
+   * The re-seed is 409-ONLY. A 400 means the server stored nothing and our revision is still current,
+   * so the user's pending selection is still valid and must survive for them to correct it. RED if
+   * the re-seed is hoisted out of the `instanceof WorkspaceRevisionConflictError` branch.
+   */
+  it('does not re-seed the edit form for a non-conflict failure', async () => {
+    sharedMocks.updateWorkspace.mockRejectedValueOnce(
+      new UnsupportedPluginsError(
+        'These plugins are not available in the selected marketplaces: demo/ghost.',
+        ['demo/ghost']
+      )
+    );
+
+    const wrapper = mountLayout();
+    await flushPromises();
+    await wrapper.get('[data-test="ws-update"]').trigger('click');
+    await flushPromises();
+
+    expect(sharedMocks.showFormError).toHaveBeenCalledTimes(1);
+    expect(sharedMocks.reseedEditForm).not.toHaveBeenCalled();
+  });
+
+  it('routes a 400 unsupported_plugins to the inline form error, naming the offending plugin', async () => {
+    sharedMocks.createWorkspace.mockRejectedValueOnce(
+      new UnsupportedPluginsError(
+        'These plugins are not available in the selected marketplaces: demo/ghost.',
+        ['demo/ghost']
+      )
+    );
+
+    const wrapper = mountLayout();
+    await flushPromises();
+    await wrapper.get('[data-test="ws-create"]').trigger('click');
+    await flushPromises();
+
+    expect(sharedMocks.showFormError).toHaveBeenCalledTimes(1);
+    expect(sharedMocks.showFormError.mock.calls[0][0]).toContain('demo/ghost');
+    expect(sharedMocks.closeForm).not.toHaveBeenCalled();
+  });
+
+  it('closes the form and reports nothing when the save succeeds', async () => {
+    const wrapper = mountLayout();
+    await flushPromises();
+    await wrapper.get('[data-test="ws-update"]').trigger('click');
+    await flushPromises();
+
+    expect(sharedMocks.closeForm).toHaveBeenCalledTimes(1);
+    expect(sharedMocks.showFormError).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * F6. Every test above stubs `WorkspaceSelector` and `useWorkspaces`, so they can only observe that
+ * ChatLayout CALLED `showFormError` — never that the component was still mounted to render it. It
+ * was not: `useWorkspaces.updateWorkspace` awaits `loadWorkspaces()` inside its 409 branch, which
+ * raises `isLoading`; `workspaceSelectorDisabled` folded that flag in; and WorkspaceSelector's
+ * `watch([disabled, lockedWorkspaceId])` called `closeDropdown()` on the rising edge. By the time
+ * the catch ran, the dropdown was gone — `reseedEditForm()` bailed (`formMode` was no longer
+ * `'edit'`) and `showFormError()` set a field on nothing. The user's edit vanished silently.
+ *
+ * Same class as F5: a control unmounted out from under the code about to act on it. F5 was
+ * triggered by a click, this by a reactive flag.
+ *
+ * This test therefore mocks NOTHING between ChatLayout and the DOM except `fetch`: the real
+ * `useWorkspaces`, the real `workspacesApi` (so the 409 body is genuinely parsed into
+ * `WorkspaceRevisionConflictError`), the real `WorkspaceSelector` and its real watcher.
+ */
+describe('ChatLayout keeps the workspace edit form alive across a 409 (F6)', () => {
+  const gateway = { canonicalBaseUrl: 'http://gw', appId: 'app', available: true, error: null };
+
+  const workspaceAt = (revision: number, plugin: string) => ({
+    id: 'ws-user',
+    name: 'My Project',
+    directoryRelPath: 'my-project',
+    marketplaces: ['demo'],
+    isSystemDefined: false,
+    createdAt: 0,
+    updatedAt: 0,
+    compatibility: 'compatible',
+    unsupportedMarketplaces: [],
+    pluginSelection: [{ marketplace: 'demo', plugin }],
+    pluginsRevision: revision,
+  });
+
+  const catalog = {
+    selected: ['demo'],
+    marketplaces: [
+      {
+        alias: 'demo',
+        error: null,
+        plugins: [
+          { name: 'toolkit', version: null, description: '', skills: [], agents: [] },
+          { name: 'extras', version: null, description: '', skills: [], agents: [] },
+        ],
+      },
+    ],
+    capabilities: { pluginFiltering: true },
+  };
+
+  const json = (body: unknown, status = 200) =>
+    Promise.resolve({
+      ok: status >= 200 && status < 300,
+      status,
+      json: () => Promise.resolve(body),
+    } as Response);
+
+  let fetchMock: ReturnType<typeof vi.fn>;
+  let listCalls = 0;
+  let putBodies: Array<Record<string, unknown>> = [];
+
+  beforeEach(() => {
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.modesLoading = false;
+    sharedMocks.currentThreadId = 'thread-1';
+    // No `workspace` on the summary: the selector must render as an editable dropdown, not a
+    // locked badge (a locked selector would hide the form for an unrelated reason).
+    sharedMocks.conversations = [{ threadId: 'thread-1' }];
+    sharedMocks.useRealWorkspaces = true;
+    listCalls = 0;
+    putBodies = [];
+
+    fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('/api/marketplaces')) return json(catalog);
+      if (url.startsWith('/api/workspaces/') && init?.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        putBodies.push(body);
+        // Only the FIRST save conflicts. A retry is served by a server that accepts the current
+        // revision — so a test can tell "the reload made the retry viable" apart from "the retry is
+        // rejected forever", which is what a missing/deferred reload would produce.
+        if (putBodies.length === 1) {
+          return json(
+            {
+              code: 'workspace_revision_conflict',
+              message: 'stale revision',
+              expectedRevision: 1,
+              actualRevision: 4,
+            },
+            409
+          );
+        }
+        if (body.pluginsRevision !== 4) {
+          return json(
+            {
+              code: 'workspace_revision_conflict',
+              message: 'stale revision replayed',
+              expectedRevision: body.pluginsRevision,
+              actualRevision: 4,
+            },
+            409
+          );
+        }
+        return json(workspaceAt(5, 'extras'));
+      }
+      if (url === '/api/workspaces') {
+        listCalls += 1;
+        // First list = what the form is seeded from. Every later list is the post-conflict reload,
+        // which returns the OTHER writer's selection at a newer revision.
+        return json({
+          gateway,
+          workspaces: [listCalls === 1 ? workspaceAt(1, 'toolkit') : workspaceAt(4, 'extras')],
+        });
+      }
+      return json({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    sharedMocks.useRealWorkspaces = false;
+    vi.unstubAllGlobals();
+  });
+
+  it('leaves the edit form mounted with the conflict message visible in the DOM', async () => {
+    const wrapper = mount(ChatLayout, {
+      attachTo: document.body,
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          ChatInput: true,
+          ModeSelector: true,
+          ProviderSelector: true,
+          // WorkspaceSelector deliberately NOT stubbed — its watcher is the code under test.
+        },
+      },
+    });
+    await flushPromises();
+
+    await wrapper.get('[data-testid="workspace-selector-button"]').trigger('click');
+    await flushPromises();
+    await wrapper.get('[data-testid="workspace-edit-ws-user"]').trigger('click');
+    await flushPromises();
+
+    // Sanity: the form is open and seeded from revision 1 before anything can go wrong.
+    expect(wrapper.find('[data-testid="workspace-edit-form"]').exists()).toBe(true);
+    expect(
+      wrapper.get<HTMLInputElement>('[data-testid="workspace-edit-plugin-demo-toolkit"]').element
+        .checked
+    ).toBe(true);
+
+    // A genuine plugin change, so the PUT actually carries pluginSelection + pluginsRevision.
+    await wrapper.get('[data-testid="workspace-edit-plugin-demo-extras"]').trigger('change');
+    await wrapper.get('[data-testid="workspace-edit-form"]').trigger('submit');
+    await flushPromises();
+    await flushPromises();
+
+    // The PUT really happened and really came back 409.
+    expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit)?.method === 'PUT')).toBe(
+      true
+    );
+    expect(listCalls).toBeGreaterThan(1);
+
+    // THE POINT: the dropdown and the form survived the transient `isLoading` flip...
+    expect(wrapper.find('.dropdown-menu').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="workspace-edit-form"]').exists()).toBe(true);
+    // ...the message is actually RENDERED, not merely handed to a component that no longer exists...
+    const error = wrapper.get('[data-testid="workspace-form-error"]');
+    expect(error.text()).toContain('changed elsewhere');
+    expect(error.text()).toContain('discarded');
+    // ...and the re-seed reached real form state: the OTHER writer's selection is now displayed.
+    expect(
+      wrapper.get<HTMLInputElement>('[data-testid="workspace-edit-plugin-demo-toolkit"]').element
+        .checked
+    ).toBe(false);
+    expect(
+      wrapper.get<HTMLInputElement>('[data-testid="workspace-edit-plugin-demo-extras"]').element
+        .checked
+    ).toBe(true);
+
+    // ATTRIBUTABILITY: the revision we sent is exactly the one the form was seeded with, so the
+    // conflict is caused by the out-of-band write to revision 4 and not by incidental staleness.
+    expect(putBodies).toHaveLength(1);
+    expect(putBodies[0].pluginsRevision).toBe(1);
+    expect(putBodies[0].pluginSelection).toEqual([
+      { marketplace: 'demo', plugin: 'toolkit' },
+      { marketplace: 'demo', plugin: 'extras' },
+    ]);
+
+    wrapper.unmount();
+  });
+
+  /**
+   * The 409 branch's `await loadWorkspaces()` is what makes a RETRY viable: it is the only thing
+   * that gives the form a current `pluginsRevision`. Without it the user replays the stale revision
+   * forever — an unbreakable conflict loop, strictly worse than the silence F6 fixed. Asserted
+   * separately from the message so a future change cannot trade one for the other; the mock rejects
+   * ANY second PUT that does not carry the refreshed revision.
+   */
+  it('lets the user re-apply the change and save successfully after the 409', async () => {
+    const wrapper = mount(ChatLayout, {
+      attachTo: document.body,
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          ChatInput: true,
+          ModeSelector: true,
+          ProviderSelector: true,
+        },
+      },
+    });
+    await flushPromises();
+
+    await wrapper.get('[data-testid="workspace-selector-button"]').trigger('click');
+    await flushPromises();
+    await wrapper.get('[data-testid="workspace-edit-ws-user"]').trigger('click');
+    await flushPromises();
+    await wrapper.get('[data-testid="workspace-edit-plugin-demo-extras"]').trigger('change');
+    await wrapper.get('[data-testid="workspace-edit-form"]').trigger('submit');
+    await flushPromises();
+    await flushPromises();
+
+    // Precondition for the retry: the conflict was reported and the form is still usable.
+    expect(wrapper.get('[data-testid="workspace-form-error"]').text()).toContain('discarded');
+    expect(wrapper.find('[data-testid="workspace-edit-form"]').exists()).toBe(true);
+
+    // The user re-applies what was discarded (toolkit back on, alongside the other writer's extras)
+    // and saves again. This must reach the server carrying revision 4, not the replayed 1.
+    await wrapper.get('[data-testid="workspace-edit-plugin-demo-toolkit"]').trigger('change');
+    await wrapper.get('[data-testid="workspace-edit-form"]').trigger('submit');
+    await flushPromises();
+    await flushPromises();
+
+    expect(putBodies).toHaveLength(2);
+    expect(putBodies[1].pluginsRevision).toBe(4);
+    expect(putBodies[1].pluginSelection).toEqual([
+      { marketplace: 'demo', plugin: 'extras' },
+      { marketplace: 'demo', plugin: 'toolkit' },
+    ]);
+    // Success closes the form and clears the error — not a second conflict.
+    expect(wrapper.find('[data-testid="workspace-edit-form"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="workspace-form-error"]').exists()).toBe(false);
+
+    wrapper.unmount();
+  });
+
+  /**
+   * The 400 path never calls `loadWorkspaces()` (only the 409 branch does), so it never raises
+   * `isLoading` and was never affected. Pinned so a later "reload on every failure" refactor cannot
+   * reintroduce the teardown here unnoticed.
+   */
+  it('leaves the edit form mounted with the message visible for a 400 unsupported_plugins', async () => {
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('/api/marketplaces')) return json(catalog);
+      if (url === '/api/workspaces') {
+        listCalls += 1;
+        return json({ gateway, workspaces: [workspaceAt(1, 'toolkit')] });
+      }
+      if (url.startsWith('/api/workspaces/') && init?.method === 'PUT') {
+        return json(
+          {
+            code: 'unsupported_plugins',
+            message: 'These plugins are not available in the selected marketplaces: demo/ghost.',
+            unsupportedPlugins: ['demo/ghost'],
+          },
+          400
+        );
+      }
+      return json({});
+    });
+
+    const wrapper = mount(ChatLayout, {
+      attachTo: document.body,
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          ChatInput: true,
+          ModeSelector: true,
+          ProviderSelector: true,
+        },
+      },
+    });
+    await flushPromises();
+
+    await wrapper.get('[data-testid="workspace-selector-button"]').trigger('click');
+    await flushPromises();
+    await wrapper.get('[data-testid="workspace-edit-ws-user"]').trigger('click');
+    await flushPromises();
+    await wrapper.get('[data-testid="workspace-edit-plugin-demo-extras"]').trigger('change');
+    await wrapper.get('[data-testid="workspace-edit-form"]').trigger('submit');
+    await flushPromises();
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="workspace-edit-form"]').exists()).toBe(true);
+    expect(wrapper.get('[data-testid="workspace-form-error"]').text()).toContain('demo/ghost');
+    // No reload on this path, so the user's pending selection is still theirs to correct.
+    expect(listCalls).toBe(1);
+    expect(
+      wrapper.get<HTMLInputElement>('[data-testid="workspace-edit-plugin-demo-extras"]').element
+        .checked
+    ).toBe(true);
+
+    wrapper.unmount();
+  });
+
+  /**
+   * The CREATE path reloads on SUCCESS (`createWorkspace` -> `loadWorkspaces`), which also flips
+   * `isLoading` — harmless there, since the form is closing anyway. On FAILURE it does not reload at
+   * all, so the error is visible. Pinned because "create also reloads" is the obvious place to
+   * assume the same bug exists.
+   */
+  it('leaves the create form mounted with the message visible when creation fails', async () => {
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('/api/marketplaces')) return json(catalog);
+      if (url === '/api/workspaces' && init?.method === 'POST') {
+        return json(
+          {
+            code: 'unsupported_plugins',
+            message: 'These plugins are not available in the selected marketplaces: demo/ghost.',
+            unsupportedPlugins: ['demo/ghost'],
+          },
+          400
+        );
+      }
+      if (url === '/api/workspaces') {
+        listCalls += 1;
+        return json({ gateway, workspaces: [workspaceAt(1, 'toolkit')] });
+      }
+      return json({});
+    });
+
+    const wrapper = mount(ChatLayout, {
+      attachTo: document.body,
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          ChatInput: true,
+          ModeSelector: true,
+          ProviderSelector: true,
+        },
+      },
+    });
+    await flushPromises();
+
+    await wrapper.get('[data-testid="workspace-selector-button"]').trigger('click');
+    await flushPromises();
+    await wrapper.get('[data-testid="workspace-create-open"]').trigger('click');
+    await flushPromises();
+    await wrapper.get('[data-testid="workspace-create-name"]').setValue('New WS');
+    await wrapper.get('[data-testid="workspace-create-form"]').trigger('submit');
+    await flushPromises();
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="workspace-create-form"]').exists()).toBe(true);
+    expect(wrapper.get('[data-testid="workspace-form-error"]').text()).toContain('demo/ghost');
+
+    wrapper.unmount();
   });
 });

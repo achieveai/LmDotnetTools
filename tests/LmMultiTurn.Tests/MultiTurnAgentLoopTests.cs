@@ -461,12 +461,14 @@ public class MultiTurnAgentLoopTests
         using var cts = new CancellationTokenSource();
         var runTask = loop.RunAsync(cts.Token);
 
-        var receivedMessages = new List<IMessage>();
+        // A concurrent collection, not a List: the subscriber loop below appends from a thread-pool
+        // thread while the assertions read here, and List<T> is not safe across that boundary.
+        var receivedMessages = new System.Collections.Concurrent.ConcurrentQueue<IMessage>();
         var subscribeTask = Task.Run(async () =>
         {
             await foreach (var msg in loop.SubscribeAsync(cts.Token))
             {
-                receivedMessages.Add(msg);
+                receivedMessages.Enqueue(msg);
             }
         });
 
@@ -476,14 +478,27 @@ public class MultiTurnAgentLoopTests
         // Act
         await loop.SendAsync([new TextMessage { Text = "Hi", Role = Role.User }]);
 
-        // Wait for processing
-        await Task.Delay(300);
+        // Poll for the run's completion rather than sleeping a fixed 300 ms and hoping. That fixed
+        // wait is exactly what failed on CI: RunAssignment and the assistant text had both arrived,
+        // and only RunCompletedMessage had not — the run was still finishing, not broken.
+        IMessage[] received = [];
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            received = [.. receivedMessages];
+            if (received.OfType<RunCompletedMessage>().Any())
+            {
+                break;
+            }
+
+            await Task.Delay(25);
+        }
 
         // Assert
-        receivedMessages.Should().NotBeEmpty();
-        receivedMessages.OfType<RunAssignmentMessage>().Should().NotBeEmpty();
-        receivedMessages.OfType<TextMessage>().Should().NotBeEmpty();
-        receivedMessages.OfType<RunCompletedMessage>().Should().NotBeEmpty();
+        received.Should().NotBeEmpty();
+        received.OfType<RunAssignmentMessage>().Should().NotBeEmpty();
+        received.OfType<TextMessage>().Should().NotBeEmpty();
+        received.OfType<RunCompletedMessage>().Should().NotBeEmpty();
 
         // Cleanup
         await cts.CancelAsync();

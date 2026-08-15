@@ -117,6 +117,9 @@ public sealed class FileWorkspaceStore : IWorkspaceStore
                 Name = name,
                 DirectoryRelPath = directory,
                 Marketplaces = dto.Marketplaces ?? [],
+                // Tri-state seeding: a null selection stays null ("no preference"), it is not
+                // collapsed to [] the way Marketplaces is. Revision starts at the default 0.
+                PluginSelection = dto.PluginSelection,
                 IsSystemDefined = false,
                 CreatedAt = now,
                 UpdatedAt = now,
@@ -139,10 +142,10 @@ public sealed class FileWorkspaceStore : IWorkspaceStore
         ArgumentNullException.ThrowIfNull(id);
         ArgumentNullException.ThrowIfNull(dto);
 
-        if (string.Equals(id, _defaultWorkspace.Id, StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException($"Cannot update system-defined workspace '{id}'.");
-        }
+        SystemDefinedWorkspaceRule.ThrowIfSystemDefined(
+            id,
+            isSystemDefined: string.Equals(id, _defaultWorkspace.Id, StringComparison.Ordinal)
+        );
 
         await _lock.WaitAsync(ct);
         try
@@ -155,14 +158,21 @@ public sealed class FileWorkspaceStore : IWorkspaceStore
             }
 
             var existing = userWorkspaces[index];
-            if (existing.IsSystemDefined)
+            SystemDefinedWorkspaceRule.ThrowIfSystemDefined(id, existing.IsSystemDefined);
+
+            if (dto.PluginSelection.IsSet)
             {
-                throw new InvalidOperationException($"Cannot update system-defined workspace '{id}'.");
+                WorkspaceRevisionConflictException.ThrowIfMismatch(
+                    id,
+                    dto.PluginsRevision,
+                    existing.PluginsRevision);
             }
 
             var updatedWorkspace = existing with
             {
                 Marketplaces = dto.Marketplaces ?? [],
+                PluginSelection = dto.PluginSelection.IsSet ? dto.PluginSelection.Value : existing.PluginSelection,
+                PluginsRevision = dto.PluginSelection.IsSet ? existing.PluginsRevision + 1 : existing.PluginsRevision,
                 UpdatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             };
 
@@ -213,7 +223,30 @@ public sealed class FileWorkspaceStore : IWorkspaceStore
         try
         {
             var json = await File.ReadAllTextAsync(_workspacesFilePath, ct);
-            return JsonSerializer.Deserialize<List<Workspace>>(json, JsonOptions) ?? [];
+            var loaded = JsonSerializer.Deserialize<List<Workspace>>(json, JsonOptions) ?? [];
+
+            // A null ENTRY is damage, not a value to repair: there is no workspace there to normalize.
+            // Reported as a corrupt catalog (which every action already maps to 503) rather than
+            // skipped, because silently dropping it would make a truncated or half-written file look
+            // like a successful deletion — the one failure mode a workspace store must never fake.
+            var nullEntry = loaded.FindIndex(static w => w is null);
+            if (nullEntry >= 0)
+            {
+                throw new WorkspaceCatalogCorruptException(
+                    _workspacesFilePath,
+                    $"the entry at index {nullEntry} is null"
+                );
+            }
+
+            // A null MARKETPLACES member, in contrast, has an unambiguous repair, and it needs one.
+            // `Workspace.Marketplaces` is non-nullable and carries an `= []` initializer, so it reads
+            // as though a null cannot survive deserialization. It can: nullable reference annotations
+            // are a compile-time analysis and enforce nothing here, so an explicit `"marketplaces":
+            // null` in the file is written straight into the member. Both WRITE paths above already
+            // normalize with `?? []`; without the same normalization on the way back in, one such
+            // entry made EVERY reader throw — including the catalog listing, so the UI could not load
+            // and no API call could repair the file that broke it.
+            return [.. loaded.Select(static w => w.Marketplaces is null ? w with { Marketplaces = [] } : w)];
         }
         catch (JsonException ex)
         {
@@ -230,5 +263,103 @@ public sealed class FileWorkspaceStore : IWorkspaceStore
         await File.WriteAllTextAsync(tempFile, json, ct);
 
         File.Move(tempFile, _workspacesFilePath, overwrite: true);
+    }
+}
+
+/// <summary>
+/// Thrown when a workspace update with an explicit <c>PluginSelection</c> supplies a stale or
+/// missing <c>pluginsRevision</c>. CAS is mandatory for any explicit plugin-selection change: a
+/// missing revision is reported with <see cref="ExpectedRevision"/> equal to the sentinel <c>-1</c>
+/// (no real revision can ever equal it) to distinguish "revision omitted entirely" from "revision
+/// stale" (a real, mismatched, non-negative value). Only raised for updates that touch
+/// <see cref="WorkspaceUpdate.PluginSelection"/>; marketplace-only updates never check the revision.
+/// </summary>
+public sealed class WorkspaceRevisionConflictException : Exception
+{
+    /// <summary>Creates a new <see cref="WorkspaceRevisionConflictException"/>.</summary>
+    /// <param name="workspaceId">The workspace whose update was rejected.</param>
+    /// <param name="expectedRevision">The revision the caller supplied, or <c>-1</c> when omitted.</param>
+    /// <param name="actualRevision">The workspace's current revision.</param>
+    public WorkspaceRevisionConflictException(string workspaceId, int expectedRevision, int actualRevision)
+        : base($"Workspace '{workspaceId}' plugins revision conflict: expected {expectedRevision}, actual {actualRevision}.")
+    {
+        WorkspaceId = workspaceId;
+        ExpectedRevision = expectedRevision;
+        ActualRevision = actualRevision;
+    }
+
+    /// <summary>The workspace whose update was rejected.</summary>
+    public string WorkspaceId { get; }
+
+    /// <summary>The revision the caller supplied, or the sentinel <c>-1</c> when it was omitted.</summary>
+    public int ExpectedRevision { get; }
+
+    /// <summary>The workspace's current revision at the time of the rejected update.</summary>
+    public int ActualRevision { get; }
+
+    /// <summary>
+    /// The single owner of the compare-and-swap rule. Two callers need it — the store, which applies
+    /// it atomically under its write lock, and the plugin-selection orchestrator, which must reject a
+    /// stale request BEFORE it creates any candidate sandbox sessions (the store's own check runs at
+    /// persist time, by which point candidates would already exist). Duplicating the rule is exactly
+    /// how the marketplace-resolution bug arose: two copies of one rule drifted and disagreed on the
+    /// same input. Both callers therefore route through here.
+    /// </summary>
+    /// <param name="workspaceId">The workspace being updated.</param>
+    /// <param name="suppliedRevision">The revision the caller supplied; <c>null</c> when omitted.</param>
+    /// <param name="actualRevision">The workspace's current stored revision.</param>
+    /// <exception cref="WorkspaceRevisionConflictException">
+    /// The revision was omitted (reported as <see cref="ExpectedRevision"/> <c>-1</c>) or did not
+    /// match <paramref name="actualRevision"/>.
+    /// </exception>
+    public static void ThrowIfMismatch(string workspaceId, int? suppliedRevision, int actualRevision)
+    {
+        // An omitted revision is ambiguous ("caller didn't know it" vs "caller doesn't care") and must
+        // never silently overwrite a concurrent change — reject it exactly like a stale revision, using
+        // sentinel -1 (no real revision can equal it) so the payload still distinguishes "omitted" from
+        // "stale".
+        if (suppliedRevision is not int expected)
+        {
+            throw new WorkspaceRevisionConflictException(workspaceId, expectedRevision: -1, actualRevision);
+        }
+
+        if (expected != actualRevision)
+        {
+            throw new WorkspaceRevisionConflictException(workspaceId, expected, actualRevision);
+        }
+    }
+}
+
+/// <summary>
+/// The single owner of the "system-defined workspaces are immutable" rule.
+/// <para>
+/// Three callers need it, for the same reason the revision CAS has two: the store applies it under
+/// its write lock and is the authority, while the plugin-selection orchestrator must reject BEFORE it
+/// snapshots partitions, waits for idle, and creates candidate sandbox sessions. Left to the store
+/// alone the rejection arrives at persist time — after real gateway sessions were built and torn
+/// down, and after a busy run has had the chance to turn a 400 into a 503 restart timeout or a stale
+/// revision into a 409. Routing every caller through here is what keeps a doomed request free of side
+/// effects, and keeps one rule from drifting into three.
+/// </para>
+/// <para>
+/// The message is load-bearing: <c>WorkspacesController</c> maps a bare
+/// <see cref="InvalidOperationException"/> to <c>400</c> in its trailing catch, so the exception type
+/// and text are the wire contract and must not change.
+/// </para>
+/// </summary>
+internal static class SystemDefinedWorkspaceRule
+{
+    /// <summary>Rejects a mutation targeting a system-defined workspace.</summary>
+    /// <param name="workspaceId">The workspace being updated; interpolated into the message.</param>
+    /// <param name="isSystemDefined">Whether that workspace is system-defined.</param>
+    /// <exception cref="InvalidOperationException">
+    /// <paramref name="isSystemDefined"/> is <see langword="true"/>. Surfaces as <c>400</c>.
+    /// </exception>
+    public static void ThrowIfSystemDefined(string workspaceId, bool isSystemDefined)
+    {
+        if (isSystemDefined)
+        {
+            throw new InvalidOperationException($"Cannot update system-defined workspace '{workspaceId}'.");
+        }
     }
 }
