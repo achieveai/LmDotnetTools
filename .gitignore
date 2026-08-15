@@ -71,5 +71,8 @@ worktrees/
 # publish-launch.ps1 run-state side-car files (samples/LmStreaming.Sample/.run/instance-<port>.json)
 samples/LmStreaming.Sample/.run/
 
+# publish-launch.ps1 standalone-publish run directories (retained, inspectable artifacts — never tracked)
+/.claude/scratchpad/lmstreaming-standalone-publish/
+
 # Ad-hoc debug screenshots dropped at the repo root (doc screenshots under docs/ stay tracked)
 /*.png

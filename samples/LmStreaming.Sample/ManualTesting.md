@@ -18,22 +18,29 @@ LM_PROVIDER_MODE=codex dotnet run --project samples/LmStreaming.Sample
 
 ### Running a second, isolated instance
 
-The default instance binds the app to `:5000` and its Vite dev server to `:5173`. To run another
-instance alongside it without port collisions, use the one-command launcher:
+The default (dev) instance binds the app to `:5000` and its Vite dev server to `:5173`. To run a
+second, standalone Production instance alongside it without port collisions, use the one-command
+publish+launch script — it does **not** touch the Vite dev server at all:
 
 ```powershell
-./publish-launch.ps1                             # backend 5050, Vite 5173 (or next free port)
-./publish-launch.ps1 -Port 5060 -VitePort 5183   # a second, explicit instance alongside the first
+./publish-launch.ps1                             # backend 5050 (or next free port)
+./publish-launch.ps1 -Port 5060                  # a second, explicit instance alongside the first
 ```
 
-`publish-launch.ps1` builds, resolves a free backend/Vite port pair, and starts + supervises both
-processes itself. Under the hood it sets the same three env vars documented below, plus
-`VITE_AUTO_RUN=false` (so it — not `Vite.AspNetCore` — owns spawning `npm run dev`). See its
-comment-based help (`Get-Help ./publish-launch.ps1 -Full`) for the full port-resolution rules.
+`publish-launch.ps1` runs `npm ci` + `npm run build` in `ClientApp/`, publishes the server with
+`dotnet publish -p:BuildClientApp=false` into a fresh, retained directory under this repository's
+`.claude/scratchpad/lmstreaming-standalone-publish/`, validates the published artifact (executable +
+`wwwroot/dist/index.html` + every referenced JS/CSS asset), then launches only the published
+`LmStreaming.Sample.exe` with `ASPNETCORE_ENVIRONMENT`/`DOTNET_ENVIRONMENT=Production` scoped to
+that process. There is no Vite process, port, or dev server involved in this launcher at all. See
+its comment-based help (`Get-Help ./publish-launch.ps1 -Full`) for the full port-resolution rules.
 
-To wire the same env vars up by hand instead (e.g. for a one-off `dotnet run` outside the script),
-override the app URL plus the Vite dev-server port (`VITE_DEV_PORT`) and backend origin
-(`VITE_BACKEND_ORIGIN`):
+If you need **hot reload** instead of a standalone Production artifact, run the backend and the
+Vite dev server directly (see "Prerequisites" above and `CLAUDE.md`'s "Running locally" section) —
+`publish-launch.ps1` is not the tool for that. To run a **second, hot-reload dev instance**
+alongside the default one (rather than the standalone Production instance above), wire up its env
+vars by hand: override the app URL plus the Vite dev-server port (`VITE_DEV_PORT`) and backend
+origin (`VITE_BACKEND_ORIGIN`):
 
 ```bash
 ASPNETCORE_ENVIRONMENT=Development LM_PROVIDER_MODE=test \

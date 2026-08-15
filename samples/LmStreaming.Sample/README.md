@@ -24,16 +24,21 @@ dotnet run --project samples/LmStreaming.Sample
 The provider is chosen in the UI (header dropdown). Copilot-backed providers need a resolvable
 `gh`/Copilot token (no API key); Anthropic/OpenAI providers need `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`.
 
-### Multiple instances / one-command launcher
+### Standalone Production publish launcher
 
-To run a paired backend + Vite dev-server instance (or several side by side) without hand-wiring
-env vars, use `./publish-launch.ps1` (see its comment-based help, or `Get-Help ./publish-launch.ps1
--Full`). It builds, resolves a free backend/Vite port pair (auto-falling back only for the ports
-you didn't explicitly pass), starts and supervises both processes, and prints the URLs/PIDs:
+To build and run a standalone Production artifact (no Vite dev server, no prior manual build)
+with one command, use `./publish-launch.ps1` (see its comment-based help). Every invocation runs
+`npm ci` and `npm run build` in `ClientApp/`, publishes the server with `dotnet publish
+-p:BuildClientApp=false` into a fresh directory under this repository's
+`.claude/scratchpad/lmstreaming-standalone-publish/run-<timestamp>-<PID>/`, validates the
+published `wwwroot/dist/index.html` and every JS/CSS asset it references, then launches only the
+published `LmStreaming.Sample.exe` (`ASPNETCORE_ENVIRONMENT`/`DOTNET_ENVIRONMENT=Production`,
+scoped to that process only) and proves readiness over HTTP before reporting the URL/PID. The
+publish directory is retained after the run (success or failure) for inspection.
 
 ```powershell
-./publish-launch.ps1                             # backend 5050, Vite 5173
-./publish-launch.ps1 -Port 5060 -VitePort 5183   # a second, explicit instance alongside the first
+./publish-launch.ps1                                  # backend 5050, Debug
+./publish-launch.ps1 -Configuration Release -Port 5060 # a second, explicit Release instance
 ```
 
 ## Sandbox Workspace Agent
