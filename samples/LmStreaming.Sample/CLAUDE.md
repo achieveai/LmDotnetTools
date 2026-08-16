@@ -18,6 +18,16 @@ For a one-command **standalone Production** build+launch (no Vite dev server: `n
 `./publish-launch.ps1` instead — see its comment-based help for the `-Port`/`-Configuration`/
 `-WebhookBaseUrl`/`-Force` options and port-resolution rules.
 
+`-DestinationDirectory <path>` switches it to **deploy mode**: same build and publish, but the
+artifact is swapped into `<path>` and **nothing is launched**. The destination is classified before
+any build work runs — an existing deployment is upgraded in place with `.env`, `oauth-tokens/`,
+`conversations/`, `recordings/`, `workspaces/`, `logs/` and `notify-waits.db` carried forward
+byte-for-byte; a non-empty directory that is *not* a previous deployment is refused outright, and
+nothing is built. The swap is two same-volume renames via `<path>.candidate-*` / `<path>.backup-*`
+siblings, so the destination is never partially written. Deploying over a **running** instance is
+refused (three checkpoints; an elevated instance is detected too) — stop it first. See the
+`.PARAMETER DestinationDirectory` help for the full contract.
+
 Provider is chosen in the UI (header dropdown, `GET /api/providers`). GitHub Copilot models are
 **discovered dynamically** at startup from the Copilot `/models` API and listed by their raw model
 id (e.g. `claude-opus-4.8`, `gpt-5.5`), partitioned into "Copilot · Anthropic" / "Copilot · OpenAI"

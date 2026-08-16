@@ -3861,14 +3861,27 @@ public partial class Program
     ///     Finds the .env file to load. Checks the <c>LMSTREAMING_ENV_FILE</c> environment variable
     ///     first: when set to a path that exists, that path wins outright (no walk-up). When set but
     ///     the path does not exist, the override is ignored (never trusted blindly) and resolution
-    ///     falls through to the same ancestor walk-up as when no override is set at all.
+    ///     falls through to the same ancestor walk-up as when no override is set at all -- but it
+    ///     says so on stderr first, because a silently-ignored override is indistinguishable from a
+    ///     working one until a provider call fails with an unrelated-looking auth error.
     /// </summary>
     internal static string? FindEnvFile()
     {
         var overridePath = Environment.GetEnvironmentVariable("LMSTREAMING_ENV_FILE");
-        if (!string.IsNullOrWhiteSpace(overridePath) && File.Exists(overridePath))
+        if (!string.IsNullOrWhiteSpace(overridePath))
         {
-            return overridePath;
+            if (File.Exists(overridePath))
+            {
+                return overridePath;
+            }
+
+            // Console.Error, deliberately not a logger: this runs during host construction, before
+            // Serilog is configured, so anything written through ILogger here goes nowhere.
+            Console.Error.WriteLine(
+                $"[warn] LMSTREAMING_ENV_FILE is set to '{overridePath}', but no file exists there. "
+                    + "Ignoring the override and searching ancestor directories for .env / .env.test instead. "
+                    + "Provider credentials configured in that file will NOT be loaded."
+            );
         }
 
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

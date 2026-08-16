@@ -11,6 +11,15 @@ namespace LmStreaming.Sample.Tests;
 /// defines functions and never executes the build/publish/launch pipeline, so tests here call
 /// destination-only helpers (e.g. <c>Test-DestinationState</c>, <c>Invoke-DestinationDeploy</c>)
 /// against real, test-created fixture directories on disk.
+///
+/// <para>
+/// Neither entry point prepends <c>$ErrorActionPreference = 'Stop'</c> to the command, on purpose.
+/// It used to, which silently made every test here immune to the script's OWN
+/// <c>$ErrorActionPreference = 'Stop'</c> line being deleted: a non-terminating cmdlet error would
+/// still have terminated under the harness-supplied preference, so no test could ever have caught
+/// the regression. The script sets it at top level, so dot-sourcing already establishes it -- the
+/// harness contributing a second copy bought nothing and cost the coverage.
+/// </para>
 /// </summary>
 internal static class PublishLaunchScriptHost
 {
@@ -35,7 +44,7 @@ internal static class PublishLaunchScriptHost
     public static PwshResult InvokeForJson(string expression, TimeSpan? timeout = null)
     {
         var command =
-            $"$ErrorActionPreference = 'Stop'; . '{ScriptPath}'; ({expression}) | ConvertTo-Json -Depth 12 -Compress";
+            $". '{QuoteSingle(ScriptPath)}'; ({expression}) | ConvertTo-Json -Depth 12 -Compress";
         return Run(command, timeout);
     }
 
@@ -46,7 +55,7 @@ internal static class PublishLaunchScriptHost
     /// </summary>
     public static PwshResult InvokeForEffect(string expression, TimeSpan? timeout = null)
     {
-        var command = $"$ErrorActionPreference = 'Stop'; . '{ScriptPath}'; {expression} | Out-Null";
+        var command = $". '{QuoteSingle(ScriptPath)}'; {expression} | Out-Null";
         return Run(command, timeout);
     }
 

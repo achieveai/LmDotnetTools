@@ -168,11 +168,25 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
             }
 
             _disposed = true;
-            base.Dispose(disposing);
 
-            if (disposing)
+            // try/finally, not sequential statements: base.Dispose can throw (a SQLite close can
+            // surface a native error), and if it does, an un-finallied Release is skipped. The
+            // permit is then lost for the lifetime of the factory -- and unlike a leaked handle,
+            // which the GC eventually reclaims, a lost permit never comes back. Leak enough of
+            // them and GetConnectionAsync blocks forever on a semaphore no one will ever post to,
+            // which presents as the whole persistence layer hanging with no error anywhere.
+            // Releasing the permit is this type's ONLY responsibility to the factory; it has to
+            // happen whether or not the underlying connection closed cleanly.
+            try
             {
-                _ = _semaphore.Release();
+                base.Dispose(disposing);
+            }
+            finally
+            {
+                if (disposing)
+                {
+                    _ = _semaphore.Release();
+                }
             }
         }
 

@@ -189,6 +189,19 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         Hash(actualPath).Should().Be(Hash(expectedPath), because);
     }
 
+    /// <summary>
+    /// Collapses PowerShell's error-formatter line structure so a substring assertion can survive it.
+    /// <para>
+    /// pwsh word-wraps a thrown exception's message at roughly console width and prefixes every
+    /// continuation line with <c>"       | "</c>. A long absolute path is therefore routinely split
+    /// across two lines in stderr, so <c>StandardError.Should().Contain(somePath)</c> fails against
+    /// perfectly correct output. Short single-word assertions (e.g. "Unrecognized") happen never to
+    /// hit a wrap point, which is why this only bites once an assertion names a real path.
+    /// </para>
+    /// </summary>
+    private static string Unwrap(string text) =>
+        System.Text.RegularExpressions.Regex.Replace(text.Replace("|", " "), @"\s+", " ");
+
     private static string? FindSiblingWithSuffix(string parent, string destinationName, string suffix) =>
         Directory.GetDirectories(parent)
             .FirstOrDefault(d => Path.GetFileName(d).StartsWith($"{destinationName}.{suffix}", StringComparison.Ordinal));
@@ -207,11 +220,46 @@ public sealed class PublishLaunchDestinationTests : IDisposable
     }
 
     private static string MoveDelegateThatFailsOnCall(int callNumber) =>
-        "{ param($From, $To) " +
-        "if (-not (Get-Variable -Name __pldMoveCallCount -Scope Script -ErrorAction SilentlyContinue)) { $script:__pldMoveCallCount = 0 }; " +
-        "$script:__pldMoveCallCount++; " +
-        $"if ($script:__pldMoveCallCount -eq {callNumber}) {{ throw ('Simulated move failure on call ' + $script:__pldMoveCallCount) }}; " +
-        "[System.IO.Directory]::Move($From, $To) }";
+        MoveDelegateThatFailsOnCalls(callNumber);
+
+    /// <summary>
+    /// A move delegate that throws on each of <paramref name="callNumbers"/> (1-based) and performs
+    /// a real rename otherwise. Multiple numbers exist so a test can fail the swap AND the rollback
+    /// that follows it -- calls 2 and 3 -- which is the only way to reach the double-failure branch.
+    /// </summary>
+    private static string MoveDelegateThatFailsOnCalls(params int[] callNumbers)
+    {
+        var condition = string.Join(" -or ", callNumbers.Select(n => $"$script:__pldMoveCallCount -eq {n}"));
+        return "{ param($From, $To) " +
+            "if (-not (Get-Variable -Name __pldMoveCallCount -Scope Script -ErrorAction SilentlyContinue)) { $script:__pldMoveCallCount = 0 }; " +
+            "$script:__pldMoveCallCount++; " +
+            $"if ({condition}) {{ throw ('Simulated move failure on call ' + $script:__pldMoveCallCount) }}; " +
+            "[System.IO.Directory]::Move($From, $To) }";
+    }
+
+    /// <summary>A probe delegate that always reports the executable as free (nothing holds it).</summary>
+    private const string ProbeDelegateReportingNotHeld = "{ param($Path) return $false }";
+
+    /// <summary>A probe delegate that always reports the executable as held (locked / indeterminate).</summary>
+    private const string ProbeDelegateReportingHeld = "{ param($Path) return $true }";
+
+    /// <summary>
+    /// A process-enumeration delegate whose single entry does not reveal its <c>.Path</c> -- exactly
+    /// what <c>Get-Process</c> produces for a process running elevated or as another user.
+    /// <para>
+    /// The path is <c>$null</c>, NOT a throwing property, because that is what actually happens:
+    /// PowerShell's <c>Path</c> on a Process is an ETS ScriptProperty over
+    /// <c>MainModule.FileName</c>, and it swallows the underlying Win32Exception and yields
+    /// <c>$null</c>. Verified against a live <c>Get-Process</c> on this machine, where dozens of
+    /// ordinary processes report a null Path. A throwing test double would have exercised a
+    /// production branch that never fires in reality.
+    /// </para>
+    /// <paramref name="processName"/> is still readable, because <c>ProcessName</c> needs no privilege.
+    /// </summary>
+    private static string ProcessDelegateWithUnreadablePath(string processName) =>
+        "{ param() return @([pscustomobject]@{ Id = 9876; ProcessName = '" +
+        PublishLaunchScriptHost.QuoteSingle(processName) +
+        "'; Path = $null }) }";
 
     // ----------------------------------------------------------------------------------------
     // Destination classification (Test-DestinationState)
@@ -483,6 +531,50 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         // through the real production store and confirm the previously-committed row is readable.
         var readBack = await ReadNotifyWaitsAsync(Path.Combine(destination, "notify-waits.db"));
         readBack.Should().ContainSingle(r => r.WaitId == "wait-1" && r.ThreadId == "thread-1" && r.Label == "preserve-test");
+
+        // The successful-Recognized path's backup cleanup was previously asserted ONLY for the Empty
+        // branch. A retained backup here is not cosmetic: it is a full second copy of the previous
+        // deployment, including oauth-tokens/ and .env, left unencrypted beside the live directory
+        // and silently doubling disk use on every upgrade.
+        FindSiblingWithSuffix(_root, "recognized-dest", "backup-").Should().BeNull(
+            "the previous deployment's backup must be removed after a successful swap, not left beside the destination holding a second copy of .env and oauth-tokens/");
+        FindSiblingWithSuffix(_root, "recognized-dest", "candidate-").Should().BeNull(
+            "the candidate must have been renamed into place, leaving no leftover sibling");
+    }
+
+    [Fact]
+    public void Deploy_Recognized_RollbackAlsoFails_ErrorNamesBothSiblingsAndBothCauses()
+    {
+        // The double-failure window: between the two renames the destination path does not exist at
+        // all. If the rollback (call 3) fails too, the operator is left with NO destination and two
+        // siblings -- and the previous deployment, including the only copy of .env and
+        // oauth-tokens/, lives in one of them. A bare rollback call would surface the ROLLBACK's
+        // exception and discard the original swap error, naming neither directory, so the operator
+        // would have no way to know which sibling to rename back.
+        var staged = CreateStagedDirectory(_root, "dblfail1");
+        var destination = CreateRecognizedDestination(_root, "dblfail-dest", "oldDF");
+        var envHashBefore = Hash(Path.Combine(destination, ".env"));
+
+        var result = PublishLaunchScriptHost.InvokeForEffect(
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
+            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' " +
+            $"-MoveDelegate {MoveDelegateThatFailsOnCalls(2, 3)}");
+
+        result.Succeeded.Should().BeFalse("both the swap and its rollback were made to fail deterministically");
+
+        var backup = FindSiblingWithSuffix(_root, "dblfail-dest", "backup-");
+        var candidate = FindSiblingWithSuffix(_root, "dblfail-dest", "candidate-");
+        backup.Should().NotBeNull("the previous deployment is still on disk under its backup name -- that is the whole recovery path");
+        candidate.Should().NotBeNull("the assembled candidate must be retained for inspection");
+        Directory.Exists(destination).Should().BeFalse("sanity: the destination genuinely does not exist in this window -- that is what makes naming the backup path load-bearing");
+
+        var stderr = Unwrap(result.StandardError);
+        stderr.Should().Contain(Unwrap(backup!), "the error must name the exact backup directory the operator has to rename back");
+        stderr.Should().Contain(Unwrap(candidate!), "the error must name the retained candidate");
+        stderr.Should().Contain("Swap error", "the ORIGINAL swap failure must survive -- not be replaced by the rollback's own exception");
+        stderr.Should().Contain("Rollback error", "the rollback failure must be reported too");
+
+        Hash(Path.Combine(backup!, ".env")).Should().Be(envHashBefore, "the operator's only copy of .env must be intact inside the backup the error points them at");
     }
 
     private static async Task<IReadOnlyList<NotifyWaitRecord>> ReadNotifyWaitsAsync(string databasePath)
@@ -748,5 +840,350 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         result.StandardError.Should().Contain("Unrecognized", "the destination branch, not the default pipeline, must run when -DestinationDirectory is bound on the script's real command line");
         result.StandardOutput.Should().NotContain("Resolve port", "the default pipeline's port-resolution phase must never run once -DestinationDirectory is explicitly bound");
         result.StandardOutput.Should().NotContain("Build client", "the default pipeline's client build must never run for an explicit -DestinationDirectory invocation");
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // Running-instance detection must FAIL CLOSED (Test-ProcessHoldsPath)
+    // ----------------------------------------------------------------------------------------
+
+    [Fact]
+    public void ProcessHoldsPath_LockedExecutable_IsHeld_EvenWhenEnumerationSeesNothing()
+    {
+        // The signal that actually matters. A running Windows process holds its own image file with
+        // a share mode that denies write, and that is the very condition that will make the swap's
+        // rename fail -- so an exclusive-open failure means "held" regardless of what process
+        // enumeration reports. This arm needs no privilege, which is exactly why it exists: the
+        // enumeration arm cannot see an elevated instance at all.
+        var exePath = Path.Combine(_root, "locked.exe");
+        File.WriteAllText(exePath, "x");
+
+        using var holder = new FileStream(exePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+
+        var result = PublishLaunchScriptHost.InvokeForJson(
+            $"Test-ProcessHoldsPath -ExecutablePath '{PublishLaunchScriptHost.QuoteSingle(exePath)}' " +
+            "-ProcessEnumerationDelegate { param() return @() }");
+
+        result.Succeeded.Should().BeTrue(result.StandardError);
+        result.StandardOutput.Trim().Should().Be("true",
+            "a file that cannot be opened exclusively is held by something, and the rename this predicate guards would fail -- enumeration returning nothing must not override that");
+    }
+
+    [Fact]
+    public void ProcessHoldsPath_UnlockedExecutableAndNoMatchingProcess_IsNotHeld()
+    {
+        // Non-vacuity guard for the two tests around it: with a genuinely free executable and an
+        // empty enumeration the predicate must be FALSE. Without this, a bug making
+        // Test-ProcessHoldsPath unconditionally true would leave every other test here green while
+        // refusing every real deploy.
+        var exePath = Path.Combine(_root, "free.exe");
+        File.WriteAllText(exePath, "x");
+
+        var result = PublishLaunchScriptHost.InvokeForJson(
+            $"Test-ProcessHoldsPath -ExecutablePath '{PublishLaunchScriptHost.QuoteSingle(exePath)}' " +
+            "-ProcessEnumerationDelegate { param() return @() }");
+
+        result.Succeeded.Should().BeTrue(result.StandardError);
+        result.StandardOutput.Trim().Should().Be("false");
+    }
+
+    [Fact]
+    public void ProcessHoldsPath_ElevatedInstanceWhosePathIsUnreadable_IsHeld()
+    {
+        // THE regression this fail-closed rework exists for. Get-Process cannot read `.Path` for a
+        // process running elevated or as another user -- the getter throws Win32Exception "Access is
+        // denied" -- and the old implementation swallowed that into `continue`, silently converting
+        // "cannot determine" into "not a match". Deploying over an elevated instance therefore sailed
+        // straight past all three checkpoints and into the swap.
+        var exePath = Path.Combine(_root, "elevated.exe");
+        File.WriteAllText(exePath, "x");
+
+        var result = PublishLaunchScriptHost.InvokeForJson(
+            $"Test-ProcessHoldsPath -ExecutablePath '{PublishLaunchScriptHost.QuoteSingle(exePath)}' " +
+            $"-ProcessEnumerationDelegate {ProcessDelegateWithUnreadablePath("elevated")} " +
+            $"-ExclusiveOpenProbeDelegate {ProbeDelegateReportingNotHeld}");
+
+        result.Succeeded.Should().BeTrue(result.StandardError);
+        result.StandardOutput.Trim().Should().Be("true",
+            "a process whose NAME matches the target executable but whose path cannot be read is indeterminate, and indeterminate must count as held");
+    }
+
+    [Fact]
+    public void ProcessHoldsPath_UnrelatedProcessWhosePathIsUnreadable_IsNotHeld()
+    {
+        // The necessary bound on the previous test. On any Windows box a non-elevated Get-Process
+        // enumerates dozens of processes whose `.Path` throws (System, Registry, csrss, anything
+        // running as SYSTEM). Treating EVERY unreadable path as a match would make this predicate
+        // permanently true and refuse every deploy on every machine -- a fail-closed rework that
+        // closes the door on the operator too. Only a NAME match may escalate to "held".
+        var exePath = Path.Combine(_root, "target.exe");
+        File.WriteAllText(exePath, "x");
+
+        var result = PublishLaunchScriptHost.InvokeForJson(
+            $"Test-ProcessHoldsPath -ExecutablePath '{PublishLaunchScriptHost.QuoteSingle(exePath)}' " +
+            $"-ProcessEnumerationDelegate {ProcessDelegateWithUnreadablePath("csrss")} " +
+            $"-ExclusiveOpenProbeDelegate {ProbeDelegateReportingNotHeld}");
+
+        result.Succeeded.Should().BeTrue(result.StandardError);
+        result.StandardOutput.Trim().Should().Be("false",
+            "an unrelated SYSTEM process that merely refuses to reveal its path must not be mistaken for our executable");
+    }
+
+    [Fact]
+    public void Deploy_Recognized_CheckpointA_FailsWhenExecutableIsLockedButNoProcessMatches()
+    {
+        // End-to-end proof that the lock probe is actually wired into the deploy checkpoints, not
+        // just unit-testable in isolation: enumeration reports nothing (the elevated-instance case),
+        // yet the deploy must still refuse and leave the destination untouched.
+        var staged = CreateStagedDirectory(_root, "lockedchk1");
+        var destination = CreateRecognizedDestination(_root, "locked-chk-dest", "oldLK");
+        var exePath = Path.Combine(destination, "LmStreaming.Sample.exe");
+        var exeHashBefore = Hash(exePath);
+
+        using (var holder = new FileStream(exePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            var result = PublishLaunchScriptHost.InvokeForEffect(
+                $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
+                $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' " +
+                "-ProcessEnumerationDelegate { param() return @() }");
+
+            result.Succeeded.Should().BeFalse("the destination executable is locked, so the swap's rename would fail");
+            result.StandardError.Should().Contain("Checkpoint A");
+        }
+
+        Hash(exePath).Should().Be(exeHashBefore, "the destination must be entirely untouched when a checkpoint refuses");
+        FindSiblingWithSuffix(_root, "locked-chk-dest", "candidate-").Should().BeNull("Checkpoint A runs before any candidate is created");
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // Classifier / validator must not drift apart
+    // ----------------------------------------------------------------------------------------
+
+    [Fact]
+    public void ConfirmPublishArtifact_RejectsArtifactMissingAppsettings_SameMarkerSetAsClassifier()
+    {
+        // These two used to disagree: Test-DestinationState required appsettings.json to call a
+        // directory "ours", Confirm-PublishArtifact did not check it at all. A publish that produced
+        // no appsettings.json therefore passed validation, deployed, had its backup deleted -- and
+        // then classified as UNRECOGNIZED on the very next run, locking the operator out of their own
+        // deploy directory behind an error calling it foreign, with the previous deployment already
+        // gone. Both now derive from $script:DestinationMarkerRelativePaths, so validation refuses
+        // while the previous deployment is still recoverable.
+        var staged = CreateStagedDirectory(_root, "nosettings1");
+        File.Delete(Path.Combine(staged, "appsettings.json"));
+
+        var result = PublishLaunchScriptHost.InvokeForEffect(
+            $"Confirm-PublishArtifact -PublishDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}'");
+
+        result.Succeeded.Should().BeFalse("an artifact the classifier would later call Unrecognized must fail validation now");
+        result.StandardError.Should().Contain("appsettings.json");
+    }
+
+    [Fact]
+    public void ConfirmPublishArtifact_AcceptsCompleteArtifact()
+    {
+        // Non-vacuity guard: the marker loop must not reject a well-formed artifact.
+        var staged = CreateStagedDirectory(_root, "complete1");
+
+        var result = PublishLaunchScriptHost.InvokeForEffect(
+            $"Confirm-PublishArtifact -PublishDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}'");
+
+        result.Succeeded.Should().BeTrue(result.StandardError);
+    }
+
+    [Fact]
+    public void Deploy_StagedArtifactMissingAppsettings_RefusesBeforeTouchingRecognizedDestination()
+    {
+        // The consequence, end to end: the candidate is validated BEFORE the swap, so an incomplete
+        // publish can never reach the destination and can never delete the backup.
+        var staged = CreateStagedDirectory(_root, "nosettings2");
+        File.Delete(Path.Combine(staged, "appsettings.json"));
+        var destination = CreateRecognizedDestination(_root, "nosettings-dest", "oldNS");
+        var appsettingsHashBefore = Hash(Path.Combine(destination, "appsettings.json"));
+        var envHashBefore = Hash(Path.Combine(destination, ".env"));
+
+        var result = PublishLaunchScriptHost.InvokeForEffect(
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
+            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'");
+
+        result.Succeeded.Should().BeFalse("the assembled candidate is not a complete artifact");
+        Hash(Path.Combine(destination, "appsettings.json")).Should().Be(appsettingsHashBefore, "the destination must be untouched");
+        Hash(Path.Combine(destination, ".env")).Should().Be(envHashBefore, "preserved data must be untouched");
+        FindSiblingWithSuffix(_root, "nosettings-dest", "backup-").Should().BeNull("no rename ever happened, so no backup exists");
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // Interrupted-deploy recovery (orphaned siblings beside a Missing destination)
+    // ----------------------------------------------------------------------------------------
+
+    [Theory]
+    [InlineData("backup-20260101T000000000Z-1234")]
+    [InlineData("candidate-20260101T000000000Z-1234")]
+    public void Deploy_MissingDestinationWithOrphanedSibling_RefusesAndNamesTheRecoveryPath(string suffix)
+    {
+        // A deploy interrupted between its two renames (crash, Ctrl-C, power loss) leaves the
+        // destination path NON-EXISTENT with its backup and/or candidate still beside it. Re-running
+        // would classify Missing and take the fresh-install branch -- which never calls
+        // Copy-PreserveSet -- silently deploying an empty instance and stranding the operator's only
+        // copy of .env, oauth-tokens/ and conversations/ in a sibling nothing would ever mention.
+        var staged = CreateStagedDirectory(_root, "orphan1");
+        var destination = Path.Combine(_root, "orphan-dest");
+        var orphan = Path.Combine(_root, "orphan-dest." + suffix);
+        Directory.CreateDirectory(orphan);
+        File.WriteAllText(Path.Combine(orphan, ".env"), "PRECIOUS=1");
+
+        var result = PublishLaunchScriptHost.InvokeForEffect(
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
+            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' " +
+            $"-ProcessEnumerationDelegate {ProcessDelegateThatThrowsIfInvoked}");
+
+        result.Succeeded.Should().BeFalse("a Missing destination with leftover deploy siblings is an interrupted deploy, not a fresh install");
+        Unwrap(result.StandardError).Should().Contain(Unwrap(orphan), "the error must name the exact sibling so the operator knows what to rename back");
+        Directory.Exists(destination).Should().BeFalse("nothing may be deployed while the interrupted state is unresolved");
+        File.ReadAllText(Path.Combine(orphan, ".env")).Should().Be("PRECIOUS=1", "the orphaned sibling must be left exactly as found");
+    }
+
+    [Fact]
+    public void Deploy_MissingDestinationWithUnrelatedSibling_ProceedsNormally()
+    {
+        // Bound on the check above: only OUR suffixes count. A directory that merely lives in the
+        // same parent must not block a legitimate first deploy.
+        var staged = CreateStagedDirectory(_root, "orphan2");
+        Directory.CreateDirectory(Path.Combine(_root, "orphan2-dest-unrelated"));
+        Directory.CreateDirectory(Path.Combine(_root, "orphan2-dest.notours-123"));
+        var destination = Path.Combine(_root, "orphan2-dest");
+
+        var result = PublishLaunchScriptHost.InvokeForEffect(
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
+            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' " +
+            $"-ProcessEnumerationDelegate {ProcessDelegateThatThrowsIfInvoked}");
+
+        result.Succeeded.Should().BeTrue(result.StandardError);
+        Directory.Exists(destination).Should().BeTrue();
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // Fresh-deploy warning (no .env is preserved because there is nothing to preserve from)
+    // ----------------------------------------------------------------------------------------
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("empty")]
+    public void Deploy_FreshInstall_WarnsThatNoEnvWillBePresent_ButStillSucceeds(string state)
+    {
+        // Missing and Empty both take a branch that never calls Copy-PreserveSet, so the deployed
+        // instance has no .env at all. The app starts fine and then fails every provider request
+        // with an auth error that says nothing about a missing file. Warn, loudly, naming the path.
+        //
+        // Deliberately a WARNING and deliberately no seeded placeholder: a first-ever deploy to a
+        // new machine is legitimate, and a seeded .env would be indistinguishable from a real one --
+        // shadowing the operator's own copy and then being preserved forever by Copy-PreserveSet.
+        var staged = CreateStagedDirectory(_root, "fresh-" + state);
+        var destination = state == "missing"
+            ? Path.Combine(_root, "fresh-missing-dest")
+            : CreateEmptyDestination(_root, "fresh-empty-dest");
+
+        var result = PublishLaunchScriptHost.InvokeForEffect(
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
+            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' " +
+            $"-ProcessEnumerationDelegate {ProcessDelegateThatThrowsIfInvoked}");
+
+        result.Succeeded.Should().BeTrue("a fresh install is legitimate and must not be blocked: " + result.StandardError);
+
+        // Write-Warning under `pwsh -Command` lands on STDOUT ("WARNING: ..."), not stderr --
+        // verified directly rather than assumed; asserting on stderr silently passed nothing.
+        result.StandardOutput.Should().Contain("WARNING", "the fresh-install notice must be a real warning, not a quiet Write-Host line");
+        result.StandardOutput.Should().Contain(".env", "the warning must name what is missing");
+        Unwrap(result.StandardOutput).Should().Contain(Unwrap(destination), "the warning must name the exact deployment it applies to");
+        File.Exists(Path.Combine(destination, ".env")).Should().BeFalse("no placeholder .env may be seeded -- it would be indistinguishable from a real one and preserved forever");
+    }
+
+    [Fact]
+    public void Deploy_Recognized_DoesNotEmitTheFreshInstallWarning()
+    {
+        // Non-vacuity bound: an upgrade DOES preserve .env, so the warning must not fire. Without
+        // this, an unconditional warning would satisfy both cases above and mean nothing.
+        var staged = CreateStagedDirectory(_root, "nowarn1");
+        var destination = CreateRecognizedDestination(_root, "nowarn-dest", "oldNW");
+
+        var result = PublishLaunchScriptHost.InvokeForEffect(
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
+            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}'");
+
+        result.Succeeded.Should().BeTrue(result.StandardError);
+        result.StandardOutput.Should().NotContain("Fresh deployment", "an upgrade preserves .env, so the fresh-install warning must not fire");
+        File.Exists(Path.Combine(destination, ".env")).Should().BeTrue();
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // Destination path normalization
+    // ----------------------------------------------------------------------------------------
+
+    [Fact]
+    public void ResolveDestinationDirectory_RelativePath_ResolvesAgainstCallerWorkingDirectory()
+    {
+        // Every sibling path is derived with Split-Path -Parent, which returns '' for a bare
+        // relative name -- and Join-Path then throws on the empty parent, deep inside the swap
+        // rather than at the entry point. Normalizing once, up front, is what keeps the sibling
+        // derivation total.
+        // A script-block invocation, not "Set-Location; Resolve-..." -- InvokeForJson wraps the
+        // expression in parentheses, and a parenthesized expression cannot contain a statement
+        // separator.
+        var result = PublishLaunchScriptHost.InvokeForJson(
+            $"& {{ Set-Location -LiteralPath '{PublishLaunchScriptHost.QuoteSingle(_root)}'; " +
+            "Resolve-DestinationDirectory -DestinationDirectory 'relative-deploy' }");
+
+        result.Succeeded.Should().BeTrue(result.StandardError);
+        result.StandardOutput.Trim().Trim('"').Should().Be(
+            Path.Combine(_root, "relative-deploy").Replace("\\", "\\\\"),
+            "a relative destination must resolve against the caller's working directory, absolutely");
+    }
+
+    [Fact]
+    public void ResolveDestinationDirectory_TrailingSeparator_IsTrimmed()
+    {
+        // Split-Path -Leaf returns '' for "C:\deploy\", which would produce sibling names like
+        // ".candidate-..." with no leaf prefix -- and FindSiblingWithSuffix-style recovery guidance
+        // would then never match them.
+        var withSlash = Path.Combine(_root, "trailing-deploy") + Path.DirectorySeparatorChar;
+
+        var result = PublishLaunchScriptHost.InvokeForJson(
+            $"Resolve-DestinationDirectory -DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(withSlash)}'");
+
+        result.Succeeded.Should().BeTrue(result.StandardError);
+        result.StandardOutput.Trim().Trim('"').Should().Be(
+            Path.Combine(_root, "trailing-deploy").Replace("\\", "\\\\"));
+    }
+
+    [Fact]
+    public void ResolveDestinationDirectory_DriveRoot_IsRefused()
+    {
+        // A drive root has no parent, so there is nowhere to place the candidate and backup
+        // siblings -- and a deploy there would treat the entire volume as the deployment.
+        var driveRoot = Path.GetPathRoot(Path.GetTempPath())!;
+
+        var result = PublishLaunchScriptHost.InvokeForEffect(
+            $"Resolve-DestinationDirectory -DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(driveRoot)}'");
+
+        result.Succeeded.Should().BeFalse("deploying to a volume root must be refused explicitly, not fail obscurely inside the swap");
+        result.StandardError.Should().Contain("root");
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // Whole-script syntax
+    // ----------------------------------------------------------------------------------------
+
+    [Fact]
+    public void Script_ParsesWithoutSyntaxErrors()
+    {
+        // A real parse, not a brace/paren tally. A balanced-delimiter count cannot see an unclosed
+        // string, a malformed param() block, a bad here-string terminator, or a delimiter inside a
+        // comment -- all of which this file now contains plenty of, and any of which would make the
+        // script fail at dot-source time on the operator's machine rather than here.
+        var result = PublishLaunchScriptHost.Run(
+            "$e = $null; $t = $null; " +
+            $"[System.Management.Automation.Language.Parser]::ParseFile('{PublishLaunchScriptHost.QuoteSingle(PublishLaunchScriptHost.ScriptPath)}', [ref]$t, [ref]$e) | Out-Null; " +
+            "if ($e) { $e | ForEach-Object { \"$($_.Extent.StartLineNumber): $($_.Message)\" }; exit 1 }");
+
+        result.Succeeded.Should().BeTrue("publish-launch.ps1 must parse cleanly: " + result.StandardOutput + result.StandardError);
     }
 }

@@ -87,6 +87,35 @@
     auto-fallback port (that already skips busy ports on its own). See -Port above for the full
     port-resolution rules.
 
+.PARAMETER DestinationDirectory
+    Switches the script into DESTINATION MODE: build and publish exactly as normal, then deploy the
+    artifact into this directory instead of launching anything. Nothing is started, no port is
+    resolved, and no `.run-state.json` is written -- the deployed instance is yours to run.
+
+    The path may be relative (resolved against your current working directory) but must not be a
+    drive root; the deploy needs a parent directory in which to place its candidate/backup siblings.
+
+    The destination is CLASSIFIED before any build work runs:
+      * Missing / Empty -> fresh install. Nothing is preserved because there is nothing to preserve;
+        the script WARNS that the deployed instance will have no `.env`.
+      * Recognized (contains all of LmStreaming.Sample.exe, appsettings.json and
+        wwwroot/dist/index.html) -> upgrade in place, preserving your data (see below).
+      * Unrecognized (non-empty but missing one of those markers) -> REFUSED, nothing is built and
+        nothing on disk is touched. This is the guard against pointing the script at, say, your
+        Documents folder.
+
+    On an upgrade, these are copied forward from the existing deployment and are never taken from
+    the build output: `.env`, `oauth-tokens/`, `conversations/`, `recordings/`, `workspaces/`,
+    `logs/`, `notify-waits.db` (with its -wal/-shm/-journal sidecars), `.run-state.json`.
+
+    The swap itself is two renames on the same volume (existing -> `<dir>.backup-<utc>-<pid>`, then
+    `<dir>.candidate-<utc>-<pid>` -> destination), so the destination is never partially written. If
+    the second rename fails the first is rolled back and the candidate is retained for inspection.
+
+    Deploying over a RUNNING instance is refused: the executable is checked three times (before
+    staging, before reading your preserved data, and immediately before the swap). Stop the running
+    instance first. An instance running elevated or as another user is also detected.
+
 .EXAMPLE
     ./publish-launch.ps1
     Build the client, publish the server, and launch the standalone Production artifact on
@@ -95,6 +124,11 @@
 .EXAMPLE
     ./publish-launch.ps1 -Configuration Release -Port 5060
     Publish a Release artifact and launch it on an explicit port.
+
+.EXAMPLE
+    ./publish-launch.ps1 -Configuration Release -DestinationDirectory D:\apps\lmstreaming
+    Build and publish a Release artifact and deploy it into D:\apps\lmstreaming, preserving that
+    deployment's .env, oauth-tokens/, conversations/ and notify-waits.db. Launches nothing.
 #>
 [CmdletBinding()]
 param(
@@ -316,24 +350,32 @@ function Get-PublishedAssetReferences {
     return $assets
 }
 
-# Validates the FULL publish artifact before launch: the executable, wwwroot/dist/index.html, and
-# every local JS/CSS asset that HTML references (converting each `/dist/assets/x.js` reference to
-# `<publish>/wwwroot/dist/assets/x.js` and rejecting any that resolves outside wwwroot). Throws a
-# focused error identifying exactly what is missing; returns the resolved paths for the launch
-# and readiness phases so they never have to re-derive them.
+# Validates the FULL publish artifact before launch: every marker in
+# $script:DestinationMarkerRelativePaths (the same set Test-DestinationState uses to decide whether a
+# directory is one of ours) plus every local JS/CSS asset index.html references (converting each
+# `/dist/assets/x.js` reference to `<publish>/wwwroot/dist/assets/x.js` and rejecting any that
+# resolves outside wwwroot). Throws a focused error identifying exactly what is missing; returns the
+# resolved paths for the launch and readiness phases so they never have to re-derive them.
+#
+# Sharing the marker constant with the classifier is load-bearing, not tidiness: the two used to
+# disagree (the classifier required appsettings.json, this validator did not), so a publish missing
+# appsettings.json passed validation, deployed, deleted its backup, and then classified as
+# Unrecognized on the NEXT run -- locking the operator out of their own deploy directory behind an
+# error calling it foreign. Anything the classifier will later demand must be demanded here first,
+# while the previous deployment is still recoverable.
 function Confirm-PublishArtifact {
     param([Parameter(Mandatory)][string] $PublishDirectory)
 
-    $executablePath = Join-Path $PublishDirectory 'LmStreaming.Sample.exe'
-    if (-not (Test-Path $executablePath)) {
-        throw "Published executable not found at $executablePath. The publish step did not produce the expected standalone artifact."
+    foreach ($marker in $script:DestinationMarkerRelativePaths) {
+        $markerPath = Join-Path $PublishDirectory $marker
+        if (-not (Test-Path -LiteralPath $markerPath)) {
+            throw "Required publish artifact '$marker' not found at $markerPath. The publish step did not produce a complete standalone artifact (all of these are required, and a deployment missing any one of them is classified as unrecognized on the next run: $($script:DestinationMarkerRelativePaths -join ', '))."
+        }
     }
 
+    $executablePath = Join-Path $PublishDirectory $script:ExecutableName
     $wwwrootDirectory = Join-Path $PublishDirectory 'wwwroot'
     $indexPath = Join-Path $wwwrootDirectory (Join-Path 'dist' 'index.html')
-    if (-not (Test-Path $indexPath)) {
-        throw "Published SPA entry point not found at $indexPath. The Vite build output was not copied into the publish directory."
-    }
 
     $assetReferences = Get-PublishedAssetReferences -IndexPath $indexPath
 
@@ -354,7 +396,7 @@ function Confirm-PublishArtifact {
         if (-not $isWithinWwwroot) {
             throw "Published asset reference '$asset' resolves outside wwwroot ($resolvedAsset). Refusing to validate or serve it."
         }
-        if (-not (Test-Path $resolvedAsset)) {
+        if (-not (Test-Path -LiteralPath $resolvedAsset)) {
             throw "Published asset referenced by index.html was not found on disk: $resolvedAsset (referenced as $asset)."
         }
     }
@@ -374,9 +416,17 @@ function Stop-OwnedProcessTree {
         [Parameter(Mandatory)] [string] $Label
     )
     try {
-        & taskkill /PID $ProcessId /T /F 2>&1 | Out-Null
+        $output = & taskkill /PID $ProcessId /T /F 2>&1
+        # taskkill is a NATIVE command: a non-zero exit does not throw regardless of
+        # $ErrorActionPreference, so without this check every failure -- including "access is
+        # denied" on an elevated child, which leaves the process alive and its port held -- would
+        # be silently discarded by the Out-Null this line used to end with. Exit code 128 is
+        # "no such process", i.e. it already exited, which is the outcome we wanted anyway.
+        if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 128) {
+            Write-Warning "Could not stop the $Label process tree (PID $ProcessId): taskkill exited $LASTEXITCODE. $(($output | Out-String).Trim())"
+        }
     } catch {
-        # Already exited is not a failure -- nothing left to clean up.
+        Write-Warning "Could not stop the $Label process tree (PID $ProcessId): $($_.Exception.Message)"
     }
 }
 
@@ -386,7 +436,7 @@ function Write-RunStateFile {
         [Parameter(Mandatory)] $State
     )
     $dir = Split-Path -Parent $Path
-    if (-not (Test-Path $dir)) {
+    if (-not (Test-Path -LiteralPath $dir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
     }
     $State | ConvertTo-Json -Depth 6 | Set-Content -Path $Path -Encoding utf8
@@ -452,8 +502,48 @@ $script:NotifyWaitsSidecarNames = @(
     'notify-waits.db-journal'
 )
 
+# The published executable's file name, and the exact marker set that defines a "Recognized"
+# deployment. BOTH Test-DestinationState (which decides whether a destination is one of ours) and
+# Confirm-PublishArtifact (which validates a candidate before it is swapped in) derive from these
+# same constants, so the two can no longer disagree. They previously did: the classifier required
+# appsettings.json and the validator did not, so a publish that produced no appsettings.json passed
+# validation, deployed, deleted its backup, and then classified as Unrecognized on the NEXT run --
+# locking the operator out of their own deploy directory with an error calling it foreign.
+$script:ExecutableName = 'LmStreaming.Sample.exe'
+$script:DestinationMarkerRelativePaths = @(
+    $script:ExecutableName,
+    'appsettings.json',
+    (Join-Path 'wwwroot' (Join-Path 'dist' 'index.html'))
+)
+
 $script:DefaultProcessEnumerationDelegate = { Get-Process -ErrorAction SilentlyContinue }
 $script:DefaultMoveDelegate = { param($From, $To) [System.IO.Directory]::Move($From, $To) }
+
+# Injectable seam for the "is the destination executable locked by a running process?" probe.
+# Returns $true when the file exists and CANNOT be opened for exclusive read/write, which is the
+# property that actually matters for a rename -- see Test-ProcessHoldsPath's comment for why the
+# previous image-path comparison was not sufficient.
+$script:DefaultExclusiveOpenProbeDelegate = {
+    param($Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $false
+    }
+    try {
+        $stream = [System.IO.File]::Open(
+            $Path,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::None)
+        $stream.Dispose()
+        return $false
+    } catch [System.IO.IOException] {
+        # Sharing violation: something else holds the file. This is the signal we want.
+        return $true
+    } catch [System.UnauthorizedAccessException] {
+        # Cannot even attempt the probe (ACL, read-only). Indeterminate -> fail closed.
+        return $true
+    }
+}
 
 # Classifies a destination directory using ONLY cheap filesystem checks -- this always runs
 # BEFORE any build/publish work so an Unrecognized destination is rejected before npm/dotnet
@@ -473,33 +563,129 @@ function Test-DestinationState {
         return [pscustomobject]@{ State = 'Empty' }
     }
 
-    $hasExecutable  = Test-Path -LiteralPath (Join-Path $DestinationDirectory 'LmStreaming.Sample.exe')
-    $hasAppsettings = Test-Path -LiteralPath (Join-Path $DestinationDirectory 'appsettings.json')
-    $hasIndexHtml   = Test-Path -LiteralPath (Join-Path $DestinationDirectory (Join-Path 'wwwroot' (Join-Path 'dist' 'index.html')))
+    $missingMarkers = @(
+        $script:DestinationMarkerRelativePaths |
+            Where-Object { -not (Test-Path -LiteralPath (Join-Path $DestinationDirectory $_)) }
+    )
 
-    if ($hasExecutable -and $hasAppsettings -and $hasIndexHtml) {
+    if ($missingMarkers.Count -eq 0) {
         return [pscustomobject]@{ State = 'Recognized' }
     }
 
     return [pscustomobject]@{ State = 'Unrecognized' }
 }
 
-# Checkpoint primitive: true if any enumerated process's executable path resolves to
-# $ExecutablePath. Access-denied-tolerant (some processes refuse to reveal .Path) and
-# exact-path (case-insensitive, full-path-resolved) rather than a name match, so it cannot be
-# fooled by an unrelated process that merely shares the published exe's file name elsewhere.
+# Builds the Unrecognized refusal text from the marker constants rather than restating them, so a
+# change to the marker set cannot leave the operator-facing message describing a different rule
+# than the one that was actually applied.
+function Get-UnrecognizedDestinationMessage {
+    param(
+        [Parameter(Mandatory)] [string] $DestinationDirectory,
+        [Parameter(Mandatory)] [string] $Refusal
+    )
+    $markerList = $script:DestinationMarkerRelativePaths -join ', '
+    return "Destination '$DestinationDirectory' is Unrecognized (non-empty, but missing one or more of the required markers: $markerList). $Refusal"
+}
+
+# Fails closed on any orphaned sibling left behind by an interrupted deploy. Between the two
+# renames of a swap the destination path does not exist at all, so a crash/Ctrl-C in that window
+# leaves <leaf>.backup-* and/or <leaf>.candidate-* with NO destination. Re-running would then
+# classify Missing and take the fresh-install branch -- which never calls Copy-PreserveSet -- so
+# the retry would silently deploy an empty instance and strand the operator's only copy of .env,
+# oauth-tokens/ and conversations/ in a sibling nothing ever mentions. Refuse instead, and name
+# what was found. Cheap: pure enumeration, and it runs before any build work.
+function Assert-NoOrphanedDeploySiblings {
+    param([Parameter(Mandatory)] [string] $DestinationDirectory)
+
+    $parent = Split-Path -Parent $DestinationDirectory
+    $leaf   = Split-Path -Leaf $DestinationDirectory
+    if ([string]::IsNullOrEmpty($parent) -or -not (Test-Path -LiteralPath $parent)) {
+        return
+    }
+
+    $orphans = @(
+        Get-ChildItem -LiteralPath $parent -Force -Directory |
+            Where-Object { $_.Name -like "$leaf.backup-*" -or $_.Name -like "$leaf.candidate-*" } |
+            ForEach-Object { $_.FullName }
+    )
+
+    if ($orphans.Count -gt 0) {
+        throw (
+            "Destination '$DestinationDirectory' does not exist, but $($orphans.Count) leftover deploy " +
+            "sibling(s) were found beside it:`n  " + ($orphans -join "`n  ") + "`n" +
+            "That is the signature of a deploy interrupted between its two renames. The '.backup-*' " +
+            "directory is your PREVIOUS deployment and holds the only copy of .env, oauth-tokens/ and " +
+            "conversations/. Rename it back onto '$DestinationDirectory' to recover, then re-run. " +
+            "Refusing to deploy -- a fresh install here would strand that data permanently."
+        )
+    }
+}
+
+# Checkpoint primitive: is the destination executable in use? Two independent signals, ORed,
+# because each one alone has a hole:
+#
+#  1. An exclusive-open probe (FileShare.None) on the executable itself. This is the signal that
+#     actually matters -- a running Windows process holds its own image file with a share mode
+#     that denies write, so the probe fails with a sharing violation, and that is the same
+#     condition that will make the swap's rename fail. It needs no privilege to observe.
+#  2. Process enumeration matching the resolved image path, retained because it names WHICH
+#     process to stop in the operator-facing message and catches the case where the executable
+#     was already renamed/replaced out from under a still-running process.
+#
+# The enumeration arm used to be the ONLY arm, and it FAILED OPEN in the exact case this feature
+# is for: a process running elevated or as another user does not reveal its image path, and the
+# old code recorded "cannot determine" as "not a match". Deploying over an elevated instance
+# therefore sailed straight past the checkpoint.
+#
+# Note precisely HOW that indeterminacy presents, because the obvious guess is wrong: PowerShell's
+# `Path` on a Process is an ETS ScriptProperty over `MainModule.FileName`, and when the underlying
+# Win32Exception ("Access is denied") is raised the property getter SWALLOWS it and yields $null.
+# It does not throw out to the caller. So the load-bearing branch is the null check, not the
+# try/catch -- the catch is retained only for a genuine terminating case, and would have been a
+# fig leaf on its own. Verified against a live Get-Process: `$_.Path -eq $null` holds for dozens
+# of ordinary processes on any box.
+#
+# Which is exactly why the fail-closed rule is NARROWED to a name match. ProcessName is readable
+# without privilege; treating every null path as a match would make this predicate permanently
+# true and refuse every deploy on every machine. "Name matches AND path indeterminate" isolates
+# the one ambiguous case that matters -- an instance of OUR executable we cannot confirm -- and
+# calls it held. A false "it is running" costs the operator one Stop-Process; a false "it is not"
+# is the data-loss path.
 function Test-ProcessHoldsPath {
     param(
         [Parameter(Mandatory)] [string]      $ExecutablePath,
-        [Parameter(Mandatory)] [scriptblock] $ProcessEnumerationDelegate
+        [Parameter(Mandatory)] [scriptblock] $ProcessEnumerationDelegate,
+        [scriptblock] $ExclusiveOpenProbeDelegate = $script:DefaultExclusiveOpenProbeDelegate
     )
 
     $resolvedTarget = [System.IO.Path]::GetFullPath($ExecutablePath)
+
+    if (& $ExclusiveOpenProbeDelegate $resolvedTarget) {
+        return $true
+    }
+
+    $targetProcessName = [System.IO.Path]::GetFileNameWithoutExtension($resolvedTarget)
     $processes = & $ProcessEnumerationDelegate
     foreach ($process in $processes) {
         $candidatePath = $null
-        try { $candidatePath = $process.Path } catch { $candidatePath = $null }
-        if (-not $candidatePath) { continue }
+        try {
+            $candidatePath = $process.Path
+        } catch {
+            # Belt and braces: see the comment above -- in practice the getter returns $null rather
+            # than throwing, and the branch below is the one that fires.
+            $candidatePath = $null
+        }
+
+        if (-not $candidatePath) {
+            # Indeterminate. Held only if this is plausibly an instance of OUR executable.
+            $candidateName = $null
+            try { $candidateName = $process.ProcessName } catch { $candidateName = $null }
+            if ($candidateName -and $candidateName.Equals($targetProcessName, [System.StringComparison]::OrdinalIgnoreCase)) {
+                return $true
+            }
+            continue
+        }
+
         try {
             $resolvedCandidate = [System.IO.Path]::GetFullPath($candidatePath)
         } catch {
@@ -602,6 +788,123 @@ function Invoke-AtomicMove {
     & $MoveDelegate $From $To
 }
 
+# Normalizes -DestinationDirectory ONCE, at the entry point, before any build work runs.
+#
+# Two things have to be true for the rest of this feature to hold, and neither is guaranteed by the
+# raw parameter value:
+#
+#  1. It must be absolute. Every sibling path (candidate, backup) is derived with Split-Path
+#     -Parent, which returns '' for a bare relative name like "deploy" -- and Join-Path then throws
+#     on the empty parent, deep inside the swap rather than here. Resolving relative to the
+#     CALLER's working directory (GetFullPath's default) is also the only interpretation that
+#     matches what an operator typing a relative path means; the script otherwise resolves
+#     everything from $PSScriptRoot.
+#  2. It must have a parent. A drive root ("C:\") has none, so there is nowhere to put the
+#     candidate and backup siblings -- and a deploy there would treat the entire volume as the
+#     destination. Refuse explicitly instead of failing obscurely later.
+#
+# Trailing separators are trimmed because Split-Path -Leaf returns '' for "C:\deploy\", which would
+# silently produce sibling names like ".candidate-..." with no leaf prefix.
+function Resolve-DestinationDirectory {
+    param([Parameter(Mandatory)] [string] $DestinationDirectory)
+
+    if ([string]::IsNullOrWhiteSpace($DestinationDirectory)) {
+        throw 'The -DestinationDirectory value is empty. Provide the directory the published application should be deployed into.'
+    }
+
+    # Resolved against $PWD, NOT via the single-argument GetFullPath overload. That overload uses
+    # the PROCESS current directory ([Environment]::CurrentDirectory), which PowerShell's
+    # Set-Location does not update -- so `cd D:\deploys; ./publish-launch.ps1 -DestinationDirectory
+    # site` would silently resolve "site" against wherever the pwsh process happened to start,
+    # typically this repository. That is a wrong directory, not an error: the deploy would succeed
+    # against a path the operator never named. $PWD is the location the operator actually sees.
+    $base = $PWD.ProviderPath
+    if ([string]::IsNullOrEmpty($base) -or -not [System.IO.Path]::IsPathRooted($base)) {
+        throw "Cannot resolve the relative -DestinationDirectory '$DestinationDirectory': the current location ('$PWD') is not a filesystem path. Pass an absolute path, or change to a filesystem directory first."
+    }
+
+    $resolved = [System.IO.Path]::GetFullPath($DestinationDirectory, $base).TrimEnd('\', '/')
+
+    $parent = [System.IO.Path]::GetDirectoryName($resolved)
+    if ([string]::IsNullOrEmpty($parent)) {
+        throw "The -DestinationDirectory '$DestinationDirectory' resolves to '$resolved', which is a drive/volume root. Deploying there would treat the whole volume as the deployment, and there is no parent directory in which to stage the candidate and backup siblings this script's atomic swap requires. Choose a subdirectory."
+    }
+
+    return $resolved
+}
+
+# A Missing or Empty destination takes a branch that never calls Copy-PreserveSet -- there is no
+# previous deployment to preserve anything from -- so the deployed instance has no .env. The app
+# reads its provider credentials from that file, so it will start and then fail every request with
+# an auth error that says nothing about a missing file. Warn loudly and name the exact path.
+#
+# Deliberately a warning, not a failure, and deliberately does NOT seed a placeholder .env:
+# a first-ever deploy to a new machine is a legitimate, expected use of this script, and a seeded
+# file would be indistinguishable from a real one -- silently shadowing the operator's own copy if
+# they later drop one in, and getting preserved forever by Copy-PreserveSet once it exists.
+function Write-FreshDeployWarning {
+    param(
+        [Parameter(Mandatory)] [string] $DestinationDirectory,
+        [Parameter(Mandatory)] [string] $State
+    )
+
+    $reason = if ($State -eq 'Missing') { 'did not exist' } else { 'was empty' }
+    Write-Warning (
+        "Fresh deployment: '$DestinationDirectory' $reason, so there is no previous deployment to " +
+        "preserve configuration from. No .env file will be present at " +
+        "'$(Join-Path $DestinationDirectory '.env')'. The application will start, but any provider " +
+        "requiring credentials will fail at request time. Create that file after this deploy " +
+        "completes -- subsequent deploys to this destination will preserve it."
+    )
+}
+
+# The two-rename swap, shared by the Empty and Recognized branches. It was duplicated verbatim in
+# both, which is how the two drifted apart in review more than once; a swap is exactly the place
+# where two near-identical copies must not be maintained by hand.
+#
+# Rename 1 (destination -> backup) is left UNGUARDED on purpose: it is the first mutation, so a
+# failure there leaves the pre-run state intact and the natural error is the right error. Only
+# rename 2 (candidate -> destination) has a rollback path, and that rollback is itself guarded:
+# between the two renames the destination path does not exist at all, so if the rollback ALSO
+# fails the operator is left with no destination and two siblings, and the only thing that makes
+# that recoverable is being told both paths and both errors. A bare rollback call would surface
+# the rollback's own exception and discard the original one, naming neither directory.
+function Invoke-CandidateSwap {
+    param(
+        [Parameter(Mandatory)] [string]      $CandidateDirectory,
+        [Parameter(Mandatory)] [string]      $DestinationDirectory,
+        [Parameter(Mandatory)] [scriptblock] $MoveDelegate
+    )
+
+    $backupPath = New-BackupPath -DestinationDirectory $DestinationDirectory
+    Invoke-AtomicMove -From $DestinationDirectory -To $backupPath -MoveDelegate $MoveDelegate
+
+    try {
+        Invoke-AtomicMove -From $CandidateDirectory -To $DestinationDirectory -MoveDelegate $MoveDelegate
+    } catch {
+        $swapError = $_.Exception.Message
+        try {
+            Invoke-AtomicMove -From $backupPath -To $DestinationDirectory -MoveDelegate $MoveDelegate
+        } catch {
+            throw (
+                "Swapping the candidate into place FAILED, and rolling back to the previous deployment ALSO FAILED. " +
+                "'$DestinationDirectory' does not currently exist and NOTHING will recreate it automatically. " +
+                "Your previous deployment -- including the only copy of .env, oauth-tokens/ and conversations/ -- " +
+                "is intact at '$backupPath'; rename it back onto '$DestinationDirectory' to recover. " +
+                "The assembled candidate is retained at '$CandidateDirectory'. " +
+                "Swap error: $swapError. Rollback error: $($_.Exception.Message)."
+            )
+        }
+        throw "Swapping the candidate into place failed and has been rolled back to the pre-existing destination (byte-identical to before this run): $swapError. The assembled candidate is retained at '$CandidateDirectory' for inspection."
+    }
+
+    try {
+        Remove-Item -LiteralPath $backupPath -Recurse -Force
+    } catch {
+        Write-Warning "Deploy succeeded, but removing the temporary backup '$backupPath' failed: $($_.Exception.Message)"
+    }
+}
+
 # Orchestrates one deploy of a validated staged publish output into $DestinationDirectory.
 # Never builds/publishes/launches anything itself -- StagedDirectory must already be a
 # validated publish artifact. Classifies first and rejects Unrecognized immediately. Missing
@@ -622,10 +925,19 @@ function Invoke-DestinationDeploy {
     )
 
     $state = (Test-DestinationState -DestinationDirectory $DestinationDirectory).State
-    $executablePath = Join-Path $DestinationDirectory 'LmStreaming.Sample.exe'
+    $executablePath = Join-Path $DestinationDirectory $script:ExecutableName
 
     if ($state -eq 'Unrecognized') {
-        throw "Destination '$DestinationDirectory' is Unrecognized (non-empty, but missing one or more of the required markers: LmStreaming.Sample.exe, appsettings.json, wwwroot/dist/index.html). Refusing to deploy -- nothing on disk was touched."
+        throw (Get-UnrecognizedDestinationMessage -DestinationDirectory $DestinationDirectory `
+            -Refusal 'Refusing to deploy -- nothing on disk was touched.')
+    }
+
+    if ($state -eq 'Missing') {
+        Assert-NoOrphanedDeploySiblings -DestinationDirectory $DestinationDirectory
+    }
+
+    if ($state -eq 'Missing' -or $state -eq 'Empty') {
+        Write-FreshDeployWarning -DestinationDirectory $DestinationDirectory -State $state
     }
 
     if ($state -eq 'Missing') {
@@ -653,21 +965,10 @@ function Invoke-DestinationDeploy {
         Copy-ReplaceSet -StagedDirectory $StagedDirectory -CandidateDirectory $candidateDirectory
         Confirm-PublishArtifact -PublishDirectory $candidateDirectory | Out-Null
 
-        $backupPath = New-BackupPath -DestinationDirectory $DestinationDirectory
-        Invoke-AtomicMove -From $DestinationDirectory -To $backupPath -MoveDelegate $MoveDelegate
-
-        try {
-            Invoke-AtomicMove -From $candidateDirectory -To $DestinationDirectory -MoveDelegate $MoveDelegate
-        } catch {
-            Invoke-AtomicMove -From $backupPath -To $DestinationDirectory -MoveDelegate $MoveDelegate
-            throw "Swapping the candidate into place failed and has been rolled back to the pre-existing destination (byte-identical to before this run): $($_.Exception.Message). The assembled candidate is retained at '$candidateDirectory' for inspection."
-        }
-
-        try {
-            Remove-Item -LiteralPath $backupPath -Recurse -Force
-        } catch {
-            Write-Warning "Deploy succeeded, but removing the temporary backup '$backupPath' failed: $($_.Exception.Message)"
-        }
+        Invoke-CandidateSwap `
+            -CandidateDirectory $candidateDirectory `
+            -DestinationDirectory $DestinationDirectory `
+            -MoveDelegate $MoveDelegate
         return
     }
 
@@ -690,21 +991,10 @@ function Invoke-DestinationDeploy {
         throw "Checkpoint C: the destination executable at '$executablePath' started running immediately before the swap. The assembled candidate is retained at '$candidateDirectory' for inspection; the destination was not touched."
     }
 
-    $backupPath = New-BackupPath -DestinationDirectory $DestinationDirectory
-    Invoke-AtomicMove -From $DestinationDirectory -To $backupPath -MoveDelegate $MoveDelegate
-
-    try {
-        Invoke-AtomicMove -From $candidateDirectory -To $DestinationDirectory -MoveDelegate $MoveDelegate
-    } catch {
-        Invoke-AtomicMove -From $backupPath -To $DestinationDirectory -MoveDelegate $MoveDelegate
-        throw "Swapping the candidate into place failed and has been rolled back to the pre-existing destination (byte-identical to before this run): $($_.Exception.Message). The assembled candidate is retained at '$candidateDirectory' for inspection."
-    }
-
-    try {
-        Remove-Item -LiteralPath $backupPath -Recurse -Force
-    } catch {
-        Write-Warning "Deploy succeeded, but removing the temporary backup '$backupPath' failed: $($_.Exception.Message)"
-    }
+    Invoke-CandidateSwap `
+        -CandidateDirectory $candidateDirectory `
+        -DestinationDirectory $DestinationDirectory `
+        -MoveDelegate $MoveDelegate
 }
 
 # Real orchestrator for `-DestinationDirectory`: builds the client + server exactly like the
@@ -729,12 +1019,19 @@ function Invoke-DestinationPublish {
 
     $state = (Test-DestinationState -DestinationDirectory $DestinationDirectory).State
     if ($state -eq 'Unrecognized') {
-        throw "Destination '$DestinationDirectory' is Unrecognized (non-empty, but missing one or more of the required markers: LmStreaming.Sample.exe, appsettings.json, wwwroot/dist/index.html). Refusing to publish -- nothing was built."
+        throw (Get-UnrecognizedDestinationMessage -DestinationDirectory $DestinationDirectory `
+            -Refusal 'Refusing to publish -- nothing was built.')
+    }
+    if ($state -eq 'Missing') {
+        # Before the build, not only inside Invoke-DestinationDeploy: an interrupted-deploy state is
+        # not going to resolve itself over the minutes the build takes, and refusing now means the
+        # operator reads the recovery instructions instead of an npm log.
+        Assert-NoOrphanedDeploySiblings -DestinationDirectory $DestinationDirectory
     }
     Write-Host "    Destination state: $state" -ForegroundColor DarkGray
 
     if ($state -eq 'Recognized') {
-        $executablePath = Join-Path $DestinationDirectory 'LmStreaming.Sample.exe'
+        $executablePath = Join-Path $DestinationDirectory $script:ExecutableName
         if (Test-ProcessHoldsPath -ExecutablePath $executablePath -ProcessEnumerationDelegate $ProcessEnumerationDelegate) {
             throw "Checkpoint A: the destination executable at '$executablePath' is currently running. Stop it before deploying, then retry."
         }
@@ -784,13 +1081,14 @@ function Invoke-Main {
     $ProjectFile = Join-Path $ProjectDir 'LmStreaming.Sample.csproj'
     $ClientAppDir = Join-Path $ProjectDir 'ClientApp'
 
-    if (-not (Test-Path $ProjectFile)) {
+    if (-not (Test-Path -LiteralPath $ProjectFile)) {
         throw "Could not find LmStreaming.Sample.csproj next to this script ($ProjectFile)."
     }
 
     if ($DestinationDirectoryWasExplicit -and $DestinationDirectory) {
+        $resolvedDestination = Resolve-DestinationDirectory -DestinationDirectory $DestinationDirectory
         $repositoryRoot = Invoke-GitMetadata -RepoDir $ProjectDir -Arguments @('rev-parse', '--show-toplevel') -Description 'the repository root'
-        Invoke-DestinationPublish -ProjectFile $ProjectFile -ClientAppDirectory $ClientAppDir -Configuration $Configuration -DestinationDirectory $DestinationDirectory -RepositoryRoot $repositoryRoot
+        Invoke-DestinationPublish -ProjectFile $ProjectFile -ClientAppDirectory $ClientAppDir -Configuration $Configuration -DestinationDirectory $resolvedDestination -RepositoryRoot $repositoryRoot
         return
     }
 
