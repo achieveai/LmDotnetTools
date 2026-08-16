@@ -146,9 +146,14 @@ public class SubAgentSpawnSuppressionTests
         injectedReceipt!.SpawningSuppressed.Should().BeTrue(
             "this loop enforces the flag, so its receipt may promise the guarantee");
 
-        // The latch is released with the run: a later turn on the same thread gets the tool back.
-        created.SubAgentTools!.GetFunctions().Select(f => f.Contract.Name).Should().Contain(
-            "Agent", "the run-scoped suppression must have been disposed exactly once at run end");
+        // The latch is released with the run, but disposal happens on the producer's continuation
+        // AFTER DrainAsync observes the terminal message — so a later turn getting the tool back is
+        // not necessarily visible the instant the drain loop exits. Poll for it instead of asserting
+        // immediately.
+        await WaitForConditionAsync(
+            () => created.SubAgentTools!.GetFunctions().Select(f => f.Contract.Name).Contains("Agent"),
+            "The run-scoped suppression was never disposed after the run ended.",
+            cts.Token);
 
         await cts.CancelAsync();
     }
@@ -217,8 +222,15 @@ public class SubAgentSpawnSuppressionTests
         var messages = await DrainAsync(loop, NewInput("boom", suppressSpawning: true), cts.Token);
         messages.OfType<RunCompletedMessage>().Should().NotBeEmpty("the run must have finished, in error");
 
-        loop.SubAgentTools!.GetFunctions().Select(f => f.Contract.Name).Should().Contain(
-            "Agent", "a failed run must still release its suppression scope");
+        // DrainAsync returns as soon as it observes the terminal RunCompletedMessage, but the producer
+        // releases RunSpawnSuppression from a continuation that runs AFTER that terminal publish — an
+        // immediate assertion here races that continuation and can observe the scope as not yet
+        // disposed. Poll for it instead (production always releases it, just not synchronously with
+        // the terminal message reaching this side of the channel).
+        await WaitForConditionAsync(
+            () => loop.SubAgentTools!.GetFunctions().Select(f => f.Contract.Name).Contains("Agent"),
+            "A failed run never released its suppression scope.",
+            cts.Token);
 
         await cts.CancelAsync();
     }
@@ -497,6 +509,33 @@ public class SubAgentSpawnSuppressionTests
             var history = MessagePersistenceConverter.FromPersistedMessages(
                 await store.LoadMessagesAsync(threadId, ct));
             if (condition(history))
+            {
+                return;
+            }
+
+            await Task.Delay(20, ct);
+        }
+
+        throw new TimeoutException(timeoutMessage);
+    }
+
+    /// <summary>
+    /// Waits until <paramref name="condition"/> is true, or throws after a 10s timeout. Mirrors
+    /// <see cref="WaitForPersistedAsync"/>'s bounded-poll shape for the same reason: a terminal message
+    /// reaching <c>DrainAsync</c> and the producer's continuation that releases
+    /// <c>RunSpawnSuppression</c> are two separate, unsynchronized events, so anything asserting on the
+    /// disposal that continuation performs has to poll for it rather than check once immediately after
+    /// the terminal message is observed.
+    /// </summary>
+    private static async Task WaitForConditionAsync(
+        Func<bool> condition,
+        string timeoutMessage,
+        CancellationToken ct)
+    {
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (condition())
             {
                 return;
             }
