@@ -168,24 +168,41 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
             }
 
             _disposed = true;
-            base.Dispose(disposing);
 
-            if (disposing)
+            // try/finally, not sequential statements: base.Dispose can throw (a SQLite close can
+            // surface a native error), and if it does, an un-finallied Release is skipped. The
+            // permit is then lost for the lifetime of the factory -- and unlike a leaked handle,
+            // which the GC eventually reclaims, a lost permit never comes back. Leak enough of
+            // them and GetConnectionAsync blocks forever on a semaphore no one will ever post to,
+            // which presents as the whole persistence layer hanging with no error anywhere.
+            // Releasing the permit is this type's ONLY responsibility to the factory; it has to
+            // happen whether or not the underlying connection closed cleanly.
+            try
             {
-                _ = _semaphore.Release();
+                base.Dispose(disposing);
+            }
+            finally
+            {
+                if (disposing)
+                {
+                    _ = _semaphore.Release();
+                }
             }
         }
 
         public override async ValueTask DisposeAsync()
         {
-            if (_disposed)
-            {
-                return;
-            }
-
-            _disposed = true;
+            // Deliberately does NOT set _disposed here before delegating: DbConnection's default
+            // DisposeAsync() implementation calls the synchronous Dispose(), which virtually
+            // dispatches back to THIS type's Dispose(bool) override on the very same instance. If
+            // _disposed were already true at that point, that reentrant call's own guard would
+            // short-circuit and skip base.Dispose(disposing) entirely -- meaning the underlying
+            // SqliteConnection's native handle would never actually be closed or returned to the
+            // pool, silently leaking it for the lifetime of this (GC-tracked) object. Dispose(bool)
+            // already sets _disposed and releases the semaphore exactly once; letting that call own
+            // both keeps this override a thin, idempotent forward rather than a second, competing
+            // disposal path.
             await base.DisposeAsync().ConfigureAwait(false);
-            _ = _semaphore.Release();
         }
     }
 }

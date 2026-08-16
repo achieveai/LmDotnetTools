@@ -185,33 +185,35 @@ public class MutableSubAgentTemplateSourceTests
         var source = new MutableSubAgentTemplateSource();
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
 
-        var writer = Task.Run(
-            () =>
+        // Deliberately NOT passing cts.Token to Task.Run. The token is a 2-second timer, and
+        // Task.Run's token argument is a *pre-execution* cancellation check, not a way to stop the
+        // delegate: if the timer fires before the thread pool dequeues the work item, the task
+        // transitions straight to Canceled without ever running its body, and the Task.WhenAll
+        // below then throws TaskCanceledException. On a loaded CI agent that scheduling delay is
+        // routine -- it is what made this test flake. Both loops already poll IsCancellationRequested,
+        // which is the only thing that actually ends them, so the token argument bought nothing and
+        // only created the race.
+        var writer = Task.Run(() =>
+        {
+            var i = 0;
+            while (!cts.IsCancellationRequested)
             {
-                var i = 0;
-                while (!cts.IsCancellationRequested)
-                {
-                    source.TryRegister($"key-{i++}", Template($"k{i}"));
-                }
-            },
-            cts.Token
-        );
+                source.TryRegister($"key-{i++}", Template($"k{i}"));
+            }
+        });
 
-        var reader = Task.Run(
-            () =>
+        var reader = Task.Run(() =>
+        {
+            while (!cts.IsCancellationRequested)
             {
-                while (!cts.IsCancellationRequested)
+                // Force enumeration of both keys and values from each immutable snapshot.
+                foreach (var kvp in source.Templates)
                 {
-                    // Force enumeration of both keys and values from each immutable snapshot.
-                    foreach (var kvp in source.Templates)
-                    {
-                        _ = kvp.Key.Length;
-                        _ = kvp.Value.Name;
-                    }
+                    _ = kvp.Key.Length;
+                    _ = kvp.Value.Name;
                 }
-            },
-            cts.Token
-        );
+            }
+        });
 
         await Task.WhenAll(writer, reader);
     }

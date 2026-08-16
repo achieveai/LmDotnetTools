@@ -4,10 +4,11 @@ namespace LmStreaming.Sample.Tests;
 
 /// <summary>
 ///     Covers <c>Program.ResolveViteAutoRun()</c> — the flag that decides whether
-///     <c>Vite.AspNetCore</c> spawns/supervises its own <c>npm run dev</c> child (AutoRun), or
-///     whether an external supervisor (e.g. <c>publish-launch.ps1</c>) owns that process instead.
-///     Follows the same reflection + env-var save/restore pattern as
-///     <see cref="ProgramPortResolutionTests" />.
+///     <c>Vite.AspNetCore</c> spawns/supervises its own <c>npm run dev</c> child (AutoRun) when
+///     the app is run in DEVELOPMENT mode via <c>dotnet run</c>. This is unrelated to
+///     <c>publish-launch.ps1</c>, which now builds+publishes a standalone Production artifact
+///     and never spawns, proxies to, or otherwise involves a Vite dev server at all. Follows the
+///     same reflection + env-var save/restore pattern as <see cref="ProgramPortResolutionTests" />.
 /// </summary>
 public class ProgramViteAutoRunResolutionTests
 {

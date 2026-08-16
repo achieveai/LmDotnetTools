@@ -68,8 +68,20 @@ worktrees/
 # Local proxy rebuild/build scratch dir (multi-GB; never track)
 /.run/
 
-# publish-launch.ps1 run-state side-car files (samples/LmStreaming.Sample/.run/instance-<port>.json)
+# Local scratch dir under the sample (publish-launch.ps1 no longer writes instance-<port>.json here;
+# its run-state side-car is .run-state.json inside the publish run directory ignored just below).
 samples/LmStreaming.Sample/.run/
+
+# publish-launch.ps1 standalone-publish run directories (retained, inspectable artifacts — never tracked)
+/.claude/scratchpad/lmstreaming-standalone-publish/
+
+# publish-launch.ps1 -DestinationDirectory deploy siblings. These exist only transiently during a
+# swap, but a deploy interrupted between its two renames leaves them behind — and a backup sibling
+# is a COMPLETE copy of a deployment, including .env, oauth-tokens/ and conversations/. If a
+# destination is ever placed inside this repository, those must never be committable. Anchored
+# nowhere, so they match at any depth.
+*.candidate-*/
+*.backup-*/
 
 # Ad-hoc debug screenshots dropped at the repo root (doc screenshots under docs/ stay tracked)
 /*.png
