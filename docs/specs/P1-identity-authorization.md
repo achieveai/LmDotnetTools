@@ -524,11 +524,36 @@ and `:2075`. `UseCors` inside `UseLmStreaming()` already precedes `MapController
 > [#237](https://github.com/achieveai/LmDotnetTools/issues/237). Enforcement is a property of the
 > deployment, not of a customer.
 
-`Identity:Enforce=false` (the default) keeps every current call path working, resolving
-unauthenticated interactive requests to the legacy principal of section 8.5.
-`Identity:Enforce=true` requires a validated token on every `/api/*` route. This mirrors the
-`AUTH_ENFORCE` deploy discipline in `docs/deployment/AUTH_ENFORCE.md`: deploy with enforcement off,
-onboard callers, then flip.
+`Identity:Enforce=true` requires a validated token on every `/api/*` route.
+
+`Identity:Enforce=false` (the default) keeps every current call path working. Concretely, an
+unauthenticated interactive request is not rejected and does not produce a null principal; it
+resolves to the **development principal**:
+
+```
+Principal {
+    Source     = Interactive,
+    Actor      = (EndUser, "dev:local"),
+    OnBehalfOf = null,
+    TenantId   = Identity:LegacyTenantId (default "legacy"),
+    AppId      = null,
+    Roles      = ["admin"],
+}
+```
+
+Two properties make this safe to reason about. It is a **real** `Principal`, so no code path needs a
+null check and no test needs a second code path - which is what keeps the existing suite green. And
+it never authorizes anything by its own contents: with `Enforce=false`, `IResourceAccessPolicy`
+short-circuits at step 0 of 7.4 to `Allow("enforcement_disabled")` before looking at tenant, owner,
+or role. The `admin` role and the quarantine tenant id are there so that listing queries and UI
+affordances behave sensibly in development, **not** because the policy consults them.
+
+The corollary matters for reviewers: `Enforce=false` is not "authorization with a permissive
+principal", it is "authorization off". Nothing about the development principal should be read as a
+security boundary, and the flip to `true` is what turns the model on.
+
+This mirrors the `AUTH_ENFORCE` deploy discipline in `docs/deployment/AUTH_ENFORCE.md`: deploy with
+enforcement off, onboard callers, then flip.
 
 The consequence to be aware of is that a shared deployment cannot stage the flip customer by
 customer - when it flips, it flips for everyone in that process. Staging across customers is done
@@ -641,10 +666,14 @@ sign-in boundary.
   route. Explicitly **not** a redirect back to Entra. A `401`-style re-authentication redirect would
   loop forever, because signing in again cannot fix a missing tenant - that loop is the specific
   failure mode this path exists to avoid.
-- **What is logged:** one Warning-level audit record (7.7) carrying `entraTenantId`, `oid`,
-  `preferred_username`, `appId`, and the correlation id. This is the signal an operator uses to
-  notice that someone is waiting to be onboarded. The raw token is never logged. Records are
-  deduplicated per `tid` over a short window so a client retry loop cannot flood the log.
+- **What is logged:** one Warning-level `AuthenticationAuditRecord` (7.7) with
+  `outcome = rejected`, `reason = unknown_tenant`, `claimedEntraTenantId`, `claimedObjectId`,
+  `appId`, and the correlation id - plus `claimedUpn` only when `Identity:Audit:IncludeUpn` is set,
+  since the person named there is by definition not our user. This record is a pre-principal one
+  precisely because no principal exists: the rejection is the reason none was constructed. It is
+  the signal an operator uses to notice that someone is waiting to be onboarded. The raw token is
+  never logged. Records are deduplicated per `tid` over a short window so a client retry loop
+  cannot flood the log.
 
 **Binding the first admin.** On a user's first successful sign-in, if a `tenant_admins` row for that
 tenant matches their lower-cased `preferred_username` and still has `user_id IS NULL`, `user_id` is
@@ -655,7 +684,21 @@ bound, the UPN is never consulted again (8.2).
 
 ## 5. Token validation rules for the OBO JWT
 
-Fail closed at every step. Any failure is `401`, an audit record, and no principal.
+Fail closed at every step. Every failure produces an audit record and no principal. The status code
+is **not** uniform, and the rule is stated here once so the per-step codes below are not read as
+inconsistencies:
+
+- **`401 Unauthorized`** - the token could not be established as genuine: bad `typ`, disallowed
+  algorithm, wrong issuer or audience, bad signature, expired, missing `oid`/`jti`, or replayed.
+  The caller may retry with a better token.
+- **`403 Forbidden`** - the token is genuine and its claims are trusted, but the identity it names
+  is not entitled to be here: an unprovisioned or suspended tenant (step 7), or an app asserting a
+  user outside its own tenant (step 11). Retrying with a fresh token changes nothing; an operator
+  has to act.
+
+Steps 1-6 and 8-10 are `401`. Steps 7 and 11 are `403`. Neither response body distinguishes further
+- both return only a stable code (`invalid_token`, `tenant_not_provisioned`, `tenant_mismatch`) with
+no detail about which tenants exist.
 
 ### 5.1 Validation sequence
 
@@ -677,18 +720,28 @@ Ordered, and short-circuiting:
    resource URI.
 5. **Signature** against the key identified by `kid` (5.2).
 6. **Lifetime.** `nbf` and `exp` with the clock skew of 5.3.
-7. **Tenant.** `tid` must be present and must resolve to an `active` row in the `tenants` table
-   (8.2). A well-signed token from a tenant we have not provisioned is `403`, not `401` - it
-   authenticated fine, it is just not a customer. Resolution never creates a tenant (4.4).
-8. **Subject.** `oid` must be present; the user id is `{tid}:{oid}` (3.3).
+7. **Tenant resolution.** `tid` must be present, and looking it up as
+   `tenants.entra_tenant_id = tid` must return exactly one row with `status = 'active'`. That row's
+   `tenant_id` - our internal `tnt_*` value - is what becomes `Principal.TenantId`; the raw `tid`
+   GUID is never used as a tenant id anywhere past this line. A well-signed token whose `tid` has
+   no row is `403 tenant_not_provisioned`; a row with `status = 'suspended'` is `403` as well.
+   Resolution never creates a tenant (4.4). Call the resolved value `resolvedTenantId` for step 11.
+8. **Subject.** `oid` must be present; the user id is `{tid}:{oid}` (3.3). This key deliberately
+   uses the **Entra** `tid`, not the internal id, because it must stay stable if a tenant is ever
+   re-provisioned under a new internal id.
 9. **Replay.** `jti` must be present and unseen (5.4).
 10. **Actor chain.** If `act` is present, record it into `DelegationChain` (5.5).
-11. **Tenant agreement.** The `tid` in the token must equal the tenant the presenting app id is
-    onboarded to. A mismatch means an app registered for tenant A is asserting a user of tenant B -
-    reject with `403` and raise it as a security event, not a routine denial.
+11. **Tenant agreement.** `resolvedTenantId` from step 7 must equal the internal tenant id the
+    presenting app id is onboarded to (`Identity:Apps:<appId>:TenantId`, 5.2). **Both sides of this
+    comparison are internal `tnt_*` ids** - comparing the token's raw `tid` GUID against the
+    configured internal id would never match, and the check would either reject everything or, if
+    an implementer "fixed" it by removing the check, silently drop cross-tenant containment. A
+    mismatch means an app registered for tenant A is asserting a user of tenant B - reject with
+    `403 tenant_mismatch` and raise it as a security event, not a routine denial.
 
 Step 11 is the cross-tenant containment check. Without it, a single compromised app credential
-could assert users in every tenant.
+could assert users in every tenant. Note the two steps do different work: step 7 asks "is this
+Entra tenant a customer of ours?", step 11 asks "is it *this app's* customer?".
 
 ### 5.2 Key distribution and rotation
 
@@ -707,8 +760,15 @@ could assert users in every tenant.
 }
 ```
 
-`TenantId` here is our internal tenant id (3.3), so an app registration is onboarded to a tenant we
-have already provisioned; it is the value step 11 of 5.1 compares against.
+`TenantId` here is our internal tenant id (3.3) - a `tnt_*` value that must already exist in the
+`tenants` table (8.2), so an app registration cannot be onboarded to a tenant nobody provisioned.
+It is compared in step 11 of 5.1 against `resolvedTenantId`, the *internal* id that step 7 obtained
+by looking up the token's `tid`. The configuration never contains an Entra `tid` GUID; the
+`tid` -> `tnt_*` mapping lives in exactly one place, the `tenants.entra_tenant_id` column.
+
+Startup validation: every `Identity:Apps:*:TenantId` is resolved against the `tenants` table when
+the host starts. An unresolvable value is a **startup failure**, not a runtime `403` - a typo in an
+app registration should not present as an authentication bug months later.
 
 `jwks_uri` is resolved from the issuer's OIDC discovery document at
 `{issuer}/.well-known/openid-configuration` rather than hardcoded, because the path is not
@@ -743,9 +803,10 @@ token's acceptance window by a full 100%. 120s matches the figure already agreed
 ### 5.4 Replay
 
 `jti` is required. A validated `jti` is recorded with an expiry of `exp + ClockSkew` and rejected
-on second presentation. A replayed `jti` is `401` **and** an audit record classified as a security
-event, not a routine denial - a replay is evidence, and a log line that looks like an ordinary
-`401` will not be noticed.
+on second presentation. A replayed `jti` is `401` **and** an `AuthenticationAuditRecord` (7.7) with
+`eventClass = security` and `reason = replayed_jti`, not a routine denial - a replay is evidence,
+and a log line that looks like an ordinary `401` will not be noticed. The record carries the `jti`
+so the replay can be correlated with the original accepted use.
 
 **Store.** Single-instance today: an in-memory expiring set. This is honestly insufficient the
 moment the API runs more than one replica, because a replay directed at a second instance would
@@ -761,9 +822,18 @@ a multi-instance deployment must either use sticky routing or accept the gap exp
 > within their lifetime.
 
 So that this cannot be missed by someone who never reads this document, the replay store reports
-itself at runtime: the diagnostics payload exposes `identity.replayStore` as `in-memory` or
-`shared`, and startup logs one Warning when the value is `in-memory`. A configuration flag alone
-would not do - the operator adding a replica is rarely the person who configured identity.
+itself at runtime. Concretely:
+
+- A new `GET /api/diagnostics/identity` action on the existing
+  `samples/LmStreaming.Sample/Controllers/DiagnosticsController.cs:14` (route prefix
+  `api/diagnostics`, alongside the existing `provider-info` and `serialization-samples` actions)
+  returns `{ "enforce": true|false, "replayStore": "in-memory"|"shared", "replicaSafe": false|true }`.
+  Reusing this controller rather than adding another one keeps the operator's diagnostic surface in
+  one place; it is registered like the rest of the sample's controllers and needs no new wiring.
+- Startup logs exactly one `Warning` when `replayStore` is `in-memory`, naming this section.
+
+A configuration flag alone would not do - the operator adding a replica is rarely the person who
+configured identity. The action ships in slice 5 with the rest of the operator surface (11).
 
 ### 5.5 The `act` claim
 
@@ -874,7 +944,7 @@ Minted by us, RFC 9068-conformant, header `typ: at+jwt`, signed `RS256`:
 | `scope` | Space-delimited, subset of the minting principal's scopes |
 | `jti` | Replay id |
 | `iat`, `nbf`, `exp` | `exp - iat <= 900` seconds |
-| `client_id` | Required by RFC 9068; the app id |
+| `client_id` | REQUIRED by RFC 9068 section 2.2; the app id |
 
 ### 6.3 Lifetime
 
@@ -918,10 +988,28 @@ Served on the `/embed` route:
 - `X-Frame-Options: DENY` on every non-embed route. It is a legacy fallback only: any browser
   supporting CSP obeys `frame-ancestors` and ignores `X-Frame-Options`, so `frame-ancestors` is
   the real policy.
-- The host is advised to set `sandbox="allow-scripts allow-forms allow-popups"`. Note that
-  `allow-scripts` together with `allow-same-origin` on same-origin content lets the framed document
-  remove its own `sandbox` attribute, nullifying the sandbox - so that pairing is only safe
-  cross-origin, which the embed is.
+- The host is advised to set
+  `sandbox="allow-scripts allow-same-origin allow-forms allow-popups"`.
+
+  **`allow-same-origin` is required, not optional.** Without it the framed document is assigned an
+  *opaque* origin, and three things in 6.4 stop working:
+  1. The iframe's `postMessage` arrives at the host with `event.origin === "null"`, so the host
+     cannot verify who sent `embed-ready` - and 6.4 requires it to.
+  2. The host has no non-wildcard `targetOrigin` to send the token to, since `"null"` is not a
+     usable target. The only way to deliver the token becomes `targetOrigin: "*"`, which 6.4 calls
+     a defect.
+  3. The framed app cannot read its own origin's storage, and same-origin XHR/fetch to our API is
+     treated as cross-origin from an opaque origin.
+
+  The well-known warning that `allow-scripts` plus `allow-same-origin` lets a document remove its
+  own `sandbox` attribute applies **only when the framed content is same-origin with the parent** -
+  the escape works by reaching into the parent document. The embed is served from our origin and
+  the host page from theirs, so the pairing is safe here. This is called out because a reviewer
+  applying the rule mechanically will ask for `allow-same-origin` to be dropped, and dropping it
+  silently forces a wildcard `targetOrigin`.
+
+  The sandbox is defence in depth regardless; `frame-ancestors` above is the control that actually
+  bounds who may frame us.
 - **No cookies are used by the embed**, which is what avoids `SameSite=None; Secure` and CHIPS
   `Partitioned` entirely. This is the main practical argument for the bearer-token choice in 4.1.
 
@@ -944,7 +1032,12 @@ the narrowest door.
 2. **Named users only.** A grant names a user id. No link sharing, no org-wide-by-default.
 3. **Tenant is an outer boundary, not a permission.** Every query filters on `tenant_id` first. A
    cross-tenant read is impossible by construction, not by policy.
-4. **Absent means denied.** A resource with no owner is not public; see the migration policy in 8.5.
+4. **Absent means denied, and null never matches.** A resource with no owner is not public. Any
+   comparison in which either side is null - a null `OwnerUserId`, or a principal with a null
+   `EffectiveUserId` - is **not a match**, never a match. This is stated as a rule because the
+   obvious implementation (`a == b` on two nullable strings) gets it exactly backwards: it makes
+   every unowned resource match every app-only principal. See 7.4 step 3 and the migration policy
+   in 8.5.
 5. **Not-found, not forbidden.** A read of a resource in another tenant, or one the principal has
    no grant on, returns `404`. This matches the gateway's existing uniform-404 cross-app behaviour
    and avoids confirming that an id exists. A *write* to a resource the principal can read but not
@@ -975,24 +1068,48 @@ Flat, tenant-scoped:
 New in `src/LmCore/Identity/`:
 
 ```csharp
+/// <summary>Addresses a resource: what kind, and which one.</summary>
 public readonly record struct ResourceRef(string Type, string Id);
+
+/// <summary>
+/// The ownership facts the policy needs about one resource. Loaded by the caller from whichever
+/// store owns the resource, so the policy performs no I/O of its own and is directly unit-testable.
+/// </summary>
+public sealed record ResourceDescriptor
+{
+    public required ResourceRef Ref { get; init; }
+
+    /// <summary>Owning tenant. Ignored when <see cref="IsSystemDefined"/> is true.</summary>
+    public required string TenantId { get; init; }
+
+    /// <summary>Owning end user, '{tid}:{oid}'. Null for an app-owned or legacy resource.</summary>
+    public string? OwnerUserId { get; init; }
+
+    /// <summary>Owning app id. Null for a resource created through the interactive UI.</summary>
+    public string? OwnerAppId { get; init; }
+
+    /// <summary>Read-only built-in - a system mode or the seeded workspace.</summary>
+    public bool IsSystemDefined { get; init; }
+}
 
 public enum AccessAction { Read, Use, Write, Delete, Share, Publish }
 
 public sealed record AccessDecision(bool Allowed, string Reason)
 {
-    public static AccessDecision Deny(string reason) => new(false, reason);
-    public static readonly AccessDecision AllowOwner  = new(true, "owner");
-    public static readonly AccessDecision AllowGrant  = new(true, "grant");
-    public static readonly AccessDecision AllowAdmin  = new(true, "tenant_admin");
-    public static readonly AccessDecision AllowSystem = new(true, "system_defined");
+    public static AccessDecision Deny(string reason)  => new(false, reason);
+    public static AccessDecision Allow(string reason) => new(true, reason);
+    public static readonly AccessDecision AllowOwner    = new(true, "owner");
+    public static readonly AccessDecision AllowGrant    = new(true, "grant");
+    public static readonly AccessDecision AllowAdmin    = new(true, "tenant_admin");
+    public static readonly AccessDecision AllowSystem   = new(true, "system_defined");
+    public static readonly AccessDecision AllowDisabled = new(true, "enforcement_disabled");
 }
 
 public interface IResourceAccessPolicy
 {
     ValueTask<AccessDecision> EvaluateAsync(
         Principal principal,
-        ResourceRef resource,
+        ResourceDescriptor resource,
         AccessAction action,
         CancellationToken ct = default);
 }
@@ -1003,15 +1120,37 @@ Core interface of that name.
 
 Evaluation order, first match wins:
 
-1. `resource.TenantId != principal.TenantId` -> `Deny("cross_tenant")`.
-2. Resource is system-defined (`IsSystemDefined`) and action is `read`/`use` -> `AllowSystem`.
-   System-defined resources are readable by every member of every tenant and writable by no one.
-3. `resource.OwnerUserId == principal.EffectiveUserId` -> `AllowOwner`.
-4. A grant exists for `(tenant, resource, principal.EffectiveUserId)` conferring the action ->
+0. **Enforcement off.** When `Identity:Enforce` is false (4.1) -> `AllowDisabled`, audited. This is
+   the pre-rollout path and the reason existing tests keep passing; it is deliberately the first
+   step, so that nothing below it is ever exercised with the development principal and no rule can
+   be misread as the disabled behaviour.
+1. `resource.IsSystemDefined` and action is `Read` or `Use` -> `AllowSystem`. System-defined
+   resources are readable by every member of every tenant and writable by no one, so this is
+   evaluated **before** the tenant check and `TenantId` is not consulted for them.
+2. `resource.TenantId != principal.TenantId` -> `Deny("cross_tenant")`. Admins do not bypass this;
+   a tenant admin is an admin of exactly one tenant.
+3. **Subject resolution.** Let `user = principal.EffectiveUserId`.
+   - If `user is null` the caller is app-only (mode C, or a service acting as itself). It may match
+     **only** on the app dimension: `resource.OwnerAppId is not null && resource.OwnerAppId ==
+     principal.AppId` -> `AllowOwner`; otherwise -> `Deny("app_only_no_owner")`. An app-only
+     principal never matches a null owner and never consults grants.
+   - Otherwise continue to step 4.
+4. `resource.OwnerUserId is not null && resource.OwnerUserId == user` -> `AllowOwner`.
+5. An unexpired grant exists for `(principal.TenantId, resource.Ref, user)` conferring the action ->
    `AllowGrant`.
-5. `principal.Roles` contains `admin` and the action is permitted for admins -> `AllowAdmin`,
+6. `principal.Roles` contains `admin` and the action is permitted for admins -> `AllowAdmin`,
    audited.
-6. Otherwise -> `Deny("no_grant")`.
+7. Otherwise -> `Deny("no_grant")`.
+
+**The null rule (7.1 principle 4) is load-bearing in steps 3 and 4.** Both `OwnerUserId` and
+`EffectiveUserId` are nullable. Writing step 4 as a bare `resource.OwnerUserId == user` would make a
+legacy row with no owner match every app-only principal, silently handing unowned data to any
+service credential - the precise opposite of "private by default". The non-null guards are not
+defensive style; they are the rule.
+
+SQL behaves correctly here without the guard, because `NULL = 'x'` is `NULL` rather than true. C#
+`==` on two nulls is `true`. That asymmetry between 7.5's query and this algorithm is exactly where
+an implementer is likely to go wrong, so both are written out explicitly.
 
 `AccessDecision.Reason` is written to the audit record for allows as well as denies. A deny-only
 audit cannot answer "was this ever attempted successfully?".
@@ -1021,19 +1160,48 @@ audit cannot answer "was this ever attempted successfully?".
 Listing endpoints must not fetch-then-filter. `IConversationStore.ListThreadsAsync` gains a
 principal parameter and pushes the predicate into SQL:
 
+The predicate must mirror **every** allow branch of 7.4, not just the owner branch. A query that
+omits the admin branch produces the worst possible outcome: `GET /conversations` returns an empty
+list for a tenant admin while `GET /conversations/{id}` on the same rows returns `200`. The list and
+the point read must agree.
+
+Four parameters are bound from the principal before the query runs:
+
+| Parameter | Value |
+|---|---|
+| `@tenantId` | `principal.TenantId` |
+| `@userId` | `principal.EffectiveUserId`, may be `NULL` for an app-only caller |
+| `@appId` | `principal.AppId`, `NULL` for an interactive caller |
+| `@isTenantAdmin` | `1` when `principal.Roles` contains `admin`, else `0` - computed once, not per row |
+
 ```sql
 SELECT ... FROM thread_metadata t
 WHERE t.tenant_id = @tenantId
-  AND ( t.owner_user_id = @userId
-        OR EXISTS (SELECT 1 FROM resource_grants g
-                   WHERE g.tenant_id = @tenantId
-                     AND g.resource_type = 'conversation'
-                     AND g.resource_id = t.thread_id
-                     AND g.subject_id = @userId
-                     AND (g.expires_at IS NULL OR g.expires_at > @now)) )
+  AND ( @isTenantAdmin = 1
+        OR (@userId IS NOT NULL AND t.owner_user_id = @userId)
+        OR (@userId IS NULL AND @appId IS NOT NULL AND t.owner_app_id = @appId)
+        OR (@userId IS NOT NULL AND EXISTS (
+              SELECT 1 FROM resource_grants g
+              WHERE g.tenant_id     = @tenantId
+                AND g.resource_type = 'conversation'
+                AND g.resource_id   = t.thread_id
+                AND g.subject_id    = @userId
+                AND (g.expires_at IS NULL OR g.expires_at > @now))) )
 ORDER BY t.last_updated DESC
 LIMIT @limit OFFSET @offset;
 ```
+
+The `@userId IS NOT NULL` guards are the SQL spelling of 7.4 step 3: without them an app-only
+principal would fall through to the grant sub-query with a `NULL` subject. They do not protect
+against a `NULL` **owner** - SQL already handles that, since `NULL = @userId` evaluates to `NULL`
+and never satisfies the `WHERE`.
+
+Listing a tenant admin's results emits one audit record for the query, not one per row: action
+`read`, resource type `conversation`, resource id `*`, reason `tenant_admin`.
+
+Workspaces and modes use the identical three-branch shape. Their stores are whole-file JSON today
+(2.6) and so filter in memory, which is safe only because they have no `LIMIT`; if OQ-3 moves them
+into SQLite they must adopt the query form above rather than keep the in-memory filter.
 
 In-memory filtering after a `LIMIT` would silently return short pages - the page would be trimmed
 after the database had already truncated it.
@@ -1066,32 +1234,74 @@ the repository already runs Serilog with `CompactJsonFormatter` writing structur
 logs are already queried with DuckDB (see `CLAUDE.md`).
 
 **What makes the later migration mechanical** is that the interim must not be ad-hoc logging at call
-sites. Every record goes through one sink:
+sites. Every record goes through one sink.
+
+**There are two record kinds, and conflating them does not work.** The events that most need an
+audit trail - an unprovisioned tenant rejected at sign-in (4.4), a cross-tenant token (5.1 step 11),
+a replayed `jti` (5.4), a signature that did not verify - all occur *before* a `Principal` exists,
+by definition: they are the reasons no principal was constructed. A single record type whose fields
+are sourced from `Principal` therefore cannot carry them, and an implementer forced to fill
+`actorId` would either invent a placeholder or, worse, skip the record. So:
 
 ```csharp
-public interface IAuditSink { void Write(AuditRecord record); }
+public interface IAuditSink
+{
+    void Write(AuthenticationAuditRecord record);   // pre-principal
+    void Write(AuthorizationAuditRecord record);    // post-principal
+}
 ```
 
-with a fixed field set - no call site may add or omit fields:
+Both are emitted under a fixed `SourceContext` of `Audit` and share `eventId`, `timestamp`,
+`correlationId`, `eventClass`, `outcome`, and `reason`, so one DuckDB query over `SourceContext =
+'Audit'` returns both and `recordKind` discriminates.
+
+**`AuthenticationAuditRecord`** - written by the authentication handlers (5.1, 4.4, 6.x), where the
+only identity available is what the presented token *claimed*:
 
 | Field | Source |
 |---|---|
-| `decisionId` | new GUID per decision |
+| `recordKind` | constant `authentication` |
+| `eventId` | new GUID |
+| `timestamp` | `TimeProvider.GetUtcNow()` |
+| `frontDoor` | `interactive` \| `s2s_obo` \| `embed` |
+| `claimedEntraTenantId` | the raw `tid` claim, or null if the token did not parse |
+| `claimedObjectId` | the raw `oid` claim, or null |
+| `claimedUpn` | `preferred_username`, **only when `Identity:Audit:IncludeUpn` is true** |
+| `appId` | the presented `X-Sbx-App-Id`, or null |
+| `resolvedTenantId` | our internal `tnt_*` if resolution succeeded, else null |
+| `jti` | the token's `jti`, for correlating a replay with its original use |
+| `outcome` | `accepted` \| `rejected` |
+| `reason` | the stable failure code (`unknown_tenant`, `tenant_mismatch`, `replayed_jti`, ...) |
+| `correlationId` | ambient request correlation id |
+| `eventClass` | `routine` or `security` |
+
+Note what is **not** here: no token, no signature, no bearer value, ever - the never-log invariant
+of `docs/deployment/AUTH_ENFORCE.md` applies unchanged. `claimedUpn` is behind a flag because a
+rejected sign-in is exactly the case where the presented identifier belongs to someone who is not
+our user; some deployments will want it for support, some will not want it retained at all.
+
+**`AuthorizationAuditRecord`** - written by `IResourceAccessPolicy` (7.4) and by the admin listing
+path (7.5), where a `Principal` exists by construction:
+
+| Field | Source |
+|---|---|
+| `recordKind` | constant `authorization` |
+| `eventId` | new GUID per decision |
 | `timestamp` | `TimeProvider.GetUtcNow()` |
 | `actorKind`, `actorId` | `Principal.Actor` |
 | `onBehalfOfKind`, `onBehalfOfId` | `Principal.OnBehalfOf`, null when absent |
 | `tenantId`, `appId` | `Principal` |
 | `source` | `Principal.Source` |
 | `permission` | the `AccessAction` |
-| `resourceType`, `resourceId` | the `ResourceRef` |
-| `decision` | `allow` or `deny` |
+| `resourceType`, `resourceId` | the `ResourceRef` (`*` for a listing) |
+| `outcome` | `allow` or `deny` |
 | `reason` | `AccessDecision.Reason` (7.4) |
 | `correlationId` | ambient request/run correlation id |
-| `eventClass` | `routine` or `security` (5.4 replays, 5.1 step 11 tenant mismatches) |
+| `eventClass` | `routine` or `security` |
 
-Records are emitted under a fixed `SourceContext` of `Audit`, so a query selects audit lines by that
-property rather than by matching message templates. Migrating to P4 then means reimplementing
-`IAuditSink` against the outbox and changing nothing else.
+Neither record's field set may be extended or trimmed at a call site. Migrating to P4 then means
+reimplementing `IAuditSink` against the outbox and changing nothing else; the two record kinds
+become two outbox event types.
 
 Two rules carried over from #237 unchanged: **both allows and denies are recorded** - a deny-only
 trail cannot answer "was this ever attempted successfully?" - and records are **not redacted at
@@ -1114,15 +1324,28 @@ migration runner. Recommendation: `PRAGMA user_version`, an ordered array of mig
 applied in a single transaction with `user_version` bumped in that same transaction.
 
 The existing `CREATE TABLE IF NOT EXISTS` block becomes migration step 1, so a database created by
-an earlier build is recognised as already at version 1 without re-running DDL. Steps 2-5 then add,
-in order: the tenant tables (8.2), the ownership columns (8.3), `resource_grants` (8.4), and
-`usage_rollup` (9.2).
+an earlier build is recognised as already at version 1 without re-running DDL.
+
+**Step number == the `user_version` the database holds after the step commits.** This table is the
+single source of truth for those numbers; anywhere else in this document that names a version must
+agree with it.
+
+| Step | `user_version` after | Adds | Section | Slice |
+|---|---|---|---|---|
+| 1 | 1 | the existing eight tables, unchanged | 2.5 | - (already deployed) |
+| 2 | 2 | `tenants`, `tenant_admins` | 8.2 | 1 (#301) |
+| 3 | 3 | owner columns on `thread_metadata`; quarantine tenant row; backfill | 8.3, 8.5 | 2 (#302) |
+| 4 | 4 | `resource_grants` | 8.4 | 2 (#302) |
+| 5 | 5 | `usage_rollup` | 9.2 | 6 (#306) |
+
+So slice 1 takes a database from 1 to 2, slice 2 from 2 to **4**, and slice 6 from 4 to 5. A fresh
+database created by the current build runs steps 1-5 in order and lands at 5; the runner never
+branches on "new versus existing".
+
+The runner is built in slice 1 rather than slice 2, because the `tenants` table needed by explicit
+provisioning (4.4) is itself a migration step.
 
 File changed: `src/LmMultiTurn/Persistence/Sqlite/SqliteSchemaInitializer.cs`.
-
-**This moved.** The runner was originally scoped to slice #302, but explicit tenant provisioning
-(4.4) puts the `tenants` table in slice #301, and that table needs the runner. The runner is
-therefore built in slice 1; slice 2 only appends steps to it.
 
 ### 8.2 New tables: `tenants` and `tenant_admins`
 
@@ -1224,36 +1447,109 @@ code, and the audit shape rather than growing three near-identical mechanisms.
 
 The hard question: what tenant and owner do conversations that already exist get?
 
-**They get a tenant and no owner.** Migration step 3 backfills:
+**They go into a quarantine tenant, owned by nobody, and stay invisible until an operator adopts
+them.** Not "a tenant that admins can browse" - that idea does not survive contact with explicit
+provisioning, for the reason spelled out below.
+
+#### 8.5.1 The backfill
+
+Migration step 3, in one transaction:
 
 ```sql
+-- 1. the quarantine tenant must exist before anything points at it
+INSERT OR IGNORE INTO tenants
+       (tenant_id,       entra_tenant_id, display_name,
+        status,          created_at,      created_by)
+VALUES (@legacyTenantId, NULL,            'Unadopted (pre-identity) data',
+        'quarantined',   @now,            'migration');
+
+-- 2. stamp every pre-existing row with that same id
 UPDATE thread_metadata SET tenant_id = @legacyTenantId WHERE tenant_id IS NULL;
 ```
 
-where `@legacyTenantId` comes from `Identity:LegacyTenantId`, defaulting to the literal `"legacy"`.
-`owner_user_id` stays `NULL`, meaning **unclaimed**.
+`@legacyTenantId` is resolved **once**, before the transaction opens, from
+`Identity:LegacyTenantId` with a default of `"legacy"`, and the same variable is bound to both
+statements. It must not be a literal in one statement and a parameter in the other: an operator who
+sets `Identity:LegacyTenantId` would then create a row named `legacy` while the backfill stamped
+rows with their configured value, and every migrated conversation would reference a tenant that
+does not exist.
 
-Because tenants are now explicit rows (8.2), migration step 3 also **inserts the legacy tenant
-itself** - `tenant_id='legacy'`, `entra_tenant_id=NULL`, `status='active'` - before backfilling.
-Without that insert the backfilled rows would reference a tenant that does not exist and every
-legacy conversation would be unreadable by everyone. Because it has no Entra directory, nobody can
-ever sign in *as* the legacy tenant; its rows are reachable only through the policy below.
+`owner_user_id` and `owner_app_id` stay `NULL`, meaning **unclaimed**.
 
-Visibility of unclaimed rows is governed by `Identity:LegacyConversationPolicy`:
+#### 8.5.2 Why the quarantine tenant is invisible, deliberately
 
-| Value | Behaviour | Intended for |
-|---|---|---|
-| `AdminOnly` (**default**) | Visible only to principals holding `admin` | Production |
-| `AssignTo:{userId}` | Backfilled to that user at migration time | Single-operator installs |
-| `Shared` | Visible to every member of the legacy tenant | Development and demo |
+The quarantine tenant has no `entra_tenant_id`, so step 7 of 5.1 can never resolve a token to it,
+so **no principal can ever carry `TenantId = 'legacy'`**. Its `status` is `quarantined`, which is
+not `active`, so even adding an `entra_tenant_id` by hand would not produce a sign-in.
 
-`AdminOnly` is the fail-closed default: no pre-existing conversation becomes visible to a user who
-could not already see it. `Shared` is explicitly a development convenience and must be documented
-as such in `docs/deployment/AUTH_ENFORCE.md`.
+A policy of the form "visible to admins of the legacy tenant" therefore describes an unreachable
+state: there is no such admin and no way to become one. Nor can an admin of a *real* tenant be let
+in, because that is precisely the `Deny("cross_tenant")` of 7.4 step 2 - the one rule the whole
+model rests on. Punching a hole in it for legacy data would let an admin of any tenant read data
+that may have belonged to a different customer entirely, which is the failure this spec exists to
+prevent.
+
+The honest answer is the third one: **the data does not become visible by relaxing a rule, it
+becomes visible by being moved.**
+
+#### 8.5.3 The adoption path
+
+Adoption is an operator action on the same trust boundary as tenant creation (4.4), on the same
+`TenantsController`, with the same two traps closed (unconditional header; hard `503` when no
+operator secret is configured):
+
+```
+POST /api/admin/tenants/{tenantId}/adopt-legacy
+X-S2S-Auth: <operator secret>
+Content-Type: application/json
+
+{
+  "ownerUserId": "<entra tid>:<oid>",   // optional
+  "threadIds":   ["thr_1", "thr_2"],    // optional; omit to adopt all quarantined rows
+  "dryRun":      true
+}
+```
+
+Behaviour:
+
+- `{tenantId}` must exist in `tenants` with `status = 'active'`; otherwise `404`, nothing written.
+- Only rows whose `tenant_id` equals the quarantine tenant are eligible. A row already adopted into
+  a real tenant is never re-stamped, so a repeated call is idempotent rather than destructive.
+- Each adopted row gets `tenant_id = {tenantId}` and, when `ownerUserId` was supplied,
+  `owner_user_id = ownerUserId`.
+- **`ownerUserId` is validated before any write**: it must parse as `{tid}:{oid}`, and its `tid`
+  must equal the `entra_tenant_id` of `{tenantId}`. A user id from a different Entra tenant is
+  `400 owner_tenant_mismatch` - accepting it would write a row that 7.4 step 2 then denies to
+  everybody, silently re-quarantining the data under a different name. A prior sign-in is
+  deliberately **not** required: `oid` is stable and readable from the directory, and requiring one
+  would make it impossible to hand a departed operator's conversations to their replacement.
+- If `ownerUserId` is omitted, rows land in the tenant unowned. They are then visible to that
+  tenant's admins - which works, because a real tenant has reachable admins - and to nobody else.
+  This is the recommended first step: adopt into the tenant, let an admin look, then assign owners.
+- `dryRun: true` returns the affected count and a sample without writing. Adoption is the only
+  operation in P1 that moves customer data across a tenancy boundary, so it gets a rehearsal mode.
+- Every call writes one `AuthorizationAuditRecord` (7.7) with `eventClass = security`, recording
+  operator, target tenant, owner, and row count.
+
+This replaces `Identity:LegacyConversationPolicy` entirely - there is no `AdminOnly`,
+`AssignTo:{userId}`, or `Shared` mode. `AssignTo` was unimplementable as written: it named a user
+at *migration* time, when no tenant mapping exists to validate them against, and it would have
+assigned an owner from one tenant to a row stamped with another.
+
+**Development and demo installs** need no special visibility mode. They run `Identity:Enforce=false`
+(7.4 step 0), where the policy allows everything and legacy rows read exactly as they do today. The
+quarantine only bites once enforcement is switched on - which is the moment someone should be making
+a deliberate decision about that data anyway.
+
+`docs/deployment/AUTH_ENFORCE.md` gains a section describing the sequence: migrate, enforce off,
+adopt, enforce on.
+
+#### 8.5.4 Rollback
 
 The migration is **additive and reversible by ignoring the columns**: with `Identity:Enforce=false`
 the new columns are written but never used as a filter, so rolling back to the previous build reads
-the same database successfully.
+the same database successfully. Adoption is not automatically reversible - it rewrites `tenant_id` -
+which is why `dryRun` exists.
 
 ### 8.6 Workspaces and chat modes - fields, not columns
 
@@ -1263,8 +1559,10 @@ These are JSON documents (2.6), so there is no DDL:
 - `samples/LmStreaming.Sample/Models/ChatMode.cs` - add `TenantId`, `OwnerUserId`, `Visibility`.
 - `samples/LmStreaming.Sample/Persistence/FileWorkspaceStore.cs`,
   `samples/LmStreaming.Sample/Persistence/FileChatModeStore.cs` - on load, a document missing the
-  new fields deserializes them as `null` and is treated as legacy under the same
-  `LegacyConversationPolicy`; the file is rewritten with the fields present on first write.
+  new fields deserializes them as `null`. Such a document is stamped with the quarantine tenant id
+  of 8.5.1 on first write, which makes it invisible under enforcement until adopted - the same
+  treatment SQLite rows get, reached by the same route. `adopt-legacy` (8.5.3) therefore also
+  accepts `resourceType` of `workspace` and `mode`.
 - `samples/LmStreaming.Sample/Persistence/IWorkspaceStore.cs`,
   `samples/LmStreaming.Sample/Persistence/IChatModeStore.cs` - `GetAllAsync` and
   `GetAllModesAsync` take a `Principal` and filter.
@@ -1284,7 +1582,8 @@ reconsidering (OQ-3).
 |---|---|
 | `src/LmCore/Identity/Principal.cs` | new - `Principal`, `PrincipalRef`, `PrincipalKind`, `PrincipalSource` |
 | `src/LmCore/Identity/ITenantStore.cs` | new - tenant lookup and admin binding (8.2) |
-| `src/LmCore/Identity/IResourceAccessPolicy.cs` | new - `ResourceRef`, `AccessAction`, `AccessDecision` |
+| `src/LmCore/Identity/IResourceAccessPolicy.cs` | new - `ResourceRef`, `ResourceDescriptor`, `AccessAction`, `AccessDecision` |
+| `src/LmCore/Identity/IAuditSink.cs` | new - `AuthenticationAuditRecord`, `AuthorizationAuditRecord` (7.7) |
 | `src/LmCore/Models/UsageRecord.cs` | add `TenantId`, `PrincipalId`, `AppId` |
 | `src/LmMultiTurn/Persistence/ThreadMetadata.cs` | add `TenantId`, `OwnerUserId`, `OwnerAppId` |
 | `src/LmMultiTurn/Persistence/IConversationStore.cs` | `ListThreadsAsync` takes a `Principal` |
@@ -1303,11 +1602,13 @@ reconsidering (OQ-3).
 | `samples/LmStreaming.Sample/Controllers/WorkspacesController.cs` | scope all 4 endpoints |
 | `samples/LmStreaming.Sample/Controllers/ChatModesController.cs` | **add `[InboundS2SAuth]`**; scope endpoints |
 | `samples/LmStreaming.Sample/Controllers/EmbedTokensController.cs` | new - `POST /api/embed/tokens` |
-| `samples/LmStreaming.Sample/Controllers/TenantsController.cs` | new - operator tenant provisioning (4.4) |
+| `samples/LmStreaming.Sample/Controllers/TenantsController.cs` | new - operator tenant provisioning (4.4) and `adopt-legacy` (8.5.3) |
+| `samples/LmStreaming.Sample/Controllers/DiagnosticsController.cs` | add `GET api/diagnostics/identity` (5.4) |
 | `samples/LmStreaming.Sample/Models/Workspace.cs`, `Models/ChatMode.cs` | ownership fields |
 | `samples/LmStreaming.Sample/Persistence/FileWorkspaceStore.cs`, `FileChatModeStore.cs`, `IWorkspaceStore.cs`, `IChatModeStore.cs` | ownership + filtering |
 | `samples/LmStreaming.Sample/ClientApp/src/` | MSAL Browser sign-in; bearer on every fetch; sharing UI |
-| `docs/deployment/AUTH_ENFORCE.md` | document `Identity:Enforce` and tenant provisioning beside `AUTH_ENFORCE` |
+| `docs/deployment/AUTH_ENFORCE.md` | document `Identity:Enforce`, tenant provisioning, and the migrate/adopt/enforce sequence (8.5.3) |
+| `CHANGELOG.md` | the `ChatModesController` behaviour change (slice 4) |
 
 ---
 
@@ -1352,8 +1653,8 @@ every thread's JSON.
 -- migration step 5
 CREATE TABLE IF NOT EXISTS usage_rollup (
     tenant_id          TEXT    NOT NULL,
-    principal_id       TEXT,
-    app_id             TEXT,
+    principal_id       TEXT    NOT NULL,   -- '' when there is no end user (app-only)
+    app_id             TEXT    NOT NULL,   -- '' when the caller is interactive
     thread_id          TEXT    NOT NULL,
     day                INTEGER NOT NULL,   -- UTC midnight, unix ms
     model_id           TEXT    NOT NULL,
@@ -1364,7 +1665,7 @@ CREATE TABLE IF NOT EXISTS usage_rollup (
     reasoning_tokens   INTEGER NOT NULL DEFAULT 0,
     cost_micros        INTEGER NOT NULL DEFAULT 0,
     currency           TEXT    NOT NULL DEFAULT 'USD',
-    PRIMARY KEY (tenant_id, principal_id, thread_id, day, model_id)
+    PRIMARY KEY (tenant_id, principal_id, app_id, thread_id, day, model_id)
 );
 CREATE INDEX IF NOT EXISTS idx_usage_rollup_tenant_day
   ON usage_rollup (tenant_id, day DESC);
@@ -1378,11 +1679,33 @@ Aggregation is idempotent on the primary key, matching the ledger's existing `Pr
 dedup discipline: a replayed projection must `UPSERT` to the folded value, not `+=`, or a restart
 would double-count.
 
+**Two things about that key are deliberate and both are easy to get wrong.**
+
+*`principal_id` and `app_id` are `NOT NULL` with `''` as the "not applicable" sentinel.* SQLite
+permits `NULL` in a non-`INTEGER` `PRIMARY KEY` column, and for uniqueness purposes `NULL` is not
+equal to `NULL`. A nullable `principal_id` would therefore mean `ON CONFLICT` never fires for
+app-only traffic: every projection replay would insert another row instead of folding, and the
+resulting over-count would show up as inflated spend on exactly the mode-C daemons that bill by
+outcome. `''` compares equal to `''`, so the UPSERT works.
+
+*`app_id` is part of the key.* Two apps in the same tenant driving the same thread on the same day
+with the same model are separate lines of attribution; leaving `app_id` out of the key would fold
+them together and simultaneously make the stored `app_id` value non-deterministic - last writer
+wins. 9.1 attributes usage to `(tenant, app, principal)`, and the key has to carry all three for
+the table to answer the question 9.3 asks of it.
+
 ### 9.3 The tenant-admin view
 
 `GET /api/admin/usage?from=&to=&groupBy=user|app|model` - requires role `admin`, and filters
 `tenant_id = principal.TenantId` unconditionally. Returns per-group token counters and
 `cost_micros`. Cost stays in integer micros end to end; no floating point.
+
+Each `groupBy` value maps to one key column of 9.2: `user` -> `principal_id`, `app` -> `app_id`,
+`model` -> `model_id`. `groupBy=app` is the reason `app_id` is part of the primary key rather than
+a payload column - grouping by a column that is not in the key would sum rows that the UPSERT had
+already folded under a different, arbitrarily chosen `app_id`. Rows carrying the `''` sentinel are
+reported as `(none)` rather than being dropped, so a tenant's totals across groups always reconcile
+with its ungrouped total.
 
 Relates to [#116](https://github.com/achieveai/LmDotnetTools/issues/116) - cached and reasoning
 token counts are dropped on some usage paths, and `PromptTokens` semantics differ across providers.
@@ -1461,11 +1784,11 @@ sign-in in ClientApp with a bearer header on every fetch. `AllowedOrigins` defau
 `["*"]`. The global `Identity:Enforce` flag, defaulting false. `IAuditSink` over structured logs
 (7.7).
 
-Explicit provisioning (4.4) adds the following to this slice, which earlier drafts deferred:
+Explicit provisioning (4.4) also puts the following in this slice:
 
-- The `PRAGMA user_version` migration runner (8.1) - it moves here from slice 2, because the tenant
-  tables need it.
-- Migration step 2: `tenants` and `tenant_admins` (8.2), plus the legacy tenant row.
+- The `PRAGMA user_version` migration runner (8.1), because the tenant tables are themselves a
+  migration step.
+- Migration step 2 - `tenants` and `tenant_admins` (8.2). Database reaches `user_version` 2.
 - `ITenantStore` / `SqliteTenantStore`; `tid` -> internal tenant id resolution on every sign-in.
 - `TenantsController` with `POST /api/admin/tenants`, guarded unconditionally by the operator
   secret and failing closed (`503`) when that secret is unset - both traps named in 4.4.
@@ -1488,9 +1811,10 @@ pillar. With `Enforce=true` an anonymous `/api/conversations` call is `401`.
 
 ### Slice 2 - [#302] Conversation ownership
 
-**Ships.** Migration steps 3 and 4 - owner columns on `thread_metadata`, the `resource_grants`
-table, the owner index. The migration runner itself already exists from slice 1, which makes this
-slice smaller than it was before tenant provisioning moved the runner earlier.
+**Ships.** Migration steps 3 and 4 - owner columns on `thread_metadata`, the quarantine tenant row
+and backfill (8.5.1), the `resource_grants` table, the owner index. Database goes from
+`user_version` 2 to 4. The runner itself already exists from slice 1.
+`TenantsController` gains `POST /api/admin/tenants/{tenantId}/adopt-legacy` (8.5.3), with `dryRun`.
 `ThreadMetadata` fields. `ListThreadsAsync(Principal, ...)` with the SQL predicate of 7.5 across all
 three store implementations. Ownership written at `POST /api/conversations`
 (`ConversationsController.cs:221`), which also closes #162. `PrincipalConflictException` and the
@@ -1502,10 +1826,14 @@ endpoints scoped.
 
 **Verified by.** Two users in one tenant each see only their own conversations. A cross-tenant
 `GET /api/conversations/{id}` is `404`, not `403`. A shared conversation appears for the grantee as
-`viewer` and is not writable. After migration with `LegacyConversationPolicy=AdminOnly`, a
-pre-existing conversation is invisible to a `member` and visible to an `admin`. A database at
-version 1 opened by the new build reaches version 3 with no data loss, and the resulting database
-still opens under the previous build.
+`viewer` and is not writable. A tenant admin's `GET /api/conversations` and their
+`GET /api/conversations/{id}` agree on the same row set - the specific defect a missing admin
+branch in 7.5 would produce. A pre-existing conversation, after migration, is invisible to a
+`member` **and** to an `admin` of every provisioned tenant, and becomes visible only after
+`adopt-legacy`; `dryRun` writes nothing; an `ownerUserId` whose `tid` does not match the target
+tenant is `400` and writes nothing; calling `adopt-legacy` twice adopts the same rows once. A
+database at `user_version` 1 opened by the new build reaches **4** with no data loss, and the
+resulting database still opens under the previous build.
 
 ### Slice 3 - [#303] Workspace ownership
 
@@ -1532,8 +1860,10 @@ read-only for all.
 **Verified by.** A mode created by user A is invisible to user B. An admin-published mode is
 visible to every member of the tenant and editable only by an admin. A non-admin `publish` is
 `403`. A request to `/api/chat-modes` carrying `X-Sbx-App-Id` without `X-S2S-Auth` is now `401`
-where it previously succeeded - an intentional behaviour change that must be called out in the PR
-body.
+where it previously succeeded. This is a deliberate breaking change to an existing endpoint's
+behaviour and closes the hole named in 2.3; it needs a `CHANGELOG.md` entry and a note in
+`docs/deployment/AUTH_ENFORCE.md`, because an existing integrator sending only `X-Sbx-App-Id` will
+start failing on upgrade.
 
 ### Slice 5 - [#305] Host-asserted OBO on the S2S path
 
@@ -1541,6 +1871,8 @@ body.
 `Identity:Apps`, a `kid`-keyed key cache with the 24h/1h/5min policy, 120s clock skew, the `jti`
 replay set, `act`-chain mapping, and the tenant-agreement check (5.1 step 11).
 `InboundS2SAuthAttribute` extended per 4.2, including the no-fallback rule on an invalid OBO token.
+`GET /api/diagnostics/identity` on the existing `DiagnosticsController` (5.4), reporting `enforce`,
+`replayStore` and `replicaSafe`, plus the startup Warning when the replay store is in-memory.
 
 **Depends on.** Slice 1, for `Principal` and for the `tenants` table that step 7 of 5.1 resolves
 against. Still independent of slices 2-4, so it can run in parallel with them - explicit
@@ -1550,8 +1882,13 @@ provisioning moved the tenant registry *earlier*, into slice 1, so it did not ad
 `Principal{Actor=(App,...), OnBehalfOf=(EndUser,...), Source=HostAsserted}`. An app holding a scope
 while acting for a user without it is **refused** - the intersection rule (3.2). An invalid OBO JWT
 is `401` and does **not** fall back to `AppOnly`. A replayed `jti` is `401` and produces a
-security-classified audit record. A token whose `tid` differs from the app's onboarded tenant is
-`403`. A request with no `Authorization` header behaves byte-identically to today.
+security-classified audit record. A token whose `tid` resolves to a tenant other than the app's
+onboarded internal tenant id is `403 tenant_mismatch`; a token whose `tid` resolves to no row is
+`403 tenant_not_provisioned`; an expired or badly signed token is `401` - the 401/403 split of 5.1
+is asserted per case, not just "rejected". A host whose `Identity:Apps:*:TenantId` names a tenant
+absent from the `tenants` table fails **startup**, not a request.
+`GET /api/diagnostics/identity` reports `replicaSafe: false` while the replay store is in-memory.
+A request with no `Authorization` header behaves byte-identically to today.
 
 ### Slice 6 - [#306] Usage attribution and the tenant-admin view
 
@@ -1599,10 +1936,11 @@ the general API audience is rejected.
 
 ## 12. Open questions
 
-Four of the nine questions in the first draft are now decided and have moved into the body of this
-spec: `Identity:Enforce` is global (4.1), tenants are explicitly provisioned (4.4), the `jti` replay
-store is in-memory and single-replica for now (5.4), and audit goes to structured logs until P4
-exists (7.7). The five below are still open.
+Decisions that were once open and are now recorded in the body, listed here only so a reader looking
+for them does not conclude they were dropped: `Identity:Enforce` is global (4.1), tenants are
+explicitly provisioned (4.4), the `jti` replay store is in-memory and single-replica for now (5.4),
+and audit goes to structured logs until P4 exists (7.7). The questions below are genuinely
+undecided.
 
 **OQ-1 - What happens to a conversation when its owner leaves the tenant?**
 Options: transfer to a tenant admin, soft-delete, or leave it orphaned and admin-visible. This
