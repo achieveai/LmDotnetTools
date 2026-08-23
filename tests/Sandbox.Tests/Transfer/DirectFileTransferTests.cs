@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -538,27 +537,44 @@ public class DirectFileTransferTests
     [Fact]
     public async Task ReadTextFileAsync_SlowHeadersThenHangingErrorBody_BoundedByOneTransportTimeout()
     {
-        // Wide absolute margins so CI/timer jitter never flips the assertion: the fixed one-timeout call
-        // is ~1000 ms, the old double-timeout bug would be ~1600 ms (headerDelay + a second full timeout),
-        // and the ceiling sits at 1500 ms — clearly under the ~2000 ms double budget yet above ~1000 ms.
-        var transportTimeout = TimeSpan.FromMilliseconds(1000);
-        var headerDelay = TimeSpan.FromMilliseconds(600);
+        // The invariant under test: the error-body read must SHARE the ONE transport budget the header
+        // read already started — it must never begin a second one. Asserted STRUCTURALLY, not on the wall
+        // clock: an elapsed-time ceiling cannot tell a loaded CI runner from the defect returning, because
+        // a stalled runner overshoots the bug's own signature (issue #330).
+        //
+        // The handler holds the file-GET headers back until the SDK's per-call transport token has ACTUALLY
+        // fired — it waits on that very token, so no clock is compared — and only then delivers a 409 whose
+        // body is legible only to a reader that still holds budget:
+        //   ONE shared budget -> the error-body read is born already-cancelled, so classification falls
+        //                        back to the status alone: Conflict, no error_code.
+        //   a SECOND budget   -> the body parses and its error_code (path_not_found) reclassifies the
+        //                        failure as NotFound — which is exactly what this test refuses.
+        const string errorBody = """{"error":"gone","code":409,"error_code":"path_not_found","retryable":false}""";
         var serverAddress = TestSupport.NewLoopbackAddress();
-        using var httpClient = new HttpClient(new SlowHeaderHangingBodyHandler(headerDelay)) { BaseAddress = serverAddress };
-        var options = new SandboxClientOptions(serverAddress, "app-1", TestSupport.ValidSecret, TimeSpan.FromMinutes(5), transportTimeout);
+        var handler = new BudgetExhaustingHeaderHandler(errorBody);
+        using var httpClient = new HttpClient(handler) { BaseAddress = serverAddress, Timeout = Timeout.InfiniteTimeSpan };
+        var options = new SandboxClientOptions(
+            serverAddress,
+            "app-1",
+            TestSupport.ValidSecret,
+            TimeSpan.FromMinutes(5),
+            TimeSpan.FromMilliseconds(200)
+        );
         using var client = new SandboxClient(options, httpClient);
 
-        var stopwatch = Stopwatch.StartNew();
         Func<Task> act = () => client.ReadTextFileAsync(Session, "notes.txt");
         var exception = await act.Should().ThrowAsync<SandboxException>();
-        stopwatch.Stop();
 
-        // The slow headers consumed part of the ONE transport budget, and the error-body read shares the
-        // SAME budget, so the whole call is bounded by ~1× TransportTimeout. The old double-timeout bug
-        // (a fresh TransportTimeout for the error body) would have taken ~headerDelay + TransportTimeout
-        // (≈ 1600 ms here) — comfortably above this ceiling.
+        // Non-vacuity first: if the header phase had NOT exhausted the budget, everything below would be
+        // meaningless, so fail loudly on that rather than silently proving nothing.
+        handler
+            .BudgetExpiredBeforeHeaders.Should()
+            .BeTrue("the header read must consume the entire transport budget before the error body is offered");
+
+        // Status-only classification: the shared budget was already spent, so the error body was never
+        // read. A fresh second TransportTimeout would have read it and produced NotFound/path_not_found.
         exception.Which.Kind.Should().Be(SandboxErrorKind.Conflict);
-        stopwatch.Elapsed.Should().BeLessThan(TimeSpan.FromMilliseconds(1500));
+        exception.Which.ErrorCode.Should().BeNull();
     }
 
     [Fact]
@@ -734,20 +750,31 @@ public class DirectFileTransferTests
     }
 
     /// <summary>
-    /// Answers mount resolution immediately, but DELAYS the (error) files-response headers by
-    /// <paramref name="headerDelay"/> — consuming part of the transport budget — then returns a non-2xx
-    /// whose error body never finishes streaming (<see cref="NeverEndingContent"/>). Used to prove the
-    /// whole download is bounded by ONE TransportTimeout across headers + error body.
+    /// Answers mount resolution immediately, but withholds the (error) files-response headers until the
+    /// SDK's per-call transport budget has ACTUALLY expired — it waits on the very
+    /// <see cref="CancellationToken"/> the SDK handed the transport, so the ordering is an observed event
+    /// rather than a clock comparison — and only then returns a non-2xx carrying a
+    /// <see cref="BudgetGatedContent"/> error body. That makes "did the error-body read start a SECOND
+    /// transport budget?" visible in the classified exception instead of in elapsed milliseconds.
     /// </summary>
-    private sealed class SlowHeaderHangingBodyHandler(TimeSpan headerDelay) : HttpMessageHandler
+    private sealed class BudgetExhaustingHeaderHandler(string errorBody) : HttpMessageHandler
     {
+        /// <summary>Guards against an unbounded hang if the SDK never arms a budget at all: the wait gives up and the test then fails loudly.</summary>
+        private static readonly TimeSpan WaitGuard = TimeSpan.FromSeconds(30);
+
+        /// <summary>True only if the transport token fired BEFORE the file-GET headers were delivered — the precondition every assertion here rests on.</summary>
+        public bool BudgetExpiredBeforeHeaders { get; private set; }
+
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var path = request.RequestUri!.AbsolutePath;
             if (request.Method == HttpMethod.Get && path.Contains("/files/", StringComparison.Ordinal))
             {
-                await Task.Delay(headerDelay, cancellationToken).ConfigureAwait(false);
-                return new HttpResponseMessage(HttpStatusCode.Conflict) { Content = new NeverEndingContent() };
+                BudgetExpiredBeforeHeaders = await WaitForCancellationAsync(cancellationToken).ConfigureAwait(false);
+
+                // Deliver the headers anyway: a real gateway's response can land at the very moment the
+                // client-side deadline lapses, and the SDK must still classify it.
+                return new HttpResponseMessage(HttpStatusCode.Conflict) { Content = new BudgetGatedContent(errorBody) };
             }
 
             return new HttpResponseMessage(HttpStatusCode.OK)
@@ -759,6 +786,75 @@ public class DirectFileTransferTests
                 ),
             };
         }
+
+        private static async Task<bool> WaitForCancellationAsync(CancellationToken cancellationToken)
+        {
+            var fired = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var registration = cancellationToken.Register(() => fired.TrySetResult());
+            var completed = await Task.WhenAny(fired.Task, Task.Delay(WaitGuard, CancellationToken.None)).ConfigureAwait(false);
+            return ReferenceEquals(completed, fired.Task);
+        }
+    }
+
+    /// <summary>
+    /// An error body legible ONLY to a reader that still holds transport budget: its read stream throws
+    /// <see cref="OperationCanceledException"/> the instant it is asked for bytes under an already-cancelled
+    /// token, and otherwise yields the JSON in full. Reading it therefore proves a SECOND budget was armed;
+    /// failing to read it proves the one shared budget was already spent.
+    /// </summary>
+    private sealed class BudgetGatedContent : HttpContent
+    {
+        private readonly byte[] _bytes;
+
+        public BudgetGatedContent(string json)
+        {
+            _bytes = Encoding.UTF8.GetBytes(json);
+            Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+        }
+
+        protected override Task<Stream> CreateContentReadStreamAsync() => Task.FromResult<Stream>(new BudgetGatedStream(_bytes));
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => stream.WriteAsync(_bytes, 0, _bytes.Length);
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = _bytes.Length;
+            return true;
+        }
+    }
+
+    /// <summary>A read stream that refuses to produce a single byte under an already-cancelled token, and otherwise replays <paramref name="bytes"/>.</summary>
+    private sealed class BudgetGatedStream(byte[] bytes) : Stream
+    {
+        private int _position;
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var produced = Math.Min(buffer.Length, bytes.Length - _position);
+            bytes.AsSpan(_position, produced).CopyTo(buffer.Span);
+            _position += produced;
+            return ValueTask.FromResult(produced);
+        }
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override void Flush() { }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     /// <summary>
