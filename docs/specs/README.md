@@ -6,7 +6,7 @@ Naming: `P<n>-<topic>.md`, where `<n>` is the pillar number.
 
 Planned files:
 
-- `P1-identity-authorization.md` - not yet written
+- [`P1-identity-authorization.md`](P1-identity-authorization.md) - identity, tenancy and authorization
 - `P2-durable-runtime.md` - not yet written
 - `P3-deployment-surfaces.md` - not yet written
 - `P4-governed-access.md` - not yet written
