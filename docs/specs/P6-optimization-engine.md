@@ -53,6 +53,7 @@ specifying these wrongly is worse than leaving them open:
 | Pairwise judging (`JudgeContext.Peers`, `PairwiseJudgeRunner`, presentation seeds) | No slice ships a ranking consumer; every runner and record here is pointwise | a ranking story, if one is ever raised |
 | `IRoutingPolicy` / `CascadeStage` C# | §7's *decisions* are what matter now; the interface shape depends on the cascade executor, which is three slices away | #322 |
 | Model *tier* as a typed concept | Only the cascade needs an ordering over model strength | #322 |
+| `AllowSameFamilyPanel` (permitting a two-same-family panel) | Only two families are reachable, so the flag's only legal use is the false-consensus failure §2.12.2, §2.12.4 and §2.12.5 each argue against; representing the panel it permits was the more expensive of the two closures | a third reachable family, which would make it a different question |
 | Per-criterion and confidence-based ballot analytics | `experiment_ballot` is a declared lossy tally summary (§6.1); criterion detail and confidence are not persisted, and no claim here reads them back | a consumer that needs them, which buys the schema change |
 
 Where those appear below they appear as decisions and constraints, not as types.
@@ -423,9 +424,6 @@ public sealed record HarnessOptions
     /// <summary>Optional stronger model that decides a straddle (§2.12.3). Null means straddles
     /// terminate as Split.</summary>
     public IJudge? ArbiterJudge { get; init; }
-    /// <summary>Permits a configured panel whose two judges share a ModelFamily. Off by default;
-    /// when on, every verdict is stamped so those rows are never pooled with clean ones.</summary>
-    public bool AllowSameFamilyPanel { get; init; }
 }
 
 public sealed class JudgeGauntlet
@@ -450,6 +448,20 @@ public sealed class JudgeGauntlet
    propagating; a judge that returns gives a `Ballot`.
 4. `aggregator.Aggregate(...)` with an `AggregationContext` carrying the options, the reliability
    snapshot, and the faults.
+5. **If that verdict is an unresolved `Split` and `options.ArbiterJudge` is configured**, await one
+   `JudgeAsync` on the arbiter and call `aggregator.Aggregate(...)` a **second** time — with the
+   arbiter's ballot appended to `ballots`, or, if the arbiter faulted, with a `JudgeFault` for it
+   appended to `context.Faults`. The second verdict is the emitted one.
+
+**The escalation boundary is `RunAsync`, not the aggregator.** `Aggregate` is synchronous by design:
+it is a pure reduction over ballots and cannot await an `IJudge`, so the one asynchronous call
+§2.12.3 requires is made by the gauntlet, exactly as gate execution and panel fan-out are. The
+aggregator is therefore invoked **at most twice** per candidate and is pure both times. It tells the
+passes apart from data it already holds — `context.Options.ArbiterJudge` names the arbiter, so a
+ballot from that `JudgeId` is the arbiter's deciding vote (§2.12.3 rule 1), a `JudgeFault` for that
+`JudgeId` is `ArbiterUnavailable`, and a straddle with neither present is `"split:unresolved"`. That
+is the whole of the arbiter's result-or-fault path: no new type, and no I/O behind a pure
+interface.
 
 **Degradation is classified after fan-out, from what actually came back** — not from a health probe
 before it. That ordering is forced: `IJudge` exposes no reachability, retry and backoff live below
@@ -532,8 +544,15 @@ a panel instance.
 reason. The rules that *throw* are configuration-time, validated once when `JudgeGauntlet` is
 constructed rather than per candidate:
 
-- **Two judges** — the intended configuration — must have **distinct `ModelFamily`** unless
-  `HarnessOptions.AllowSameFamilyPanel` is set.
+- **Two judges** — the intended configuration — must have **distinct `ModelFamily`**. There is no
+  override. An earlier draft carried an `AllowSameFamilyPanel` escape hatch; it is **removed**,
+  because it permitted a panel `PanelComposition` cannot represent — `Full` is two judges of
+  distinct families, and two same-family judges are neither that, nor `Degraded`, nor `Unavailable`.
+  Giving it a fourth representation would have been the expensive way to close that hole, and it
+  would have bought a configuration this document argues against three separate times: agreement
+  between two same-family judges is false consensus, not signal (§2.12.2), one family cannot cancel
+  a bias it shares (§2.12.4), and §2.12.5 already refuses a correlated second judge even at the cost
+  of dropping to one. A flag whose only legal use is the failure mode next to it is not a flag.
 - **One judge** is legal and is how the Revobot migration reproduces today's behaviour (§4.2). Every
   verdict it produces is `Degradation = SingleJudge` with a null `Dispersion`, by the same rule that
   covers a two-judge panel degraded at runtime — so a legacy single-judge row is never mistaken for a
@@ -575,8 +594,9 @@ agree on the decision but not on the quality, and that gap is a rubric-quality s
 On a straddle, in order, with the applied rule recorded verbatim in `Verdict.TieBreakRule`:
 
 1. **Arbiter escalation**, if `HarnessOptions.ArbiterJudge` is configured and its family is not the
-   generator's. One call. The arbiter's side decides; `Score` becomes the arbiter's weighted score,
-   not a blend. Recorded as `"arbiter:<judgeId>:<family>"`.
+   generator's. One call, made by `JudgeGauntlet.RunAsync` step 5 and fed back through a second
+   reduction (§2.10) — the reducer never makes it. The arbiter's side decides; `Score` becomes the
+   arbiter's weighted score, not a blend. Recorded as `"arbiter:<judgeId>:<family>"`.
 
    The arbiter is *intended* to be a stronger model than either panel member, but "stronger" is not
    enforced here: it needs an ordering over model strength, and that ordering is a cascade concern
@@ -735,24 +755,18 @@ marker for §2.12.1's unknown-family case, where NULL means the exclusion filter
    missing judge).
 
    The only generator-family rule that *throws* is at configuration time and is a different check:
-   two configured judges sharing a family with **each other** (`AllowSameFamilyPanel`, §2.12.1).
-   `AllowSameFamilyPanel` governs judge-vs-judge; generator exclusion governs judge-vs-candidate.
-   There is no flag permitting the second case; permitting it is exactly the false-consensus failure
-   of §2.12.5.
+   two configured judges sharing a family with **each other** (§2.12.1). That check governs
+   judge-vs-judge; generator exclusion governs judge-vs-candidate. **Neither has an override flag**,
+   and §2.12.1 records why the judge-vs-judge one lost the escape hatch it used to have. Permitting
+   either is the same false-consensus failure, described at §2.12.5.
 2. `Candidate.ModelId` is **never rendered into the judge prompt**. `Candidate.VariantId` is rendered
    only as an opaque label (`"A"` / `"B"`), never a model name — removing the self-recognition cue
    that drives the effect.
-3. When `AllowSameFamilyPanel` is deliberately set, the resulting rows must be **segmented, not
-   pooled**. No field on `Verdict` records this and none is added: it is already derivable from
-   persisted data, since two counted `Panel` ballots on one record sharing a `judge_family`
-   (§6.1) *is* the override having been relied on. Deriving it also has the property a flag would
-   not: it is true only when the override actually changed the panel, not merely when it was
-   enabled.
-4. Panel family-disjointness (§2.12.1) means a self-preferring judge is **detected** — it straddles
+3. Panel family-disjointness (§2.12.1) means a self-preferring judge is **detected** — it straddles
    against the other family and the verdict becomes `Split`. Note this is weaker than the
    three-judge case, where such a judge would be outvoted and the verdict would still be correct;
    with two judges we get an alarm, not a correction (§2.12.4).
-5. When excluding the generator's family would leave fewer than two judges, the harness runs the
+4. When excluding the generator's family would leave fewer than two judges, the harness runs the
    single remaining judge rather than admitting the generator's own family — admitting it would
    manufacture false consensus, which is worse than a missing judge (§2.12.5).
 
@@ -1001,6 +1015,13 @@ public sealed record EvalBaseline
     public required string RubricId { get; init; }
     public required string RubricVersion { get; init; }
     public required int CorpusSize { get; init; }
+    /// <summary>How many of CorpusSize yielded a counted score, so the baseline's own coverage
+    /// (ScoredItems/CorpusSize) is frozen beside the conditional metrics it belongs to. §5.3 forbids
+    /// reporting MeanScore or P10Score without the coverage they were computed over, and a *frozen*
+    /// conditional metric is not an exception to that rule — it is the case that most needs it,
+    /// since the run it came from is long gone. Distinct from MinCoverage, which is a floor imposed
+    /// on the candidate, not a fact about this baseline.</summary>
+    public required int ScoredItems { get; init; }
     public required double MeanScore { get; init; }
     public required double P10Score { get; init; }
     public required double PassRate { get; init; }
@@ -1022,11 +1043,18 @@ The fourth element is the one the first three leave out. Corpus, rubric and vari
 *candidate* side fixed; nothing held the *evaluator* side fixed, and it moves on its own — §2.9
 refits reliability weights from accumulating human verdicts, which is why §2.6 has to record the
 weight that was actually applied. A refit alone changes scores, and against a frozen baseline that
-reads as a candidate regression. `EvaluatorConfigHash` covers, in a defined order: each
-`(JudgeId, ModelId, ModelFamily, judge prompt template hash)`, the arbiter's identity or its absence,
-the aggregator's `RuleId`, the `HarnessOptions` that decide exclusion and composition
-(`AbstainFloor`, `DispersionAlarm`, `AllowSameFamilyPanel`), the id of the reliability snapshot, and
-the human-signal source set that snapshot was fitted over (§8.1.5).
+reads as a candidate regression. `EvaluatorConfigHash` covers, in pipeline order: the **ordered gate
+list, each gate's identity and its configuration**; each `(JudgeId, ModelId, ModelFamily, judge prompt
+template hash)`; the arbiter's identity or its absence; the aggregator's `RuleId`; the
+`HarnessOptions` that decide exclusion (`AbstainFloor`, `DispersionAlarm`); the id of the reliability
+snapshot; and the human-signal source set that snapshot was fitted over (§8.1.5).
+
+**The gates lead that list rather than trailing it, and their absence was the sharpest hole in it.**
+A gate short-circuits to `Fail` with no score and no judge call (§2.10), and a gate-rejected item stays in
+`PassRate`'s denominator while never entering its numerator (§5.3). Retuning one bound on one gate
+therefore moves the reported pass rate with nothing about the candidate having changed — which is
+the exact comparison this hash exists to refuse. Ordered, because gates short-circuit: the same set
+in a different order rejects on a different gate and yields a different `gate_reason`.
 
 ### 5.3 What a run emits
 
@@ -1536,15 +1564,19 @@ removed.
 
 **Ships:** corpus reader over `review_run` / `review_artifact` (pairing `ContextArtifactPayload` input
 with `ReviewArtifactPayload` output, and `b-variant-review` as the paired B arm), `EvalBaseline`, the
-runner, the delta-and-regression report, and the hard refusal to compare across `RubricVersion` or
-`CorpusSnapshotHash`. The shallow `ReviewFinding` parser noted in §4.3(2).
+runner, the delta-and-regression report, and the hard refusal to compare across `RubricVersion`,
+`CorpusSnapshotHash` or `EvaluatorConfigHash`, or below the baseline's `MinCoverage` (§5.4). The shallow `ReviewFinding` parser noted in §4.3(2).
 
 **Depends on:** Slice 1.
 
 **Verified by:** a replay over a fixture corpus reproducing a known baseline deterministically (using
 `RecordPlaybackMiddleware` so no provider is called); a seeded regression from a deliberately
-degraded variant detected; a cross-rubric-version comparison refused with a clear error; a
-tail-collapse case (mean flat, P10 down) detected.
+degraded variant detected; a cross-rubric-version comparison refused with a clear error; **a
+comparison refused when only `EvaluatorConfigHash` differs** — same corpus, same rubric, same
+candidate output, one judge model swapped, which must not read as a candidate regression — and
+again when only a gate bound moved, since gates are in that hash (§5.2); **a run below the
+baseline's `MinCoverage` refused rather than reported**; a tail-collapse case (mean flat, P10 down)
+detected.
 
 ### Slice 3 — #321 · Experiment record
 
