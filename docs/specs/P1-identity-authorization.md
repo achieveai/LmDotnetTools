@@ -64,6 +64,8 @@ so a later reader knows the silence is a decision, not an oversight:
   so the combination cannot arise.
 - **Backfill of pre-P1 usage into `usage_rollup`.** Records with no `TenantId` are not projected
   (9.2). Pre-P1 spend stays readable exactly where it is today, per conversation.
+- **Re-keying `usage_rollup` when a thread is adopted.** Spend already rolled up against the
+  quarantine tenant stays under it; adoption moves the conversation, not the ledger (9.2).
 - **Per-operator identity on the operator console.** `X-S2S-Auth` is a shared secret, so the
   administration audit record (7.7) records *that* the operator credential was presented and from
   where, never *who* presented it. Naming individual operators needs an operator directory, which
@@ -726,10 +728,11 @@ no detail about which tenants exist.
 
 Ordered, and short-circuiting:
 
-1. **Header type.** `typ` must be `at+jwt` or `application/at+jwt` (RFC 9068). Tokens we mint
-   (embed tokens, section 6) conform. Note that **Entra's own v2.0 access tokens emit `typ: JWT`,
-   not `at+jwt`** - so this check applies only to host-minted OBO JWTs and to our own tokens, never
-   to a raw Entra token forwarded unchanged.
+1. **Header type.** The accepted `typ` set is **part of the issuer registration** (5.2), never one
+   global constant: `at+jwt` or `application/at+jwt` (RFC 9068) for a host STS and for tokens we
+   mint (embed tokens, section 6); `JWT` for an app registered against the Entra issuer, because
+   **Entra's own v2.0 tokens emit `typ: JWT`** - including the output of its on-behalf-of flow,
+   which 5.6 accepts. A raw Entra token forwarded unchanged is still refused, at step 4 on `aud`.
 2. **Algorithm allow-list.** `RS256`, `ES256`, `PS256`. Reject `none`. Reject all symmetric
    algorithms (`HS*`) for a federated issuer - a symmetric key would make the verifier able to mint.
 3. **Issuer.** `iss` must exactly equal the issuer registered for the presenting app id. For a
@@ -868,9 +871,10 @@ RFC 8693 represents a delegation chain by nesting `act` inside `act`, outermost 
 }
 ```
 
-Mapping: the outermost `act.sub` becomes `Principal.Actor`; nested entries become
-`DelegationChain` in outermost-first order. Per the RFC, only top-level claims and the current
-actor participate in an access decision - `DelegationChain` is audit only.
+Mapping: **every** `act` entry, outermost first, becomes `DelegationChain` (5.1 step 10).
+`Principal.Actor` is **not** taken from `act` - it is always the party we authenticated ourselves,
+the app credential (4.2). The RFC's "current actor" is therefore identified by that credential
+rather than by a claim the caller supplies, and `DelegationChain` stays audit only (3.2).
 
 An `act` claim signals **delegation**, not impersonation: the delegate keeps its own identity and
 it is explicit that actions are taken by A representing B. That is exactly the semantics we want,
@@ -919,7 +923,8 @@ Two Entra constraints matter to integrators: the `assertion` must carry `aud` eq
 requesting app's own client id, and OBO works only for delegated (user) tokens - an app-only token
 must use client credentials instead, which yields `Source = AppOnly` and no human.
 
-We accept either shape. Validation (5.1) is identical; only the issuer registration differs.
+We accept either shape. Validation (5.1) is identical apart from step 1, whose accepted `typ` set
+is itself part of the issuer registration - which is the only thing that differs.
 
 ---
 
@@ -1223,7 +1228,10 @@ Evaluation order, first match wins:
    **first allow**; a principal denied as `Owner` for an action may still be allowed as
    `TenantAdmin` for it, which is exactly how an admin edits a published mode they do not own.
    `TenantMember` is last because it confers only `read`/`use`; ahead of `TenantAdmin` it would
-   cost the admin their audited-read reason for no gain.
+   cost the admin their audited-read reason for no gain. **When no applicable relationship allows,
+   return the denial of the first applicable one in this same order.** A published owner is also a
+   `TenantMember`, so `write` would otherwise deny as either `owner_write_frozen_by_publication` or
+   `tenant_member_read_only`, and the reason strings are contract (7.4.1).
 
 4. **Apply the rights table of 7.4.1** for `(relationship, action, resource.Visibility)`. There is
    no step in which a relationship confers "everything".
@@ -1243,10 +1251,14 @@ audit cannot answer "was this ever attempted successfully?".
 
 #### 7.4.1 The rights table (normative)
 
-**This table is the single normative statement of who may do what.** Section 7.3, the commentary
-below it, 7.5, 8.6, and the slice test matrices in section 11 are all **derived** from it. Where any
-of them disagrees with a cell here, the cell wins and the other text is the defect. Nothing outside
-this table may add, remove or qualify a right.
+**This table is the single normative statement of what a relationship confers**, and it is step 4
+of 7.4. Two layers decide before it and are not its: scope admission, which refuses a principal at
+the front door (3.2, 4.2), and 7.4 steps 0-2 - the enforcement gate, the system-defined
+short-circuit, the tenant check.
+Everything downstream of step 4 - section 7.3, the commentary below it, 7.5, 8.6, and the slice test
+matrices in section 11 - is **derived** from it. Where any of them disagrees with a cell here, the
+cell wins and the other text is the defect. Nothing outside this table may add, remove or qualify a
+right.
 
 Two rules are worth stating first because the natural implementation gets both wrong. Neither adds
 anything the cells do not already say:
@@ -1756,17 +1768,22 @@ X-S2S-Auth: <operator secret>
 Content-Type: application/json
 
 {
-  "ownerUserId": "<entra tid>:<oid>",   // optional
-  "threadIds":   ["thr_1", "thr_2"],    // optional; omit to adopt all quarantined rows
-  "dryRun":      true
+  "ownerUserId":  "<entra tid>:<oid>",  // optional
+  "resourceType": "thread",             // thread | workspace | mode; default thread
+  "resourceIds":  ["thr_1", "thr_2"],   // optional; omit to adopt every quarantined
+                                        // resource of that type. One type per call.
+  "dryRun":       true
 }
 ```
 
 Behaviour:
 
-- `{tenantId}` must exist in `tenants` with `status = 'active'`; otherwise `404`, nothing written.
-- Only rows whose `tenant_id` equals the quarantine tenant are eligible. A row already adopted into
-  a real tenant is never re-stamped, so a repeated call is idempotent rather than destructive.
+- `{tenantId}` must exist in `tenants` with `status = 'active'`; otherwise `404` and no customer
+  row is written.
+- Only resources of the requested `resourceType` whose `tenant_id` equals the quarantine tenant are
+  eligible; for `workspace` and `mode` those are the JSON documents of 8.6, stamped on first write,
+  and `resourceIds` names their document ids. A resource already adopted into a real tenant is never
+  re-stamped, so a repeated call is idempotent rather than destructive.
 - Each adopted row gets `tenant_id = {tenantId}` and, when `ownerUserId` was supplied,
   `owner_user_id = ownerUserId`.
 - **`ownerUserId` is validated before any write**: it must parse as `{tid}:{oid}`, and its `tid`
@@ -1785,8 +1802,10 @@ Behaviour:
   X at 02:00" is exactly the kind of event an audit trail exists to hold, and a rehearsal that
   leaves no trace is a reconnaissance tool.
 - Every call writes one `AdministrationAuditRecord` (7.7) with `eventClass = security`, carrying
-  `operation`, target tenant, target owner, affected row count, and `dryRun` - **including** when
-  `dryRun` is true, where `outcome` is `rehearsed` rather than `applied`. It is not an
+  `operation`, target tenant, target owner, affected row count, and `dryRun` - **including** a
+  `dryRun` (`outcome = rehearsed` rather than `applied`) and **including** a rejected call
+  (`outcome = rejected`, with `reason` the stable code). A rejection changes no customer row; "no
+  customer row is written" never means no audit record. It is not an
   `AuthorizationAuditRecord`: that record's fields are sourced from a `Principal`, and this path has
   none (7.7).
 
@@ -1824,6 +1843,13 @@ every startup, after migrations and before the first request is served, not only
 in steady state, and it buys an invariant worth stating: **no `thread_metadata` row ever has a null
 `tenant_id` while the process is serving requests**, whatever sequence of builds wrote it.
 Post-rollback rows then land in quarantine with everything else and adopt through the same route.
+
+**The repair carries statement 1's guard with it**, because a recurring update cannot be protected
+by a one-time check. Before each repair, `@legacyTenantId` must resolve to the persisted
+`entra_tenant_id IS NULL AND status = 'quarantined'` row; if it resolves to any other row, or to
+none, the process **fails to start** with `legacy_tenant_id_collision` and writes nothing.
+Configuration drift that retypes the id as a real tenant's would otherwise hand every post-rollback
+row to that customer's admins - once per reboot, indefinitely.
 
 The alternative - prohibiting writes while downgraded - was rejected because the build that would
 have to refuse is the old one, which has never heard of any of this.
@@ -2024,9 +2050,11 @@ what makes a replay land on the same key.
 
 The one case worth naming: a record written *after* slice 6 for a **quarantined** thread has a
 tenant - the quarantine tenant - so it does project. It rolls up under a tenant that no principal
-can ever carry (8.5.2), which is the correct answer rather than a special case: the spend is
-preserved, and it becomes visible when the thread is adopted and reprojected, at the same moment the
-conversation does.
+can ever carry (8.5.2): the spend is preserved but **stays there after the thread is adopted**.
+Adoption (8.5.3) rewrites `thread_metadata`, not `usage_rollup`, whose own `tenant_id` is part of
+its primary key; and a reprojection reproduces that same key, because 9.1 fixes a record's
+`TenantId` at first observation and never re-attributes it. Re-keying the rollup on adoption is cut
+from P1 (1.2), for the same reason pre-P1 spend is: it is a migration of the usage ledger.
 
 Aggregation is idempotent on the primary key, matching the ledger's existing `ProviderAttemptId`
 dedup discipline: a replayed projection must `UPSERT` to the folded value, not `+=`, or a restart
@@ -2194,7 +2222,9 @@ branch in 7.5 would produce. A pre-existing conversation, after migration, is in
 `member` **and** to an `admin` of every provisioned tenant, and becomes visible only after
 `adopt-legacy`; `dryRun` changes no conversation row **and does write its
 `AdministrationAuditRecord` with `outcome = rehearsed`** (8.5.3); an `ownerUserId` whose `tid` does
-not match the target tenant is `400` and writes nothing; calling `adopt-legacy` twice adopts the
+not match the target tenant is `400`, changes no conversation row, and writes one
+`AdministrationAuditRecord` with `outcome = rejected` and `reason = owner_tenant_mismatch` (7.7);
+calling `adopt-legacy` twice adopts the
 same rows once. A migration run whose configured `Identity:LegacyTenantId` names an existing
 **active** tenant fails with `legacy_tenant_id_collision` and leaves every row unstamped (8.5.1). A
 database at `user_version` 1 opened by the new build reaches **4** with no data loss, and the
