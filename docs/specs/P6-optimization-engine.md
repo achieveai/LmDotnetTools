@@ -35,9 +35,26 @@ heavily-tested piece that turns an agent output into a defensible number.
   (`samples/CodeReviewDaemon.Sample/Agents/JudgeAgent.cs:12`, and the prompt itself says so at
   `samples/CodeReviewDaemon.Sample/Prompts/daemon-prompts.yaml:357`). Promoting a verdict to a gate
   is a separate, later decision (Q7).
-- **Not a human-labelling product.** We consume human verdicts the daemon already collects; we do not
-  build an annotation UI.
+- **Not a human-labelling product.** No annotation tool, no labelling queue, no rater management. The
+  one exception is deliberate and small: slice #323c adds a *single* reviewer disposition affordance
+  (§8.1.3), because without one human verdict the proxy can never be validated. That is an
+  affordance, not a product.
 - **No new provider abstractions.** Judges are driven through the existing `IMultiTurnAgent` seam.
+
+### Deliberately unspecified in these slices
+
+This spec specifies **slice #319 to implementable depth** and fixes the decisions that are expensive
+to reverse. It deliberately does **not** define API surface for decisions nobody has taken yet —
+specifying these wrongly is worse than leaving them open:
+
+| Cut | Why | Reopened by |
+| --- | --- | --- |
+| `GatingMode` and every gating-only rule | Verdicts are advisory in #319–#323 (Q7 is open). A public contract that encodes gating behaviour commits us to a reliability threshold and corpus size nobody has agreed | Q7 |
+| Pairwise judging (`JudgeContext.Peers`, `PairwiseJudgeRunner`, presentation seeds) | No slice ships a ranking consumer; every runner and record here is pointwise | a ranking story, if one is ever raised |
+| `IRoutingPolicy` / `CascadeStage` C# | §7's *decisions* are what matter now; the interface shape depends on the cascade executor, which is three slices away | #322 |
+| Model *tier* as a typed concept | Only the cascade needs an ordering over model strength | #322 |
+
+Where those appear below they appear as decisions and constraints, not as types.
 
 ## 2. The harness abstraction
 
@@ -60,8 +77,24 @@ without a cycle or an unwanted dependency. A leaf project over `LmCore` + `LmMul
 from both, and from a future eval runner, with no cycle.
 
 `LmMultiTurn` (not just `LmCore`) is required because the harness drives judges through
-`IMultiTurnAgent` and attributes cost through `IUsageSink`
-(`src/LmMultiTurn/UsageAccounting/IUsageSink.cs:11`).
+`IMultiTurnAgent`.
+
+**Layering rule: `LmEval` owns no persistence and no orchestration.** `JudgeGauntlet.RunAsync`
+returns a complete `Verdict` and knows nothing about SQLite, migrations, the daemon's schema, or
+model routing. Everything that stores or sequences is the **host's** job:
+
+| Concern | Owner |
+| --- | --- |
+| Deciding a verdict | `LmEval` |
+| Persisting a verdict, ballots, human observations | the daemon (§6) — its database, its migrations |
+| Measuring and attributing cost | the host, around the judge invocation (§6.2) |
+| Sequencing generate → evaluate → escalate | the host (§7) |
+
+This is why the harness contract carries no cost type and takes no usage sink. `IUsageSink` is
+write-only and `IMultiTurnAgent` offers no way to attach one after construction, so a gauntlet that
+promised per-ballot cost could not honour it. The host already owns the agent and its thread id,
+which is exactly the join key §6.2 uses, so it is the layer that *can* measure cost — and the layer
+that should.
 
 ### 2.2 Core vocabulary
 
@@ -95,6 +128,10 @@ public sealed record Candidate
     /// <summary>Which arm produced this candidate. Null for a corpus item with no variant.</summary>
     public string? VariantId { get; init; }
     public string? ModelId { get; init; }
+    /// <summary>Model family of whatever produced Content. Required for generator-family exclusion
+    /// (§3.2); when null, exclusion cannot be applied and the verdict records that fact. Resolved
+    /// by the host — LmEval does not own a model taxonomy.</summary>
+    public string? GeneratorFamily { get; init; }
     public IReadOnlyDictionary<string, string> Metadata { get; init; }
         = new Dictionary<string, string>();
 }
@@ -193,9 +230,11 @@ Design choices and the evidence for each:
   cut GPT-4's math-grading failure rate from 70% to 30% (Zheng et al., 2023, arXiv:2306.05685). The
   harness enforces this structurally: the response schema puts `reasoning` before `score`, so the
   model cannot emit a score it has not yet justified.
-- **Pointwise for gating, pairwise only for ranking.** Pairwise tracks human preference better
+- **Pointwise only.** Pairwise comparison tracks human preference better
   (Liu et al., 2024, arXiv:2403.16950), but pairwise preferences flip ~35% of the time under
-  distractor features versus ~9% for absolute scores (Tripathi et al., 2025, arXiv:2504.14716).
+  distractor features versus ~9% for absolute scores (Tripathi et al., 2025, arXiv:2504.14716), and
+  no consumer in these slices ranks candidates — the eval runner and the experiment record both
+  store pointwise scores. Pairwise is out of scope (§1).
 - **Integer scale.** G-Eval's probability-weighted scoring recovers resolution integers discard
   (Liu et al., 2023, arXiv:2303.16634) but needs token logprobs, which several providers behind
   `IMultiTurnAgent` do not expose. Recorded as Q3.
@@ -212,6 +251,11 @@ public sealed record Ballot
     /// generator/judge collision (§3.2).</summary>
     public required string ModelFamily { get; init; }
     public required IReadOnlyDictionary<string, int> CriterionScores { get; init; }
+    /// <summary>The rubric-weighted average of CriterionScores, on the rubric's own scale:
+    /// <c>sum(c.Weight * CriterionScores[c.CriterionId]) / sum(c.Weight)</c> over
+    /// <see cref="Rubric.Criteria"/>. Because it is normalised by total weight it stays within
+    /// [MinScore, MaxScore] and is directly comparable to Rubric.PassThreshold. A criterion the
+    /// judge did not score makes the ballot invalid — it is a schema violation, not a zero.</summary>
     public required double WeightedScore { get; init; }
     public required string Reasoning { get; init; }
     /// <summary>Self-reported confidence in [0,1]. Below the abstain floor the ballot is recorded
@@ -220,16 +264,10 @@ public sealed record Ballot
     /// <summary>True when the judge declined to score. An abstention is DISTINCT from a zero.</summary>
     public required bool Abstained { get; init; }
     public string? AbstainReason { get; init; }
-    /// <summary>Which presentation order this ballot was cast under (§3.1).</summary>
-    public required int PresentationSeed { get; init; }
-    public required TokenCost Cost { get; init; }
+    /// <summary>The reliability weight applied to this ballot when it was aggregated (§2.9),
+    /// recorded so a past verdict stays auditable after the weights are refitted.</summary>
+    public required double AppliedWeight { get; init; }
 }
-
-/// <summary>New to LmEval. Cost in USD micro-units, matching UsageRecord's units exactly so no
-/// conversion happens at the boundary. Provenance is non-null so an unpriced call is never read
-/// as a free one (§6.2).</summary>
-public sealed record TokenCost(long InputTokens, long OutputTokens, long ReasoningTokens,
-    long? CostMicros, CostProvenance Provenance);
 
 public interface IJudge
 {
@@ -240,11 +278,9 @@ public interface IJudge
         CancellationToken cancellationToken);
 }
 
-/// <summary>Per-invocation controls the harness sets, not the judge implementation.</summary>
+/// <summary>Per-invocation input the harness supplies, not the judge implementation.</summary>
 public sealed record JudgeContext
 {
-    public required int PresentationSeed { get; init; }
-    public IReadOnlyList<Candidate> Peers { get; init; } = [];
     public string? Reference { get; init; }
 }
 ```
@@ -268,20 +304,22 @@ public sealed record Verdict
 {
     public required string CandidateId { get; init; }
     public required VerdictOutcome Outcome { get; init; }
-    /// <summary>Aggregated score on the rubric's scale. Null when NoDecision.</summary>
+    /// <summary>Aggregated score on the rubric's scale. Null whenever there are **no counted
+    /// ballots** — a gate rejection (which short-circuits before any judge runs) and a NoDecision
+    /// alike. A gate-rejected candidate has Outcome = Fail with Score = null; the two carry
+    /// different information and neither implies a numeric score.</summary>
     public double? Score { get; init; }
     public required IReadOnlyList<GateDecision> GateDecisions { get; init; }
     public required IReadOnlyList<Ballot> Ballots { get; init; }
     /// <summary>Ballots cast but excluded, each with why. Never silently dropped.</summary>
     public required IReadOnlyList<ExcludedBallot> ExcludedBallots { get; init; }
-    /// <summary>Disagreement among counted ballots. High dispersion on a gating item is a
+    /// <summary>Disagreement among counted ballots. High dispersion is a
     /// review-this-by-hand signal. <b>Null</b> whenever dispersion is undefined rather than zero:
     /// a single counted ballot (§2.12.6), a gate short-circuit with no ballots, or a NoDecision.
     /// Null is not 0.0 — a lone judge is not a panel in perfect agreement.</summary>
     public double? Dispersion { get; init; }
     public required string RubricId { get; init; }
     public required string RubricVersion { get; init; }
-    public required TokenCost TotalCost { get; init; }
     public required string TieBreakRule { get; init; }
     public required PanelDegradation Degradation { get; init; }
     /// <summary>Names the unreachable family when Degradation is not None. Stable, non-sensitive
@@ -291,11 +329,27 @@ public sealed record Verdict
 
 public sealed record ExcludedBallot(Ballot Ballot, string ExclusionReason);
 
+/// <summary>Everything the reduction step needs beyond the ballots themselves. Passed in rather
+/// than captured at construction so a verdict records the exact weights it was computed from.</summary>
+public sealed record AggregationContext
+{
+    public required HarnessOptions Options { get; init; }
+    /// <summary>Reliability snapshot keyed by JudgeId for this (TaskType, RubricVersion) (§2.9).
+    /// A judge absent from the map weighs 1.0.</summary>
+    public required IReadOnlyDictionary<string, double> Reliability { get; init; }
+    /// <summary>Judges that faulted rather than returning a ballot, and why — this is how
+    /// degradation is classified (§2.12.6).</summary>
+    public required IReadOnlyList<JudgeFault> Faults { get; init; }
+}
+
+public sealed record JudgeFault(string JudgeId, string ModelFamily, string Reason);
+
 public interface IBallotAggregator
 {
     string RuleId { get; }
     Verdict Aggregate(Candidate candidate, Rubric rubric,
-        IReadOnlyList<GateDecision> gates, IReadOnlyList<Ballot> ballots);
+        IReadOnlyList<GateDecision> gates, IReadOnlyList<Ballot> ballots,
+        AggregationContext context);
 }
 ```
 
@@ -303,11 +357,10 @@ public interface IBallotAggregator
 
 1. Drop every ballot with `Abstained == true` or `Confidence < HarnessOptions.AbstainFloor`
    (default `0.34`), recording each in `ExcludedBallots`.
-2. If fewer than `HarnessOptions.MinCountedBallots` survive → `NoDecision`. **Not a fail.** An
-   unmeasured candidate and a bad candidate are different facts. `MinCountedBallots` is **2 in
-   gating mode and 1 in advisory mode**: advisory runs deliberately accept a single surviving
-   ballot and mark the verdict `Degradation = SingleJudge` (§2.12.6), whereas a gating run refuses.
-   A single-ballot verdict never reports a `Dispersion`.
+2. If **no** ballot survives → `NoDecision`. **Not a fail.** An unmeasured candidate and a bad
+   candidate are different facts. A single surviving ballot *is* counted, and the verdict is marked
+   `Degradation = SingleJudge` (§2.12.6) with a null `Dispersion` — verdicts are advisory in these
+   slices, so one judge's read is worth recording provided it is labelled as one judge's read.
 3. With two counted ballots, apply the straddle test of §2.12.2 — same side of `PassThreshold`
    decides directly, opposite sides runs the tie-break of §2.12.3.
 4. `Score` is the reliability-**weighted mean** of the counted ballots — with weights `w_i` from
@@ -315,10 +368,9 @@ public interface IBallotAggregator
    an arbiter-resolved straddle it is the arbiter's score, not a blend.
 
    *No median is defined anywhere in this spec, and the aggregator is named for what it computes.*
-   An earlier draft specified a weighted median for its robustness to one miscalibrated judge; that
-   rationale requires at least three ballots to mean anything, and §2.12 fixes the panel at two,
-   where a median is identical to a mean. The straddle test — not a robust statistic — is what now
-   protects against a single bad judge.
+   A median only earns its robustness at three or more ballots; §2.12 fixes the panel at two, where
+   it is identical to a mean. The straddle test, not a robust statistic, is what protects against a
+   single bad judge.
 
 **Weighted, not unweighted.** Weak-supervision-weighted ensembles of <=70B judges reach o3-mini-level
 selection accuracy (87.7% avg), and weighting significantly beats unweighted aggregation
@@ -349,21 +401,52 @@ not #319.
 ### 2.10 The pipeline
 
 ```csharp
+/// <summary>The complete option surface. Validated once at construction; see §2.12.1 for the
+/// configuration rules that throw.</summary>
+public sealed record HarnessOptions
+{
+    /// <summary>Ballots below this self-reported confidence are excluded from the tally (§2.8).</summary>
+    public double AbstainFloor { get; init; } = 0.34;
+    /// <summary>Dispersion above which the verdict is flagged for human review (§2.8). Null
+    /// disables the alarm.</summary>
+    public double? DispersionAlarm { get; init; } = null;
+    /// <summary>Optional stronger model that decides a straddle (§2.12.3). Null means straddles
+    /// terminate as Split.</summary>
+    public IJudge? ArbiterJudge { get; init; }
+    /// <summary>Permits a configured panel whose two judges share a ModelFamily. Off by default;
+    /// when on, every verdict is stamped so those rows are never pooled with clean ones.</summary>
+    public bool AllowSameFamilyPanel { get; init; }
+}
+
 public sealed class JudgeGauntlet
 {
-    public JudgeGauntlet(IReadOnlyList<IGate> gates, JudgePanel panel,
-        IBallotAggregator aggregator, HarnessOptions options, IUsageSink? usageSink = null,
+    public JudgeGauntlet(IReadOnlyList<IGate> gates, IReadOnlyList<IJudge> judges,
+        IBallotAggregator aggregator, HarnessOptions options,
         ILogger<JudgeGauntlet>? logger = null);
 
     public Task<Verdict> RunAsync(Candidate candidate, Rubric rubric,
+        IReadOnlyDictionary<string, double> reliability,
         CancellationToken cancellationToken);
 }
 ```
 
-`RunAsync` = run gates in order → short-circuit on first `Reject` (emitting a `Verdict` with
-`Outcome = Fail`, no ballots, near-zero cost) → otherwise fan the panel out concurrently, one
-`PresentationSeed` per judge → aggregate → emit. Cost is accumulated across every model call and
-reported on the `Verdict` whether it passed or failed.
+`RunAsync`:
+
+1. Run gates in order; short-circuit on the first `Reject`, emitting `Outcome = Fail` with no
+   ballots and a null `Score`. No judge runs, so this path costs nothing.
+2. `JudgePanel.Compose(judges, candidate, options)` (§2.12.1) — a **pure** eligibility filter over
+   model families. It never probes a provider.
+3. Fan the eligible judges out concurrently. A judge that faults becomes a `JudgeFault` rather than
+   propagating; a judge that returns gives a `Ballot`.
+4. `aggregator.Aggregate(...)` with an `AggregationContext` carrying the options, the reliability
+   snapshot, and the faults.
+
+**Degradation is classified after fan-out, from what actually came back** — not from a health probe
+before it. That ordering is forced: `IJudge` exposes no reachability, retry and backoff live below
+this layer in the agent plumbing, and a synchronous pre-flight check could not know the outcome of
+retries that have not happened yet. Two eligible judges of which one faults is `SingleJudge`; both
+faulting is `PanelUnavailable`. The classification is therefore a fact about the run, not a
+prediction about the provider.
 
 ### 2.11 Relationship to `LmWorkflow`
 
@@ -371,18 +454,16 @@ The harness deliberately does **not** build on `LmWorkflow`'s node graph, for st
 
 `LmWorkflow` is a **controller-LLM-driven** state machine, not a deterministic executor. Nothing
 auto-advances: `WorkflowRuntime.AdvanceTo` (`src/LmWorkflow/Runtime/WorkflowRuntime.cs:1211`) is
-called by the controller model via the `SetCurrentNode` tool
-(`src/LmWorkflow/Tools/WorkflowToolProvider.cs:98`), and the join state computed by
+called by the controller model via `SetCurrentNode`
+(`src/LmWorkflow/Tools/WorkflowToolProvider.cs:98`), and the join state from
 `WorkflowProjectionBuilder.BuildJoin` (`src/LmWorkflow/Runtime/WorkflowProjectionBuilder.cs:147`) is
-**advisory** — its `satisfied` flag blocks nothing. Worse for our purposes, `JoinMode.Quorum`
-(`src/LmWorkflow/Model/WorkflowEnums.cs:48`) is rejected outright by the validator
-(`src/LmWorkflow/Ingest/WorkflowValidator.cs:175`) and `JoinPolicy.Threshold`
-(`src/LmWorkflow/Model/JoinPolicy.cs:7`) is unused. Majority vote *is* a quorum join, so the one
-primitive we most need is the one V1 does not have. There is also no reduce node — named as
-explicitly out-of-V1 at `src/LmWorkflow/Model/WorkflowNode.cs:105` — and no reducer seam of any kind.
-
-Putting a vote tally behind a controller LLM would also make aggregation itself non-deterministic,
-which defeats the point of the artifact.
+**advisory** — its `satisfied` flag blocks nothing. `JoinMode.Quorum`
+(`src/LmWorkflow/Model/WorkflowEnums.cs:48`) is rejected by the validator
+(`src/LmWorkflow/Ingest/WorkflowValidator.cs:175`), `JoinPolicy.Threshold`
+(`src/LmWorkflow/Model/JoinPolicy.cs:7`) is unused, and there is no reduce node (out-of-V1 at
+`src/LmWorkflow/Model/WorkflowNode.cs:105`). A panel vote *is* a quorum join, so the primitive we
+most need is the one V1 lacks — and putting a vote tally behind a controller LLM would make
+aggregation non-deterministic, defeating the point of the artifact.
 
 **What we reuse instead**, without depending on `LmWorkflow`:
 
@@ -415,7 +496,7 @@ to violate an invariant:
 /// built from eligible judges; it never filters them itself.</summary>
 public abstract record PanelComposition
 {
-    /// <summary>Two eligible judges of distinct families. The only composition that may gate.</summary>
+    /// <summary>Two eligible judges of distinct families.</summary>
     public sealed record Full(IJudge First, IJudge Second) : PanelComposition;
     /// <summary>Exactly one eligible judge. Legal, and always yields Degradation = SingleJudge.</summary>
     public sealed record Degraded(IJudge Only, string Reason) : PanelComposition;
@@ -425,22 +506,38 @@ public abstract record PanelComposition
 
 public static class JudgePanel
 {
-    /// <summary>Drops judges sharing the candidate's generator family (§3.2) and judges whose
-    /// provider is unreachable (§2.12.6), then classifies what is left.</summary>
+    /// <summary>Pure, synchronous eligibility filter: drops judges whose ModelFamily equals
+    /// candidate.GeneratorFamily (§3.2), then classifies what is left. It performs no I/O and
+    /// probes no provider — provider failure is classified after fan-out (§2.12.6).</summary>
     public static PanelComposition Compose(IReadOnlyList<IJudge> configured, Candidate candidate,
         HarnessOptions options);
 }
 ```
 
-`Compose` is total — it returns a composition for every input and **throws for no candidate-driven
-reason**. The configuration-time rules are what throw, and they are checked once at startup rather
-than per candidate: the configured judge set must contain exactly two judges of **distinct
-`ModelFamily`**, or `HarnessOptions.AllowSameFamilyPanel` must be set (which stamps the verdict so
-those rows are never pooled with clean ones).
+`JudgePanel` is a static helper because it holds no state and `JudgeGauntlet` calls it internally —
+the gauntlet takes `IReadOnlyList<IJudge>` (§2.10), never a panel object, so nothing needs to inject
+a panel instance.
+
+`Compose` is **total**: it returns a composition for every input and throws for no candidate-driven
+reason. The rules that *throw* are configuration-time, validated once when `JudgeGauntlet` is
+constructed rather than per candidate:
+
+- **Two judges** — the intended configuration — must have **distinct `ModelFamily`** unless
+  `HarnessOptions.AllowSameFamilyPanel` is set.
+- **One judge** is legal and is how the Revobot migration reproduces today's behaviour (§4.2). Every
+  verdict it produces is `Degradation = SingleJudge` with a null `Dispersion`, by the same rule that
+  covers a two-judge panel degraded at runtime — so a legacy single-judge row is never mistaken for a
+  panel verdict in a #320 aggregate.
+- **Zero, or more than two**, throws. Three-plus is the PoLL shape, which §2.9 explicitly did not
+  buy.
 
 That separation is the whole point. "Two judges of distinct families" is an invariant of the
-*configuration*; "how many of them are eligible for this candidate" is a per-candidate fact that
-legitimately varies, and `Degraded` is its honest representation rather than an exception.
+*configuration*; "how many are eligible for this candidate" is a per-candidate fact that legitimately
+varies, and `Degraded` is its honest representation rather than an exception.
+
+When `candidate.GeneratorFamily` is null the filter cannot run. `Compose` then returns `Full` and the
+verdict records `generator-family-unknown`, so a row that was never eligibility-checked is
+distinguishable from one that passed the check.
 
 #### 2.12.2 What "disagree" means on an ordinal scale
 
@@ -461,10 +558,14 @@ agree on the decision but not on the quality, and that gap is a rubric-quality s
 
 On a straddle, in order, with the applied rule recorded verbatim in `Verdict.TieBreakRule`:
 
-1. **Arbiter escalation**, if `HarnessOptions.ArbiterJudge` is configured, its family is not the
-   generator's, and its tier is at or above the generator's (§7.2). One call. The arbiter's side
-   decides; `Score` becomes the arbiter's weighted score, not a blend. Recorded as
-   `"arbiter:<judgeId>:<family>"`.
+1. **Arbiter escalation**, if `HarnessOptions.ArbiterJudge` is configured and its family is not the
+   generator's. One call. The arbiter's side decides; `Score` becomes the arbiter's weighted score,
+   not a blend. Recorded as `"arbiter:<judgeId>:<family>"`.
+
+   The arbiter is *intended* to be a stronger model than either panel member, but "stronger" is not
+   enforced here: it needs an ordering over model strength, and that ordering is a cascade concern
+   (§7). Configuring a weak arbiter is a configuration mistake this slice does not detect — recorded
+   as a constraint on #322, which is where tier acquires a definition.
 2. **Otherwise `Split`** — a first-class `VerdictOutcome`, recorded as `"split:unresolved"`. Not a
    pass, not a fail, and not a `NoDecision` (which means *the panel could not be run*; `Split` means
    *the panel ran and the judges genuinely disagreed*).
@@ -537,22 +638,22 @@ preference.
 
 #### 2.12.6 Degradation when a provider is down
 
-`HarnessOptions.GatingMode` decides, because the right answer differs by consequence:
+Verdicts are advisory in these slices (§1), so there is one rule rather than a mode switch:
 
-- **Advisory mode (the default, and all of #319):** fall back to the **single reachable judge**. The
-  verdict is emitted with `Degradation = SingleJudge`, `Dispersion = null`, and a
-  `DegradationReason` naming the unreachable family. It is a real verdict and is written to the
-  experiment record, but §5 aggregates **exclude degraded rows by default** and report their count
-  separately. One judge's read on a corpus item is worth more than a hole, provided the hole is
-  labelled.
-- **Gating mode:** **fail closed.** Emit `NoDecision` with `Degradation = PanelUnavailable`. A gate
-  that silently weakens to one judge when a provider blips is exactly how a quality bar erodes
-  without anyone deciding to lower it.
-- **Both judges unreachable:** `NoDecision` with `Degradation = PanelUnavailable`, in either mode.
-  Never a `Pass`.
+- **One judge returns, one faults:** emit the verdict with `Degradation = SingleJudge`,
+  `Dispersion = null`, and a `DegradationReason` naming the faulted family. It is a real verdict and
+  is recorded, but §5 aggregates **exclude degraded rows by default** and report their count
+  separately. One judge's read is worth more than a hole, provided the hole is labelled.
+- **Both fault:** `NoDecision` with `Degradation = PanelUnavailable`. Never a `Pass`.
 
-Retry and backoff for a transient provider failure happen below this layer, in the existing agent
-plumbing; `Degradation` records only what the panel ended up with after those retries were exhausted.
+Retry and backoff for transient provider failures happen below this layer in the agent plumbing;
+`Degradation` records only what the panel ended up with after those retries were exhausted, which is
+why it is classified after fan-out (§2.10) rather than probed beforehand.
+
+**What a future gate would need** is the opposite default — fail closed rather than degrade, because
+a gate that silently weakens to one judge when a provider blips is how a quality bar erodes without
+anyone deciding to lower it. That rule is not specified here (§1, Q7); what this slice provides is
+the provenance it would need, since `Degradation` is persisted per verdict.
 
 `Degradation` is a non-null enum on `Verdict`
 (`None | SingleJudge | PanelUnavailable | ArbiterUnavailable`) so a reader who ignores it cannot
@@ -573,20 +674,16 @@ models barely helps (66.2%) (Zheng et al., 2023, arXiv:2306.05685). Reordering a
 leaderboard: Vicuna-13B "beat" ChatGPT on 66 of 80 queries under ChatGPT judging
 (Wang et al., 2023, arXiv:2305.17926).
 
-**The control.** `JudgeContext.PresentationSeed` is assigned by the harness, never by the judge.
+**Why it does not arise in these slices.** Position bias needs two or more candidates in one prompt
+for one to occupy a favoured position. Every judge here is **pointwise** — one candidate, one rubric,
+one score (§2.5) — so there is no ordering for a judge to prefer, and no presentation seed, peer
+list, or paired runner is specified (§1). The one residual ordering, the order of rubric criteria, is
+fixed by `Rubric.Criteria` being an ordered list under a versioned `RubricVersion`.
 
-- *Pairwise*: `PairwiseJudgeRunner` runs **both orders** and treats a disagreement between passes as
-  **no preference** from that judge — its ballot abstains (§2.8) rather than counting for either
-  side. This is Balanced Position Calibration
-  (Wang et al., 2023, arXiv:2305.17926).
-- *Pointwise with peers*: `JudgeContext.Peers` is shuffled per judge by `PresentationSeed`, so no two
-  panel members see the same ordering and a shared positional preference cannot align into consensus.
-- The seed is persisted on the `Ballot`, so any verdict is reproducible and a position effect can be
-  measured after the fact rather than assumed absent.
-
-**Enforcement, not convention.** `JudgeGauntlet` assigns seeds; an `IJudge` that ignores
-`PresentationSeed` is caught by a harness test asserting two seeds produce two different rendered
-prompts.
+**The precondition on later work.** If a ranking story is ever raised, position bias becomes live
+immediately and the mitigation is Balanced Position Calibration — run both orders and treat a
+disagreement between the passes as no preference rather than a win (Wang et al., 2023,
+arXiv:2305.17926). The numbers above are why that is not optional.
 
 ### 3.2 Self-preference bias
 
@@ -618,14 +715,22 @@ self-preference axis is unmeasurable retrospectively, and no amount of later ana
 
 **The controls.**
 
-1. `JudgePanel` **rejects at construction** any judge whose `ModelFamily` equals the candidate's
-   generator family, unless `HarnessOptions.AllowSelfFamilyJudge` is explicitly set. A throw, not a
-   warning.
+1. **Per candidate**, `JudgePanel.Compose` (§2.12.1) drops any judge whose `ModelFamily` equals
+   `Candidate.GeneratorFamily`. It **filters**; it does not throw, because which judges are eligible
+   is a property of the candidate and legitimately varies run to run. There is no override flag —
+   a generator-family judge is never admitted (see §2.12.5 for why an override would be worse than a
+   missing judge).
+
+   The only generator-family rule that *throws* is at configuration time and is a different check:
+   two configured judges sharing a family with **each other** (`AllowSameFamilyPanel`, §2.12.1).
+   `AllowSameFamilyPanel` governs judge-vs-judge; generator exclusion governs judge-vs-candidate.
+   There is no flag permitting the second case; permitting it is exactly the false-consensus failure
+   of §2.12.5.
 2. `Candidate.ModelId` is **never rendered into the judge prompt**. `Candidate.VariantId` is rendered
    only as an opaque label (`"A"` / `"B"`), never a model name — removing the self-recognition cue
    that drives the effect.
-3. When the same-family case is deliberately allowed, the fact is stamped on the `Verdict` so
-   downstream analysis can segment on it rather than pool it.
+3. When `AllowSameFamilyPanel` is deliberately set, the fact is stamped on the `Verdict` so
+   downstream analysis can segment on those rows rather than pool them.
 4. Panel family-disjointness (§2.12.1) means a self-preferring judge is **detected** — it straddles
    against the other family and the verdict becomes `Split`. Note this is weaker than the
    three-judge case, where such a judge would be outvoted and the verdict would still be correct;
@@ -680,7 +785,7 @@ other than quality. LLMBar reaches 94% expert agreement on a cleaner, more objec
 for investing in anchors.
 
 Initial target: **Krippendorff's alpha in the 0.7–0.8 band** against human verdicts, per task type.
-Below 0.67 the rubric is treated as not yet fit for gating.
+Below 0.67 the rubric is treated as not yet fit for any use beyond exploratory measurement.
 
 ## 4. Revobot migration
 
@@ -734,8 +839,10 @@ exactly (`:153`). Internally it becomes a thin adapter:
 
 - Build a `Candidate` from `JudgeRequest` (`samples/CodeReviewDaemon.Sample/Agents/JudgeAgent.cs:140`) with
   `TaskType = "code-review"`, `Content = JudgingInput`, `VariantId = request.VariantId`.
-- Run a `JudgeGauntlet` configured with **zero gates and a single-judge panel**. That is what
-  reproduces today's behaviour exactly.
+- Run a `JudgeGauntlet` configured with **zero gates and one judge** — the single-judge
+  configuration §2.12.1 admits precisely for this. Every verdict it produces carries
+  `Degradation = SingleJudge`, which is an accurate description of what Revobot does today and keeps
+  these rows out of §5's headline aggregates until the panel actually lands in #322.
 - Map `Verdict.Score` → the artifact's `score`, the single `Ballot.Reasoning` → `rationale`.
 - **Preserve the malformed-response behaviour bit-for-bit for now.** Today `ParseVerdict` returns
   `(0, rawText)` on unparseable output (`:87`, `:110`). Under the harness that is naturally an
@@ -879,7 +986,7 @@ public sealed record EvalBaseline
     public required double MeanScore { get; init; }
     public required double P10Score { get; init; }
     public required double PassRate { get; init; }
-    public required decimal MeanCostUsd { get; init; }
+    public required long MeanCostMicros { get; init; }   // host-supplied; see §6.2
     public required string CorpusSnapshotHash { get; init; }
 }
 ```
@@ -892,8 +999,9 @@ referenced thereafter, never recomputed silently.
 `EvalRun` → one row per run plus one `Verdict` per corpus item, written to the same SQLite store as
 the experiment record (§6). A run emits:
 
-- per-item `Verdict` (score, gates, ballots, dispersion, cost);
-- aggregate mean / P10 / pass-rate / total cost;
+- per-item `Verdict` (score, gates, ballots, dispersion) joined to the cost the host recorded for
+  that item's threads (§6.2) — the runner reads cost, the harness never produces it;
+- aggregate mean / P10 / pass-rate, and total cost from that join;
 - the **delta against the named baseline**, with a confidence interval;
 - the count of `NoDecision` items — a run where the panel could not decide on 30% of items is not a
   clean result even if the remaining 70% look good;
@@ -921,20 +1029,25 @@ number, so it is a hard error.
 
 ### 6.1 Schema
 
-One row per (candidate, variant, judged) triple, stored in the daemon's existing SQLite database as
-**migration V5**. `SchemaMigrations.All` currently runs 1–4
+Three tables, stored in the daemon's existing SQLite database as **migration V5**.
+`SchemaMigrations.All` currently runs 1–4
 (`samples/CodeReviewDaemon.Sample/Persistence/Migrations/SchemaMigrations.cs:17-20`) with
 `LatestVersion` derived at `:12`, so adding V5 is the established, tested path via `MigrationRunner`.
 
+The split is forced by cardinality: one verdict has **many ballots** (§2.7) and may accumulate
+**several human observations over time** (§8.1). Flattening either into the verdict row would lose
+rows or leave the reader guessing which ballot a column described.
+
+**`experiment_record` — one row per (candidate, variant, verdict).**
+
 ```
-experiment_record
   id                    INTEGER PK
   experiment_id         TEXT NOT NULL   -- groups arms of one experiment
   review_run_id         INTEGER NULL    -- FK -> review_run.id; NULL for offline eval items
   eval_run_id           TEXT NULL       -- set for corpus replays
   task_type             TEXT NOT NULL
   variant_id            TEXT NOT NULL   -- 'primary' | 'b' | ...
-  model_provider        TEXT NOT NULL
+  model_provider        TEXT NOT NULL   -- the generator's
   model_id              TEXT NOT NULL
   reasoning_effort      TEXT NULL       -- NOT available from usage; see §6.2
   prompt_template_hash  TEXT NULL
@@ -943,24 +1056,13 @@ experiment_record
   gate_outcome          TEXT NOT NULL   -- Pass | Reject | Inconclusive
   gate_reason           TEXT NULL
   judge_score           REAL NULL       -- NULL when NoDecision. NEVER 0-as-missing.
-  judge_dispersion      REAL NULL
-  ballot_count          INTEGER NOT NULL
-  excluded_ballot_count INTEGER NOT NULL
+  judge_dispersion      REAL NULL       -- NULL, not 0.0, when undefined (§2.12.6)
   verdict_outcome       TEXT NOT NULL   -- Pass | Fail | Split | NoDecision
   tie_break_rule        TEXT NULL
-  straddled             INTEGER NOT NULL -- 0/1; the judges landed on opposite sides (§2.12.2)
+  straddled             INTEGER NOT NULL -- 0/1; judges landed on opposite sides (§2.12.2)
   panel_degradation     TEXT NOT NULL   -- None | SingleJudge | PanelUnavailable | ArbiterUnavailable
-  human_verdict         TEXT NULL       -- Accepted | Edited | Rejected | Ambiguous | Ignored
-                                        -- NULL = no human signal observed yet
-  human_verdict_source  TEXT NOT NULL   -- provenance; see §8.1.3. NOT NULL and no default.
-                                        -- 'None' = observable, nothing seen yet
-                                        -- 'NotObservable' = this provider cannot produce the signal
-  human_verdict_conf    REAL NULL       -- proxy strength in [0,1]; NULL for Explicit
-  human_signal_seen_at  TEXT NULL
-  human_edit_distance   INTEGER NULL
   outcome               TEXT NULL       -- terminal business outcome, e.g. Merged | Abandoned
   generator_cost_micros INTEGER NULL    -- USD micro-units, matching UsageRecord
-  judge_cost_micros     INTEGER NULL
   cost_provenance       TEXT NOT NULL   -- Unavailable | PublicEstimate | ProviderReported
   input_tokens          INTEGER NULL
   output_tokens         INTEGER NULL
@@ -969,25 +1071,70 @@ experiment_record
   created_at            TEXT NOT NULL
 ```
 
-Indexes on `(experiment_id)`, `(task_type, rubric_version)`, `(review_run_id)`, `(usage_thread_id)`.
+**`experiment_ballot` — one row per ballot, counted or excluded.**
+
+```
+  id                INTEGER PK
+  record_id         INTEGER NOT NULL  -- FK -> experiment_record.id
+  judge_id          TEXT NOT NULL
+  judge_model_id    TEXT NOT NULL     -- provenance for §7.2's tier segmentation
+  judge_family      TEXT NOT NULL
+  role              TEXT NOT NULL     -- Panel | Arbiter
+  score             REAL NULL         -- NULL when the judge abstained. NEVER 0-as-missing.
+  abstained         INTEGER NOT NULL  -- 0/1
+  applied_weight    REAL NULL         -- NULL for an excluded ballot
+  exclusion_reason  TEXT NULL         -- NULL iff the ballot was counted
+```
+
+`ballot_count` and `excluded_ballot_count` are **not** columns; they are `COUNT(*)` over this table,
+so the two can never disagree.
+
+**`human_observation` — zero or more rows per record, append-only.**
+
+```
+  id             INTEGER PK
+  record_id      INTEGER NOT NULL  -- FK -> experiment_record.id
+  verdict        TEXT NOT NULL     -- Accepted | Edited | Rejected | Ambiguous | Ignored
+  source         TEXT NOT NULL     -- provenance; see §8.1.3. NOT NULL and no default.
+  confidence     REAL NULL         -- proxy strength in [0,1]; NULL for an explicit source
+  edit_distance  INTEGER NULL
+  observed_at    TEXT NOT NULL
+```
+
+Append-only is what makes Q8's answer safe: a proxy harvested today and an explicit control answered
+next month are **two rows**, not an overwrite. Nothing decides at write time which wins, and a reader
+wanting only explicit signal filters on `source`.
+
+A provider that *cannot* produce the signal has not observed indifference, so it gets no row at all.
+That case is recorded on the record instead:
+
+```
+  human_signal_state    TEXT NOT NULL   -- Observable | NotObservable
+```
+
+`Observable` with no `human_observation` rows means *nothing seen yet*; `NotObservable` means this
+row's provider cannot produce the signal at all (§8.1.2). Collapsing the two would turn a provider
+gap into apparent human indifference.
+
+Indexes on `(experiment_id)`, `(task_type, rubric_version)`, `(review_run_id)`, `(usage_thread_id)`,
+`experiment_ballot(record_id)`, `human_observation(record_id, source)`.
 
 Cost is stored in **micro-units (integer)**, matching `UsageRecord.EstimatedPublicCostMicros` /
-`ProviderReportedCostMicros`, so no floating-point drift is introduced at the boundary.
+`ProviderReportedCostMicros`, so no floating-point drift is introduced at the boundary. Judge cost is
+deliberately **not** a column: `LmEval` computes no cost (§2.1), and judge spend is recoverable from
+the usage ledger by thread (§6.2) once that join exists.
 
-Several fields carry deliberate NULL semantics, following the project's not-run-sentinel discipline:
-`judge_score` is NULL (never 0) when there is no decision; `human_verdict` NULL means *no human
-signal observed yet*, not *rejected*; `outcome` NULL means *not yet terminal*; and `cost_provenance`,
-`panel_degradation` and `human_verdict_source` are **non-null enums** precisely so a reader cannot
-mistake a NULL for a benign default — a missing cost is not a zero cost, a degraded panel is not a
-full one, and a proxy verdict is not a human's stated opinion.
+NULL semantics follow the project's not-run-sentinel discipline throughout: `judge_score` and
+`experiment_ballot.score` are NULL — never 0 — when there is no decision or the judge abstained;
+`outcome` NULL means *not yet terminal*; and `cost_provenance`, `panel_degradation`,
+`human_signal_state` and `human_observation.source` are **non-null enums with no default**, so a
+writer that ignores provenance fails to insert rather than silently claiming a benign one. A missing
+cost is not a zero cost, a degraded panel is not a full one, and a proxy verdict is not a human's
+stated opinion.
 
-A `CHECK` constraint ties the last pair together: `human_verdict IS NULL` if and only if
-`human_verdict_source IN ('None', 'NotObservable')`. It is not possible to record a verdict without
-saying where it came from, and the column has **no default**, so a writer that ignores provenance
-fails to insert rather than silently claiming `Explicit`. The two null-verdict sources are kept
-distinct on purpose: `None` means no human signal has appeared yet, `NotObservable` means this row's
-provider cannot produce the signal at all, and collapsing them would turn a provider gap into
-apparent human indifference (§8.1.2).
+A `CHECK` constraint ties `human_observation.confidence` to its source: NULL if and only if the
+source is explicit, non-NULL otherwise. It is not possible to record a proxy verdict without
+recording how strong the proxy was.
 
 ### 6.2 Joining to usage, and what is actually measured
 
@@ -1016,10 +1163,7 @@ The daemon already composes deterministic thread ids per stage via `ThreadId(run
 (used at `samples/CodeReviewDaemon.Sample/Orchestration/DaemonReviewStageExecutor.cs:3052` for the
 judge and `:3015` for the B arm), so generator
 and judge cost land on **different thread ids under the same review run** — which is exactly what
-lets `generator_cost_micros` and `judge_cost_micros` be separated cleanly.
-
-`JudgeGauntlet` takes an optional `IUsageSink` (§2.10) so judge cost is captured by the same
-machinery as generator cost and the two are comparable by construction.
+lets the two be separated by query, without `LmEval` having to know what a cost is (§2.1).
 
 Three facts the implementer must know, because they change what §7 can be built on:
 
@@ -1078,30 +1222,22 @@ accuracy at up to 98% cost reduction, or +4% accuracy at equal cost
 trained on preference data with a cost-quality parameter, reported >85% cost reduction on MT-Bench
 while retaining ~95% of GPT-4 performance (Ong et al., 2024, arXiv:2406.18665).
 
-```csharp
-public sealed record CascadeStage(string StageId, string ModelId, string? ReasoningEffort,
-    double EscalateBelowScore);
+**No interface is specified here** (§1): the cascade executor does not exist yet and its shape
+decides what a routing type would look like. What #322 inherits is two decisions and a data
+dependency.
 
-public interface IRoutingPolicy
-{
-    RoutingDecision Decide(string taskType, IReadOnlyDictionary<string, string> signals);
-}
-```
+1. **Thresholds are fitted, not tuned.** The escalate-below-this-score threshold is fitted per task
+   type from `experiment_record` — minimize expected cost subject to a pass-rate floor against the
+   always-expensive baseline. Below the configured minimum record count the policy falls back to
+   today's constant and **records that it did**, so an unfitted route is never mistaken for a fitted
+   one.
+2. **The generator may not share a judge family** (§2.12.5). With two judge families configured, a
+   generator sharing one forces every run down to a single judge, silently degrading every verdict
+   the cascade optimizes against. Validated where the cascade is configured — a whole-corpus
+   degradation is a configuration error, not a runtime condition.
 
-**Hard constraint on model selection (from §2.12.5).** The cascade must never select a generator
-whose `ModelFamily` is one of the two configured judge families. With only two families reachable,
-a generator sharing a judge family forces the panel down to a single judge on every run, which
-silently degrades every verdict the cascade then optimizes against. `IRoutingPolicy` validates this
-at configuration time and refuses to start with a colliding cascade, rather than discovering it per
-candidate.
-
-`EscalateBelowScore` per stage is **fitted**, per task type, from `experiment_record`: choose the
-threshold minimizing expected cost subject to a pass-rate floor relative to the always-expensive
-baseline. When a task type has fewer than N records the policy returns the configured constant and
-**says so** in `RoutingDecision.Reason`, so an unfitted route is never mistaken for a fitted one.
-
-The effort axis depends entirely on §6.2(3) — if `reasoning_effort` is not stamped at write time,
-half of this fit has no input.
+**Data dependency:** the effort axis depends entirely on §6.2(3). If `reasoning_effort` is not
+stamped at write time, half of this fit has no input.
 
 ### 7.2 The guardrail: a cheap verifier rubber-stamps
 
@@ -1116,17 +1252,19 @@ arXiv:2411.17501). The generation-verification gap is real and scales with pretr
 
 **The rules.**
 
-1. **`JudgePanel` refuses to construct a panel whose members are all cheaper-tier than the generator
-   for a gating decision.** `HarnessOptions.RequireJudgeTierAtLeastGenerator` defaults to `true`.
-   Overriding it stamps the `Verdict` with `judge_tier_below_generator`, and the eval runner reports
-   those rows separately rather than pooling them.
+1. **An all-cheaper-tier panel is a measured condition, not a silent one.** `LmEval` has no model
+   tier concept (§1) and `JudgePanel` does not enforce one; a tier comparison belongs where models
+   are configured. What the harness guarantees is the provenance to detect it: every ballot records
+   its judge's model, so a #320 aggregate can segment runs whose judges were all cheaper than the
+   generator instead of pooling them. Deciding what to *do* about that segment is #322.
 2. **The counterweight is weighting, not permission.** Weak verifiers are not useless in aggregate:
    weak-supervision-*weighted* ensembles of <=70B judges reach o3-mini-level selection accuracy
    (87.7% avg) with a Llama-3.3-70B generator, and weighted significantly beats unweighted
    (Saad-Falcon et al., 2025, arXiv:2506.18203). So a cheap panel is permitted **only** as the
    full family-disjoint, reliability-weighted two-judge panel with an arbiter configured for
    straddles (§2.9, §2.12) — never a single cheap judge, and never a cheap panel running degraded.
-   A `Degradation` of `SingleJudge` disqualifies the verdict from gating outright.
+   §5 already excludes `SingleJudge` rows from headline aggregates by default; #322 must not
+   reintroduce them into a routing fit.
 3. **A routing change must clear an eval gate.** No cascade threshold ships without a #320 run on the
    named baseline showing pass-rate within the configured margin. The routing policy is data-driven
    in both directions: the data proposes it, and the data has to ratify it.
@@ -1145,12 +1283,10 @@ explicit control would mean the first fitted judge weights arrive months after t
 harvesting a proxy and never validating it would mean calibrating quality against a signal nobody
 ever checked.
 
-**Correction to an earlier draft of this section.** It claimed all four signals were "already
-observable today — extraction work, not new plumbing." That was wrong, and the error mattered: three
-of the four need provider work first, and specifying a mapping over signals that cannot be observed
-would have produced confidently wrong `Accepted` / `Rejected` / `Ignored` labels in exactly the table
-that calibrates the judges. The corpus cannot begin accruing on GitHub the day the harness ships.
-§8.1.2 states what must be built first, and §9 puts that work ahead of extraction in the ordering.
+**The corpus cannot begin accruing on GitHub the day the harness ships.** Three of the four signals
+below need provider work first. Mapping verdicts over signals that cannot be observed would produce
+confidently wrong `Accepted` / `Rejected` / `Ignored` labels in exactly the table that calibrates the
+judges, so §8.1.2 states what must be built first and §9 puts that work ahead of extraction.
 
 #### 8.1.1 The candidate signals, and what each actually requires
 
@@ -1177,27 +1313,27 @@ Three prerequisites, none of them large, all of them ahead of extraction in §9:
   recommends; a column nothing writes is worse than no column.
 
 **The absence of a signal is never a verdict.** If a required signal is not observable for a row's
-provider, the extractor writes `human_verdict = NULL` with
-`human_verdict_source = 'NotObservable'` — *not* `None`, and never a guessed label. `None` means "no
-human signal has appeared yet"; `NotObservable` means "this provider cannot produce the signal, so
-absence here carries no information". Collapsing the two would silently convert a provider gap into
-apparent human indifference, which is the same class of error as the `0`-means-parse-failure defect
-in §2.6.
+provider, the extractor writes **no `human_observation` row** and sets
+`experiment_record.human_signal_state = 'NotObservable'` — never a guessed label. `Observable` with
+no rows means "no human signal has appeared yet"; `NotObservable` means "this provider cannot produce
+the signal, so absence here carries no information". Collapsing the two would silently convert a
+provider gap into apparent human indifference, which is the same class of error as the
+`0`-means-parse-failure defect in §2.6.
 
-#### 8.1.3 Mapping signals to `human_verdict`
+#### 8.1.3 Mapping signals to an observation
 
 Applied only where §8.1.1 says the signal is observable for that row's provider. The mapping is
 deliberately conservative: **only resolution *and* a code change earns `Accepted`.**
 
-| Signals | `human_verdict` | `human_verdict_source` | `conf` |
+| Signals | `verdict` | `source` | `confidence` |
 | --- | --- | --- | --- |
 | S1 and S2 | `Accepted` | `ProxyResolvedAndChanged` | 0.8 |
 | S1, not S2 | `Ambiguous` | `ProxyResolvedUnchanged` | 0.3 |
 | S3 | `Rejected` | `ProxyDeleted` | 0.6 |
 | S4 | `Ignored` | `ProxyIgnored` | 0.5 |
 | a reviewer states it | `Accepted`/`Edited`/`Rejected` | `Explicit` | NULL |
-| observable, nothing seen | NULL | `None` | NULL |
-| signal unavailable here | NULL | `NotObservable` | NULL |
+| observable, nothing seen | *(no row)* | — | — |
+| signal unavailable here | *(no row; `human_signal_state = 'NotObservable'`)* | — | — |
 
 Note what the source column names: **the evidence, not the conclusion.**
 `ProxyResolvedUnchanged` says "the thread was resolved and the code did not change" — a fact. It does
@@ -1215,27 +1351,29 @@ provider. That is precisely the contamination this section exists to prevent.
 A resolved thread genuinely means one of at least three things: *fixed*, *won't fix*, or *tidying up
 a stale thread before merge*. The schema keeps that visible rather than flattening it:
 
-1. **`Ambiguous` is a real value of `human_verdict`.** The resolved-but-unchanged case is not coerced
+1. **`Ambiguous` is a real value of `verdict`.** The resolved-but-unchanged case is not coerced
    into `Accepted` to make the column tidier. It is the largest noise source and it is labelled.
 2. **`Ignored` is distinct from `Rejected`.** A thread nobody touched is not a reviewer disagreeing;
    conflating them would systematically understate agreement.
-3. **`NotObservable` is distinct from `None`** (§8.1.2), so a provider gap never reads as indifference.
-4. **`human_verdict_conf` carries the strength**, so a fit can weight an `Accepted`-at-0.8 below an
+3. **`NotObservable` is distinct from "no rows yet"** (§8.1.2), so a provider gap never reads as
+   indifference.
+4. **`confidence` carries the strength**, so a fit can weight an `Accepted`-at-0.8 below an
    `Explicit` accept rather than treating them as the same observation.
 
 #### 8.1.5 How a proxy verdict is never silently mixed with an explicit one
 
 Three enforcement points, none of them conventional:
 
-1. **Schema.** `human_verdict_source` is `NOT NULL` with **no default**, plus the `CHECK` in §6.1
-   tying it to `human_verdict`. A writer cannot omit provenance.
+1. **Schema.** `human_observation.source` is `NOT NULL` with **no default**, plus the `CHECK` in §6.1
+   tying `confidence` to it. A writer cannot omit provenance, and because the table is append-only a
+   proxy observation is never overwritten by — or confused with — an explicit one on the same record.
 2. **Default read path.** Judge calibration (§8.3) and every §5 aggregate read
-   `human_verdict_source = 'Explicit'` **only**. Admitting proxy rows requires an explicit
+   `source = 'Explicit'` **only**. Admitting proxy rows requires an explicit
    `IncludeProxyVerdicts` flag, and that flag is **stamped onto the resulting artifact** — a
    `JudgeReliability` row records the source set it was fitted from, so a weight derived from proxies
    is itself labelled and cannot later be mistaken for a human-validated one.
 3. **Refusal to pool.** The eval runner refuses to compare or aggregate across differing
-   `human_verdict_source` sets, exactly as it refuses across `RubricVersion` and
+   `source` sets, exactly as it refuses across `RubricVersion` and
    `CorpusSnapshotHash` (§5.4). A hard error, not a warning, for the same reason: silent pooling is
    the most plausible route to a confident wrong number.
 
@@ -1271,12 +1409,12 @@ not the original finding — becomes the candidate lesson. Two rails, both inher
 ### 8.3 Closing the measurement loop
 
 Human verdicts are what calibrate the judges. `JudgeReliability` (§2.9) is fitted per
-`(JudgeId, TaskType, RubricVersion)` from agreement with `human_verdict`, and §3.5's Krippendorff
+`(JudgeId, TaskType, RubricVersion)` from agreement with recorded human observations, and §3.5's Krippendorff
 alpha is computed against the same column. Until enough human verdicts accumulate, every judge weight
 stays 1.0 and the harness reports its alpha as *not yet estimable* rather than computing a number
 from four data points.
 
-Both readers obey §8.1.5: they consume `human_verdict_source = 'Explicit'` by default, and any fit
+Both readers obey §8.1.5: they consume `source = 'Explicit'` by default, and any fit
 that admits proxy rows records that fact on the `JudgeReliability` row it produces. A weight fitted
 from proxies is usable — it is better than the 1.0 default — but it is never presentable as
 human-validated.
@@ -1300,19 +1438,21 @@ Revobot's `JudgeAgent` re-seated on it per §4.2, plus the daemon's new project 
 
 **Verified by:** (a) every existing test in `tests/CodeReviewDaemon.Sample.Tests` passing
 **unmodified** — the no-behaviour-change proof; (b) harness unit tests covering at minimum: the
-position seed actually changes the rendered prompt; a same-family panel throws; a panel including
-the generator's family throws; an abstention is excluded rather than counted as zero; a first-`Reject`
-gate short-circuits with **no model call** (asserted against a call-counting fake); `NoDecision` when
-fewer than `MinCountedBallots` survive.
+a two-judge same-family configuration throws at construction while a one-judge configuration does
+not; a candidate whose `GeneratorFamily` matches a configured judge yields `Degraded`, not a throw;
+an abstention is excluded rather than counted as zero; a first-`Reject` gate short-circuits with
+**no model call** (asserted against a call-counting fake); `NoDecision` — not `Fail` — when no
+ballot survives the abstain filter.
 
 The two-panel logic of §2.12 needs its own cases: same-side scores decide without invoking the
 arbiter (asserted against a call-counting arbiter fake); opposite-side scores escalate exactly once;
 an unavailable arbiter yields `Split` with `Degradation = ArbiterUnavailable`, distinguishable from
-the not-configured case; advisory mode with one reachable judge yields a verdict marked
+the not-configured case; one judge faulting yields a verdict marked
 `SingleJudge` with a **null** `Dispersion` (null, not 0.0 — a lone judge is not a panel in perfect
-agreement); gating mode on the same input yields `NoDecision`; excluding the generator's family down
-to one judge produces a `PanelComposition.Degraded` rather than throwing, while a *configuration*
-holding two same-family judges throws at startup.
+agreement); excluding the generator's family down
+to one judge produces a `PanelComposition.Degraded` rather than throwing; and a single-judge
+configuration — the Revobot adapter's shape — produces a `SingleJudge` verdict with a null
+`Dispersion` and never reaches the arbiter.
 
 Every bias control in §3 carries a mutation proof — the assertion must break when the control is
 removed.
@@ -1333,33 +1473,35 @@ tail-collapse case (mean flat, P10 down) detected.
 
 ### Slice 3 — #321 · Experiment record
 
-**Ships:** SQLite migration V5 per §6.1; write path from `JudgeGauntlet` and the eval runner;
+**Ships:** SQLite migration V5 per §6.1; the **host-side** write path that persists a `Verdict` and
+its ballots (the harness itself writes nothing, §2.1);
 **wiring `PricingConfigResolver` so cost is actually estimated** (§6.2(2)); effort stamped at write
 time (§6.2(3)); `judge` artifact schema v2 (§6.3); `JudgeReliability` fitting.
 
 **Depends on:** Slices 1 and 2.
 
 **Verified by:** migration up-and-idempotent tests against the existing `MigrationRunner`; a
-round-trip test proving `judge_score` is NULL — not 0 — for a `NoDecision`; a cost-attribution test
-proving judge and generator cost land in separate columns keyed on their distinct thread ids and sum
-to the ledger's total; a test that `cost_provenance` is `PublicEstimate` once the pricing resolver is
+round-trip test proving `judge_score` is NULL — not 0 — for a `NoDecision`; a ballot round-trip
+proving an abstention persists as `score IS NULL` with `abstained = 1`; a cost-attribution test
+proving judge and generator spend separate cleanly by their distinct thread ids and sum to the
+ledger's total; a test that `cost_provenance` is `PublicEstimate` once the pricing resolver is
 wired (this is the regression guard against it silently reverting to dead code); a v1-artifact reader
 still parsing after v2 ships.
 
 ### Slice 4 — #322 · Routing cascade
 
-**Ships:** `IRoutingPolicy`, `CascadeStage`, the threshold fit over `experiment_record`, the
-insufficient-data fallback that names itself, and the §7.2 guardrails
-(`RequireJudgeTierAtLeastGenerator`, the weighted-panel exemption, the eval gate on threshold
-changes).
+**Ships:** the cascade executor and its policy type, the threshold fit over `experiment_record`, the
+insufficient-data fallback that names itself, the §7 configuration check that the generator never
+shares a judge family, and the §7.2 guardrails (the weighted-panel rule and the eval gate on
+threshold changes).
 
 **Depends on:** Slice 3 — it needs accumulated records, and specifically needs the cost and effort
 columns to be populated rather than null.
 
 **Verified by:** a fit over a synthetic record set producing the known-optimal threshold; a
-below-minimum-data case returning the constant **and** saying so in `RoutingDecision.Reason`; a
-single-cheap-judge gating panel refused; a cheap **weighted family-disjoint** panel permitted; an
-end-to-end check that a threshold change without a passing #320 run is rejected.
+below-minimum-data case returning the constant **and** recording that it did; a cascade configured
+with a generator sharing a judge family refused at startup; an end-to-end check that a threshold
+change without a passing #320 run is rejected.
 
 ### Slice 5 — #323a · Provider signal enablement
 
@@ -1379,8 +1521,8 @@ merge signal non-null on a merged PR.
 
 ### Slice 6 — #323b · Proxy harvest
 
-**Ships:** extraction of the observable signals (§8.1.1) into `human_verdict` /
-`human_verdict_source` / `human_verdict_conf`; the `NotObservable` source and the `CHECK` constraint;
+**Ships:** extraction of the observable signals (§8.1.1) into `human_observation` rows;
+`human_signal_state` and the `confidence` `CHECK` constraint;
 the `Explicit`-only default read path with the `IncludeProxyVerdicts` flag stamped onto any
 `JudgeReliability` it produces; the eval runner's refusal to pool across source sets; and the
 edit-derived knowledge extraction pass of §8.2.
@@ -1392,23 +1534,23 @@ may ship for ADO ahead of P-A, since S1 is already real there — but the GitHub
 **Verified by:** each signal combination in §8.1.3 mapping to the stated verdict and source; a
 resolved-but-unchanged thread landing as `Ambiguous`, **not** `Accepted` (the flattening this slice
 exists to prevent); `Ignored` distinct from `Rejected`; **a GitHub row with no resolution signal
-landing as `NotObservable`, not `None` and not a guessed label** — the contamination guard, and the
+landing as `human_signal_state = 'NotObservable'` with no observation row, not a guessed label** — the contamination guard, and the
 one test that would have caught the original draft's error; S2 alone producing no verdict; an insert
-omitting `human_verdict_source` failing rather than defaulting; a calibration fit over mixed sources
+omitting `source` failing rather than defaulting; a calibration fit over mixed sources
 refusing to pool unless the flag is set, and stamping the flag on its output when it is; an edited
 comment producing exactly one KB entry with a host-derived path, and a model-supplied path rejected.
 
 ### Slice 7 — #323c · Explicit reviewer disposition
 
-**Ships:** the reviewer-facing disposition control, writing `human_verdict_source = 'Explicit'` with
+**Ships:** the reviewer-facing disposition control, writing `source = 'Explicit'` with
 `human_edit_distance`; and the proxy-validation report — on rows carrying both an explicit and a
 proxy verdict, the proxy's measured agreement with the human (§8.1.5), which converts the confidence
 values in §8.1.3 from estimates into measurements.
 
 **Depends on:** Slice 6.
 
-**Verified by:** an explicit verdict overriding a previously recorded proxy on the same row while the
-proxy's evidence remains recoverable for the agreement report; the agreement report computed only
+**Verified by:** an explicit observation landing **alongside** an earlier proxy observation on the
+same record rather than replacing it, with the default read path returning only the explicit one; the agreement report computed only
 over rows holding both; alpha and reliability reported as *not estimable* below the minimum sample
 count rather than computed from a handful of rows.
 
@@ -1416,6 +1558,11 @@ count rather than computed from a handful of rows.
 
 Q1, Q2 and Q8 are closed; their answers are worked through in §2.12 and §8.1 respectively. The
 numbering of the remaining questions is left unchanged so existing references stay valid.
+
+Several things this spec previously specified are now **deliberately unspecified** (§1) because they
+depend on questions below: gating behaviour on Q7, pairwise judging on whether a ranking consumer is
+ever raised, and the routing policy's interface on #322's cascade executor. Each is named in §1 with
+its rationale rather than described in a shape nobody has committed to.
 
 - **Q3 — Logprobs.** G-Eval's probability-weighted scoring (Liu et al., 2023, arXiv:2303.16634)
   materially improves resolution but needs token logprobs, which `IMultiTurnAgent` does not surface
