@@ -11,4 +11,5 @@ Planned files:
 - `P3-deployment-surfaces.md` - not yet written
 - `P4-governed-access.md` - not yet written
 - `P5-contractor-loop.md` - not yet written
-- `P6-optimization-engine.md` - not yet written
+- [`P6-optimization-engine.md`](P6-optimization-engine.md) - shared judge harness, eval runner,
+  experiment record, routing cascade, human-edit feedback (epic #298)
