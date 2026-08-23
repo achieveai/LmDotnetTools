@@ -1781,9 +1781,9 @@ Behaviour:
 - `{tenantId}` must exist in `tenants` with `status = 'active'`; otherwise `404` and no customer
   row is written.
 - Only resources of the requested `resourceType` whose `tenant_id` equals the quarantine tenant are
-  eligible; for `workspace` and `mode` those are the JSON documents of 8.6, stamped on first write,
-  and `resourceIds` names their document ids. A resource already adopted into a real tenant is never
-  re-stamped, so a repeated call is idempotent rather than destructive.
+  eligible; for `workspace` and `mode` those are the JSON documents of 8.6, which the stores stamp
+  at load, and `resourceIds` names their document ids. A resource already adopted into a real
+  tenant is never re-stamped, so a repeated call is idempotent rather than destructive.
 - Each adopted row gets `tenant_id = {tenantId}` and, when `ownerUserId` was supplied,
   `owner_user_id = ownerUserId`.
 - **`ownerUserId` is validated before any write**: it must parse as `{tid}:{oid}`, and its `tid`
@@ -1862,13 +1862,22 @@ These are JSON documents (2.6), so there is no DDL:
 - `samples/LmStreaming.Sample/Models/ChatMode.cs` - add `TenantId`, `OwnerUserId`, `Visibility`.
 - `samples/LmStreaming.Sample/Persistence/FileWorkspaceStore.cs`,
   `samples/LmStreaming.Sample/Persistence/FileChatModeStore.cs` - on load, a document missing the
-  new fields deserializes them as `null`. Such a document is stamped with the quarantine tenant id
-  of 8.5.1 on first write, which makes it invisible under enforcement until adopted - the same
-  treatment SQLite rows get, reached by the same route. `adopt-legacy` (8.5.3) therefore also
-  accepts `resourceType` of `workspace` and `mode`.
+  new fields deserializes them as `null`, and the store stamps it with the quarantine tenant id of
+  8.5.1 **at that point, in memory**; the stamped value reaches disk on the next save. That makes it
+  invisible under enforcement until adopted - the same treatment SQLite rows get, reached by the
+  same route. `adopt-legacy` (8.5.3) therefore also accepts `resourceType` of `workspace` and
+  `mode`.
 - `samples/LmStreaming.Sample/Persistence/IWorkspaceStore.cs`,
   `samples/LmStreaming.Sample/Persistence/IChatModeStore.cs` - `GetAllAsync` and
   `GetAllModesAsync` take a `Principal` and filter.
+
+**The stamp has to land on load, not on first write**, for the reason 8.5.4 gives for making the
+SQLite repair recur on every startup. Adoption selects only resources already carrying the
+quarantine tenant, and a document nothing has written yet carries nothing; under enforcement it also
+matches no principal's filter, so no ordinary write can arrive to stamp it. It would be invisible
+and un-adoptable at once - the exact state 8.5.4 exists to prevent, reached by a different door.
+Stamping at load is idempotent, costs no startup sweep of the JSON files, and makes every legacy
+document selectable by `adopt-legacy` before anything touches it.
 
 `Visibility` is an enum: `Private` (default), `Shared` (named grants), `TenantPublished`
 (admin-published). It is declared once, in `src/LmCore/Identity/`, beside `ResourceDescriptor`
@@ -2247,7 +2256,9 @@ the share contract defined once in slice 2 (8.4) - same role validation, same gr
 **Verified by.** These cases are **derived from 7.4.1**. `GET /api/workspaces` returns only owned
 plus granted plus system-defined. A
 workspace `use` without a grant is refused even when `read` is granted. A `workspaces.json` written
-by the previous build loads without the new fields and is rewritten with them on first save.
+by the previous build loads without the new fields, is stamped with the quarantine tenant at load,
+and is rewritten with them on the next save; it is selectable by `adopt-legacy` before that save
+ever happens (8.6).
 Writing `Visibility.TenantPublished` to a workspace is rejected by the store (7.2), and
 `EvaluateAsync(_, workspace, Publish, _)` throws rather than denying, so the unsupported pair
 cannot be mistaken for a policy outcome. An owner may `share` and `delete` their own workspace; a
@@ -2361,7 +2372,8 @@ rather than from `OccurredAtUtc` (9.1). Merging two observations of one attempt 
 projected into `usage_rollup` at all** (9.2): pre-P1 spend stays readable through the existing
 per-conversation usage endpoint, and `/api/admin/usage` reports from the slice-6 cut-over forward.
 Post-cut-over spend on a still-quarantined thread *does* project, under the quarantine tenant, and
-becomes visible when that thread is adopted.
+**stays under it after that thread is adopted** - adoption rewrites `thread_metadata`, not
+`usage_rollup` (9.2), and re-keying the rollup is cut from P1 (1.2).
 
 ### Slice 7 - [#309] Embed token and the packaged iframe
 
