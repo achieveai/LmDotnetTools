@@ -258,7 +258,11 @@ bug in every aggregate computed over those artifacts. `Abstained` + `Confidence`
 ### 2.7 Verdict and aggregation
 
 ```csharp
-public enum VerdictOutcome { Pass, Fail, Tie, NoDecision }
+public enum VerdictOutcome { Pass, Fail, Split, NoDecision }
+
+/// <summary>What the panel actually ended up with. Non-null so a reader who ignores it cannot
+/// mistake a one-judge verdict for a full-panel one (§2.12.6).</summary>
+public enum PanelDegradation { None, SingleJudge, PanelUnavailable, ArbiterUnavailable }
 
 public sealed record Verdict
 {
@@ -277,6 +281,10 @@ public sealed record Verdict
     public required string RubricVersion { get; init; }
     public required TokenCost TotalCost { get; init; }
     public required string TieBreakRule { get; init; }
+    public required PanelDegradation Degradation { get; init; }
+    /// <summary>Names the unreachable family when Degradation is not None. Stable, non-sensitive
+    /// text only — same rail as GateDecision.Reason (§2.11).</summary>
+    public string? DegradationReason { get; init; }
 }
 
 public sealed record ExcludedBallot(Ballot Ballot, string ExclusionReason);
@@ -293,31 +301,22 @@ public interface IBallotAggregator
 
 1. Drop every ballot with `Abstained == true` or `Confidence < HarnessOptions.AbstainFloor`
    (default `0.34`), recording each in `ExcludedBallots`.
-2. If fewer than `HarnessOptions.MinCountedBallots` (default 2) survive → `NoDecision`. **Not a
-   fail.** An unmeasured candidate and a bad candidate are different facts.
-3. Otherwise take the **weighted median** of `WeightedScore`, judges weighted by calibrated
-   reliability (§2.9). Median, not mean, so one miscalibrated judge cannot drag the panel.
-4. `Outcome = Score >= rubric.PassThreshold ? Pass : Fail`.
-
-**Panel composition rule (enforced, not advisory).** `JudgePanel` refuses to construct with two
-judges of the same `ModelFamily` unless `HarnessOptions.AllowSameFamilyPanel` is set. Three small
-models from *disjoint* families, max-voted, beat a single large judge across six datasets with less
-intra-model bias and >7x lower cost (Verga et al., 2024, arXiv:2404.18796). A panel of three
-instances of one model is a single judge with extra steps.
+2. If fewer than `HarnessOptions.MinCountedBallots` survive → `NoDecision`. **Not a fail.** An
+   unmeasured candidate and a bad candidate are different facts. `MinCountedBallots` is **2 in
+   gating mode and 1 in advisory mode**: advisory runs deliberately accept a single surviving
+   ballot and mark the verdict `Degradation = SingleJudge` (§2.12.6), whereas a gating run refuses.
+   A single-ballot verdict never reports a `Dispersion`.
+3. With two counted ballots, apply the straddle test of §2.12.2 — same side of `PassThreshold`
+   decides directly, opposite sides runs the tie-break of §2.12.3.
+4. `Score` is the reliability-weighted mean of the counted ballots (§2.9); with one ballot it is
+   that ballot's score. On an arbiter-resolved straddle it is the arbiter's score, not a blend.
 
 **Weighted, not unweighted.** Weak-supervision-weighted ensembles of <=70B judges reach o3-mini-level
 selection accuracy (87.7% avg), and weighting significantly beats unweighted aggregation
 (Saad-Falcon et al., 2025, arXiv:2506.18203).
 
-**Tie-breaking**, in order, with the applied rule recorded verbatim in `Verdict.TieBreakRule` so a
-tie is never silently resolved:
-
-1. **Even panel, exact split** → escalate to `HarnessOptions.TieBreakJudge` if configured; record
-   `"escalated:<judgeId>"`.
-2. Else prefer the side with **higher mean judge confidence**; record `"confidence"`.
-3. Else prefer the side with **lower total cost** — cheaper wins ties, this is an optimization
-   engine; record `"cost"`.
-4. Else **`Tie`** with `"unresolved"`. A `Tie` is a real outcome and is never coerced to `Pass`.
+Panel composition and tie-breaking are the subject of §2.12, which is where the two-family
+constraint is worked through.
 
 ### 2.8 Low confidence and abstention
 
@@ -391,6 +390,137 @@ which defeats the point of the artifact.
 natural implementation behind a future `LmWorkflow` reduce node and a real `JoinMode.Quorum`. That is
 the third-consumer payoff, recorded as a follow-up rather than scoped here.
 
+### 2.12 Panel composition: two families, and what that costs
+
+**Decision: the harness ships a two-judge panel.** Three genuinely disjoint model families are not
+reliably reachable in this deployment (Q2, now closed), so the three-judge PoLL shape is not
+available and the design commits to two rather than pretending otherwise.
+
+#### 2.12.1 Composition rule
+
+`JudgePanel` requires exactly two judges with **distinct `ModelFamily` values**, neither equal to the
+candidate's generator family (§3.2). Construction throws otherwise. `HarnessOptions.PanelSize` is
+fixed at 2 for the default panel; `AllowSameFamilyPanel` remains available for deliberate experiments
+and stamps the verdict so those rows are never pooled with clean ones.
+
+#### 2.12.2 What "disagree" means on an ordinal scale
+
+Two judges rarely produce identical scores, so raw score inequality is the wrong trigger — it would
+fire on almost every candidate. What matters is whether they land on **opposite sides of
+`Rubric.PassThreshold`**:
+
+- **Same side** → the panel agrees on the decision even if the scores differ. `Score` is the mean of
+  the two weighted scores; `Outcome` is that side. Recorded as `"consensus"`. This resolves the
+  common case for free.
+- **Opposite sides** → a **straddle**. This is the genuine disagreement, and only here does the
+  tie-break ladder run.
+
+`Dispersion` (§2.7) is still recorded in the same-side case: two judges agreeing on `Pass` at 9 and 6
+agree on the decision but not on the quality, and that gap is a rubric-quality signal worth keeping.
+
+#### 2.12.3 The tie-break rule (chosen)
+
+On a straddle, in order, with the applied rule recorded verbatim in `Verdict.TieBreakRule`:
+
+1. **Arbiter escalation**, if `HarnessOptions.ArbiterJudge` is configured, its family is not the
+   generator's, and its tier is at or above the generator's (§7.2). One call. The arbiter's side
+   decides; `Score` becomes the arbiter's weighted score, not a blend. Recorded as
+   `"arbiter:<judgeId>:<family>"`.
+2. **Otherwise `Split`** — a first-class `VerdictOutcome`, recorded as `"split:unresolved"`. Not a
+   pass, not a fail, and not a `NoDecision` (which means *the panel could not be run*; `Split` means
+   *the panel ran and the judges genuinely disagreed*).
+
+The arbiter is a **stronger single model**, not a third peer. It costs one extra call on the straddle
+rate only — if straddles run at 15%, the panel costs 2.15 calls per candidate, not 3.
+
+**Why an arbiter rather than a third peer judge.** A third peer would necessarily share a family with
+one of the two judges, because only two families are reachable. That converts a tie into a *family
+vote*: whichever family holds two of the three seats wins by construction. It manufactures a majority
+instead of measuring one, and it would do so invisibly — the verdict would read as a 2–1 consensus
+when it is really one family outvoting another. An arbiter that is explicitly recorded as the
+deciding voice, with its family named in `TieBreakRule`, keeps that visible.
+
+**Why not confidence-weighted resolution.** Self-reported confidence is not calibrated across model
+families. One family's 0.8 and another's 0.8 are not the same quantity, and we have no cross-family
+calibration on day one — `JudgeReliability` defaults to 1.0 (§2.9). Picking the higher-confidence
+judge would produce a decisive-looking number out of noise, which is the exact failure this pillar
+exists to prevent. Confidence is still used, but only where it is meaningful: **within** a judge, as
+the abstain floor (§2.8), and as recorded data for later calibration. Once §8.3 has fitted per-family
+reliability from human verdicts, revisiting this becomes legitimate — a follow-up, not a day-one rule.
+
+**Why `Split` is acceptable as a terminal outcome.** Verdicts are advisory in #319 (§1), so a `Split`
+costs nothing operationally today. It is also the more useful datum: the **straddle rate is a direct
+estimate of judge unreliability**, available without any human labels at all. A rising straddle rate
+on a stable corpus says the rubric is underspecified at its threshold — precisely the diagnostic the
+eval runner needs, and precisely what a forced resolution would erase. §5.3 therefore reports
+straddle rate alongside `NoDecision` rate.
+
+#### 2.12.4 What two judges cost in signal quality
+
+Stated plainly so the decision is auditable later.
+
+| Property | 3 disjoint families (PoLL) | 2 disjoint families (chosen) |
+| --- | --- | --- |
+| Majority exists | yes — a biased judge is outvoted | **no.** An even panel has no majority |
+| Effect of one biased judge | absorbed, verdict still correct | surfaces as a straddle — *detected*, not corrected |
+| Cross-family bias cancellation | partial | **none.** Two families cannot average out a shared bias |
+| Cost per candidate | 3 calls | 2 calls + arbiter on the straddle rate |
+| Disagreement is informative | weakly (2–1 vs 3–0) | **strongly** — the straddle rate is the primary reliability signal |
+
+The honest summary: **we trade error *correction* for error *detection*.** PoLL's claim is that three
+small disjoint judges beat one large judge with less intra-model bias and >7x lower cost
+(Verga et al., 2024, arXiv:2404.18796); the mechanism is the majority. Without a majority we do not
+get that correction. What we keep is the part that matters most early: two independent families
+disagreeing is a reliable alarm that the rubric or the candidate is genuinely borderline, and that
+alarm is what §5.4 and §8.3 consume.
+
+This also means **§3.2's "a self-preferring judge is outvoted by construction" no longer holds**, and
+it has been corrected there: with two judges such a judge is detected, not outvoted.
+
+#### 2.12.5 When the generator's family is one of the only two
+
+§3.2 excludes the generator's family from the panel. With only two families reachable, that exclusion
+can leave one judge. The harness then runs the **single non-generator judge** and marks the verdict
+`SingleJudge` (degraded, §2.12.6). It does **not** admit the generator's family to reach a count of
+two.
+
+The reason is specific to an even panel: **a compromised second judge is worse than a missing one.**
+With two judges, agreement *is* the signal. A judge from the generator's family that self-prefers
+will agree with the generator's output, producing **false consensus** — a `"consensus"` verdict that
+reads as two independent families concurring when it is one model family agreeing with itself. That
+does not merely add noise; it corrupts the single quantity the two-panel exists to produce. A
+one-judge verdict is weaker but honest, and it is labelled.
+
+The better fix is upstream: **constrain generator routing so the generator never occupies one of the
+two judge families.** That is a model-selection constraint and belongs to #322 (§7.1), where routing
+is already being decided; it is recorded there as a hard constraint on the cascade rather than a
+preference.
+
+#### 2.12.6 Degradation when a provider is down
+
+`HarnessOptions.GatingMode` decides, because the right answer differs by consequence:
+
+- **Advisory mode (the default, and all of #319):** fall back to the **single reachable judge**. The
+  verdict is emitted with `Degradation = SingleJudge`, `Dispersion = null`, and a
+  `DegradationReason` naming the unreachable family. It is a real verdict and is written to the
+  experiment record, but §5 aggregates **exclude degraded rows by default** and report their count
+  separately. One judge's read on a corpus item is worth more than a hole, provided the hole is
+  labelled.
+- **Gating mode:** **fail closed.** Emit `NoDecision` with `Degradation = PanelUnavailable`. A gate
+  that silently weakens to one judge when a provider blips is exactly how a quality bar erodes
+  without anyone deciding to lower it.
+- **Both judges unreachable:** `NoDecision` with `Degradation = PanelUnavailable`, in either mode.
+  Never a `Pass`.
+
+Retry and backoff for a transient provider failure happen below this layer, in the existing agent
+plumbing; `Degradation` records only what the panel ended up with after those retries were exhausted.
+
+`Degradation` is a non-null enum on `Verdict`
+(`None | SingleJudge | PanelUnavailable | ArbiterUnavailable`) so a reader who ignores it cannot
+mistake a one-judge verdict for a full-panel one. `ArbiterUnavailable` is the straddle case where
+escalation was configured but the arbiter could not be reached: the outcome is `Split`, and the
+reason distinguishes "we chose not to escalate" from "we tried and could not".
+
 ## 3. Bias controls
 
 This section is the reason the numbers are worth anything. Each control names the failure mode it
@@ -407,7 +537,8 @@ leaderboard: Vicuna-13B "beat" ChatGPT on 66 of 80 queries under ChatGPT judging
 **The control.** `JudgeContext.PresentationSeed` is assigned by the harness, never by the judge.
 
 - *Pairwise*: `PairwiseJudgeRunner` runs **both orders** and treats a disagreement between passes as
-  a `Tie` for that judge, not a win. This is Balanced Position Calibration
+  **no preference** from that judge — its ballot abstains (§2.8) rather than counting for either
+  side. This is Balanced Position Calibration
   (Wang et al., 2023, arXiv:2305.17926).
 - *Pointwise with peers*: `JudgeContext.Peers` is shuffled per judge by `PresentationSeed`, so no two
   panel members see the same ordering and a shared positional preference cannot align into consensus.
@@ -447,7 +578,13 @@ grading itself.
    that drives the effect.
 3. When the same-family case is deliberately allowed, the fact is stamped on the `Verdict` so
    downstream analysis can segment on it rather than pool it.
-4. Panel family-disjointness (§2.7) means a self-preferring judge is outvoted by construction.
+4. Panel family-disjointness (§2.12.1) means a self-preferring judge is **detected** — it straddles
+   against the other family and the verdict becomes `Split`. Note this is weaker than the
+   three-judge case, where such a judge would be outvoted and the verdict would still be correct;
+   with two judges we get an alarm, not a correction (§2.12.4).
+5. When excluding the generator's family would leave fewer than two judges, the harness runs the
+   single remaining judge rather than admitting the generator's own family — admitting it would
+   manufacture false consensus, which is worse than a missing judge (§2.12.5).
 
 ### 3.3 Verbosity and length bias
 
@@ -707,7 +844,11 @@ the experiment record (§6). A run emits:
 - aggregate mean / P10 / pass-rate / total cost;
 - the **delta against the named baseline**, with a confidence interval;
 - the count of `NoDecision` items — a run where the panel could not decide on 30% of items is not a
-  clean result even if the remaining 70% look good.
+  clean result even if the remaining 70% look good;
+- the **straddle rate** (§2.12.2) and, separately, the share of straddles resolved by arbiter versus
+  left as `Split`. This is the primary judge-reliability signal available without human labels, and
+  a rising straddle rate on a stable corpus means the rubric is underspecified at its threshold;
+- the count of rows with `Degradation != None`, excluded from the aggregates by default (§2.12.6).
 
 ### 5.4 Regression detection
 
@@ -753,9 +894,15 @@ experiment_record
   judge_dispersion      REAL NULL
   ballot_count          INTEGER NOT NULL
   excluded_ballot_count INTEGER NOT NULL
-  verdict_outcome       TEXT NOT NULL   -- Pass | Fail | Tie | NoDecision
+  verdict_outcome       TEXT NOT NULL   -- Pass | Fail | Split | NoDecision
   tie_break_rule        TEXT NULL
-  human_verdict         TEXT NULL       -- Accepted | Edited | Rejected | NULL = not yet reviewed
+  straddled             INTEGER NOT NULL -- 0/1; the judges landed on opposite sides (§2.12.2)
+  panel_degradation     TEXT NOT NULL   -- None | SingleJudge | PanelUnavailable | ArbiterUnavailable
+  human_verdict         TEXT NULL       -- Accepted | Edited | Rejected | Ambiguous | Ignored
+                                        -- NULL = no human signal observed yet
+  human_verdict_source  TEXT NOT NULL   -- provenance; see §8.1.2. NOT NULL and no default.
+  human_verdict_conf    REAL NULL       -- proxy strength in [0,1]; NULL for Explicit
+  human_signal_seen_at  TEXT NULL
   human_edit_distance   INTEGER NULL
   outcome               TEXT NULL       -- terminal business outcome, e.g. Merged | Abandoned
   generator_cost_micros INTEGER NULL    -- USD micro-units, matching UsageRecord
@@ -773,10 +920,17 @@ Indexes on `(experiment_id)`, `(task_type, rubric_version)`, `(review_run_id)`, 
 Cost is stored in **micro-units (integer)**, matching `UsageRecord.EstimatedPublicCostMicros` /
 `ProviderReportedCostMicros`, so no floating-point drift is introduced at the boundary.
 
-Four fields carry deliberate NULL semantics, following the project's not-run-sentinel discipline:
-`judge_score` is NULL (never 0) when there is no decision; `human_verdict` NULL means *not yet
-reviewed*, not *rejected*; `outcome` NULL means *not yet terminal*; and `cost_provenance` is a
-**non-null enum** precisely so a reader cannot mistake a NULL cost for a zero cost.
+Several fields carry deliberate NULL semantics, following the project's not-run-sentinel discipline:
+`judge_score` is NULL (never 0) when there is no decision; `human_verdict` NULL means *no human
+signal observed yet*, not *rejected*; `outcome` NULL means *not yet terminal*; and `cost_provenance`,
+`panel_degradation` and `human_verdict_source` are **non-null enums** precisely so a reader cannot
+mistake a NULL for a benign default — a missing cost is not a zero cost, a degraded panel is not a
+full one, and a proxy verdict is not a human's stated opinion.
+
+A `CHECK` constraint ties the last pair together: `human_verdict IS NULL` if and only if
+`human_verdict_source = 'None'`. It is not possible to record a verdict without saying where it came
+from, and the column has **no default**, so a writer that ignores provenance fails to insert rather
+than silently claiming `Explicit`.
 
 ### 6.2 Joining to usage, and what is actually measured
 
@@ -874,6 +1028,13 @@ public interface IRoutingPolicy
 }
 ```
 
+**Hard constraint on model selection (from §2.12.5).** The cascade must never select a generator
+whose `ModelFamily` is one of the two configured judge families. With only two families reachable,
+a generator sharing a judge family forces the panel down to a single judge on every run, which
+silently degrades every verdict the cascade then optimizes against. `IRoutingPolicy` validates this
+at configuration time and refuses to start with a colliding cascade, rather than discovering it per
+candidate.
+
 `EscalateBelowScore` per stage is **fitted**, per task type, from `experiment_record`: choose the
 threshold minimizing expected cost subject to a pass-rate floor relative to the always-expensive
 baseline. When a task type has fewer than N records the policy returns the configured constant and
@@ -902,9 +1063,10 @@ arXiv:2411.17501). The generation-verification gap is real and scales with pretr
 2. **The counterweight is weighting, not permission.** Weak verifiers are not useless in aggregate:
    weak-supervision-*weighted* ensembles of <=70B judges reach o3-mini-level selection accuracy
    (87.7% avg) with a Llama-3.3-70B generator, and weighted significantly beats unweighted
-   (Saad-Falcon et al., 2025, arXiv:2506.18203). So a cheap panel is permitted **only** as a
-   family-disjoint, reliability-weighted panel of three or more (§2.7, §2.9) — never a single cheap
-   judge.
+   (Saad-Falcon et al., 2025, arXiv:2506.18203). So a cheap panel is permitted **only** as the
+   full family-disjoint, reliability-weighted two-judge panel with an arbiter configured for
+   straddles (§2.9, §2.12) — never a single cheap judge, and never a cheap panel running degraded.
+   A `Degradation` of `SingleJudge` disqualifies the verdict from gating outright.
 3. **A routing change must clear an eval gate.** No cascade threshold ships without a #320 run on the
    named baseline showing pass-rate within the configured margin. The routing policy is data-driven
    in both directions: the data proposes it, and the data has to ratify it.
@@ -915,24 +1077,82 @@ arXiv:2411.17501). The generation-verification gap is real and scales with pretr
 
 ## 8. Human-edit feedback (#323)
 
-### 8.1 Capturing the edit
+### 8.1 Capturing the signal: proxy now, explicit control later
 
-The signal is the **diff between what the agent produced and what the human shipped.** Three capture
-points, in increasing fidelity:
+**Decision (Q8, now closed): do both.** Start harvesting a corpus immediately from GitHub signals the
+daemon already sees, and add an explicit reviewer disposition control in a later slice. Waiting for
+the explicit control would mean the first fitted judge weights arrive months after the harness does;
+harvesting a proxy without ever adding the explicit control would mean calibrating quality against a
+signal that never gets validated. Both, in that order, with the two kept rigorously separate.
 
-1. **Existing, weak:** a finding raised in round N and fixed by round N+1 — the derivation
-   `ReviewFeedbackAgent` (`samples/CodeReviewDaemon.Sample/Agents/ReviewFeedbackAgent.cs:21`) already
-   performs, keyed on the provider-reported PR author, writing
-   `KnowledgeBase/developers/<slug>.reviewfeedbacks.md`, combined with the knowledge pass by
-   `AtCloseExtractionSeam.Combine` (`Agents/AtCloseExtractionSeam.cs:39`).
-2. **New, direct:** a human editing, resolving, or deleting a posted review comment. The daemon
-   already signs every comment with a `[{{ bot_name }}]` marker (`Prompts/daemon-prompts.yaml:265`)
-   precisely so a later pass can identify its own comments, and already reads them back as
-   `ExistingReviewComment` (`Orchestration/IReviewCommentPublisher.cs:76`) with an `IsActive` flag
-   and bot-authorship detection at `Orchestration/DaemonReviewStageExecutor.cs:2304`. The same
-   mechanism identifies which of its comments a human subsequently altered.
-3. **New, explicit:** `human_verdict` / `human_edit_distance` on `experiment_record` (§6.1), written
-   when a reviewer dispositions an output.
+#### 8.1.1 The proxy signals
+
+All four are already observable in the daemon today — this is extraction work, not new plumbing.
+
+| # | Signal | Where it comes from |
+| --- | --- | --- |
+| S1 | A bot comment thread is **resolved** | `ExistingReviewComment.IsActive` (`samples/CodeReviewDaemon.Sample/Orchestration/IReviewCommentPublisher.cs:76`); bot authorship via the `[{{ bot_name }}]` marker (`Prompts/daemon-prompts.yaml:265`), detected at `Orchestration/DaemonReviewStageExecutor.cs:2304` |
+| S2 | The finding's **cited lines changed** in a later commit | diff between the review's `HeadSha` and a later head, already computed for re-review context (prev head SHA / review round) |
+| S3 | A bot comment was **deleted** | present in round N's comment listing, absent in round N+1 under the same marker |
+| S4 | The thread was still **open at PR close/merge** | `ReviewRun.MergeSha`, `PrLifecycleState` (`Persistence/Models/ReviewRunAxes.cs:40`) |
+
+S2 requires resolving a finding to a file and line range, which is the shallow `ReviewFinding` parser
+from §4.3(2) — already scheduled in slice #320. That is the dependency that puts proxy harvest after
+the eval runner.
+
+#### 8.1.2 Mapping signals to `human_verdict`
+
+The mapping is deliberately conservative: **only the combination of resolution *and* a code change
+earns `Accepted`.** Everything weaker keeps its ambiguity in the data.
+
+| Signals | `human_verdict` | `human_verdict_source` | `conf` |
+| --- | --- | --- | --- |
+| S1 and S2 | `Accepted` | `ProxyResolvedAndChanged` | 0.8 |
+| S1, not S2 | `Ambiguous` | `ProxyResolvedUnchanged` | 0.3 |
+| S3 | `Rejected` | `ProxyDeleted` | 0.6 |
+| S4 | `Ignored` | `ProxyIgnored` | 0.5 |
+| a reviewer states it | `Accepted`/`Edited`/`Rejected` | `Explicit` | NULL |
+| nothing observed | NULL | `None` | NULL |
+
+Note what the source column names: **the evidence, not the conclusion.**
+`ProxyResolvedUnchanged` says "the thread was resolved and the code did not change" — a fact. It does
+not say "the reviewer agreed". A later reader who disagrees with our inference can re-derive a
+different verdict from the same recorded evidence, which would be impossible if we had stored only
+`Ambiguous`.
+
+#### 8.1.3 Keeping the proxy's noise visible
+
+A resolved thread genuinely means one of at least three things: *fixed*, *won't fix*, or *tidying up
+a stale thread before merge*. The schema keeps that visible rather than flattening it, in three ways:
+
+1. **`Ambiguous` is a real value of `human_verdict`.** The resolved-but-unchanged case is not coerced
+   into `Accepted` to make the column tidier. It is the single largest noise source and it is
+   labelled as such.
+2. **`Ignored` is distinct from `Rejected`.** A thread nobody ever touched is not a reviewer
+   disagreeing; conflating them would systematically understate agreement.
+3. **`human_verdict_conf` carries the strength**, so a downstream fit can weight an
+   `Accepted`-at-0.8 below an `Explicit` accept rather than treating them as the same observation.
+
+#### 8.1.4 How a proxy verdict is never silently mixed with an explicit one
+
+Three enforcement points, none of them conventional:
+
+1. **Schema.** `human_verdict_source` is `NOT NULL` with **no default**, plus the `CHECK` in §6.1
+   tying it to `human_verdict`. A writer cannot omit provenance.
+2. **Default read path.** Judge calibration (§8.3) and every §5 aggregate read
+   `human_verdict_source = 'Explicit'` **only**. Admitting proxy rows requires an explicit
+   `IncludeProxyVerdicts` flag, and that flag is **stamped onto the resulting artifact** — a
+   `JudgeReliability` row records the source set it was fitted from, so a weight derived from proxies
+   is itself labelled as such and cannot later be mistaken for a human-validated one.
+3. **Refusal to pool.** The eval runner refuses to compare or aggregate across differing
+   `human_verdict_source` sets, exactly as it refuses across `RubricVersion` and
+   `CorpusSnapshotHash` (§5.4). It is a hard error, not a warning, for the same reason: a silent
+   pooling is the most plausible route to a confident wrong number.
+
+Once the explicit control ships, the proxy becomes independently checkable: on rows carrying **both**
+an explicit verdict and a proxy-derived one, the proxy's agreement with the human is measurable. That
+number is the proxy's own validation, and until it exists the proxy's confidence values above are
+declared estimates, not measurements.
 
 ### 8.2 Turning an edit into durable context
 
@@ -966,6 +1186,15 @@ alpha is computed against the same column. Until enough human verdicts accumulat
 stays 1.0 and the harness reports its alpha as *not yet estimable* rather than computing a number
 from four data points.
 
+Both readers obey §8.1.4: they consume `human_verdict_source = 'Explicit'` by default, and any fit
+that admits proxy rows records that fact on the `JudgeReliability` row it produces. A weight fitted
+from proxies is usable — it is better than the 1.0 default — but it is never presentable as
+human-validated.
+
+There is also a second, label-free calibration signal available immediately: the **straddle rate**
+(§2.12.3). Two disjoint families disagreeing needs no human at all, and it is the only reliability
+estimate the harness has on day one, before any verdict of either provenance has accrued.
+
 ## 9. Delivery slices
 
 Each slice is one PR. Every slice states what ships, what it depends on, and how it is verified.
@@ -981,11 +1210,20 @@ Revobot's `JudgeAgent` re-seated on it per §4.2, plus the daemon's new project 
 
 **Verified by:** (a) every existing test in `tests/CodeReviewDaemon.Sample.Tests` passing
 **unmodified** — the no-behaviour-change proof; (b) harness unit tests covering at minimum: the
-position seed actually changes the rendered prompt; a same-family panel throws; an abstention is
-excluded rather than counted as zero; each of the four tie-break rules fires and is named in
-`Verdict.TieBreakRule`; a first-`Reject` gate short-circuits with **no model call** (asserted against
-a call-counting fake); `NoDecision` when fewer than `MinCountedBallots` survive. Every bias control in
-§3 carries a mutation proof — the assertion must break when the control is removed.
+position seed actually changes the rendered prompt; a same-family panel throws; a panel including
+the generator's family throws; an abstention is excluded rather than counted as zero; a first-`Reject`
+gate short-circuits with **no model call** (asserted against a call-counting fake); `NoDecision` when
+fewer than `MinCountedBallots` survive.
+
+The two-panel logic of §2.12 needs its own cases: same-side scores decide without invoking the
+arbiter (asserted against a call-counting arbiter fake); opposite-side scores escalate exactly once;
+an unavailable arbiter yields `Split` with `Degradation = ArbiterUnavailable`, distinguishable from
+the not-configured case; advisory mode with one reachable judge yields a verdict marked
+`SingleJudge` with a null `Dispersion`, while **gating mode on the same input yields `NoDecision`**;
+excluding the generator's family down to one judge degrades rather than admitting that family.
+
+Every bias control in §3 carries a mutation proof — the assertion must break when the control is
+removed.
 
 ### Slice 2 — #320 · Eval runner
 
@@ -1031,29 +1269,43 @@ below-minimum-data case returning the constant **and** saying so in `RoutingDeci
 single-cheap-judge gating panel refused; a cheap **weighted family-disjoint** panel permitted; an
 end-to-end check that a threshold change without a passing #320 run is rejected.
 
-### Slice 5 — #323 · Human-edit feedback
+### Slice 5 — #323a · Proxy harvest
 
-**Ships:** edit capture (bot-marker comment diff over `ExistingReviewComment` + the `human_verdict`
-write path), the edit-derived knowledge extraction pass, and judge reliability fitting against human
-verdicts.
+**Ships:** extraction of signals S1–S4 (§8.1.1) into `human_verdict` / `human_verdict_source` /
+`human_verdict_conf`; the `CHECK` constraint and no-default provenance column; the
+`Explicit`-only default read path with the `IncludeProxyVerdicts` flag stamped onto any
+`JudgeReliability` it produces; the eval runner's refusal to pool across source sets; and the
+edit-derived knowledge extraction pass of §8.2.
 
-**Depends on:** Slice 3.
+**Depends on:** Slice 3 for the schema, **and Slice 2** for the shallow `ReviewFinding` parser that
+signal S2 needs to resolve a finding to a line range.
 
-**Verified by:** an edited comment producing exactly one KB entry with a host-derived path; a
-model-supplied path rejected; `human_verdict` round-tripping to `experiment_record`; alpha reported as
-*not estimable* below the minimum sample count rather than computed from a handful of rows.
+**Verified by:** each of the four signal combinations in §8.1.2 mapping to the stated verdict and
+source; a resolved-but-unchanged thread landing as `Ambiguous`, **not** `Accepted` (the flattening
+this slice exists to prevent); `Ignored` distinct from `Rejected`; an insert omitting
+`human_verdict_source` failing rather than defaulting; a calibration fit over mixed sources refusing
+to pool unless the flag is set, and stamping the flag on its output when it is; an edited comment
+producing exactly one KB entry with a host-derived path, and a model-supplied path rejected.
+
+### Slice 6 — #323b · Explicit reviewer disposition
+
+**Ships:** the reviewer-facing disposition control, writing `human_verdict_source = 'Explicit'` with
+`human_edit_distance`; and the proxy-validation report — on rows carrying both an explicit and a
+proxy verdict, the proxy's measured agreement with the human (§8.1.4), which converts the confidence
+values in §8.1.2 from estimates into measurements.
+
+**Depends on:** Slice 5.
+
+**Verified by:** an explicit verdict overriding a previously recorded proxy on the same row while the
+proxy's evidence remains recoverable for the agreement report; the agreement report computed only
+over rows holding both; alpha and reliability reported as *not estimable* below the minimum sample
+count rather than computed from a handful of rows.
 
 ## 10. Open questions
 
-- **Q1 — Panel size and cost.** PoLL uses three disjoint-family judges
-  (Verga et al., 2024, arXiv:2404.18796). Three judges on every Revobot review is roughly 3x judge
-  cost on a step that is currently 1x and advisory. Do we run the panel only on eval-runner replays
-  and A/B decisions, and keep production Revobot on a single judge until a verdict actually gates
-  something?
-- **Q2 — Which three families.** Family-disjointness needs three provider families we can reach
-  cheaply and reliably. Available providers are OpenAI, Anthropic, OpenRouter and Copilot-backed
-  models — is Copilot-brokered access to a model a distinct *family* for bias purposes, or the same
-  model wearing a different hat? Most likely the latter, which shrinks the pool.
+Q1, Q2 and Q8 are closed; their answers are worked through in §2.12 and §8.1 respectively. The
+numbering of the remaining questions is left unchanged so existing references stay valid.
+
 - **Q3 — Logprobs.** G-Eval's probability-weighted scoring (Liu et al., 2023, arXiv:2303.16634)
   materially improves resolution but needs token logprobs, which `IMultiTurnAgent` does not surface
   and several providers do not offer. Worth a provider-capability probe, or do we accept integer
@@ -1072,6 +1324,3 @@ model-supplied path rejected; `human_verdict` round-tripping to `experiment_reco
 - **Q7 — Whether the judge ever gates.** §1 keeps verdicts advisory. The margin thesis eventually
   wants an agent that declines to ship its own bad output. What alpha, on what corpus size, is the
   bar for promoting a verdict from advisory to gating?
-- **Q8 — Who writes `human_verdict`.** §8.1(3) assumes a reviewer dispositions an output somewhere.
-  Revobot has no such surface today — the closest is resolving a PR comment thread. Is thread
-  resolution a good enough proxy for `Accepted`, or does #323 need a real disposition affordance?
