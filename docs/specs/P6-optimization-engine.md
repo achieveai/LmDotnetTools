@@ -53,6 +53,7 @@ specifying these wrongly is worse than leaving them open:
 | Pairwise judging (`JudgeContext.Peers`, `PairwiseJudgeRunner`, presentation seeds) | No slice ships a ranking consumer; every runner and record here is pointwise | a ranking story, if one is ever raised |
 | `IRoutingPolicy` / `CascadeStage` C# | §7's *decisions* are what matter now; the interface shape depends on the cascade executor, which is three slices away | #322 |
 | Model *tier* as a typed concept | Only the cascade needs an ordering over model strength | #322 |
+| Per-criterion and confidence-based ballot analytics | `experiment_ballot` is a declared lossy tally summary (§6.1); criterion detail and confidence are not persisted, and no claim here reads them back | a consumer that needs them, which buys the schema change |
 
 Where those appear below they appear as decisions and constraints, not as types.
 
@@ -264,9 +265,14 @@ public sealed record Ballot
     /// <summary>True when the judge declined to score. An abstention is DISTINCT from a zero.</summary>
     public required bool Abstained { get; init; }
     public string? AbstainReason { get; init; }
-    /// <summary>The reliability weight applied to this ballot when it was aggregated (§2.9),
-    /// recorded so a past verdict stays auditable after the weights are refitted.</summary>
-    public required double AppliedWeight { get; init; }
+    /// <summary>The reliability weight aggregation applied (§2.9), recorded so a past verdict
+    /// stays auditable after the weights are refitted. <b>Null as a judge returns it</b> — a judge
+    /// cannot know its own weight, and the snapshot does not exist until <c>Aggregate</c> runs.
+    /// Aggregation records each counted ballot as <c>ballot with { AppliedWeight = w }</c>, so the
+    /// invariant is: non-null on every ballot in <c>Verdict.Ballots</c>, null on every one in
+    /// <c>ExcludedBallots</c>. That is exactly what <c>experiment_ballot.applied_weight</c>
+    /// persists (§6.1).</summary>
+    public double? AppliedWeight { get; init; }
 }
 
 public interface IJudge
@@ -366,6 +372,10 @@ public interface IBallotAggregator
 4. `Score` is the reliability-**weighted mean** of the counted ballots — with weights `w_i` from
    §2.9, `Score = sum(w_i * s_i) / sum(w_i)`. With one counted ballot it is that ballot's score. On
    an arbiter-resolved straddle it is the arbiter's score, not a blend.
+
+   Each counted ballot is re-recorded as `ballot with { AppliedWeight = w_i }` before it is
+   placed in `Verdict.Ballots`. The aggregator is the **only** component that writes that field,
+   because it is the only one holding the snapshot; an `ExcludedBallot` keeps it null.
 
    *No median is defined anywhere in this spec, and the aggregator is named for what it computes.*
    A median only earns its robustness at three or more ballots; §2.12 fixes the panel at two, where
@@ -535,9 +545,15 @@ That separation is the whole point. "Two judges of distinct families" is an inva
 *configuration*; "how many are eligible for this candidate" is a per-candidate fact that legitimately
 varies, and `Degraded` is its honest representation rather than an exception.
 
-When `candidate.GeneratorFamily` is null the filter cannot run. `Compose` then returns `Full` and the
-verdict records `generator-family-unknown`, so a row that was never eligibility-checked is
-distinguishable from one that passed the check.
+When `candidate.GeneratorFamily` is null, only the **exclusion step** is skipped — no judge is
+dropped — and classification then runs on the real eligible count exactly as above: two → `Full`,
+one → `Degraded`, zero → `Unavailable`. It does **not** shortcut to `Full`. The Revobot adapter
+is one judge and sets no `GeneratorFamily` (§4.2), and it must classify as `Degraded` like every
+other one-judge configuration, or its documented `SingleJudge` verdict would be unreachable.
+
+That a row was never eligibility-checked is therefore **not** carried by the composition. It is
+carried by `experiment_record.generator_family` being NULL (§6.1), which is the durable form of the
+same fact and the one §5.3 segments on.
 
 #### 2.12.2 What "disagree" means on an ordinal scale
 
@@ -584,9 +600,10 @@ deciding voice, with its family named in `TieBreakRule`, keeps that visible.
 families. One family's 0.8 and another's 0.8 are not the same quantity, and we have no cross-family
 calibration on day one — `JudgeReliability` defaults to 1.0 (§2.9). Picking the higher-confidence
 judge would produce a decisive-looking number out of noise, which is the exact failure this pillar
-exists to prevent. Confidence is still used, but only where it is meaningful: **within** a judge, as
-the abstain floor (§2.8), and as recorded data for later calibration. Once §8.3 has fitted per-family
-reliability from human verdicts, revisiting this becomes legitimate — a follow-up, not a day-one rule.
+exists to prevent. Confidence is used only where it is meaningful: **within** a judge, as the abstain
+floor (§2.8). It is deliberately **not persisted** (§6.1), so revisiting this needs a schema change
+before it needs an argument — which is the honest price, and it is why §8.3's per-family reliability
+fit is the cheaper route to the same end.
 
 **Why `Split` is acceptable as a terminal outcome.** Verdicts are advisory in #319 (§1), so a `Split`
 costs nothing operationally today. It is also the more useful datum: the **straddle rate is a direct
@@ -597,22 +614,14 @@ straddle rate alongside `NoDecision` rate.
 
 #### 2.12.4 What two judges cost in signal quality
 
-Stated plainly so the decision is auditable later.
-
-| Property | 3 disjoint families (PoLL) | 2 disjoint families (chosen) |
-| --- | --- | --- |
-| Majority exists | yes — a biased judge is outvoted | **no.** An even panel has no majority |
-| Effect of one biased judge | absorbed, verdict still correct | surfaces as a straddle — *detected*, not corrected |
-| Cross-family bias cancellation | partial | **none.** Two families cannot average out a shared bias |
-| Cost per candidate | 3 calls | 2 calls + arbiter on the straddle rate |
-| Disagreement is informative | weakly (2–1 vs 3–0) | **strongly** — the straddle rate is the primary reliability signal |
-
-The honest summary: **we trade error *correction* for error *detection*.** PoLL's claim is that three
-small disjoint judges beat one large judge with less intra-model bias and >7x lower cost
-(Verga et al., 2024, arXiv:2404.18796); the mechanism is the majority. Without a majority we do not
-get that correction. What we keep is the part that matters most early: two independent families
-disagreeing is a reliable alarm that the rubric or the candidate is genuinely borderline, and that
-alarm is what §5.4 and §8.3 consume.
+Stated plainly so the decision is auditable later: **we trade error *correction* for error
+*detection*.** PoLL's claim is that three small disjoint judges beat one large judge with less
+intra-model bias and >7x lower cost (Verga et al., 2024, arXiv:2404.18796), and the mechanism is the
+majority. An even panel has no majority, so a biased judge is not outvoted and a bias shared by both
+families is not averaged out — it surfaces as a straddle, detected rather than corrected. The bill
+is 2 calls plus an arbiter on the straddle rate rather than 3. What we keep is the part that matters
+most early: two independent families disagreeing is a reliable alarm that the rubric or the candidate
+is genuinely borderline, and that alarm is what §5.4 and §8.3 consume.
 
 This also means **§3.2's "a self-preferring judge is outvoted by construction" no longer holds**, and
 it has been corrected there: with two judges such a judge is detected, not outvoted.
@@ -642,8 +651,8 @@ Verdicts are advisory in these slices (§1), so there is one rule rather than a 
 
 - **One judge returns, one faults:** emit the verdict with `Degradation = SingleJudge`,
   `Dispersion = null`, and a `DegradationReason` naming the faulted family. It is a real verdict and
-  is recorded, but §5 aggregates **exclude degraded rows by default** and report their count
-  separately. One judge's read is worth more than a hole, provided the hole is labelled.
+  is recorded, but §5 aggregates **exclude degraded rows by default** — from the numerator, not
+  from the denominator (§5.3) — and report their count separately. One judge's read is worth more than a hole, provided the hole is labelled.
 - **Both fault:** `NoDecision` with `Degradation = PanelUnavailable`. Never a `Pass`.
 
 Retry and backoff for transient provider failures happen below this layer in the agent plumbing;
@@ -655,11 +664,9 @@ a gate that silently weakens to one judge when a provider blips is how a quality
 anyone deciding to lower it. That rule is not specified here (§1, Q7); what this slice provides is
 the provenance it would need, since `Degradation` is persisted per verdict.
 
-`Degradation` is a non-null enum on `Verdict`
-(`None | SingleJudge | PanelUnavailable | ArbiterUnavailable`) so a reader who ignores it cannot
-mistake a one-judge verdict for a full-panel one. `ArbiterUnavailable` is the straddle case where
-escalation was configured but the arbiter could not be reached: the outcome is `Split`, and the
-reason distinguishes "we chose not to escalate" from "we tried and could not".
+`ArbiterUnavailable` is the straddle case where escalation was configured but the arbiter could not
+be reached: the outcome is `Split`, and the reason distinguishes "we chose not to escalate" from "we
+tried and could not". That `Degradation` is non-null is stated once, on `Verdict` (§2.7).
 
 ## 3. Bias controls
 
@@ -713,6 +720,12 @@ self-judged, only that the code path in force today does it. Historical rows are
 This is an independent argument for the schema v2 of §6.3: without a persisted judge model, the
 self-preference axis is unmeasurable retrospectively, and no amount of later analysis recovers it.
 
+**The judge half is not sufficient on its own.** Self-preference is a *relation* — judge family
+equals generator family — so a persisted judge family measures nothing without the generator's
+beside it. That is the claim forcing `experiment_record.generator_family` (§6.1) to exist as a
+column rather than be derived: it is the second operand of this axis, and it doubles as the durable
+marker for §2.12.1's unknown-family case, where NULL means the exclusion filter never ran.
+
 **The controls.**
 
 1. **Per candidate**, `JudgePanel.Compose` (§2.12.1) drops any judge whose `ModelFamily` equals
@@ -729,8 +742,12 @@ self-preference axis is unmeasurable retrospectively, and no amount of later ana
 2. `Candidate.ModelId` is **never rendered into the judge prompt**. `Candidate.VariantId` is rendered
    only as an opaque label (`"A"` / `"B"`), never a model name — removing the self-recognition cue
    that drives the effect.
-3. When `AllowSameFamilyPanel` is deliberately set, the fact is stamped on the `Verdict` so
-   downstream analysis can segment on those rows rather than pool them.
+3. When `AllowSameFamilyPanel` is deliberately set, the resulting rows must be **segmented, not
+   pooled**. No field on `Verdict` records this and none is added: it is already derivable from
+   persisted data, since two counted `Panel` ballots on one record sharing a `judge_family`
+   (§6.1) *is* the override having been relied on. Deriving it also has the property a flag would
+   not: it is true only when the override actually changed the panel, not merely when it was
+   enabled.
 4. Panel family-disjointness (§2.12.1) means a self-preferring judge is **detected** — it straddles
    against the other family and the verdict becomes `Split`. Note this is weaker than the
    three-judge case, where such a judge would be outvoted and the verdict would still be correct;
@@ -945,7 +962,8 @@ Available sources, in descending order of usefulness:
   (`samples/CodeReviewDaemon.Sample/Persistence/Models/ReviewRunAxes.cs:40`) says whether the PR
   eventually merged; it is genuinely computed by both providers
   (`samples/CodeReviewDaemon.Sample/Orchestration/GitHubPrProvider.cs:199-205`,
-  `Orchestration/AdoPrProvider.cs:413-416`) and persisted at `Persistence/ReviewStore.cs:188`. Weak
+  `samples/CodeReviewDaemon.Sample/Orchestration/AdoPrProvider.cs:413-416`) and persisted at
+  `samples/CodeReviewDaemon.Sample/Persistence/ReviewStore.cs:188`. Weak
   and confounded, but free. **Do not use `ReviewRun.MergeSha`** — it is declared and read back but
   never assigned by any path, so it is always NULL (§8.1.1).
 - **Full conversation histories.** `CodeReviewDaemonOptions.ConversationStorePath`
@@ -988,11 +1006,27 @@ public sealed record EvalBaseline
     public required double PassRate { get; init; }
     public required long MeanCostMicros { get; init; }   // host-supplied; see §6.2
     public required string CorpusSnapshotHash { get; init; }
+    /// <summary>Identity of every score-affecting *evaluator* input (§5.4). A comparison across two
+    /// different values is refused, not warned about.</summary>
+    public required string EvaluatorConfigHash { get; init; }
+    /// <summary>Least coverage a candidate run may have and still be compared (§5.3). It lives on
+    /// the baseline so the run being judged cannot relax the bar it is judged against.</summary>
+    public required double MinCoverage { get; init; }
 }
 ```
 
-A baseline is a **frozen tuple of (corpus snapshot, rubric version, variant config)**. Recorded once,
-referenced thereafter, never recomputed silently.
+A baseline is a **frozen tuple of (corpus snapshot, rubric version, variant config, evaluator
+config)**. Recorded once, referenced thereafter, never recomputed silently.
+
+The fourth element is the one the first three leave out. Corpus, rubric and variant hold the
+*candidate* side fixed; nothing held the *evaluator* side fixed, and it moves on its own — §2.9
+refits reliability weights from accumulating human verdicts, which is why §2.6 has to record the
+weight that was actually applied. A refit alone changes scores, and against a frozen baseline that
+reads as a candidate regression. `EvaluatorConfigHash` covers, in a defined order: each
+`(JudgeId, ModelId, ModelFamily, judge prompt template hash)`, the arbiter's identity or its absence,
+the aggregator's `RuleId`, the `HarnessOptions` that decide exclusion and composition
+(`AbstainFloor`, `DispersionAlarm`, `AllowSameFamilyPanel`), the id of the reliability snapshot, and
+the human-signal source set that snapshot was fitted over (§8.1.5).
 
 ### 5.3 What a run emits
 
@@ -1008,7 +1042,22 @@ the experiment record (§6). A run emits:
 - the **straddle rate** (§2.12.2) and, separately, the share of straddles resolved by arbiter versus
   left as `Split`. This is the primary judge-reliability signal available without human labels, and
   a rising straddle rate on a stable corpus means the rubric is underspecified at its threshold;
-- the count of rows with `Degradation != None`, excluded from the aggregates by default (§2.12.6).
+- the count of rows excluded from the aggregates by default: `Degradation != None` (§2.12.6), and
+  `generator_family IS NULL`, which was never eligibility-checked (§2.12.1). Both are reported,
+  neither is pooled with clean rows. **Excluded means excluded from the scored set and from the
+  numerator — never from the denominator below.**
+
+**The denominator, stated once, because omitting it is how a variant games this.** Every rate above,
+and `PassRate`, is over **`CorpusSize`** — the item count of the named corpus snapshot, not the
+count the run managed to process. An item that yielded no score still occupies the denominator and
+never the numerator: a gate rejection (`Fail` with a null `Score`, §2.7), a `Split`, a `NoDecision`,
+an excluded row, and an item that faulted or was never reached. Declining to score a hard item
+therefore *lowers* `PassRate` instead of flattering it.
+
+`MeanScore` and `P10Score` are the deliberate exception: they are **conditional**, defined only over
+*scored* items — those that yielded a counted score and were not excluded. They are never reported
+without `Coverage = scored / CorpusSize` beside them, and never carry a comparison alone: a mean over
+a different subset is a different quantity, not a worse one.
 
 ### 5.4 Regression detection
 
@@ -1021,9 +1070,13 @@ version:
 3. the `NoDecision` rate rises materially — the panel has stopped being able to judge, which
    invalidates the comparison rather than passing it.
 
-**Comparisons are refused, not warned about, when `RubricVersion` or `CorpusSnapshotHash` differ.**
-A silent cross-version comparison is the most likely way this system produces a confident wrong
-number, so it is a hard error.
+**Comparisons are refused, not warned about, when `RubricVersion`, `CorpusSnapshotHash` or
+`EvaluatorConfigHash` differ, or when the run's `Coverage` is below the baseline's `MinCoverage`.**
+A silent incomparable comparison is the most likely way this system produces a confident wrong
+number, so each is a hard error rather than a warning. The coverage bound and trigger 3 catch the
+same failure at different ranges — the bound rejects a single thin run outright, the trigger
+catches a coverage slide that stays inside it. A refusal is recorded on the run with the failing
+condition named; it is not a regression and it is not a pass.
 
 ## 6. Experiment record (#321)
 
@@ -1049,6 +1102,7 @@ rows or leave the reader guessing which ballot a column described.
   variant_id            TEXT NOT NULL   -- 'primary' | 'b' | ...
   model_provider        TEXT NOT NULL   -- the generator's
   model_id              TEXT NOT NULL
+  generator_family      TEXT NULL       -- NULL = unknown, which is also 'never eligibility-checked'
   reasoning_effort      TEXT NULL       -- NOT available from usage; see §6.2
   prompt_template_hash  TEXT NULL
   rubric_id             TEXT NOT NULL
@@ -1089,6 +1143,24 @@ rows or leave the reader guessing which ballot a column described.
 `ballot_count` and `excluded_ballot_count` are **not** columns; they are `COUNT(*)` over this table,
 so the two can never disagree.
 
+**`experiment_ballot` is a deliberately lossy tally summary, and this fixes the audit claims that may
+be made of it.** It carries what reproduces the verdict's arithmetic and identifies every exclusion:
+the score, the abstention, the applied weight, the reason, and both judge identities. It does **not**
+carry per-criterion scores, `Confidence`, `AbstainReason`, or `Reasoning`. Three constraints follow,
+and they are binding on the rest of this spec:
+
+- **`exclusion_reason` is authoritative, never recomputed.** An abstain-floor exclusion is stored as
+  its reason; `Confidence` is not stored, so no reader may re-derive the decision from the row and
+  compare. A stored reason disagreeing with a re-derivation is not a case that can arise.
+- **Calibration (§2.9) fits on `score` and the human verdict only.** Confidence-weighted or
+  per-criterion fitting is not available from this schema, and revisiting the confidence question of
+  §2.12.3 requires a schema change first — which is a real cost, and is the reason that section
+  treats it as a follow-up rather than a near thing.
+- **Rationale is not recoverable for eval rows.** For daemon rows it survives in the `judge` artifact
+  (§6.3) for as long as artifact retention keeps it; for offline eval items (`eval_run_id` set,
+  `review_run_id` NULL) there is no artifact and it is retained nowhere. No claim here depends on
+  reading it back.
+
 **`human_observation` — zero or more rows per record, append-only.**
 
 ```
@@ -1124,13 +1196,12 @@ Cost is stored in **micro-units (integer)**, matching `UsageRecord.EstimatedPubl
 deliberately **not** a column: `LmEval` computes no cost (§2.1), and judge spend is recoverable from
 the usage ledger by thread (§6.2) once that join exists.
 
-NULL semantics follow the project's not-run-sentinel discipline throughout: `judge_score` and
-`experiment_ballot.score` are NULL — never 0 — when there is no decision or the judge abstained;
-`outcome` NULL means *not yet terminal*; and `cost_provenance`, `panel_degradation`,
-`human_signal_state` and `human_observation.source` are **non-null enums with no default**, so a
-writer that ignores provenance fails to insert rather than silently claiming a benign one. A missing
-cost is not a zero cost, a degraded panel is not a full one, and a proxy verdict is not a human's
-stated opinion.
+NULL semantics follow the project's not-run-sentinel discipline: scores are NULL — never 0 — when
+there is no decision or the judge abstained, `outcome` NULL means *not yet terminal*, and
+`generator_family` NULL means *unknown*, never *same as the judge*. Every provenance enum
+(`cost_provenance`, `panel_degradation`, `human_signal_state`, `human_observation.source`) is
+**non-null with no default**, so a writer that ignores provenance fails to insert rather than
+silently claiming a benign value.
 
 A `CHECK` constraint ties `human_observation.confidence` to its source: NULL if and only if the
 source is explicit, non-NULL otherwise. It is not possible to record a proxy verdict without
@@ -1169,7 +1240,7 @@ Three facts the implementer must know, because they change what §7 can be built
 
 1. **Usage is not a SQL table.** It is persisted into `ThreadMetadata.Properties` as JSON strings
    under the keys `"usage.aggregate"` and `"usage.records"`
-   (`ConversationUsageProjection.cs:22`, `:25`), written through
+   (`src/LmMultiTurn/UsageAccounting/ConversationUsageProjection.cs:22`, `:25`), written through
    `IConversationStore.UpdateMetadataAsync`. Reading it for analysis means reading the conversation
    store, not joining a table — which is one more reason §6.1 denormalizes cost into
    `experiment_record`.
@@ -1211,7 +1282,8 @@ versions; `ReviewArtifact.ArtifactSchemaVersion`
 
 ### 7.1 The mechanism
 
-Today routing is six hand-tuned constants in `CodeReviewDaemonOptions.cs` (`:43`, `:49`, `:171`,
+Today routing is six hand-tuned constants in
+`samples/CodeReviewDaemon.Sample/Configuration/CodeReviewDaemonOptions.cs` (`:43`, `:49`, `:171`,
 `:179`, `:211`, `:221`). The cascade replaces the *choice* of those values with a fit over
 `experiment_record`, keeping the constants as the fallback when data is insufficient.
 
@@ -1295,7 +1367,7 @@ judges, so §8.1.2 states what must be built first and §9 puts that work ahead 
 | S1 | A bot comment thread is **resolved** | **ADO only.** `ThreadIsActive` derives it from thread status (`samples/CodeReviewDaemon.Sample/Orchestration/AdoReviewCommentPublisher.cs:126`, `:184`). On **GitHub it is unavailable**: the publisher hardcodes `IsActive: true` at three sites (`samples/CodeReviewDaemon.Sample/Orchestration/GitHubReviewCommentPublisher.cs:140`, `:168`, `:185`) because the REST listing does not expose thread resolution at all | bot authorship via the `[{{ bot_name }}]` marker (`samples/CodeReviewDaemon.Sample/Prompts/daemon-prompts.yaml:265`), detected at `samples/CodeReviewDaemon.Sample/Orchestration/DaemonReviewStageExecutor.cs:2304` |
 | S2 | The finding's **cited lines changed** in a later commit | **Available on both**, and the only signal needing no provider work — it is a git diff between the review's `HeadSha` and a later head, already computed for re-review context | needs the shallow `ReviewFinding` parser of §4.3(2) to resolve a finding to a line range (slice #320) |
 | S3 | A bot comment was **deleted** | **Unavailable on both.** Absence from a later listing cannot prove deletion: the listing is capped at `MaxExistingCommentsListed = 120` (`samples/CodeReviewDaemon.Sample/Orchestration/DaemonReviewStageExecutor.cs:2198`) and that cap is a *render* bound, not a retrieval bound. Nothing persists the set of comment ids the daemon published in a round | — |
-| S4 | The thread was still **open at PR close/merge** | **Partly.** The PR's terminal state *is* real: `PrLifecycleState` is computed by both providers (`samples/CodeReviewDaemon.Sample/Orchestration/GitHubPrProvider.cs:199-205`, `Orchestration/AdoPrProvider.cs:413-416`) and persisted (`Persistence/ReviewStore.cs:188`). The *thread-open* half depends on S1, so S4 inherits S1's GitHub gap. Note `ReviewRun.MergeSha` is **never assigned by any path** — declared, inserted from the record, read back, and nothing ever sets it — so it must not be used as the merge signal | use `PrLifecycleState`, not `MergeSha` |
+| S4 | The thread was still **open at PR close/merge** | **Partly.** The PR's terminal state *is* real: `PrLifecycleState` is computed by both providers (`samples/CodeReviewDaemon.Sample/Orchestration/GitHubPrProvider.cs:199-205`, `samples/CodeReviewDaemon.Sample/Orchestration/AdoPrProvider.cs:413-416`) and persisted (`samples/CodeReviewDaemon.Sample/Persistence/ReviewStore.cs:188`). The *thread-open* half depends on S1, so S4 inherits S1's GitHub gap. Note `ReviewRun.MergeSha` is **never assigned by any path** — declared, inserted from the record, read back, and nothing ever sets it — so it must not be used as the merge signal | use `PrLifecycleState`, not `MergeSha` |
 
 #### 8.1.2 What must be built first
 
@@ -1452,7 +1524,10 @@ the not-configured case; one judge faulting yields a verdict marked
 agreement); excluding the generator's family down
 to one judge produces a `PanelComposition.Degraded` rather than throwing; and a single-judge
 configuration — the Revobot adapter's shape — produces a `SingleJudge` verdict with a null
-`Dispersion` and never reaches the arbiter.
+`Dispersion` and never reaches the arbiter; a candidate with a **null** `GeneratorFamily` and one
+configured judge classifying as `Degraded` rather than `Full` (the adapter's exact shape — this is
+the case that has to break if `Compose` ever shortcuts on a null family again); and every ballot in
+`Verdict.Ballots` carrying a non-null `AppliedWeight` while every `ExcludedBallot` carries null.
 
 Every bias control in §3 carries a mutation proof — the assertion must break when the control is
 removed.
@@ -1482,7 +1557,9 @@ time (§6.2(3)); `judge` artifact schema v2 (§6.3); `JudgeReliability` fitting.
 
 **Verified by:** migration up-and-idempotent tests against the existing `MigrationRunner`; a
 round-trip test proving `judge_score` is NULL — not 0 — for a `NoDecision`; a ballot round-trip
-proving an abstention persists as `score IS NULL` with `abstained = 1`; a cost-attribution test
+proving an abstention persists as `score IS NULL` with `abstained = 1` and an excluded ballot as
+`applied_weight IS NULL`; a candidate judged with no known generator family persisting
+`generator_family IS NULL` and being excluded from a §5.3 aggregate by default; a cost-attribution test
 proving judge and generator spend separate cleanly by their distinct thread ids and sum to the
 ledger's total; a test that `cost_provenance` is `PublicEstimate` once the pricing resolver is
 wired (this is the regression guard against it silently reverting to dead code); a v1-artifact reader
