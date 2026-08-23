@@ -81,7 +81,9 @@ Note two traps for readers:
 
 ## 2. Verified current state
 
-Every statement below was checked against the tree at `d757d4be`.
+Baseline: `d757d4be`. These are the conditions the rest of this document designs against, so a
+slice that finds one of them no longer true should stop and reconcile the design rather than work
+around it - each is load-bearing somewhere below, and the section that depends on it is named.
 
 ### 2.1 There is no end-user identity anywhere
 
@@ -548,9 +550,9 @@ short-circuits at step 0 of 7.4 to `Allow("enforcement_disabled")` before lookin
 or role. The `admin` role and the quarantine tenant id are there so that listing queries and UI
 affordances behave sensibly in development, **not** because the policy consults them.
 
-The corollary matters for reviewers: `Enforce=false` is not "authorization with a permissive
-principal", it is "authorization off". Nothing about the development principal should be read as a
-security boundary, and the flip to `true` is what turns the model on.
+`Enforce=false` is therefore not "authorization with a permissive principal" - it is authorization
+off. The development principal is not a security boundary at any point, and the flip to `true` is
+what turns the model on.
 
 This mirrors the `AUTH_ENFORCE` deploy discipline in `docs/deployment/AUTH_ENFORCE.md`: deploy with
 enforcement off, onboard callers, then flip.
@@ -1038,6 +1040,11 @@ the narrowest door.
    obvious implementation (`a == b` on two nullable strings) gets it exactly backwards: it makes
    every unowned resource match every app-only principal. See 7.4 step 3 and the migration policy
    in 8.5.
+6. **A relationship is not a permission.** Owning a resource, holding a grant on it, or being a
+   tenant admin decides *which* rights are consulted, never that all of them apply. Every right is
+   resolved per action and per publication state in 7.4.1. The failure this rules out is the
+   natural one: an owner check that returns a blanket allow, handing a non-admin owner the
+   tenant-wide `publish` action.
 5. **Not-found, not forbidden.** A read of a resource in another tenant, or one the principal has
    no grant on, returns `404`. This matches the gateway's existing uniform-404 cross-app behaviour
    and avoids confirming that an id exists. A *write* to a resource the principal can read but not
@@ -1045,23 +1052,39 @@ the narrowest door.
 
 ### 7.2 Resource types and actions
 
-| Resource type | Id | Actions |
-|---|---|---|
-| `conversation` | `threadId` | `read`, `write`, `delete`, `share` |
-| `workspace` | `workspaceId` | `read`, `use`, `write`, `delete`, `share` |
-| `mode` | `modeId` | `read`, `use`, `write`, `delete`, `publish` |
+| Resource type | Id | Actions | Can be published? |
+|---|---|---|---|
+| `conversation` | `threadId` | `read`, `write`, `delete`, `share` | no |
+| `workspace` | `workspaceId` | `read`, `use`, `write`, `delete`, `share` | no |
+| `mode` | `modeId` | `read`, `use`, `write`, `delete`, `share`, `publish` | yes |
 
 `use` is deliberately separate from `read`: seeing that a workspace exists and being able to run an
 agent inside it are different privileges, and conflating them is how access silently widens.
-`publish` on a mode is the admin-only action that turns a private mode into a tenant-shared one.
+
+`publish` is the admin-only action that turns a private resource into a tenant-shared one, and
+**only modes have it**. A workspace carries plugin selection, tool grants and filesystem roots, so
+publishing one hands every member of the tenant a capability set rather than a prompt; that is a
+larger decision than this pillar settles, and it is scoped out rather than half-built. The
+consequence is normative: a `workspace` may hold `Visibility.Private` or `Visibility.Shared` only,
+and `IWorkspaceStore` rejects `TenantPublished` on write.
+
+An action absent from a resource type's row is not "denied by default" - it is **invalid input**.
+`EvaluateAsync` throws `ArgumentOutOfRangeException` for a type/action pair not in this table, so a
+typo surfaces as a crash in a test rather than as a silent deny in production.
 
 ### 7.3 Roles
 
 Flat, tenant-scoped:
 
 - `member` - default for every signed-in user.
-- `admin` - may publish shared modes, view the tenant usage report (section 9), and read any
-  resource in the tenant for support purposes. Every admin read is audited.
+- `admin` - may publish and unpublish modes, write a resource **while it is published**, view the
+  tenant usage report (section 9), and read any resource in the tenant for support purposes. Every
+  admin read is audited.
+
+What `admin` deliberately does **not** include: writing or deleting a member's private resource,
+and sharing anyone's resource with a third party. The role is support and tenant governance, not
+ownership of everything in the tenant. 7.4.1 is the authoritative statement; this list is a summary
+of it and must not be read as extending it.
 
 ### 7.4 The decision point
 
@@ -1090,7 +1113,16 @@ public sealed record ResourceDescriptor
 
     /// <summary>Read-only built-in - a system mode or the seeded workspace.</summary>
     public bool IsSystemDefined { get; init; }
+
+    /// <summary>
+    /// Publication state (8.6). Gates which actions the owner retains - see 7.4.1. Resource
+    /// types that cannot be published are always <c>Private</c> or <c>Shared</c>.
+    /// </summary>
+    public required Visibility Visibility { get; init; }
 }
+
+/// <summary>How widely a resource is exposed within its tenant.</summary>
+public enum Visibility { Private = 0, Shared = 1, TenantPublished = 2 }
 
 public enum AccessAction { Read, Use, Write, Delete, Share, Publish }
 
@@ -1101,6 +1133,7 @@ public sealed record AccessDecision(bool Allowed, string Reason)
     public static readonly AccessDecision AllowOwner    = new(true, "owner");
     public static readonly AccessDecision AllowGrant    = new(true, "grant");
     public static readonly AccessDecision AllowAdmin    = new(true, "tenant_admin");
+    public static readonly AccessDecision AllowAppOwner = new(true, "app_owner");
     public static readonly AccessDecision AllowSystem   = new(true, "system_defined");
     public static readonly AccessDecision AllowDisabled = new(true, "enforcement_disabled");
 }
@@ -1124,29 +1157,39 @@ Evaluation order, first match wins:
    the pre-rollout path and the reason existing tests keep passing; it is deliberately the first
    step, so that nothing below it is ever exercised with the development principal and no rule can
    be misread as the disabled behaviour.
-1. `resource.IsSystemDefined` and action is `Read` or `Use` -> `AllowSystem`. System-defined
-   resources are readable by every member of every tenant and writable by no one, so this is
-   evaluated **before** the tenant check and `TenantId` is not consulted for them.
+1. `resource.IsSystemDefined`: `Read` or `Use` -> `AllowSystem`; **any other action** ->
+   `Deny("system_defined_immutable")`. System-defined resources are readable by every member of
+   every tenant and writable by no one, so this is evaluated **before** the tenant check and
+   `TenantId` is not consulted for them. Both halves short-circuit here rather than falling through
+   - "writable by no one" (7.2, 7.3) has to include tenant admins, and leaving it to emerge from
+   later steps would make it depend on a system resource happening never to be published.
 2. `resource.TenantId != principal.TenantId` -> `Deny("cross_tenant")`. Admins do not bypass this;
    a tenant admin is an admin of exactly one tenant.
-3. **Subject resolution.** Let `user = principal.EffectiveUserId`.
-   - If `user is null` the caller is app-only (mode C, or a service acting as itself). It may match
-     **only** on the app dimension: `resource.OwnerAppId is not null && resource.OwnerAppId ==
-     principal.AppId` -> `AllowOwner`; otherwise -> `Deny("app_only_no_owner")`. An app-only
-     principal never matches a null owner and never consults grants.
-   - Otherwise continue to step 4.
-4. `resource.OwnerUserId is not null && resource.OwnerUserId == user` -> `AllowOwner`.
-5. An unexpired grant exists for `(principal.TenantId, resource.Ref, user)` conferring the action ->
-   `AllowGrant`.
-6. `principal.Roles` contains `admin` and the action is permitted for admins -> `AllowAdmin`,
-   audited.
-7. Otherwise -> `Deny("no_grant")`.
+3. **Relationship resolution.** Establish *which* relationship the principal has to the resource -
+   this step decides nothing on its own. Let `user = principal.EffectiveUserId`.
+   - `user is null`: the caller is app-only (mode C, or a service acting as itself). Its only
+     possible relationship is `AppOwner`, and only when
+     `resource.OwnerAppId is not null && resource.OwnerAppId == principal.AppId`. Otherwise ->
+     `Deny("app_only_no_owner")`. An app-only principal never matches a null owner, never consults
+     grants, and carries no roles.
+   - `resource.OwnerUserId is not null && resource.OwnerUserId == user` -> `Owner`.
+   - An unexpired grant exists for `(principal.TenantId, resource.Ref, user)` -> `Grantee`, with
+     the set of actions that grant confers.
+   - `principal.Roles` contains `admin` -> `TenantAdmin`.
+   - None of the above -> `Deny("no_relationship")`.
 
-**The null rule (7.1 principle 4) is load-bearing in steps 3 and 4.** Both `OwnerUserId` and
-`EffectiveUserId` are nullable. Writing step 4 as a bare `resource.OwnerUserId == user` would make a
-legacy row with no owner match every app-only principal, silently handing unowned data to any
-service credential - the precise opposite of "private by default". The non-null guards are not
-defensive style; they are the rule.
+   A principal may hold more than one of these. Evaluate them in the order listed and take the
+   **first allow**; a principal denied as `Owner` for an action may still be allowed as
+   `TenantAdmin` for it, which is exactly how an admin edits a published mode they do not own.
+
+4. **Apply the rights table of 7.4.1** for `(relationship, action, resource.Visibility)`. There is
+   no step in which a relationship confers "everything".
+
+**The null rule (7.1 principle 4) is load-bearing in step 3.** Both `OwnerUserId` and
+`EffectiveUserId` are nullable. Writing the owner test as a bare `resource.OwnerUserId == user`
+would make a legacy row with no owner match every app-only principal, silently handing unowned data
+to any service credential - the precise opposite of "private by default". The non-null guards are
+not defensive style; they are the rule.
 
 SQL behaves correctly here without the guard, because `NULL = 'x'` is `NULL` rather than true. C#
 `==` on two nulls is `true`. That asymmetry between 7.5's query and this algorithm is exactly where
@@ -1154,6 +1197,65 @@ an implementer is likely to go wrong, so both are written out explicitly.
 
 `AccessDecision.Reason` is written to the audit record for allows as well as denies. A deny-only
 audit cannot answer "was this ever attempted successfully?".
+
+#### 7.4.1 Owner rights are per action, and per publication state
+
+Ownership is **not** a blanket grant. Two actions do not follow from owning a thing:
+
+- **`publish` is never an owner right.** Publishing turns a private resource into one the whole
+  tenant depends on. That is a tenant-governance decision, so it belongs to the `admin` role and to
+  nobody else (7.3), and 7.2 already says so. An owner branch that returned an allow for every
+  `AccessAction` would hand every member the ability to push a mode to the entire organisation.
+- **Publication freezes the owner's write and delete.** Once a resource is `TenantPublished`, other
+  people's work depends on it. The owner keeps `read` and `use` but loses `write`, `delete` and
+  `share`; editorial control passes to the admins who published it.
+
+The full table. `V` is `resource.Visibility` (8.6); `-` means the row cannot arise.
+
+| Action | Owner, `Private`/`Shared` | Owner, `TenantPublished` | Grantee | Tenant admin | App owner |
+|---|---|---|---|---|---|
+| `read` | allow | allow | if the grant confers it | allow, audited | allow |
+| `use` | allow | allow | if the grant confers it | allow, audited | allow |
+| `write` | allow | **deny** `owner_write_frozen_by_publication` | if the grant confers it | allow **only** when `V = TenantPublished`; otherwise deny `admin_no_write` | allow |
+| `delete` | allow | **deny** `unpublish_before_delete` | deny `grant_confers_no_delete` | deny `admin_no_delete` (OQ-1) | allow |
+| `share` | allow | **deny** `publication_supersedes_sharing` | deny `grantee_may_not_reshare` | deny `admin_may_not_reshare` | deny `app_cannot_share` |
+| `publish` | **deny** `publish_is_admin_only` | **deny** `publish_is_admin_only` | deny `publish_is_admin_only` | allow, audited | deny `publish_is_admin_only` |
+
+Reading the non-obvious cells:
+
+- **Admin `write` only on published resources.** An admin's tenant-wide reach is a *support* power:
+  read everything, and maintain what the tenant collectively depends on. It is not a licence to
+  edit a colleague's private conversation. Narrowing admin `write` to `TenantPublished` is what
+  makes the previous row safe to freeze - the resource does not become uneditable, it changes
+  hands.
+- **`publish` is a toggle, both ways.** Unpublishing is the same action and the same admin-only
+  right. There is no separate `Unpublish` member, so no code path can gate the two directions
+  differently. The HTTP surface is `POST` and `DELETE` on
+  `/api/chat-modes/{modeId}/publication`, and both authorize with `AccessAction.Publish`.
+- **Delete of a published resource is denied to everyone.** An admin unpublishes first, which
+  returns `write`/`delete` to the owner. Two steps, deliberately: a one-click delete of a mode the
+  tenant is actively using is the mistake this prevents, and it also means nothing holds a
+  reference to a resource that vanished.
+- **Nobody re-shares.** A grantee cannot pass their access on, and an admin cannot grant a third
+  party access to someone's private resource. If either could, "private by default with named
+  sharing" would decay to "shared with whoever a grantee or admin likes", and the owner would never
+  see it happen.
+- **An app owner cannot `share` or `publish`.** Both name a *user* as the beneficiary, and an
+  app-only principal has no user directory context and no roles. This is a structural denial, not
+  a policy choice.
+
+The owner who wants to change a published mode has a route that needs nobody's permission: clone it
+(a new `Private` mode they own), edit freely, and ask an admin to publish the clone. Nobody is ever
+stuck waiting on an admin to make progress; they only wait to affect the whole tenant.
+
+**Grants never confer `delete`, `share` or `publish`** - only `read`, `use` and `write`. The
+`resource_grants` row (8.4) must reject any other action at write time, not only at evaluation
+time, so a bad grant cannot sit in the table waiting for a policy bug to honour it.
+
+**Deny reasons are part of the contract.** Each string above is the `AccessDecision.Reason` written
+to the audit record and is the assertion target for the tests in slices 2-4. A generic
+`Deny("no_grant")` for all of these would make the audit trail unable to distinguish "you were
+never allowed" from "you were allowed until this was published".
 
 ### 7.5 Listing is a filter, not a loop
 
@@ -1199,9 +1301,16 @@ and never satisfies the `WHERE`.
 Listing a tenant admin's results emits one audit record for the query, not one per row: action
 `read`, resource type `conversation`, resource id `*`, reason `tenant_admin`.
 
-Workspaces and modes use the identical three-branch shape. Their stores are whole-file JSON today
-(2.6) and so filter in memory, which is safe only because they have no `LIMIT`; if OQ-3 moves them
-into SQLite they must adopt the query form above rather than keep the in-memory filter.
+Workspaces and modes use the identical shape plus one branch the conversation query does not need:
+`OR t.visibility = 'TenantPublished'`, since a published mode is readable and usable by every
+member of the tenant (7.4.1). Their stores are whole-file JSON today (2.6) and so filter in memory,
+which is safe only because they have no `LIMIT`; if OQ-3 moves them into SQLite they must adopt the
+query form above rather than keep the in-memory filter.
+
+Note that the listing predicate covers `read` only. It is **not** a substitute for calling
+`IResourceAccessPolicy` on `write`, `delete`, `share` or `publish` - those vary by publication
+state and by relationship in ways no list query models. An endpoint that infers "it was in your
+list, so you may edit it" reintroduces exactly the collapse 7.4.1 exists to prevent.
 
 In-memory filtering after a `LIMIT` would silently return short pages - the page would be trimmed
 after the database had already truncated it.
@@ -1399,12 +1508,20 @@ never the durable key, because it is mutable (3.3).
 ALTER TABLE thread_metadata ADD COLUMN tenant_id     TEXT;
 ALTER TABLE thread_metadata ADD COLUMN owner_user_id TEXT;
 ALTER TABLE thread_metadata ADD COLUMN owner_app_id  TEXT;
+ALTER TABLE thread_metadata ADD COLUMN visibility    TEXT;   -- 'Private' | 'Shared'
 CREATE INDEX IF NOT EXISTS idx_thread_metadata_owner
   ON thread_metadata (tenant_id, owner_user_id, last_updated DESC);
 ```
 
 Nullable, because SQLite cannot add a `NOT NULL` column without a default and because null is the
 signal for "legacy, unclaimed" (8.5). The index exactly matches the `WHERE` and `ORDER BY` of 7.5.
+
+`visibility` is stored rather than derived from the presence of a `resource_grants` row. Deriving it
+would mean the policy issues a second query before it can build a `ResourceDescriptor` (7.4), on
+every decision, and would make `Private` and `Shared` indistinguishable the moment a grant expires
+rather than being revoked. A null reads as `Private`. Conversations never carry
+`TenantPublished` (7.2), so the column's domain is two values here; modes reuse the same field name
+in their JSON document (8.6) with all three.
 
 `owner_app_id` records which app created the conversation - it is the durable form of the
 `CallerCredential` freeze, which today exists only in the in-memory pool and is lost on restart.
@@ -1425,7 +1542,7 @@ CREATE TABLE IF NOT EXISTS resource_grants (
     resource_type TEXT NOT NULL,          -- 'conversation' | 'workspace' | 'mode'
     resource_id   TEXT NOT NULL,
     subject_id    TEXT NOT NULL,          -- '{tid}:{oid}' of the grantee
-    role          TEXT NOT NULL,          -- 'viewer' | 'editor'
+    role          TEXT NOT NULL CHECK (role IN ('viewer','editor')),
     granted_by    TEXT NOT NULL,
     granted_at    INTEGER NOT NULL,
     expires_at    INTEGER,                -- NULL = no expiry
@@ -1435,10 +1552,14 @@ CREATE INDEX IF NOT EXISTS idx_resource_grants_subject
   ON resource_grants (tenant_id, subject_id, resource_type);
 ```
 
-`viewer` maps to `read` + `use`; `editor` adds `write`. Neither confers `delete` or `share` - those
-stay with the owner. `expires_at` is present from the start because P3 takeover and P2 assist
-claims both need time-boxed grants, and retrofitting expiry onto a grant table already in use is
-painful.
+`viewer` maps to `read` + `use`; `editor` adds `write`. **Neither confers `delete`, `share`, or
+`publish`** (7.4.1) - those stay with the owner or the admin. The role vocabulary is closed by a
+`CHECK` constraint rather than only by the policy, so a grant conferring something else cannot sit
+in the table waiting for a policy bug to honour it; there is no `role` value that maps to the three
+withheld actions, by construction.
+
+`expires_at` is present from the start because P3 takeover and P2 assist claims both need
+time-boxed grants, and retrofitting expiry onto a grant table already in use is painful.
 
 One table serves all three resource types, so #302, #303, and #304 share the sharing UI, the policy
 code, and the audit shape rather than growing three near-identical mechanisms.
@@ -1568,8 +1689,34 @@ These are JSON documents (2.6), so there is no DDL:
   `GetAllModesAsync` take a `Principal` and filter.
 
 `Visibility` is an enum: `Private` (default), `Shared` (named grants), `TenantPublished`
-(admin-published, modes only). `IsSystemDefined` is orthogonal and unchanged - a system mode stays
-readable by everyone and writable by no one.
+(admin-published). It is declared once, in `src/LmCore/Identity/`, beside `ResourceDescriptor`
+(7.4) - the policy and the stores must not each carry their own copy.
+
+**It is a state machine, not a label, and the transitions are what 7.4.1 gates:**
+
+```
+Private  <--(owner)---->  Shared            named grants added / all revoked
+   |                        |
+   +----(admin only)--------+---->  TenantPublished
+   ^                                       |
+   +---------(admin only)------------------+           unpublish
+```
+
+- `Private` -> `Shared` and back is the owner's own act: adding or removing a named grant (7.1).
+- Anything -> `TenantPublished` and back is `AccessAction.Publish`, **admin only, both directions**.
+  There is no separate unpublish right, so the two directions cannot drift apart.
+- While `TenantPublished`, the owner holds `read` and `use` and nothing else; `write` passes to
+  admins and `delete` is refused to everybody until it is unpublished (7.4.1).
+- Existing named grants are **retained**, not dropped, across a publish/unpublish round trip. They
+  are simply redundant while published. Dropping them would silently revoke access that the owner
+  granted, at a moment the owner did not choose and may not even be aware of.
+- **Only modes may reach `TenantPublished`** (7.2). `IWorkspaceStore` rejects the value on write,
+  and `Workspace` carries the field only so both stores share one filter shape.
+
+`IsSystemDefined` is orthogonal and unchanged - a system mode stays readable by everyone and
+writable by no one. A system-defined resource is never published, because it does not need to be:
+step 1 of 7.4 already makes it tenant-wide readable, and giving it a publication state would create
+a second path to the same visibility with different rules.
 
 `FileChatModeStore` is registered as a process-wide singleton (`Program.cs:597`) over one flat file.
 Per-user modes make that file a contention point. It stays a singleton in #304 - the file is small
@@ -1582,10 +1729,10 @@ reconsidering (OQ-3).
 |---|---|
 | `src/LmCore/Identity/Principal.cs` | new - `Principal`, `PrincipalRef`, `PrincipalKind`, `PrincipalSource` |
 | `src/LmCore/Identity/ITenantStore.cs` | new - tenant lookup and admin binding (8.2) |
-| `src/LmCore/Identity/IResourceAccessPolicy.cs` | new - `ResourceRef`, `ResourceDescriptor`, `AccessAction`, `AccessDecision` |
+| `src/LmCore/Identity/IResourceAccessPolicy.cs` | new - `ResourceRef`, `ResourceDescriptor`, `Visibility`, `AccessAction`, `AccessDecision`, the 7.4.1 rights table |
 | `src/LmCore/Identity/IAuditSink.cs` | new - `AuthenticationAuditRecord`, `AuthorizationAuditRecord` (7.7) |
 | `src/LmCore/Models/UsageRecord.cs` | add `TenantId`, `PrincipalId`, `AppId` |
-| `src/LmMultiTurn/Persistence/ThreadMetadata.cs` | add `TenantId`, `OwnerUserId`, `OwnerAppId` |
+| `src/LmMultiTurn/Persistence/ThreadMetadata.cs` | add `TenantId`, `OwnerUserId`, `OwnerAppId`, `Visibility` |
 | `src/LmMultiTurn/Persistence/IConversationStore.cs` | `ListThreadsAsync` takes a `Principal` |
 | `src/LmMultiTurn/Persistence/Sqlite/SqliteSchemaInitializer.cs` | migration runner (slice 1) + steps 2, 3, 4, 5 |
 | `src/LmMultiTurn/Persistence/Sqlite/SqliteTenantStore.cs` | new - `tenants` / `tenant_admins` reads and writes |
@@ -1826,7 +1973,13 @@ endpoints scoped.
 
 **Verified by.** Two users in one tenant each see only their own conversations. A cross-tenant
 `GET /api/conversations/{id}` is `404`, not `403`. A shared conversation appears for the grantee as
-`viewer` and is not writable. A tenant admin's `GET /api/conversations` and their
+`viewer` and is not writable, and that grantee cannot re-share it (`403`
+`grantee_may_not_reshare`) or delete it (`403` `grant_confers_no_delete`). An owner may `share` and
+`delete` their own conversation. A tenant admin may `read` a member's conversation, and may not
+`write` it (`403` `admin_no_write`), `delete` it (`403` `admin_no_delete`) or `share` it
+(`403` `admin_may_not_reshare`) - conversations are never published, so the admin `write` cell of
+7.4.1 is unreachable for this resource type. `EvaluateAsync(_, conversation, Publish, _)` throws
+rather than denying (7.2). A tenant admin's `GET /api/conversations` and their
 `GET /api/conversations/{id}` agree on the same row set - the specific defect a missing admin
 branch in 7.5 would produce. A pre-existing conversation, after migration, is invisible to a
 `member` **and** to an `admin` of every provisioned tenant, and becomes visible only after
@@ -1847,19 +2000,50 @@ legacy-tolerant load and rewrite; `IWorkspaceStore.GetAllAsync(Principal, ...)`;
 **Verified by.** `GET /api/workspaces` returns only owned plus granted plus system-defined. A
 workspace `use` without a grant is refused even when `read` is granted. A `workspaces.json` written
 by the previous build loads without the new fields and is rewritten with them on first save.
+Writing `Visibility.TenantPublished` to a workspace is rejected by the store (7.2), and
+`EvaluateAsync(_, workspace, Publish, _)` throws rather than denying, so the unsupported pair
+cannot be mistaken for a policy outcome. An owner may `share` and `delete` their own workspace; a
+grantee may do neither; a tenant admin may `read` it and may not `write`, `delete` or `share` it.
 
 ### Slice 4 - [#304] Per-user chat modes
 
 **Ships.** `[InboundS2SAuth]` **added to `ChatModesController`** - an existing hole (2.3).
 Ownership fields on `ChatMode`; `FileChatModeStore` legacy-tolerant load; `IChatModeStore`
-filtering; `Visibility.TenantPublished` and an admin-only publish endpoint; system modes remain
-read-only for all.
+filtering; `Visibility.TenantPublished` and an admin-only publish/unpublish endpoint
+(`POST`/`DELETE /api/chat-modes/{modeId}/publication`); system modes remain read-only for all. The
+7.4.1 rights table is enforced on every mode mutation, not only on publish.
 
 **Depends on.** Slice 2.
 
 **Verified by.** A mode created by user A is invisible to user B. An admin-published mode is
-visible to every member of the tenant and editable only by an admin. A non-admin `publish` is
-`403`. A request to `/api/chat-modes` carrying `X-Sbx-App-Id` without `X-S2S-Auth` is now `401`
+visible to every member of the tenant.
+
+The owner/non-admin matrix of 7.4.1 is asserted case by case, because a single "owner can do
+owner things" test is what let the collapse through in the first place. For a mode owned by a
+non-admin user A:
+
+| Case | Expected |
+|---|---|
+| A `publish` while `Private` | `403`, reason `publish_is_admin_only` |
+| A `write` while `Private` | `200` |
+| A `delete` while `Private` | `200` |
+| A `share` while `Private` | `200`; B then reads it, and B `share` is `403` `grantee_may_not_reshare` |
+| A `write` while `TenantPublished` | `403`, reason `owner_write_frozen_by_publication` |
+| A `delete` while `TenantPublished` | `403`, reason `unpublish_before_delete` |
+| A `share` while `TenantPublished` | `403`, reason `publication_supersedes_sharing` |
+| A `read` / `use` while `TenantPublished` | `200` - the owner is not locked out of their own mode |
+| admin `write` while `TenantPublished` | `200`, audited |
+| admin `write` while `Private` | `403`, reason `admin_no_write` |
+| admin `delete`, any state | `403`, reason `admin_no_delete` |
+| admin `share` | `403`, reason `admin_may_not_reshare` |
+| admin `publish`, then admin `publish` back to `Private` | both `200`; A's `write` works again after |
+
+The round trip asserts one thing the individual rows cannot: named grants created before publishing
+are still present and still effective after unpublishing (8.6). Denials assert the **reason string**,
+not just the status code - two different `403`s that both read `no_grant` would let this whole
+table pass while the policy was wrong.
+
+A request to `/api/chat-modes` carrying `X-Sbx-App-Id` without `X-S2S-Auth` is now `401`
 where it previously succeeded. This is a deliberate breaking change to an existing endpoint's
 behaviour and closes the hole named in 2.3; it needs a `CHANGELOG.md` entry and a note in
 `docs/deployment/AUTH_ENFORCE.md`, because an existing integrator sending only `X-Sbx-App-Id` will
