@@ -13,7 +13,8 @@ public class ConversationUsageAggregateTests
         long revision = 0,
         long cacheWrite = 0,
         long? estimated = null,
-        long? reported = null) =>
+        long? reported = null,
+        DateTimeOffset? occurredAt = null) =>
         new()
         {
             LogicalCallId = attemptId,
@@ -26,7 +27,10 @@ public class ConversationUsageAggregateTests
             CacheWriteTokens = cacheWrite,
             EstimatedPublicCostMicros = estimated,
             ProviderReportedCostMicros = reported,
+            OccurredAtUtc = occurredAt,
         };
+
+    private static readonly DateTimeOffset DayOne = new(2026, 8, 22, 23, 50, 0, TimeSpan.Zero);
 
     [Fact]
     public void Fold_SumsAdditively_GroupedByModel()
@@ -123,5 +127,56 @@ public class ConversationUsageAggregateTests
         agg.FoldedRevision.Should().Be(42);
         agg.Completeness.Should().Be(UsageCompleteness.Complete);
         agg.RootConversationId.Should().Be("conv-1");
+    }
+
+    [Fact]
+    public void DedupeByAttempt_KeepsTheHighestRevisionsCounts_ButTheEarliestOccurredAtUtc()
+    {
+        // Cumulative streaming re-observes one attempt many times. The counts must come from the highest
+        // revision (they replace, never add), but the timestamp must not: a later revision records when the
+        // last chunk arrived. Here that is the next UTC day, so taking it would bill the attempt to
+        // 23 August when it actually happened on the 22nd (#307 per-day rollup).
+        var records = new[]
+        {
+            Record("a1", "model-A", input: 50, output: 20, revision: 1, occurredAt: DayOne),
+            Record("a1", "model-A", input: 120, output: 55, revision: 2, occurredAt: DayOne.AddMinutes(20)),
+        };
+
+        var deduped = ConversationUsageAggregate.DedupeByAttempt(records);
+
+        deduped.Should().ContainSingle();
+        deduped[0].InputTokens.Should().Be(120);
+        deduped[0].OutputTokens.Should().Be(55);
+        deduped[0].OccurredAtUtc.Should().Be(DayOne);
+    }
+
+    [Fact]
+    public void DedupeByAttempt_TakesTheKnownTimestamp_WhenTheWinningRevisionHasNone()
+    {
+        // A legacy record (persisted before the field existed) can carry the highest revision. Adopting its
+        // null would throw away the one time we do know for that attempt.
+        var records = new[]
+        {
+            Record("a1", "model-A", input: 50, output: 20, revision: 1, occurredAt: DayOne),
+            Record("a1", "model-A", input: 120, output: 55, revision: 2),
+        };
+
+        var deduped = ConversationUsageAggregate.DedupeByAttempt(records);
+
+        deduped.Should().ContainSingle();
+        deduped[0].InputTokens.Should().Be(120);
+        deduped[0].OccurredAtUtc.Should().Be(DayOne);
+    }
+
+    [Fact]
+    public void DedupeByAttempt_LeavesTimestampNull_WhenNoRevisionKnowsOne()
+    {
+        var records = new[]
+        {
+            Record("a1", "model-A", input: 50, output: 20, revision: 1),
+            Record("a1", "model-A", input: 120, output: 55, revision: 2),
+        };
+
+        ConversationUsageAggregate.DedupeByAttempt(records)[0].OccurredAtUtc.Should().BeNull();
     }
 }

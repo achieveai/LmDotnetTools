@@ -91,4 +91,51 @@ public class UsageRecordMapperTests
 
         first.ProviderAttemptId.Should().Be(second.ProviderAttemptId);
     }
+
+    [Fact]
+    public void FromUsageMessage_StampsOccurredAtUtc_FromTheInjectedClock()
+    {
+        // The only production factory for a UsageRecord is where the attempt's wall-clock time is stamped
+        // (#307). It reads an injected TimeProvider — the codebase's established clock seam — rather than
+        // DateTimeOffset.UtcNow, so the stamp is asserted exactly instead of merely "not null".
+        var clock = new FixedClock(new DateTimeOffset(2026, 8, 22, 23, 50, 0, TimeSpan.Zero));
+        var message = new UsageMessage
+        {
+            Usage = new Usage { PromptTokens = 100, CompletionTokens = 40 },
+            GenerationId = "gen-1",
+        };
+
+        var record = UsageRecordMapper.FromUsageMessage(
+            message, "root", UsageExecutionKind.Primary, "model-A", clock);
+
+        record.OccurredAtUtc.Should().Be(clock.Now);
+    }
+
+    [Fact]
+    public void FromUsageMessage_WithoutAClock_StampsSystemTime()
+    {
+        // Production call sites pass no clock, so the default must still produce a usable timestamp — an
+        // unstamped record is indistinguishable from a legacy one and drops out of the rollup entirely.
+        var before = DateTimeOffset.UtcNow;
+        var record = UsageRecordMapper.FromUsageMessage(
+            new UsageMessage { Usage = new Usage { PromptTokens = 1 }, GenerationId = "gen-1" },
+            "root",
+            UsageExecutionKind.Primary,
+            "model-A");
+        var after = DateTimeOffset.UtcNow;
+
+        record.OccurredAtUtc.Should().NotBeNull();
+        record.OccurredAtUtc!.Value.Should().BeOnOrAfter(before).And.BeOnOrBefore(after);
+    }
+
+    /// <summary>A clock frozen at a known instant, so the stamped time is asserted exactly.</summary>
+    private sealed class FixedClock(DateTimeOffset now) : TimeProvider
+    {
+        public DateTimeOffset Now { get; } = now;
+
+        public override DateTimeOffset GetUtcNow()
+        {
+            return Now;
+        }
+    }
 }

@@ -358,4 +358,76 @@ public class ConversationUsageProjectionTests
             // best-effort cleanup
         }
     }
+
+    [Fact]
+    public async Task SaveAsync_MergesRecords_KeepingTheEarliestOccurredAtUtc_ForSameAttempt()
+    {
+        // The durable merge picks the highest revision per attempt, so it inherits that revision's
+        // timestamp. Across writers (post-restart rebuild, second instance, relay) the higher revision can
+        // be the LATER observation of the same attempt — the next UTC day here — so the persisted record
+        // would claim the attempt happened on 23 August. First-wins keeps the day a rollup buckets on (#307).
+        var store = new InMemoryConversationStore();
+        var dayOne = new DateTimeOffset(2026, 8, 22, 23, 50, 0, TimeSpan.Zero);
+
+        var early = new UsageRecord
+        {
+            LogicalCallId = "a1",
+            ProviderAttemptId = "a1",
+            RootConversationId = "conv-1",
+            RequestedModel = "m",
+            InputTokens = 40,
+            OutputTokens = 5,
+            Revision = 1,
+            OccurredAtUtc = dayOne,
+        };
+        var final = early with
+        {
+            InputTokens = 100,
+            OutputTokens = 20,
+            Revision = 7,
+            OccurredAtUtc = dayOne.AddMinutes(20),
+        };
+
+        await ConversationUsageProjection.SaveAsync(
+            store, ConversationUsageAggregate.Fold("conv-1", [early], foldedRevision: 1), [early]);
+        await ConversationUsageProjection.SaveAsync(
+            store, ConversationUsageAggregate.Fold("conv-1", [final], foldedRevision: 7), [final]);
+
+        var records = await ConversationUsageProjection.LoadRecordsAsync(store, "conv-1");
+        records.Should().ContainSingle();
+        records[0].InputTokens.Should().Be(100); // the highest revision still supplies the counts
+        records[0].OccurredAtUtc.Should().Be(dayOne);
+    }
+
+    [Fact]
+    public async Task SaveAsync_MergesRecords_KeepingTheKnownOccurredAtUtc_WhenTheWinningWriterHasNone()
+    {
+        // A legacy (pre-timestamp) record can arrive with the higher revision; adopting its null would
+        // discard the only time known for that attempt.
+        var store = new InMemoryConversationStore();
+        var dayOne = new DateTimeOffset(2026, 8, 22, 23, 50, 0, TimeSpan.Zero);
+
+        var stamped = new UsageRecord
+        {
+            LogicalCallId = "a1",
+            ProviderAttemptId = "a1",
+            RootConversationId = "conv-1",
+            RequestedModel = "m",
+            InputTokens = 40,
+            OutputTokens = 5,
+            Revision = 1,
+            OccurredAtUtc = dayOne,
+        };
+        var unstamped = stamped with { InputTokens = 100, Revision = 7, OccurredAtUtc = null };
+
+        await ConversationUsageProjection.SaveAsync(
+            store, ConversationUsageAggregate.Fold("conv-1", [stamped], foldedRevision: 1), [stamped]);
+        await ConversationUsageProjection.SaveAsync(
+            store, ConversationUsageAggregate.Fold("conv-1", [unstamped], foldedRevision: 7), [unstamped]);
+
+        var records = await ConversationUsageProjection.LoadRecordsAsync(store, "conv-1");
+        records.Should().ContainSingle();
+        records[0].InputTokens.Should().Be(100);
+        records[0].OccurredAtUtc.Should().Be(dayOne);
+    }
 }

@@ -17,11 +17,23 @@ public static class UsageRecordMapper
     ///     (the root thread id for the primary loop, the sub-agent id for a descendant) and forms the
     ///     dedup key together with the message's generation id.
     /// </summary>
+    /// <param name="message">The provider usage message to map.</param>
+    /// <param name="ownerExecutionId">The emitting execution's id.</param>
+    /// <param name="kind">How this attempt was produced.</param>
+    /// <param name="model">The effective model for the call, or null/empty when unknown.</param>
+    /// <param name="timeProvider">
+    ///     Clock used to stamp <see cref="UsageRecord.OccurredAtUtc" />. Neither
+    ///     <see cref="UsageMessage" /> nor <see cref="LmCore.Models.Usage" /> carries a provider timestamp, so
+    ///     observation time is the best available attribution — and it is injected rather than read from
+    ///     <c>DateTimeOffset.UtcNow</c> so the stamp is assertable. Defaults to
+    ///     <see cref="TimeProvider.System" />.
+    /// </param>
     public static UsageRecord FromUsageMessage(
         UsageMessage message,
         string ownerExecutionId,
         UsageExecutionKind kind,
-        string? model)
+        string? model,
+        TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(message);
 
@@ -52,6 +64,7 @@ public static class UsageRecordMapper
             CacheWriteTokens = usage.GetExtraProperty<int>("cache_creation_input_tokens"),
             ReasoningTokens = usage.TotalReasoningTokens,
             ProviderReportedCostMicros = ToMicros(usage.TotalCost),
+            OccurredAtUtc = (timeProvider ?? TimeProvider.System).GetUtcNow(),
             Finalized = true,
         };
     }
