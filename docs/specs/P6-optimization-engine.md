@@ -275,8 +275,10 @@ public sealed record Verdict
     /// <summary>Ballots cast but excluded, each with why. Never silently dropped.</summary>
     public required IReadOnlyList<ExcludedBallot> ExcludedBallots { get; init; }
     /// <summary>Disagreement among counted ballots. High dispersion on a gating item is a
-    /// review-this-by-hand signal.</summary>
-    public required double Dispersion { get; init; }
+    /// review-this-by-hand signal. <b>Null</b> whenever dispersion is undefined rather than zero:
+    /// a single counted ballot (§2.12.6), a gate short-circuit with no ballots, or a NoDecision.
+    /// Null is not 0.0 — a lone judge is not a panel in perfect agreement.</summary>
+    public double? Dispersion { get; init; }
     public required string RubricId { get; init; }
     public required string RubricVersion { get; init; }
     public required TokenCost TotalCost { get; init; }
@@ -297,7 +299,7 @@ public interface IBallotAggregator
 }
 ```
 
-**Default aggregator: `WeightedMedianAggregator`.**
+**Default aggregator: `WeightedMeanAggregator`.**
 
 1. Drop every ballot with `Abstained == true` or `Confidence < HarnessOptions.AbstainFloor`
    (default `0.34`), recording each in `ExcludedBallots`.
@@ -308,8 +310,15 @@ public interface IBallotAggregator
    A single-ballot verdict never reports a `Dispersion`.
 3. With two counted ballots, apply the straddle test of §2.12.2 — same side of `PassThreshold`
    decides directly, opposite sides runs the tie-break of §2.12.3.
-4. `Score` is the reliability-weighted mean of the counted ballots (§2.9); with one ballot it is
-   that ballot's score. On an arbiter-resolved straddle it is the arbiter's score, not a blend.
+4. `Score` is the reliability-**weighted mean** of the counted ballots — with weights `w_i` from
+   §2.9, `Score = sum(w_i * s_i) / sum(w_i)`. With one counted ballot it is that ballot's score. On
+   an arbiter-resolved straddle it is the arbiter's score, not a blend.
+
+   *No median is defined anywhere in this spec, and the aggregator is named for what it computes.*
+   An earlier draft specified a weighted median for its robustness to one miscalibrated judge; that
+   rationale requires at least three ballots to mean anything, and §2.12 fixes the panel at two,
+   where a median is identical to a mean. The straddle test — not a robust statistic — is what now
+   protects against a single bad judge.
 
 **Weighted, not unweighted.** Weak-supervision-weighted ensembles of <=70B judges reach o3-mini-level
 selection accuracy (87.7% avg), and weighting significantly beats unweighted aggregation
@@ -398,10 +407,40 @@ available and the design commits to two rather than pretending otherwise.
 
 #### 2.12.1 Composition rule
 
-`JudgePanel` requires exactly two judges with **distinct `ModelFamily` values**, neither equal to the
-candidate's generator family (§3.2). Construction throws otherwise. `HarnessOptions.PanelSize` is
-fixed at 2 for the default panel; `AllowSameFamilyPanel` remains available for deliberate experiments
-and stamps the verdict so those rows are never pooled with clean ones.
+Eligibility filtering happens **before** construction, not inside it, so the degraded path never has
+to violate an invariant:
+
+```csharp
+/// <summary>The outcome of filtering the configured judges against one candidate. A panel is
+/// built from eligible judges; it never filters them itself.</summary>
+public abstract record PanelComposition
+{
+    /// <summary>Two eligible judges of distinct families. The only composition that may gate.</summary>
+    public sealed record Full(IJudge First, IJudge Second) : PanelComposition;
+    /// <summary>Exactly one eligible judge. Legal, and always yields Degradation = SingleJudge.</summary>
+    public sealed record Degraded(IJudge Only, string Reason) : PanelComposition;
+    /// <summary>No eligible judge. Yields NoDecision with PanelUnavailable.</summary>
+    public sealed record Unavailable(string Reason) : PanelComposition;
+}
+
+public static class JudgePanel
+{
+    /// <summary>Drops judges sharing the candidate's generator family (§3.2) and judges whose
+    /// provider is unreachable (§2.12.6), then classifies what is left.</summary>
+    public static PanelComposition Compose(IReadOnlyList<IJudge> configured, Candidate candidate,
+        HarnessOptions options);
+}
+```
+
+`Compose` is total — it returns a composition for every input and **throws for no candidate-driven
+reason**. The configuration-time rules are what throw, and they are checked once at startup rather
+than per candidate: the configured judge set must contain exactly two judges of **distinct
+`ModelFamily`**, or `HarnessOptions.AllowSameFamilyPanel` must be set (which stamps the verdict so
+those rows are never pooled with clean ones).
+
+That separation is the whole point. "Two judges of distinct families" is an invariant of the
+*configuration*; "how many of them are eligible for this candidate" is a per-candidate fact that
+legitimately varies, and `Degraded` is its honest representation rather than an exception.
 
 #### 2.12.2 What "disagree" means on an ordinal scale
 
@@ -565,8 +604,17 @@ samples/CodeReviewDaemon.Sample/Orchestration/DaemonReviewStageExecutor.cs:3052
         profile, run.ModelId, ThreadId(run, DaemonAgentFactory.JudgeProfileId), ...);
 ```
 
-Every judge score in the daemon's `judge` artifacts to date was produced by the review's own model
-grading itself.
+So **the current `JudgeAsync` path judges every review with the model that wrote it.**
+
+The claim stops there deliberately. A v1 `judge` artifact persists only
+`JudgeArtifactPayload(Score, Rationale, VariantId)`
+(`samples/CodeReviewDaemon.Sample/Agents/JudgeAgent.cs:153`) — **no judge-model provenance at all** —
+so it cannot be established from the stored data that any *particular historical* artifact was
+self-judged, only that the code path in force today does it. Historical rows are therefore
+`unknown-provenance`, not `self-judged`, and §5 must not classify them as either.
+
+This is an independent argument for the schema v2 of §6.3: without a persisted judge model, the
+self-preference axis is unmeasurable retrospectively, and no amount of later analysis recovers it.
 
 **The controls.**
 
@@ -649,17 +697,17 @@ prose in a prompt file, not code.** The C# has no finding data model at all — 
 
 | Guardrail | Where it actually lives | Enforced by |
 | --- | --- | --- |
-| Review dimensions (architecture, performance, tests, …) | prose in `Prompts/daemon-prompts.yaml:128-135`; the real agent catalog is the **external `code-reviewer` plugin**, not this repo | **the model's own choice.** No dimension type in daemon code. |
-| Dimension availability | `GatewaySkillProbe` → `GatewaySkillSupport(HasReviewSkill, ReviewerAgentCount, MarketplaceErrors)`, `Workspace/Sandbox/GatewaySkillProbe.cs:18`, `IsSupported` at `:25` | code — but it only checks `ReviewerAgentCount > 0`. It cannot tell *which* dimensions ran. |
-| Sub-agent dispatch | the LLM calls the Agent tool itself | **not C#.** The daemon only waits: `ReviewSubAgentCompletionBarrier.WaitAsync`, `Agents/ReviewSubAgentCompletion.cs:258` |
-| Result aggregation | `daemon-prompts.yaml:249-250` — "de-duplicate, drop anything a sub-agent retracted or could not substantiate" | **nothing.** One sentence of prose. The C# only renders an inventory: `ReviewSubAgentTreeSnapshot.ToSafeInventory()`, `Agents/ReviewSubAgentCompletion.cs:147` |
-| Adversarial verification of findings | — | **does not exist.** No type takes a finding and challenges it. `ValidateReviewStillCurrentAsync` (`Orchestration/DaemonReviewStageExecutor.cs:2934`) verifies the PR head SHA, not findings. |
-| Severity Must/Should/Consider | `daemon-prompts.yaml:213` | prose only; never parsed. No severity enum in C#. |
-| Grading | `JudgeAgent` (`Agents/JudgeAgent.cs:19`) + prompt `daemon-prompts.yaml:349-357` | code, but a single judge, a five-line prompt, an unanchored 0–10 scale, and **nothing consumes the score** |
-| A/B arms | `ReviewVariant` (`Agents/ReviewVariant.cs:12`), `VariantReviewer` (`Agents/VariantReviewer.cs:24`) | code, and genuinely well-isolated |
-| Capability denial | `OperationPolicy.Decide` (`Workspace/OperationPolicy.cs:121`), `ScopedToolFilter.Apply` (`Agents/ScopedToolFilter.cs:20`) | code. Solid. |
-| Deterministic caps | input-side only: `MaxExistingCommentsListed = 120` (`DaemonReviewStageExecutor.cs:2198`), `MaxKnowledgeEntries = 24` (`:1564`), `MaxKnowledgeDigestChars` (`:1567`), `UntrustedTranscriptText` caps (`Orchestration/ReviewNotesArtifactBuilder.cs:38`, `:41`) | code. But **no cap, dedupe, or path/line filter on findings.** |
-| Retrieval bounding | `KnowledgeDigest.Deduplicate` (`Agents/KnowledgeDigest.cs:258`), `KnowledgeIndex.ParseIndex` | code. Deterministic ranking + caps. |
+| Review dimensions (architecture, performance, tests, …) | prose in `samples/CodeReviewDaemon.Sample/Prompts/daemon-prompts.yaml:128-135`; the real agent catalog is the **external `code-reviewer` plugin**, not this repo | **the model's own choice.** No dimension type in daemon code. |
+| Dimension availability | `GatewaySkillProbe` → `GatewaySkillSupport(HasReviewSkill, ReviewerAgentCount, MarketplaceErrors)`, `samples/CodeReviewDaemon.Sample/Workspace/Sandbox/GatewaySkillProbe.cs:18`, `IsSupported` at `:25` | code — but it only checks `ReviewerAgentCount > 0`. It cannot tell *which* dimensions ran. |
+| Sub-agent dispatch | the LLM calls the Agent tool itself | **not C#.** The daemon only waits: `ReviewSubAgentCompletionBarrier.WaitAsync`, `samples/CodeReviewDaemon.Sample/Agents/ReviewSubAgentCompletion.cs:258` |
+| Result aggregation | `samples/CodeReviewDaemon.Sample/Prompts/daemon-prompts.yaml:249-250` — "de-duplicate, drop anything a sub-agent retracted or could not substantiate" | **nothing.** One sentence of prose. The C# only renders an inventory: `ReviewSubAgentTreeSnapshot.ToSafeInventory()`, `samples/CodeReviewDaemon.Sample/Agents/ReviewSubAgentCompletion.cs:147` |
+| Adversarial verification of findings | — | **does not exist.** No type takes a finding and challenges it. `ValidateReviewStillCurrentAsync` (`samples/CodeReviewDaemon.Sample/Orchestration/DaemonReviewStageExecutor.cs:2934`) verifies the PR head SHA, not findings. |
+| Severity Must/Should/Consider | `samples/CodeReviewDaemon.Sample/Prompts/daemon-prompts.yaml:213` | prose only; never parsed. No severity enum in C#. |
+| Grading | `JudgeAgent` (`samples/CodeReviewDaemon.Sample/Agents/JudgeAgent.cs:19`) + prompt `samples/CodeReviewDaemon.Sample/Prompts/daemon-prompts.yaml:349-357` | code, but a single judge, a five-line prompt, an unanchored 0–10 scale, and **nothing consumes the score** |
+| A/B arms | `ReviewVariant` (`samples/CodeReviewDaemon.Sample/Agents/ReviewVariant.cs:12`), `VariantReviewer` (`samples/CodeReviewDaemon.Sample/Agents/VariantReviewer.cs:24`) | code, and genuinely well-isolated |
+| Capability denial | `OperationPolicy.Decide` (`samples/CodeReviewDaemon.Sample/Workspace/OperationPolicy.cs:121`), `ScopedToolFilter.Apply` (`samples/CodeReviewDaemon.Sample/Agents/ScopedToolFilter.cs:20`) | code. Solid. |
+| Deterministic caps | input-side only: `MaxExistingCommentsListed = 120` (`samples/CodeReviewDaemon.Sample/Orchestration/DaemonReviewStageExecutor.cs:2198`), `MaxKnowledgeEntries = 24` (`:1564`), `MaxKnowledgeDigestChars` (`:1567`), `UntrustedTranscriptText` caps (`samples/CodeReviewDaemon.Sample/Orchestration/ReviewNotesArtifactBuilder.cs:38`, `:41`) | code. But **no cap, dedupe, or path/line filter on findings.** |
+| Retrieval bounding | `KnowledgeDigest.Deduplicate` (`samples/CodeReviewDaemon.Sample/Agents/KnowledgeDigest.cs:258`), `KnowledgeIndex.ParseIndex` | code. Deterministic ranking + caps. |
 
 So the migration is less "move code" and more "give the prose a place to become code". The
 code-level pieces that move are the judge, the variant arms, and the artifact shapes.
@@ -669,7 +717,7 @@ code-level pieces that move are the judge, the variant arms, and the artifact sh
 **New — `src/LmEval/`** (types per §2)
 
 - `Candidate.cs`, `Gate.cs`, `Rubric.cs`, `Ballot.cs`, `Verdict.cs`, `JudgePanel.cs`,
-  `JudgeGauntlet.cs`, `Aggregation/WeightedMedianAggregator.cs`,
+  `JudgeGauntlet.cs`, `Aggregation/WeightedMeanAggregator.cs`,
   `Judges/RubricJudge.cs` (the `IMultiTurnAgent`-backed default), `HarnessOptions.cs`,
   `Gates/LengthBoundsGate.cs`, `Gates/JsonSchemaGate.cs`, `Gates/RequiredAnchorGate.cs`.
 - `src/LmEval/AchieveAi.LmDotnetTools.LmEval.csproj` — references `LmCore`, `LmMultiTurn`;
@@ -684,7 +732,7 @@ Keep the type name, keep `JudgeArtifactKind = "judge"` (`:23`) and
 `JudgeArtifactSchemaVersion = 1` (`:21`), keep `JudgeArtifactPayload(Score, Rationale, VariantId)`
 exactly (`:153`). Internally it becomes a thin adapter:
 
-- Build a `Candidate` from `JudgeRequest` (`Agents/JudgeAgent.cs:140`) with
+- Build a `Candidate` from `JudgeRequest` (`samples/CodeReviewDaemon.Sample/Agents/JudgeAgent.cs:140`) with
   `TaskType = "code-review"`, `Content = JudgingInput`, `VariantId = request.VariantId`.
 - Run a `JudgeGauntlet` configured with **zero gates and a single-judge panel**. That is what
   reproduces today's behaviour exactly.
@@ -701,7 +749,7 @@ exactly (`:153`). Internally it becomes a thin adapter:
 **`samples/CodeReviewDaemon.Sample/Prompts/daemon-prompts.yaml`**
 Add a `judge: v2.0` entry expressing the *same* grading intent as `v1.0` (`:349`) but rendered from a
 `Rubric` — anchored criteria, reasoning-before-score. **`v1.0` stays and stays the default** in this
-slice. `DaemonAgentFactory.CreateJudgeProfile` (`Agents/DaemonAgentFactory.cs:136`) selects the
+slice. `DaemonAgentFactory.CreateJudgeProfile` (`samples/CodeReviewDaemon.Sample/Agents/DaemonAgentFactory.cs:136`) selects the
 version from config, so v2.0 ships dark and is switched on by an experiment in #321.
 
 **`samples/CodeReviewDaemon.Sample/Orchestration/DaemonReviewStageExecutor.cs`**
@@ -710,7 +758,7 @@ version from config, so v2.0 ships dark and is switched on by an experiment in #
   A `// TODO(#322): judge shares the generator's model — self-preference, see P6 §3.2` comment
   records it at the line.
 - `RunVariantArmAsync` (`:2993`): unchanged.
-- The stage machine is untouched; `ReviewStage` (`Persistence/Models/ReviewRunAxes.cs:8`) keeps its
+- The stage machine is untouched; `ReviewStage` (`samples/CodeReviewDaemon.Sample/Persistence/Models/ReviewRunAxes.cs:8`) keeps its
   five values `Discovered, ContextReady, Reviewed, Judged, Posted`.
 
 **`samples/CodeReviewDaemon.Sample/Configuration/CodeReviewDaemonOptions.cs`**
@@ -729,19 +777,19 @@ emits the abstention warning.
 Called out deliberately rather than papered over.
 
 1. **Model-chosen review dimensions.** Revobot's dimensions are selected at runtime by the reviewing
-   model from the external plugin's methodology (`daemon-prompts.yaml:128`); the host only checks
+   model from the external plugin's methodology (`samples/CodeReviewDaemon.Sample/Prompts/daemon-prompts.yaml:128`); the host only checks
    that *some* reviewer agents exist (`GatewaySkillSupport.ReviewerAgentCount`,
-   `Workspace/Sandbox/GatewaySkillProbe.cs:25`). A `Rubric` is a fixed, versioned criterion list.
+   `samples/CodeReviewDaemon.Sample/Workspace/Sandbox/GatewaySkillProbe.cs:25`). A `Rubric` is a fixed, versioned criterion list.
    These are different things. **Deliberate exclusion.** The harness judges *the review that came
    out*; it does not constrain which dimensions produced it. If dimension coverage later needs
    scoring, it becomes a `RubricCriterion` ("does the review address the dimensions the diff
    implicates?") — a judgement about coverage, not a host-side catalog.
 
 2. **Findings as structured objects.** The review is Markdown prose; severity tags and file:line
-   citations exist only as text conventions (`daemon-prompts.yaml:213`). Confirmed: there is no
+   citations exist only as text conventions (`samples/CodeReviewDaemon.Sample/Prompts/daemon-prompts.yaml:213`). Confirmed: there is no
    `Finding` / `ReviewResult` type anywhere. The closest is the *read-side*
    `ExistingReviewComment(Path, Line, Body, Author, IsActive, PublishedAt, ThreadId)` at
-   `Orchestration/IReviewCommentPublisher.cs:76` — and its `Line` is a `string?` that is never
+   `samples/CodeReviewDaemon.Sample/Orchestration/IReviewCommentPublisher.cs:76` — and its `Line` is a `string?` that is never
    parsed or validated. A per-finding gate (does this cited line exist? is this a duplicate?) needs a
    parsed finding model that does not exist today. **Extension, scheduled:** `RequiredAnchorGate` in
    #319 does the shallow version (citations present and well-formed); a real `ReviewFinding` parser
@@ -752,13 +800,13 @@ Called out deliberately rather than papered over.
    A `Candidate` is a single artifact with no history. **Deliberate exclusion for #319**; the corpus
    in #320 carries whole conversations, so that is the natural home. Recorded as Q5.
 
-4. **The synthesis fold.** `daemon-prompts.yaml:249` folds N sub-agent outputs into one review,
+4. **The synthesis fold.** `samples/CodeReviewDaemon.Sample/Prompts/daemon-prompts.yaml:249` folds N sub-agent outputs into one review,
    dropping unsubstantiated findings. That is a *reducer over candidates producing a new candidate*,
    not a judge producing a verdict. `IBallotAggregator` reduces ballots, not content.
    **Extension, deferred:** an `ICandidateReducer` is the obvious sibling interface and is the same
    shape `LmWorkflow` needs for its missing reduce node (§2.11). Not in #319; see Q6.
 
-5. **Capability denial.** `OperationPolicy` (`Workspace/OperationPolicy.cs:121`) gates *what an agent
+5. **Capability denial.** `OperationPolicy` (`samples/CodeReviewDaemon.Sample/Workspace/OperationPolicy.cs:121`) gates *what an agent
    may do*, not *whether its output is good*. Superficially `IGate`-shaped, genuinely a different
    concern. **Deliberate exclusion — it stays where it is.** Merging them would put sandbox security
    policy behind an evaluation abstraction, a bad trade in both directions.
@@ -776,21 +824,25 @@ Available sources, in descending order of usefulness:
 - **The daemon's `review_run` + `review_artifact` tables** (SQLite; created in
   `samples/CodeReviewDaemon.Sample/Persistence/Migrations/SchemaMigrations.cs`). Every completed
   review is a `(PR diff → review text)` pair already tagged with `VariantId`, `ModelId`,
-  `PromptTemplateHash` (`Persistence/Models/ReviewRun.cs:24`, `:30`, `:31`). Artifact kinds present:
+  `PromptTemplateHash` (`samples/CodeReviewDaemon.Sample/Persistence/Models/ReviewRun.cs:24`, `:30`, `:31`). Artifact kinds present:
   `review`, `review-provisional`, `review-context`, `review-synthesis-request`, `judge`,
   `b-variant-review`, `knowledge`. The payload shape is `ReviewArtifactPayload`
-  (`Orchestration/DaemonReviewStageExecutor.cs:3810`), and the input side is
+  (`samples/CodeReviewDaemon.Sample/Orchestration/DaemonReviewStageExecutor.cs:3810`), and the input side is
   `ContextArtifactPayload(PrId, BaseSha, HeadSha, Diff, FileManifest, …)` (`:3782`) — an
   input/output pair by construction. **This is the best corpus we have and it is already
   accumulating.**
-- **`b-variant-review` artifacts** (`Agents/VariantReviewer.cs:97`) — the collect-only B arm's output
+- **`b-variant-review` artifacts** (`samples/CodeReviewDaemon.Sample/Agents/VariantReviewer.cs:97`) — the collect-only B arm's output
   for the *same* input. Paired by construction, and the single most valuable rows in the corpus,
   because an A/B judgement needs exactly this shape.
-- **Merged-PR outcome as a weak label.** `ReviewRun.MergeSha` and `PrLifecycleState`
-  (`Persistence/Models/ReviewRunAxes.cs:40`) say whether the PR eventually merged. Weak and
-  confounded, but free.
+- **Merged-PR outcome as a weak label.** `PrLifecycleState`
+  (`samples/CodeReviewDaemon.Sample/Persistence/Models/ReviewRunAxes.cs:40`) says whether the PR
+  eventually merged; it is genuinely computed by both providers
+  (`samples/CodeReviewDaemon.Sample/Orchestration/GitHubPrProvider.cs:199-205`,
+  `Orchestration/AdoPrProvider.cs:413-416`) and persisted at `Persistence/ReviewStore.cs:188`. Weak
+  and confounded, but free. **Do not use `ReviewRun.MergeSha`** — it is declared and read back but
+  never assigned by any path, so it is always NULL (§8.1.1).
 - **Full conversation histories.** `CodeReviewDaemonOptions.ConversationStorePath`
-  (`Configuration/CodeReviewDaemonOptions.cs:80`) wires a `FileConversationStore`
+  (`samples/CodeReviewDaemon.Sample/Configuration/CodeReviewDaemonOptions.cs:80`) wires a `FileConversationStore`
   (`src/LmMultiTurn/Persistence/FileConversationStore.cs:13`) at `Program.cs:271-275`, writing
   directory-per-thread JSON (`messages.json`, `metadata.json`, `runs.json`, `run-lifecycle.json`).
   Rich, unlabelled, and includes sub-agent threads. Useful for cost and behaviour replay, not for
@@ -803,7 +855,7 @@ Available sources, in descending order of usefulness:
   runner's own tests hermetic; they are not the corpus.
 - **Human verdicts.** The strongest available signal is derived, not direct: findings raised in one
   review round and *fixed* in a later one, which `ReviewFeedbackAgent`
-  (`Agents/ReviewFeedbackAgent.cs:21`) already distils per developer into
+  (`samples/CodeReviewDaemon.Sample/Agents/ReviewFeedbackAgent.cs:21`) already distils per developer into
   `KnowledgeBase/developers/<slug>.reviewfeedbacks.md`. A fixed finding is a human implicitly
   agreeing with it.
 
@@ -900,7 +952,9 @@ experiment_record
   panel_degradation     TEXT NOT NULL   -- None | SingleJudge | PanelUnavailable | ArbiterUnavailable
   human_verdict         TEXT NULL       -- Accepted | Edited | Rejected | Ambiguous | Ignored
                                         -- NULL = no human signal observed yet
-  human_verdict_source  TEXT NOT NULL   -- provenance; see §8.1.2. NOT NULL and no default.
+  human_verdict_source  TEXT NOT NULL   -- provenance; see §8.1.3. NOT NULL and no default.
+                                        -- 'None' = observable, nothing seen yet
+                                        -- 'NotObservable' = this provider cannot produce the signal
   human_verdict_conf    REAL NULL       -- proxy strength in [0,1]; NULL for Explicit
   human_signal_seen_at  TEXT NULL
   human_edit_distance   INTEGER NULL
@@ -928,9 +982,12 @@ mistake a NULL for a benign default — a missing cost is not a zero cost, a deg
 full one, and a proxy verdict is not a human's stated opinion.
 
 A `CHECK` constraint ties the last pair together: `human_verdict IS NULL` if and only if
-`human_verdict_source = 'None'`. It is not possible to record a verdict without saying where it came
-from, and the column has **no default**, so a writer that ignores provenance fails to insert rather
-than silently claiming `Explicit`.
+`human_verdict_source IN ('None', 'NotObservable')`. It is not possible to record a verdict without
+saying where it came from, and the column has **no default**, so a writer that ignores provenance
+fails to insert rather than silently claiming `Explicit`. The two null-verdict sources are kept
+distinct on purpose: `None` means no human signal has appeared yet, `NotObservable` means this row's
+provider cannot produce the signal at all, and collapsing them would turn a provider gap into
+apparent human indifference (§8.1.2).
 
 ### 6.2 Joining to usage, and what is actually measured
 
@@ -956,7 +1013,8 @@ What exists today:
 **The join key is `RootConversationId`**, which equals the loop's `threadId` and therefore equals
 `PersistedMessage.ThreadId` / `ThreadMetadata.ThreadId`. That is `experiment_record.usage_thread_id`.
 The daemon already composes deterministic thread ids per stage via `ThreadId(run, <profileId>)`
-(used at `DaemonReviewStageExecutor.cs:3052` for the judge and `:3015` for the B arm), so generator
+(used at `samples/CodeReviewDaemon.Sample/Orchestration/DaemonReviewStageExecutor.cs:3052` for the
+judge and `:3015` for the B arm), so generator
 and judge cost land on **different thread ids under the same review run** — which is exactly what
 lets `generator_cost_micros` and `judge_cost_micros` be separated cleanly.
 
@@ -998,8 +1056,10 @@ experiment's conclusion.
 
 Once the experiment record exists, `JudgeArtifactPayload`
 (`samples/CodeReviewDaemon.Sample/Agents/JudgeAgent.cs:153`) gains
-`JudgeArtifactSchemaVersion = 2` with additive-optional `Dispersion`, `BallotCount` and a **nullable**
-`Score`, retiring the `0`-means-parse-failure conflation from §4.2. Readers must handle both
+`JudgeArtifactSchemaVersion = 2` with additive-optional `Dispersion`, `BallotCount`, **`JudgeModelId`
+/ `JudgeModelFamily`**, and a **nullable** `Score`, retiring the `0`-means-parse-failure conflation
+from §4.2. The judge-model fields are what make the self-preference axis (§3.2) measurable at all —
+v1 records no judge provenance, so every pre-v2 row is permanently `unknown-provenance`. Readers must handle both
 versions; `ReviewArtifact.ArtifactSchemaVersion`
 (`samples/CodeReviewDaemon.Sample/Persistence/Models/ReviewArtifact.cs:17`) exists for exactly this.
 
@@ -1077,33 +1137,57 @@ arXiv:2411.17501). The generation-verification gap is real and scales with pretr
 
 ## 8. Human-edit feedback (#323)
 
-### 8.1 Capturing the signal: proxy now, explicit control later
+### 8.1 Capturing the signal: proxy first, explicit later
 
-**Decision (Q8, now closed): do both.** Start harvesting a corpus immediately from GitHub signals the
-daemon already sees, and add an explicit reviewer disposition control in a later slice. Waiting for
-the explicit control would mean the first fitted judge weights arrive months after the harness does;
-harvesting a proxy without ever adding the explicit control would mean calibrating quality against a
-signal that never gets validated. Both, in that order, with the two kept rigorously separate.
+**Decision (Q8, now closed): do both, proxy first.** Harvest a proxy verdict from signals the daemon
+can observe, and add an explicit reviewer disposition control in a later slice. Waiting for the
+explicit control would mean the first fitted judge weights arrive months after the harness does;
+harvesting a proxy and never validating it would mean calibrating quality against a signal nobody
+ever checked.
 
-#### 8.1.1 The proxy signals
+**Correction to an earlier draft of this section.** It claimed all four signals were "already
+observable today — extraction work, not new plumbing." That was wrong, and the error mattered: three
+of the four need provider work first, and specifying a mapping over signals that cannot be observed
+would have produced confidently wrong `Accepted` / `Rejected` / `Ignored` labels in exactly the table
+that calibrates the judges. The corpus cannot begin accruing on GitHub the day the harness ships.
+§8.1.2 states what must be built first, and §9 puts that work ahead of extraction in the ordering.
 
-All four are already observable in the daemon today — this is extraction work, not new plumbing.
+#### 8.1.1 The candidate signals, and what each actually requires
 
-| # | Signal | Where it comes from |
-| --- | --- | --- |
-| S1 | A bot comment thread is **resolved** | `ExistingReviewComment.IsActive` (`samples/CodeReviewDaemon.Sample/Orchestration/IReviewCommentPublisher.cs:76`); bot authorship via the `[{{ bot_name }}]` marker (`Prompts/daemon-prompts.yaml:265`), detected at `Orchestration/DaemonReviewStageExecutor.cs:2304` |
-| S2 | The finding's **cited lines changed** in a later commit | diff between the review's `HeadSha` and a later head, already computed for re-review context (prev head SHA / review round) |
-| S3 | A bot comment was **deleted** | present in round N's comment listing, absent in round N+1 under the same marker |
-| S4 | The thread was still **open at PR close/merge** | `ReviewRun.MergeSha`, `PrLifecycleState` (`Persistence/Models/ReviewRunAxes.cs:40`) |
+| # | Signal | Status today | Evidence |
+| --- | --- | --- | --- |
+| S1 | A bot comment thread is **resolved** | **ADO only.** `ThreadIsActive` derives it from thread status (`samples/CodeReviewDaemon.Sample/Orchestration/AdoReviewCommentPublisher.cs:126`, `:184`). On **GitHub it is unavailable**: the publisher hardcodes `IsActive: true` at three sites (`samples/CodeReviewDaemon.Sample/Orchestration/GitHubReviewCommentPublisher.cs:140`, `:168`, `:185`) because the REST listing does not expose thread resolution at all | bot authorship via the `[{{ bot_name }}]` marker (`samples/CodeReviewDaemon.Sample/Prompts/daemon-prompts.yaml:265`), detected at `samples/CodeReviewDaemon.Sample/Orchestration/DaemonReviewStageExecutor.cs:2304` |
+| S2 | The finding's **cited lines changed** in a later commit | **Available on both**, and the only signal needing no provider work — it is a git diff between the review's `HeadSha` and a later head, already computed for re-review context | needs the shallow `ReviewFinding` parser of §4.3(2) to resolve a finding to a line range (slice #320) |
+| S3 | A bot comment was **deleted** | **Unavailable on both.** Absence from a later listing cannot prove deletion: the listing is capped at `MaxExistingCommentsListed = 120` (`samples/CodeReviewDaemon.Sample/Orchestration/DaemonReviewStageExecutor.cs:2198`) and that cap is a *render* bound, not a retrieval bound. Nothing persists the set of comment ids the daemon published in a round | — |
+| S4 | The thread was still **open at PR close/merge** | **Partly.** The PR's terminal state *is* real: `PrLifecycleState` is computed by both providers (`samples/CodeReviewDaemon.Sample/Orchestration/GitHubPrProvider.cs:199-205`, `Orchestration/AdoPrProvider.cs:413-416`) and persisted (`Persistence/ReviewStore.cs:188`). The *thread-open* half depends on S1, so S4 inherits S1's GitHub gap. Note `ReviewRun.MergeSha` is **never assigned by any path** — declared, inserted from the record, read back, and nothing ever sets it — so it must not be used as the merge signal | use `PrLifecycleState`, not `MergeSha` |
 
-S2 requires resolving a finding to a file and line range, which is the shallow `ReviewFinding` parser
-from §4.3(2) — already scheduled in slice #320. That is the dependency that puts proxy harvest after
-the eval runner.
+#### 8.1.2 What must be built first
 
-#### 8.1.2 Mapping signals to `human_verdict`
+Three prerequisites, none of them large, all of them ahead of extraction in §9:
 
-The mapping is deliberately conservative: **only the combination of resolution *and* a code change
-earns `Accepted`.** Everything weaker keeps its ambiguity in the data.
+- **P-A — GitHub thread resolution.** Fetch `reviewThreads { isResolved }` via the GraphQL API and
+  populate `ExistingReviewComment.IsActive` from it instead of the hardcoded `true`. No GraphQL
+  client exists in the daemon today. Until this lands, **S1 and S4 yield nothing on GitHub**, and
+  since `Accepted` requires S1, no `Accepted` proxy row can be written for a GitHub PR at all.
+- **P-B — Persisted comment-id snapshots.** Record, per review round, the set of comment ids the
+  daemon published, so a later round can distinguish *deleted* from *beyond the render cap*. Without
+  it S3 is unavailable, and it must not be approximated from the capped listing.
+- **P-C — Populate the merge signal.** Either assign `ReviewRun.MergeSha` on the close path or make
+  `PrLifecycleState` the sole documented merge signal. The latter is cheaper and is what §8.1.1
+  recommends; a column nothing writes is worse than no column.
+
+**The absence of a signal is never a verdict.** If a required signal is not observable for a row's
+provider, the extractor writes `human_verdict = NULL` with
+`human_verdict_source = 'NotObservable'` — *not* `None`, and never a guessed label. `None` means "no
+human signal has appeared yet"; `NotObservable` means "this provider cannot produce the signal, so
+absence here carries no information". Collapsing the two would silently convert a provider gap into
+apparent human indifference, which is the same class of error as the `0`-means-parse-failure defect
+in §2.6.
+
+#### 8.1.3 Mapping signals to `human_verdict`
+
+Applied only where §8.1.1 says the signal is observable for that row's provider. The mapping is
+deliberately conservative: **only resolution *and* a code change earns `Accepted`.**
 
 | Signals | `human_verdict` | `human_verdict_source` | `conf` |
 | --- | --- | --- | --- |
@@ -1112,28 +1196,34 @@ earns `Accepted`.** Everything weaker keeps its ambiguity in the data.
 | S3 | `Rejected` | `ProxyDeleted` | 0.6 |
 | S4 | `Ignored` | `ProxyIgnored` | 0.5 |
 | a reviewer states it | `Accepted`/`Edited`/`Rejected` | `Explicit` | NULL |
-| nothing observed | NULL | `None` | NULL |
+| observable, nothing seen | NULL | `None` | NULL |
+| signal unavailable here | NULL | `NotObservable` | NULL |
 
 Note what the source column names: **the evidence, not the conclusion.**
 `ProxyResolvedUnchanged` says "the thread was resolved and the code did not change" — a fact. It does
 not say "the reviewer agreed". A later reader who disagrees with our inference can re-derive a
-different verdict from the same recorded evidence, which would be impossible if we had stored only
+different verdict from the same recorded evidence, which would be impossible had we stored only
 `Ambiguous`.
 
-#### 8.1.3 Keeping the proxy's noise visible
+S2 alone is deliberately **not** mapped to anything. Code changing at a cited line, with no
+resolution signal, is as easily unrelated churn as it is agreement, and on GitHub — where S1 is
+unavailable until P-A — S2-alone would otherwise become the de facto acceptance signal for the whole
+provider. That is precisely the contamination this section exists to prevent.
+
+#### 8.1.4 Keeping the proxy's noise visible
 
 A resolved thread genuinely means one of at least three things: *fixed*, *won't fix*, or *tidying up
-a stale thread before merge*. The schema keeps that visible rather than flattening it, in three ways:
+a stale thread before merge*. The schema keeps that visible rather than flattening it:
 
 1. **`Ambiguous` is a real value of `human_verdict`.** The resolved-but-unchanged case is not coerced
-   into `Accepted` to make the column tidier. It is the single largest noise source and it is
-   labelled as such.
-2. **`Ignored` is distinct from `Rejected`.** A thread nobody ever touched is not a reviewer
-   disagreeing; conflating them would systematically understate agreement.
-3. **`human_verdict_conf` carries the strength**, so a downstream fit can weight an
-   `Accepted`-at-0.8 below an `Explicit` accept rather than treating them as the same observation.
+   into `Accepted` to make the column tidier. It is the largest noise source and it is labelled.
+2. **`Ignored` is distinct from `Rejected`.** A thread nobody touched is not a reviewer disagreeing;
+   conflating them would systematically understate agreement.
+3. **`NotObservable` is distinct from `None`** (§8.1.2), so a provider gap never reads as indifference.
+4. **`human_verdict_conf` carries the strength**, so a fit can weight an `Accepted`-at-0.8 below an
+   `Explicit` accept rather than treating them as the same observation.
 
-#### 8.1.4 How a proxy verdict is never silently mixed with an explicit one
+#### 8.1.5 How a proxy verdict is never silently mixed with an explicit one
 
 Three enforcement points, none of them conventional:
 
@@ -1143,15 +1233,15 @@ Three enforcement points, none of them conventional:
    `human_verdict_source = 'Explicit'` **only**. Admitting proxy rows requires an explicit
    `IncludeProxyVerdicts` flag, and that flag is **stamped onto the resulting artifact** — a
    `JudgeReliability` row records the source set it was fitted from, so a weight derived from proxies
-   is itself labelled as such and cannot later be mistaken for a human-validated one.
+   is itself labelled and cannot later be mistaken for a human-validated one.
 3. **Refusal to pool.** The eval runner refuses to compare or aggregate across differing
    `human_verdict_source` sets, exactly as it refuses across `RubricVersion` and
-   `CorpusSnapshotHash` (§5.4). It is a hard error, not a warning, for the same reason: a silent
-   pooling is the most plausible route to a confident wrong number.
+   `CorpusSnapshotHash` (§5.4). A hard error, not a warning, for the same reason: silent pooling is
+   the most plausible route to a confident wrong number.
 
 Once the explicit control ships, the proxy becomes independently checkable: on rows carrying **both**
 an explicit verdict and a proxy-derived one, the proxy's agreement with the human is measurable. That
-number is the proxy's own validation, and until it exists the proxy's confidence values above are
+number is the proxy's own validation, and until it exists the confidence values in §8.1.3 are
 declared estimates, not measurements.
 
 ### 8.2 Turning an edit into durable context
@@ -1162,9 +1252,9 @@ The pipeline exists and is well-built; #323 adds a source, not a mechanism.
 `KnowledgeBase/<scope>/<slug>.md` with `## UPDATES:` de-duplication and daemon-injected frontmatter.
 `KnowledgeIndex` maintains `_index.jsonl` / `_toc.md`; `KnowledgeDigest` does host-side,
 relevance-ranked retrieval against the PR's changed paths — `Deduplicate` at
-`Agents/KnowledgeDigest.cs:258`, ranking at `:1683` — rendering each surviving entry with its exact
+`samples/CodeReviewDaemon.Sample/Agents/KnowledgeDigest.cs:258`, ranking at `:1683` — rendering each surviving entry with its exact
 absolute path, under caps `MaxKnowledgeEntries = 24`
-(`Orchestration/DaemonReviewStageExecutor.cs:1564`) and `MaxKnowledgeDigestChars`(`:1567`). PR #256
+(`samples/CodeReviewDaemon.Sample/Orchestration/DaemonReviewStageExecutor.cs:1564`) and `MaxKnowledgeDigestChars`(`:1567`). PR #256
 established that retrieval must be host-side and by exact path, because Grep-based retrieval silently
 no-ops.
 
@@ -1172,9 +1262,9 @@ no-ops.
 not the original finding — becomes the candidate lesson. Two rails, both inherited:
 
 - **No path component comes from the model.** `ReviewFeedbackAgent`'s design rule
-  (`Agents/ReviewFeedbackAgent.cs:14-18`) — the output path is derived host-side from the
+  (`samples/CodeReviewDaemon.Sample/Agents/ReviewFeedbackAgent.cs:14-18`) — the output path is derived host-side from the
   provider-reported identity — applies unchanged to edit-derived entries.
-- **A knowledge entry is prior output, never a mandate.** `daemon-prompts.yaml:220` already states
+- **A knowledge entry is prior output, never a mandate.** `samples/CodeReviewDaemon.Sample/Prompts/daemon-prompts.yaml:220` already states
   that a KB lesson can inform a finding but never authorise a delivery or write action. Edit-derived
   entries have better provenance and get no more authority.
 
@@ -1186,7 +1276,7 @@ alpha is computed against the same column. Until enough human verdicts accumulat
 stays 1.0 and the harness reports its alpha as *not yet estimable* rather than computing a number
 from four data points.
 
-Both readers obey §8.1.4: they consume `human_verdict_source = 'Explicit'` by default, and any fit
+Both readers obey §8.1.5: they consume `human_verdict_source = 'Explicit'` by default, and any fit
 that admits proxy rows records that fact on the `JudgeReliability` row it produces. A weight fitted
 from proxies is usable — it is better than the 1.0 default — but it is never presentable as
 human-validated.
@@ -1202,7 +1292,7 @@ Each slice is one PR. Every slice states what ships, what it depends on, and how
 ### Slice 1 — #319 · The harness
 
 **Ships:** `src/LmEval` with `Candidate`, `IGate`/`GateDecision`, `Rubric`/`RubricCriterion`,
-`IJudge`/`Ballot`, `Verdict`, `JudgePanel`, `IBallotAggregator` + `WeightedMedianAggregator`,
+`IJudge`/`Ballot`, `Verdict`, `JudgePanel`, `IBallotAggregator` + `WeightedMeanAggregator`,
 `JudgeGauntlet`, `RubricJudge`, three starter gates; `tests/LmEval.Tests`; both in the solution.
 Revobot's `JudgeAgent` re-seated on it per §4.2, plus the daemon's new project reference.
 
@@ -1219,8 +1309,10 @@ The two-panel logic of §2.12 needs its own cases: same-side scores decide witho
 arbiter (asserted against a call-counting arbiter fake); opposite-side scores escalate exactly once;
 an unavailable arbiter yields `Split` with `Degradation = ArbiterUnavailable`, distinguishable from
 the not-configured case; advisory mode with one reachable judge yields a verdict marked
-`SingleJudge` with a null `Dispersion`, while **gating mode on the same input yields `NoDecision`**;
-excluding the generator's family down to one judge degrades rather than admitting that family.
+`SingleJudge` with a **null** `Dispersion` (null, not 0.0 — a lone judge is not a panel in perfect
+agreement); gating mode on the same input yields `NoDecision`; excluding the generator's family down
+to one judge produces a `PanelComposition.Degraded` rather than throwing, while a *configuration*
+holding two same-family judges throws at startup.
 
 Every bias control in §3 carries a mutation proof — the assertion must break when the control is
 removed.
@@ -1269,32 +1361,51 @@ below-minimum-data case returning the constant **and** saying so in `RoutingDeci
 single-cheap-judge gating panel refused; a cheap **weighted family-disjoint** panel permitted; an
 end-to-end check that a threshold change without a passing #320 run is rejected.
 
-### Slice 5 — #323a · Proxy harvest
+### Slice 5 — #323a · Provider signal enablement
 
-**Ships:** extraction of signals S1–S4 (§8.1.1) into `human_verdict` / `human_verdict_source` /
-`human_verdict_conf`; the `CHECK` constraint and no-default provenance column; the
-`Explicit`-only default read path with the `IncludeProxyVerdicts` flag stamped onto any
+**Ships:** the three prerequisites of §8.1.2, without which the proxy corpus cannot begin accruing on
+GitHub at all — **P-A** GitHub thread resolution via GraphQL `reviewThreads { isResolved }`, feeding
+`ExistingReviewComment.IsActive` instead of the hardcoded `true`; **P-B** persisted per-round
+comment-id snapshots so deletion is distinguishable from the render cap; **P-C** a merge signal that
+is actually written (adopt `PrLifecycleState`, and either populate or remove `ReviewRun.MergeSha`).
+
+**Depends on:** nothing in this pillar — it is daemon plumbing and can run in parallel with Slices
+1–3.
+
+**Verified by:** a GitHub PR with a resolved bot thread surfacing `IsActive = false` (today it is
+unconditionally `true`, so this test fails before the change and is the proof P-A actually landed); a
+comment deleted between rounds distinguishable from one merely beyond the 120-entry render cap; the
+merge signal non-null on a merged PR.
+
+### Slice 6 — #323b · Proxy harvest
+
+**Ships:** extraction of the observable signals (§8.1.1) into `human_verdict` /
+`human_verdict_source` / `human_verdict_conf`; the `NotObservable` source and the `CHECK` constraint;
+the `Explicit`-only default read path with the `IncludeProxyVerdicts` flag stamped onto any
 `JudgeReliability` it produces; the eval runner's refusal to pool across source sets; and the
 edit-derived knowledge extraction pass of §8.2.
 
-**Depends on:** Slice 3 for the schema, **and Slice 2** for the shallow `ReviewFinding` parser that
-signal S2 needs to resolve a finding to a line range.
+**Depends on:** Slice 3 for the schema, **Slice 2** for the `ReviewFinding` parser that S2 needs to
+resolve a finding to a line range, and **Slice 5** for S1/S3/S4 to be observable at all. Extraction
+may ship for ADO ahead of P-A, since S1 is already real there — but the GitHub half is blocked.
 
-**Verified by:** each of the four signal combinations in §8.1.2 mapping to the stated verdict and
-source; a resolved-but-unchanged thread landing as `Ambiguous`, **not** `Accepted` (the flattening
-this slice exists to prevent); `Ignored` distinct from `Rejected`; an insert omitting
-`human_verdict_source` failing rather than defaulting; a calibration fit over mixed sources refusing
-to pool unless the flag is set, and stamping the flag on its output when it is; an edited comment
-producing exactly one KB entry with a host-derived path, and a model-supplied path rejected.
+**Verified by:** each signal combination in §8.1.3 mapping to the stated verdict and source; a
+resolved-but-unchanged thread landing as `Ambiguous`, **not** `Accepted` (the flattening this slice
+exists to prevent); `Ignored` distinct from `Rejected`; **a GitHub row with no resolution signal
+landing as `NotObservable`, not `None` and not a guessed label** — the contamination guard, and the
+one test that would have caught the original draft's error; S2 alone producing no verdict; an insert
+omitting `human_verdict_source` failing rather than defaulting; a calibration fit over mixed sources
+refusing to pool unless the flag is set, and stamping the flag on its output when it is; an edited
+comment producing exactly one KB entry with a host-derived path, and a model-supplied path rejected.
 
-### Slice 6 — #323b · Explicit reviewer disposition
+### Slice 7 — #323c · Explicit reviewer disposition
 
 **Ships:** the reviewer-facing disposition control, writing `human_verdict_source = 'Explicit'` with
 `human_edit_distance`; and the proxy-validation report — on rows carrying both an explicit and a
-proxy verdict, the proxy's measured agreement with the human (§8.1.4), which converts the confidence
-values in §8.1.2 from estimates into measurements.
+proxy verdict, the proxy's measured agreement with the human (§8.1.5), which converts the confidence
+values in §8.1.3 from estimates into measurements.
 
-**Depends on:** Slice 5.
+**Depends on:** Slice 6.
 
 **Verified by:** an explicit verdict overriding a previously recorded proxy on the same row while the
 proxy's evidence remains recoverable for the agreement report; the agreement report computed only
