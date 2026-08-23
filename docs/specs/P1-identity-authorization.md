@@ -50,6 +50,26 @@ In scope:
   replaces it.
 - **Per-tenant data residency, BYOK, or physical isolation.** Row-level tenant scoping only.
 
+**Deliberately unspecified in these slices.** Each of the following was a promise this spec once
+made, or could plausibly be expected to make, and was **cut** rather than specified. They are listed
+so a later reader knows the silence is a decision, not an oversight:
+
+- **A server-side clone/copy endpoint for modes.** Cloning needs no new authorization rule - it is
+  `read` on the source plus an ordinary create (7.4.1) - but no clone *route* ships in slices 3-4.
+- **Resource creation as an authorization decision.** `create` is not an action in 7.2 and
+  `IResourceAccessPolicy` is never consulted for it: there is no resource to describe yet. Creation
+  is gated by authenticated tenant membership, in the controller.
+- **Publication of an app-owned mode.** Rather than splitting the app-owner rights by publication
+  state, `IChatModeStore` refuses `TenantPublished` on any mode with a non-null `OwnerAppId` (8.6),
+  so the combination cannot arise.
+- **Backfill of pre-P1 usage into `usage_rollup`.** Records with no `TenantId` are not projected
+  (9.2). Pre-P1 spend stays readable exactly where it is today, per conversation.
+- **Per-operator identity on the operator console.** `X-S2S-Auth` is a shared secret, so the
+  administration audit record (7.7) records *that* the operator credential was presented and from
+  where, never *who* presented it. Naming individual operators needs an operator directory, which
+  P1 does not build.
+- **Publishing workspaces.** Only modes may reach `TenantPublished` (7.2).
+
 ### 1.3 Vocabulary
 
 This repository already has auth vocabulary. Reuse it; do not invent synonyms.
@@ -1064,13 +1084,24 @@ agent inside it are different privileges, and conflating them is how access sile
 `publish` is the admin-only action that turns a private resource into a tenant-shared one, and
 **only modes have it**. A workspace carries plugin selection, tool grants and filesystem roots, so
 publishing one hands every member of the tenant a capability set rather than a prompt; that is a
-larger decision than this pillar settles, and it is scoped out rather than half-built. The
-consequence is normative: a `workspace` may hold `Visibility.Private` or `Visibility.Shared` only,
-and `IWorkspaceStore` rejects `TenantPublished` on write.
+larger decision than this pillar settles, and it is scoped out rather than half-built. A `workspace`
+may therefore hold `Visibility.Private` or `Visibility.Shared` only; 8.6 states which documents the
+stores refuse `TenantPublished` on, and is the single place that list lives.
 
 An action absent from a resource type's row is not "denied by default" - it is **invalid input**.
 `EvaluateAsync` throws `ArgumentOutOfRangeException` for a type/action pair not in this table, so a
 typo surfaces as a crash in a test rather than as a silent deny in production.
+
+**That check runs before every shortcut**, as step -1 of 7.4 - ahead of the enforcement-disabled
+step, not partway down the list. Placed any later it would be dead exactly where it is meant to
+fire: pre-rollout runs with `Identity:Enforce=false`, so a bad pair would return `AllowDisabled`
+instead of throwing, in the configuration every existing test uses.
+
+**Creation is not an action here, deliberately.** There is no `create` row because there is no
+resource to describe yet - `ResourceDescriptor` requires a `TenantId` and a `Visibility` that do not
+exist until the thing is created. Creating a conversation, workspace or mode is authorized by being
+an authenticated member of the tenant, in the controller; the product is owned by the caller and
+`Private`. See the clone note in 7.4.1 for the consequence.
 
 ### 7.3 Roles
 
@@ -1083,8 +1114,9 @@ Flat, tenant-scoped:
 
 What `admin` deliberately does **not** include: writing or deleting a member's private resource,
 and sharing anyone's resource with a third party. The role is support and tenant governance, not
-ownership of everything in the tenant. 7.4.1 is the authoritative statement; this list is a summary
-of it and must not be read as extending it.
+ownership of everything in the tenant. This list is **derived from 7.4.1**, which is the normative
+statement; it must not be read as extending or qualifying it, and where the two disagree the table
+wins.
 
 ### 7.4 The decision point
 
@@ -1153,10 +1185,13 @@ Core interface of that name.
 
 Evaluation order, first match wins:
 
+-1. **Argument validation** (7.2): an unsupported resource type or `(type, action)` pair ->
+   `ArgumentOutOfRangeException`. Not a decision, never audited, and **before step 0** so that
+   whether a typo throws does not depend on `Identity:Enforce`.
 0. **Enforcement off.** When `Identity:Enforce` is false (4.1) -> `AllowDisabled`, audited. This is
    the pre-rollout path and the reason existing tests keep passing; it is deliberately the first
-   step, so that nothing below it is ever exercised with the development principal and no rule can
-   be misread as the disabled behaviour.
+   *decision* step, so that no rule below it is ever exercised with the development principal and
+   none can be misread as the disabled behaviour. Validation still ran before it.
 1. `resource.IsSystemDefined`: `Read` or `Use` -> `AllowSystem`; **any other action** ->
    `Deny("system_defined_immutable")`. System-defined resources are readable by every member of
    every tenant and writable by no one, so this is evaluated **before** the tenant check and
@@ -1171,16 +1206,24 @@ Evaluation order, first match wins:
      possible relationship is `AppOwner`, and only when
      `resource.OwnerAppId is not null && resource.OwnerAppId == principal.AppId`. Otherwise ->
      `Deny("app_only_no_owner")`. An app-only principal never matches a null owner, never consults
-     grants, and carries no roles.
+     grants, carries no roles, and **never becomes a `TenantMember`** - publication exposes a mode
+     to the tenant's *people*, and a service credential is not one of them. So an app-only caller
+     sees published modes neither on a point read nor in a list.
    - `resource.OwnerUserId is not null && resource.OwnerUserId == user` -> `Owner`.
    - An unexpired grant exists for `(principal.TenantId, resource.Ref, user)` -> `Grantee`, with
      the set of actions that grant confers.
    - `principal.Roles` contains `admin` -> `TenantAdmin`.
+   - `resource.Visibility == TenantPublished` -> `TenantMember`. Reached only when `user` is not
+     null, so it means "a signed-in member of this resource's tenant" - step 2 has already excluded
+     every other tenant. Without this branch a published mode appears in every member's list (7.5)
+     and then `404`s on the point read, which is the exact list/point-read disagreement 7.5 forbids.
    - None of the above -> `Deny("no_relationship")`.
 
    A principal may hold more than one of these. Evaluate them in the order listed and take the
    **first allow**; a principal denied as `Owner` for an action may still be allowed as
    `TenantAdmin` for it, which is exactly how an admin edits a published mode they do not own.
+   `TenantMember` is last because it confers only `read`/`use`; ahead of `TenantAdmin` it would
+   cost the admin their audited-read reason for no gain.
 
 4. **Apply the rights table of 7.4.1** for `(relationship, action, resource.Visibility)`. There is
    no step in which a relationship confers "everything".
@@ -1198,69 +1241,100 @@ an implementer is likely to go wrong, so both are written out explicitly.
 `AccessDecision.Reason` is written to the audit record for allows as well as denies. A deny-only
 audit cannot answer "was this ever attempted successfully?".
 
-#### 7.4.1 Owner rights are per action, and per publication state
+#### 7.4.1 The rights table (normative)
 
-Ownership is **not** a blanket grant. Two actions do not follow from owning a thing:
+**This table is the single normative statement of who may do what.** Section 7.3, the commentary
+below it, 7.5, 8.6, and the slice test matrices in section 11 are all **derived** from it. Where any
+of them disagrees with a cell here, the cell wins and the other text is the defect. Nothing outside
+this table may add, remove or qualify a right.
 
-- **`publish` is never an owner right.** Publishing turns a private resource into one the whole
-  tenant depends on. That is a tenant-governance decision, so it belongs to the `admin` role and to
-  nobody else (7.3), and 7.2 already says so. An owner branch that returned an allow for every
-  `AccessAction` would hand every member the ability to push a mode to the entire organisation.
-- **Publication freezes the owner's write and delete.** Once a resource is `TenantPublished`, other
-  people's work depends on it. The owner keeps `read` and `use` but loses `write`, `delete` and
-  `share`; editorial control passes to the admins who published it.
+Two rules are worth stating first because the natural implementation gets both wrong. Neither adds
+anything the cells do not already say:
 
-The full table. `V` is `resource.Visibility` (8.6); `-` means the row cannot arise.
+- **`publish` belongs to the `admin` role and to nobody else** (7.3). Publishing turns a private
+  resource into one the whole tenant depends on, which is a tenant-governance decision. An owner
+  branch that returned an allow for every `AccessAction` would hand every member the ability to push
+  a mode to the entire organisation.
+- **The publication freeze is uniform across relationships.** It is not an owner rule that grantees
+  and app owners are exempt from. Stated per relationship it drifted immediately: an `editor` grant
+  issued before publication kept writing a published mode - the freeze bypassed through a door the
+  owner opened months earlier and the admins cannot see.
 
-| Action | Owner, `Private`/`Shared` | Owner, `TenantPublished` | Grantee | Tenant admin | App owner |
-|---|---|---|---|---|---|
-| `read` | allow | allow | if the grant confers it | allow, audited | allow |
-| `use` | allow | allow | if the grant confers it | allow, audited | allow |
-| `write` | allow | **deny** `owner_write_frozen_by_publication` | if the grant confers it | allow **only** when `V = TenantPublished`; otherwise deny `admin_no_write` | allow |
-| `delete` | allow | **deny** `unpublish_before_delete` | deny `grant_confers_no_delete` | deny `admin_no_delete` (OQ-1) | allow |
-| `share` | allow | **deny** `publication_supersedes_sharing` | deny `grantee_may_not_reshare` | deny `admin_may_not_reshare` | deny `app_cannot_share` |
-| `publish` | **deny** `publish_is_admin_only` | **deny** `publish_is_admin_only` | deny `publish_is_admin_only` | allow, audited | deny `publish_is_admin_only` |
+**Every cell is filled, and every denial names its `AccessDecision.Reason`.** A right that depends
+on `Visibility` says so *inside the cell*; no qualification lives only in prose, because a
+prose-only qualification is exactly how the owner and grantee cells came to disagree. The reason
+strings are contract - they are what the audit record stores (7.7) and what the slice tests assert.
 
-Reading the non-obvious cells:
+`V` is `resource.Visibility` (8.6).
 
-- **Admin `write` only on published resources.** An admin's tenant-wide reach is a *support* power:
-  read everything, and maintain what the tenant collectively depends on. It is not a licence to
-  edit a colleague's private conversation. Narrowing admin `write` to `TenantPublished` is what
-  makes the previous row safe to freeze - the resource does not become uneditable, it changes
-  hands.
-- **`publish` is a toggle, both ways.** Unpublishing is the same action and the same admin-only
-  right. There is no separate `Unpublish` member, so no code path can gate the two directions
-  differently. The HTTP surface is `POST` and `DELETE` on
-  `/api/chat-modes/{modeId}/publication`, and both authorize with `AccessAction.Publish`.
-- **Delete of a published resource is denied to everyone.** An admin unpublishes first, which
-  returns `write`/`delete` to the owner. Two steps, deliberately: a one-click delete of a mode the
-  tenant is actively using is the mistake this prevents, and it also means nothing holds a
+| Action | Owner, `Private`/`Shared` | Owner, `TenantPublished` | Grantee | Tenant member | Tenant admin | App owner |
+|---|---|---|---|---|---|---|
+| `read` | allow | allow | allow when the grant confers it; otherwise deny `grant_does_not_confer_action` | allow | allow, audited | allow |
+| `use` | allow | allow | allow when the grant confers it; otherwise deny `grant_does_not_confer_action` | allow | allow, audited | allow |
+| `write` | allow | **deny** `owner_write_frozen_by_publication` | when conferred: allow while `V != TenantPublished`, **deny** `grant_write_frozen_by_publication` while published; when not conferred: deny `grant_does_not_confer_action` | deny `tenant_member_read_only` | allow **only** when `V = TenantPublished`; otherwise deny `admin_no_write` | allow |
+| `delete` | allow | **deny** `unpublish_before_delete` | deny `grant_confers_no_delete` | deny `tenant_member_read_only` | deny `admin_no_delete` (OQ-1) | allow |
+| `share` | allow | **deny** `publication_supersedes_sharing` | deny `grantee_may_not_reshare` | deny `tenant_member_read_only` | deny `admin_may_not_reshare` | deny `app_cannot_share` |
+| `publish` | **deny** `publish_is_admin_only` | **deny** `publish_is_admin_only` | deny `publish_is_admin_only` | deny `publish_is_admin_only` | allow, audited | deny `publish_is_admin_only` |
+
+The `Tenant member` column exists **only** while `V = TenantPublished` - that is the condition under
+which step 3 produces the relationship at all - so it needs no per-state split. Neither does
+`App owner`: an app-owned mode cannot be published (8.6), so its `TenantPublished` cells cannot
+arise.
+
+**Commentary, derived from the table.** The following explains why cells read as they do. It adds
+no rights and qualifies none; if it appears to, the table is right and this text is wrong.
+
+- **Admin `write` only while published** is what makes the freeze humane rather than a lock: the
+  resource does not become uneditable, it changes hands. Admin reach is a *support* power, not a
+  licence to edit a colleague's private conversation.
+- **`publish` is one right in both directions.** There is no `Unpublish` member, so no code path can
+  gate the two directions differently. The HTTP surface is `POST` and `DELETE` on
+  `/api/chat-modes/{modeId}/publication`, both authorizing with `AccessAction.Publish`. That
+  argument rules out the two directions *drifting apart*; it does not rule out the `DELETE` handler
+  omitting the policy call altogether, which is a different defect in a different controller method.
+  Slice 4 tests the non-admin `DELETE` rather than inferring it from the `POST`.
+- **Delete-while-published is two steps for everyone**, admins included: unpublish, then delete. It
+  prevents a one-click delete of a mode the tenant is actively using, and means nothing holds a
   reference to a resource that vanished.
-- **Nobody re-shares.** A grantee cannot pass their access on, and an admin cannot grant a third
-  party access to someone's private resource. If either could, "private by default with named
-  sharing" would decay to "shared with whoever a grantee or admin likes", and the owner would never
-  see it happen.
-- **An app owner cannot `share` or `publish`.** Both name a *user* as the beneficiary, and an
-  app-only principal has no user directory context and no roles. This is a structural denial, not
-  a policy choice.
+- **`grant_does_not_confer_action` versus `grant_confers_no_delete`.** The first means "this grant
+  could have conferred that action and did not" - a `viewer` asked to `write`. The second means "no
+  grant can ever confer it", because 8.4's `CHECK` closes the role vocabulary. An incident review
+  needs to tell those two `403`s apart, which is why neither is a bare `no_grant`.
+- **One reason covers three tenant-member denials**, because someone whose only relationship is
+  "same tenant, and it is published" has no path to `write`, `delete` or `share` at all. Three
+  strings would record a distinction that does not exist.
+- **Nobody re-shares**, or "private by default with named sharing" decays to "shared with whoever a
+  grantee or admin likes", with the owner never seeing it happen.
+- **An app owner cannot `share` or `publish`** because both name a *user* as the beneficiary and an
+  app-only principal has no directory context and no roles. Structural, not policy.
 
-The owner who wants to change a published mode has a route that needs nobody's permission: clone it
-(a new `Private` mode they own), edit freely, and ask an admin to publish the clone. Nobody is ever
-stuck waiting on an admin to make progress; they only wait to affect the whole tenant.
+**Where creation is authorized.** This document leans on cloning as the escape hatch that makes the
+freeze humane - the owner of a published mode copies it, edits the copy, and asks an admin to
+publish that. The reviewer was right that the hatch was never wired to anything: no section said
+where the *create* half is authorized, and the table has no `Create` or `Copy`. Closing that gap
+does not need one. **Creation is authorized at the authentication layer, by tenant membership**: any
+authenticated principal may create a conversation, workspace or mode in its own tenant, and the
+product is `Private` and owned by the caller. It is not a resource action because there is no
+resource to describe - `EvaluateAsync` takes a `ResourceDescriptor` with a required `TenantId` and
+`Visibility`, and neither exists until the thing does. So a clone is `read` on the source (which the
+table retains for a published owner) plus that ordinary create. Two consequences, stated because a
+reader will otherwise ask: the destination is owned by the *caller*, never by the source's owner;
+and anyone who may `read` the source may do this, tenant members included, because a readable
+document is a copyable one. Copy-resistance would be a different feature, not a cell in this table.
+No clone *route* ships in slices 3-4 (1.2).
 
 **Grants never confer `delete`, `share` or `publish`** - only `read`, `use` and `write`. The
-`resource_grants` row (8.4) must reject any other action at write time, not only at evaluation
-time, so a bad grant cannot sit in the table waiting for a policy bug to honour it.
-
-**Deny reasons are part of the contract.** Each string above is the `AccessDecision.Reason` written
-to the audit record and is the assertion target for the tests in slices 2-4. A generic
-`Deny("no_grant")` for all of these would make the audit trail unable to distinguish "you were
-never allowed" from "you were allowed until this was published".
+`resource_grants` row (8.4) rejects any other action at write time, not only at evaluation time, so
+a bad grant cannot sit in the table waiting for a policy bug to honour it.
 
 ### 7.5 Listing is a filter, not a loop
 
 Listing endpoints must not fetch-then-filter. `IConversationStore.ListThreadsAsync` gains a
 principal parameter and pushes the predicate into SQL:
+
+This section specifies the **SQL shape** of the filter. Which rows a principal may see is 7.4.1's
+and is **derived from it**; if a predicate here admits a row the table would deny, the predicate is
+the defect.
 
 The predicate must mirror **every** allow branch of 7.4, not just the owner branch. A query that
 omits the admin branch produces the worst possible outcome: `GET /conversations` returns an empty
@@ -1302,8 +1376,11 @@ Listing a tenant admin's results emits one audit record for the query, not one p
 `read`, resource type `conversation`, resource id `*`, reason `tenant_admin`.
 
 Workspaces and modes use the identical shape plus one branch the conversation query does not need:
-`OR t.visibility = 'TenantPublished'`, since a published mode is readable and usable by every
-member of the tenant (7.4.1). Their stores are whole-file JSON today (2.6) and so filter in memory,
+`OR (@userId IS NOT NULL AND t.visibility = 'TenantPublished')`, since a published mode is readable
+and usable by every member of the tenant (7.4.1). The `@userId IS NOT NULL` guard is not decoration:
+it is the SQL spelling of the `TenantMember` branch of 7.4 step 3, which an app-only caller never
+reaches. Without it an app-only principal would list published modes it is then denied on the point
+read - the same list/point-read disagreement, from the other direction. Their stores are whole-file JSON today (2.6) and so filter in memory,
 which is safe only because they have no `LIMIT`; if OQ-3 moves them into SQLite they must adopt the
 query form above rather than keep the in-memory filter.
 
@@ -1345,24 +1422,32 @@ logs are already queried with DuckDB (see `CLAUDE.md`).
 **What makes the later migration mechanical** is that the interim must not be ad-hoc logging at call
 sites. Every record goes through one sink.
 
-**There are two record kinds, and conflating them does not work.** The events that most need an
+**There are three record kinds, and conflating them does not work.** The events that most need an
 audit trail - an unprovisioned tenant rejected at sign-in (4.4), a cross-tenant token (5.1 step 11),
 a replayed `jti` (5.4), a signature that did not verify - all occur *before* a `Principal` exists,
 by definition: they are the reasons no principal was constructed. A single record type whose fields
 are sourced from `Principal` therefore cannot carry them, and an implementer forced to fill
 `actorId` would either invent a placeholder or, worse, skip the record. So:
 
+The operator console has the same problem for the opposite reason. Tenant provisioning (4.4) and
+`adopt-legacy` (8.5.3) authenticate with `X-S2S-Auth`, a shared operator secret, so they too have no
+`Principal` - and what they need to record (which operation, which target tenant, how many rows, was
+it a rehearsal) is not an access decision and has no `ResourceRef`. Forcing either into
+`AuthorizationAuditRecord` would require exactly the call-site field extension this section forbids.
+So:
+
 ```csharp
 public interface IAuditSink
 {
     void Write(AuthenticationAuditRecord record);   // pre-principal
     void Write(AuthorizationAuditRecord record);    // post-principal
+    void Write(AdministrationAuditRecord record);   // operator console, no principal
 }
 ```
 
-Both are emitted under a fixed `SourceContext` of `Audit` and share `eventId`, `timestamp`,
+All three are emitted under a fixed `SourceContext` of `Audit` and share `eventId`, `timestamp`,
 `correlationId`, `eventClass`, `outcome`, and `reason`, so one DuckDB query over `SourceContext =
-'Audit'` returns both and `recordKind` discriminates.
+'Audit'` returns all of them and `recordKind` discriminates.
 
 **`AuthenticationAuditRecord`** - written by the authentication handlers (5.1, 4.4, 6.x), where the
 only identity available is what the presented token *claimed*:
@@ -1408,9 +1493,33 @@ path (7.5), where a `Principal` exists by construction:
 | `correlationId` | ambient request/run correlation id |
 | `eventClass` | `routine` or `security` |
 
-Neither record's field set may be extended or trimmed at a call site. Migrating to P4 then means
-reimplementing `IAuditSink` against the outbox and changing nothing else; the two record kinds
-become two outbox event types.
+**`AdministrationAuditRecord`** - written by `TenantsController` (4.4, 8.5.3), the only paths that
+act on the operator trust boundary:
+
+| Field | Source |
+|---|---|
+| `recordKind` | constant `administration` |
+| `eventId`, `timestamp` | new GUID; `TimeProvider.GetUtcNow()` |
+| `operation` | `provision_tenant` \| `adopt_legacy` |
+| `operatorAuth` | constant `s2s_operator_secret` - see the limitation below |
+| `remoteAddress` | the caller's address, since it is the only distinguishing fact available |
+| `targetTenantId` | route `{tenantId}` |
+| `targetOwnerUserId` | the `ownerUserId` body field, or null |
+| `affectedCount` | rows the call did change, or would have changed under `dryRun` |
+| `dryRun` | body `dryRun` |
+| `outcome` | `applied` \| `rehearsed` \| `rejected` |
+| `reason` | stable code (`owner_tenant_mismatch`, `tenant_not_found`, ...), or null on success |
+| `correlationId`, `eventClass` | ambient; `security` for every record of this kind |
+
+`operatorAuth` is a constant rather than an identity, and that is the honest limitation:
+`X-S2S-Auth` is one shared secret, so the record can attest that the operator credential was
+presented, and from where, but not by whom. Per-operator attribution needs an operator directory,
+which P1 does not build (1.2). `eventClass` is unconditionally `security` because every operation on
+this boundary either creates a tenant or moves customer data between tenants.
+
+No record's field set may be extended or trimmed at a call site. Migrating to P4 then means
+reimplementing `IAuditSink` against the outbox and changing nothing else; the three record kinds
+become three outbox event types.
 
 Two rules carried over from #237 unchanged: **both allows and denies are recorded** - a deny-only
 trail cannot answer "was this ever attempted successfully?" - and records are **not redacted at
@@ -1562,7 +1671,12 @@ withheld actions, by construction.
 time-boxed grants, and retrofitting expiry onto a grant table already in use is painful.
 
 One table serves all three resource types, so #302, #303, and #304 share the sharing UI, the policy
-code, and the audit shape rather than growing three near-identical mechanisms.
+code, and the audit shape rather than growing three near-identical mechanisms. **The share surface
+is likewise one contract, parameterised by resource type**: the `POST`/`DELETE
+/api/conversations/{threadId}/shares` pair defined in slice 2 is the shape workspaces (`#303`) and
+modes (`#304`) instantiate against their own collections, with the same `viewer`/`editor` role
+validation, the same grant row, and the same `Private` <-> `Shared` transition rule below. Slices 3
+and 4 ship those routes; they do not design them, and no second share contract exists to diverge.
 
 ### 8.5 Migration of existing rows
 
@@ -1577,16 +1691,33 @@ provisioning, for the reason spelled out below.
 Migration step 3, in one transaction:
 
 ```sql
--- 1. the quarantine tenant must exist before anything points at it
+-- 1. the configured id must be free, or already be the quarantine row. The runner reads this
+--    first and rolls the transaction back if it returns a row; there is no ON CONFLICT that
+--    expresses "ignore only when the existing row is the one I meant".
+SELECT tenant_id FROM tenants
+ WHERE tenant_id = @legacyTenantId
+   AND NOT (entra_tenant_id IS NULL AND status = 'quarantined');
+-- any row here -> abort, migration fails with `legacy_tenant_id_collision`
+
+-- 2. the quarantine tenant must exist before anything points at it
 INSERT OR IGNORE INTO tenants
        (tenant_id,       entra_tenant_id, display_name,
         status,          created_at,      created_by)
 VALUES (@legacyTenantId, NULL,            'Unadopted (pre-identity) data',
         'quarantined',   @now,            'migration');
 
--- 2. stamp every pre-existing row with that same id
+-- 3. stamp every pre-existing row with that same id
 UPDATE thread_metadata SET tenant_id = @legacyTenantId WHERE tenant_id IS NULL;
 ```
+
+**Statement 1 is the whole reason this is not a plain `INSERT OR IGNORE`.** `OR IGNORE` treats "a
+tenant with that id already exists" as success without asking *which* tenant it is. If
+`Identity:LegacyTenantId` is set to - or typo'd into - the id of a real, active tenant, the insert
+is silently skipped and statement 3 then stamps every legacy conversation in the database with that
+real tenant's id. Those rows become readable by that customer's admins immediately. This is the one
+cross-tenant leak the migration is capable of causing, and the failure mode is a configuration typo,
+so it fails the migration loudly instead: an operator who sees `legacy_tenant_id_collision` picks a
+different id, and nothing has been written.
 
 `@legacyTenantId` is resolved **once**, before the transaction opens, from
 `Identity:LegacyTenantId` with a default of `"legacy"`, and the same variable is bound to both
@@ -1647,10 +1778,17 @@ Behaviour:
 - If `ownerUserId` is omitted, rows land in the tenant unowned. They are then visible to that
   tenant's admins - which works, because a real tenant has reachable admins - and to nobody else.
   This is the recommended first step: adopt into the tenant, let an admin look, then assign owners.
-- `dryRun: true` returns the affected count and a sample without writing. Adoption is the only
-  operation in P1 that moves customer data across a tenancy boundary, so it gets a rehearsal mode.
-- Every call writes one `AuthorizationAuditRecord` (7.7) with `eventClass = security`, recording
-  operator, target tenant, owner, and row count.
+- `dryRun: true` returns the affected count and a sample **without writing customer data**.
+  Adoption is the only operation in P1 that moves customer data across a tenancy boundary, so it
+  gets a rehearsal mode. The no-write guarantee is scoped to customer data deliberately: a dry run
+  still writes its audit record (below). "Someone rehearsed moving 40,000 conversations into tenant
+  X at 02:00" is exactly the kind of event an audit trail exists to hold, and a rehearsal that
+  leaves no trace is a reconnaissance tool.
+- Every call writes one `AdministrationAuditRecord` (7.7) with `eventClass = security`, carrying
+  `operation`, target tenant, target owner, affected row count, and `dryRun` - **including** when
+  `dryRun` is true, where `outcome` is `rehearsed` rather than `applied`. It is not an
+  `AuthorizationAuditRecord`: that record's fields are sourced from a `Principal`, and this path has
+  none (7.7).
 
 This replaces `Identity:LegacyConversationPolicy` entirely - there is no `AdminOnly`,
 `AssignTo:{userId}`, or `Shared` mode. `AssignTo` was unimplementable as written: it named a user
@@ -1672,6 +1810,24 @@ the new columns are written but never used as a filter, so rolling back to the p
 the same database successfully. Adoption is not automatically reversible - it rewrites `tenant_id` -
 which is why `dryRun` exists.
 
+**Rolling back and then forward is the case that needs a rule.** A downgraded build does not know
+about `tenant_id`, so every conversation it creates has `tenant_id IS NULL`. Rolling forward does
+not repair them: `user_version` is already 4, so migration step 3 never runs again, and
+`adopt-legacy` is not a way out either, since it only selects rows already stamped with the
+quarantine tenant. Those rows would be reachable by nobody the moment enforcement was switched on -
+invisible, un-adoptable, and indistinguishable from legacy rows without being treated as any.
+
+So **the null-tenant stamp is a startup repair, not a one-time migration step.** The
+`UPDATE thread_metadata SET tenant_id = @legacyTenantId WHERE tenant_id IS NULL` of 8.5.1 runs on
+every startup, after migrations and before the first request is served, not only at
+`user_version` 3. It is idempotent and costs one indexed scan of a column that is null on no rows
+in steady state, and it buys an invariant worth stating: **no `thread_metadata` row ever has a null
+`tenant_id` while the process is serving requests**, whatever sequence of builds wrote it.
+Post-rollback rows then land in quarantine with everything else and adopt through the same route.
+
+The alternative - prohibiting writes while downgraded - was rejected because the build that would
+have to refuse is the old one, which has never heard of any of this.
+
 ### 8.6 Workspaces and chat modes - fields, not columns
 
 These are JSON documents (2.6), so there is no DDL:
@@ -1692,26 +1848,41 @@ These are JSON documents (2.6), so there is no DDL:
 (admin-published). It is declared once, in `src/LmCore/Identity/`, beside `ResourceDescriptor`
 (7.4) - the policy and the stores must not each carry their own copy.
 
-**It is a state machine, not a label, and the transitions are what 7.4.1 gates:**
+**It is a state machine, not a label.** What follows describes *transitions* only - which states
+exist and what moves between them. Who may perform each move, and what rights each state confers,
+are 7.4.1's and are **derived from it**; where this section appears to say otherwise, 7.4.1 wins.
 
 ```
 Private  <--(owner)---->  Shared            named grants added / all revoked
    |                        |
    +----(admin only)--------+---->  TenantPublished
-   ^                                       |
-   +---------(admin only)------------------+           unpublish
+   ^                        ^                |
+   |                        |                |
+   +--(admin, no grants)----+--(admin, ------+          unpublish restores whichever of
+                               grants remain)          Private / Shared the grants imply
 ```
 
 - `Private` -> `Shared` and back is the owner's own act: adding or removing a named grant (7.1).
-- Anything -> `TenantPublished` and back is `AccessAction.Publish`, **admin only, both directions**.
-  There is no separate unpublish right, so the two directions cannot drift apart.
-- While `TenantPublished`, the owner holds `read` and `use` and nothing else; `write` passes to
-  admins and `delete` is refused to everybody until it is unpublished (7.4.1).
+  The rule is a function of the grants, not a remembered label: a resource is `Shared` exactly when
+  at least one unexpired `resource_grants` row names it, and `Private` otherwise. Both the share
+  surface (8.4) and unpublish recompute it the same way.
+- Anything -> `TenantPublished` and back is `AccessAction.Publish` in both directions (7.4.1).
 - Existing named grants are **retained**, not dropped, across a publish/unpublish round trip. They
   are simply redundant while published. Dropping them would silently revoke access that the owner
   granted, at a moment the owner did not choose and may not even be aware of.
-- **Only modes may reach `TenantPublished`** (7.2). `IWorkspaceStore` rejects the value on write,
-  and `Workspace` carries the field only so both stores share one filter shape.
+- **Unpublish therefore has one destination, and it is computed, not assumed:** `Shared` when a
+  retained grant remains, `Private` when none does - the same rule as the arrow above. The diagram
+  previously drew unpublish as returning to `Private` unconditionally, which contradicted both the
+  definition of `Shared` above and the round-trip requirement that retained grants be effective
+  again. Nothing has to be persisted across the round trip for this to be deterministic, because the
+  grants *are* the state.
+- **Two documents may not hold `TenantPublished` at all**, and both stores enforce it on write
+  rather than leaving it to the policy: any workspace (7.2), and any mode whose `OwnerAppId` is
+  non-null. The second is what keeps 7.4.1's `App owner` column free of a publication split - an
+  app-only owner is not subject to the owner rows, so a published app-owned mode would be one the
+  whole tenant depends on and its owner may still rewrite and delete. One store constraint replaces
+  six cells and a second rule to keep in sync. `Workspace` carries the field only so both stores
+  share one filter shape.
 
 `IsSystemDefined` is orthogonal and unchanged - a system mode stays readable by everyone and
 writable by no one. A system-defined resource is never published, because it does not need to be:
@@ -1730,11 +1901,11 @@ reconsidering (OQ-3).
 | `src/LmCore/Identity/Principal.cs` | new - `Principal`, `PrincipalRef`, `PrincipalKind`, `PrincipalSource` |
 | `src/LmCore/Identity/ITenantStore.cs` | new - tenant lookup and admin binding (8.2) |
 | `src/LmCore/Identity/IResourceAccessPolicy.cs` | new - `ResourceRef`, `ResourceDescriptor`, `Visibility`, `AccessAction`, `AccessDecision`, the 7.4.1 rights table |
-| `src/LmCore/Identity/IAuditSink.cs` | new - `AuthenticationAuditRecord`, `AuthorizationAuditRecord` (7.7) |
-| `src/LmCore/Models/UsageRecord.cs` | add `TenantId`, `PrincipalId`, `AppId` |
+| `src/LmCore/Identity/IAuditSink.cs` | new - `AuthenticationAuditRecord`, `AuthorizationAuditRecord`, `AdministrationAuditRecord` (7.7) |
+| `src/LmCore/Models/UsageRecord.cs` | add `TenantId`, `PrincipalId`, `AppId`, `OccurredAtUtc` |
 | `src/LmMultiTurn/Persistence/ThreadMetadata.cs` | add `TenantId`, `OwnerUserId`, `OwnerAppId`, `Visibility` |
 | `src/LmMultiTurn/Persistence/IConversationStore.cs` | `ListThreadsAsync` takes a `Principal` |
-| `src/LmMultiTurn/Persistence/Sqlite/SqliteSchemaInitializer.cs` | migration runner (slice 1) + steps 2, 3, 4, 5 |
+| `src/LmMultiTurn/Persistence/Sqlite/SqliteSchemaInitializer.cs` | migration runner (slice 1) + steps 2, 3, 4, 5; the quarantine-id collision check and the startup null-tenant repair (8.5.1, 8.5.4) |
 | `src/LmMultiTurn/Persistence/Sqlite/SqliteTenantStore.cs` | new - `tenants` / `tenant_admins` reads and writes |
 | `src/LmMultiTurn/Persistence/Sqlite/SqliteConversationStore.cs` | read/write new columns; scoped list query |
 | `src/LmMultiTurn/Persistence/FileConversationStore.cs`, `InMemoryConversationStore.cs` | same surface, in-memory/file filter |
@@ -1746,13 +1917,13 @@ reconsidering (OQ-3).
 | `samples/LmStreaming.Sample/Program.cs` | `AddMicrosoftIdentityWebApi`; `UseAuthentication`/`UseAuthorization` at line ~2073 |
 | `samples/LmStreaming.Sample/Identity/PrincipalFactory.cs`, `IPrincipalAccessor.cs` | new |
 | `samples/LmStreaming.Sample/Controllers/ConversationsController.cs` | extend `InboundS2SAuthAttribute`; scope all 14 endpoints |
-| `samples/LmStreaming.Sample/Controllers/WorkspacesController.cs` | scope all 4 endpoints |
-| `samples/LmStreaming.Sample/Controllers/ChatModesController.cs` | **add `[InboundS2SAuth]`**; scope endpoints |
+| `samples/LmStreaming.Sample/Controllers/WorkspacesController.cs` | scope all 4 endpoints; `shares` routes per 8.4 |
+| `samples/LmStreaming.Sample/Controllers/ChatModesController.cs` | **add `[InboundS2SAuth]`**; scope endpoints; `publication` and `shares` routes |
 | `samples/LmStreaming.Sample/Controllers/EmbedTokensController.cs` | new - `POST /api/embed/tokens` |
 | `samples/LmStreaming.Sample/Controllers/TenantsController.cs` | new - operator tenant provisioning (4.4) and `adopt-legacy` (8.5.3) |
 | `samples/LmStreaming.Sample/Controllers/DiagnosticsController.cs` | add `GET api/diagnostics/identity` (5.4) |
 | `samples/LmStreaming.Sample/Models/Workspace.cs`, `Models/ChatMode.cs` | ownership fields |
-| `samples/LmStreaming.Sample/Persistence/FileWorkspaceStore.cs`, `FileChatModeStore.cs`, `IWorkspaceStore.cs`, `IChatModeStore.cs` | ownership + filtering |
+| `samples/LmStreaming.Sample/Persistence/FileWorkspaceStore.cs`, `FileChatModeStore.cs`, `IWorkspaceStore.cs`, `IChatModeStore.cs` | ownership + filtering; reject `TenantPublished` on a workspace and on an app-owned mode (8.6) |
 | `samples/LmStreaming.Sample/ClientApp/src/` | MSAL Browser sign-in; bearer on every fetch; sharing UI |
 | `docs/deployment/AUTH_ENFORCE.md` | document `Identity:Enforce`, tenant provisioning, and the migrate/adopt/enforce sequence (8.5.3) |
 | `CHANGELOG.md` | the `ChatModesController` behaviour change (slice 4) |
@@ -1765,7 +1936,7 @@ The ledger measures correctly. The gap is attribution and queryability (2.7).
 
 ### 9.1 Record shape
 
-`src/LmCore/Models/UsageRecord.cs` gains three nullable fields:
+`src/LmCore/Models/UsageRecord.cs` gains four nullable fields:
 
 ```csharp
 /// <summary>Tenant this usage is billed to. Null only for pre-P1 records.</summary>
@@ -1776,19 +1947,37 @@ public string? PrincipalId { get; init; }
 
 /// <summary>App id that made the call. Null for the interactive path pre-P1.</summary>
 public string? AppId { get; init; }
+
+/// <summary>
+/// When the billable attempt happened, UTC. Set once, at first observation, and never
+/// recomputed. Null only for pre-P1 records. This is the sole source of the usage day in 9.2.
+/// </summary>
+public DateTimeOffset? OccurredAtUtc { get; init; }
 ```
 
-All three are nullable so existing serialized records deserialize unchanged and
+All four are nullable so existing serialized records deserialize unchanged and
 `UsageLedger.SeedFromRecords` keeps working against a database written by an earlier build.
+
+**`OccurredAtUtc` is the one genuinely new fact, and the rollup cannot be correct without it.** The
+record as it stands today carries no time at all - `LogicalCallId`, `ProviderAttemptId`, `Revision`,
+token counts, cost, and nothing else - so a projection deriving the rollup's `day` column could only
+use its own run time. `day` is part of the rollup primary key (9.2), so a persisted attempt
+reprojected after midnight would land on a *different* key and be counted twice, which is precisely
+the double-count the UPSERT is there to prevent. No existing field can stand in: the attempt id is
+opaque and the revision is a counter. One immutable timestamp is the minimum that makes the key
+stable.
 
 They are populated by `UsageLedger` from the `Principal` captured on `AgentEntry.OwnerPrincipal`
 (3.4). `PrincipalId` is `Principal.EffectiveUserId`, so an agent acting on behalf of a human bills
 to the human while the audit record still shows the agent as `Actor` - the distinction that matters
 the first time an agent's spend is disputed.
 
-Records are already deduped by `ProviderAttemptId`; adding principal fields does not change dedup.
-A merge of two observations for one attempt must keep the **first** principal rather than the
-latest, because a re-merge after a restart could otherwise re-attribute spend.
+Records are already deduped by `ProviderAttemptId`; adding these fields does not change dedup.
+A merge of two observations for one attempt must keep the **first** principal and the **first**
+`OccurredAtUtc` rather than the latest, because a re-merge after a restart could otherwise
+re-attribute spend or move an attempt to a different usage day. Note that this is a deliberate
+exception to the record's general "highest `Revision` wins" replacement rule: revisions carry
+corrected *measurements*, never a corrected identity or a corrected occurrence time.
 
 ### 9.2 A real table, not a JSON blob
 
@@ -1821,6 +2010,23 @@ CREATE INDEX IF NOT EXISTS idx_usage_rollup_tenant_day
 `ConversationUsageProjection` writes here in addition to - not instead of - the existing metadata
 keys, so the per-conversation usage endpoint (`GET /api/conversations/{threadId}/usage`,
 `ConversationsController.cs:454`) is unaffected.
+
+**A record with a null `TenantId` or a null `OccurredAtUtc` is not projected at all.** Both columns
+it would need are `NOT NULL` and both are part of the primary key, so there is no row to write. That
+is a deliberate scope cut rather than an oversight: the alternative was to specify how a pre-P1
+record acquires a tenant it never had - derive it from the owning thread, decide what happens when
+that thread is still quarantined, and then re-project every affected rollup when the thread is
+adopted - which is a migration of the usage ledger, not an attribution field. **Pre-P1 spend stays
+exactly where it is today**, in `thread_metadata.metadata_json`, readable through the
+per-conversation endpoint that already serves it, and the rollup covers the period from slice 6
+forward. `day` comes only from `OccurredAtUtc` (9.1), never from the projection's run time, which is
+what makes a replay land on the same key.
+
+The one case worth naming: a record written *after* slice 6 for a **quarantined** thread has a
+tenant - the quarantine tenant - so it does project. It rolls up under a tenant that no principal
+can ever carry (8.5.2), which is the correct answer rather than a special case: the spend is
+preserved, and it becomes visible when the thread is adopted and reprojected, at the same moment the
+conversation does.
 
 Aggregation is idempotent on the primary key, matching the ledger's existing `ProviderAttemptId`
 dedup discipline: a replayed projection must `UPSERT` to the folded value, not `+=`, or a restart
@@ -1971,10 +2177,13 @@ endpoints scoped.
 
 **Depends on.** Slice 1.
 
-**Verified by.** Two users in one tenant each see only their own conversations. A cross-tenant
+**Verified by.** These cases are **derived from 7.4.1**; where a row here and the table disagree,
+the table is right. Two users in one tenant each see only their own conversations. A cross-tenant
 `GET /api/conversations/{id}` is `404`, not `403`. A shared conversation appears for the grantee as
-`viewer` and is not writable, and that grantee cannot re-share it (`403`
-`grantee_may_not_reshare`) or delete it (`403` `grant_confers_no_delete`). An owner may `share` and
+`viewer` and is not writable - `403` `grant_does_not_confer_action`, the reason that distinguishes
+"your grant could have allowed this and does not" from "no grant ever could" - and that grantee
+cannot re-share it (`403` `grantee_may_not_reshare`) or delete it (`403`
+`grant_confers_no_delete`). An owner may `share` and
 `delete` their own conversation. A tenant admin may `read` a member's conversation, and may not
 `write` it (`403` `admin_no_write`), `delete` it (`403` `admin_no_delete`) or `share` it
 (`403` `admin_may_not_reshare`) - conversations are never published, so the admin `write` cell of
@@ -1983,21 +2192,30 @@ rather than denying (7.2). A tenant admin's `GET /api/conversations` and their
 `GET /api/conversations/{id}` agree on the same row set - the specific defect a missing admin
 branch in 7.5 would produce. A pre-existing conversation, after migration, is invisible to a
 `member` **and** to an `admin` of every provisioned tenant, and becomes visible only after
-`adopt-legacy`; `dryRun` writes nothing; an `ownerUserId` whose `tid` does not match the target
-tenant is `400` and writes nothing; calling `adopt-legacy` twice adopts the same rows once. A
+`adopt-legacy`; `dryRun` changes no conversation row **and does write its
+`AdministrationAuditRecord` with `outcome = rehearsed`** (8.5.3); an `ownerUserId` whose `tid` does
+not match the target tenant is `400` and writes nothing; calling `adopt-legacy` twice adopts the
+same rows once. A migration run whose configured `Identity:LegacyTenantId` names an existing
+**active** tenant fails with `legacy_tenant_id_collision` and leaves every row unstamped (8.5.1). A
 database at `user_version` 1 opened by the new build reaches **4** with no data loss, and the
-resulting database still opens under the previous build.
+resulting database still opens under the previous build; and the full sequence *upgrade -> roll back
+-> create a conversation on the old build -> roll forward -> adopt -> enforce* leaves that
+conversation adoptable and visible, because the null-tenant stamp is a startup repair rather than a
+one-time step (8.5.4).
 
 ### Slice 3 - [#303] Workspace ownership
 
 **Ships.** `TenantId`, `OwnerUserId`, `Visibility` on `Workspace`; `FileWorkspaceStore`
 legacy-tolerant load and rewrite; `IWorkspaceStore.GetAllAsync(Principal, ...)`; all four
 `WorkspacesController` endpoints scoped; grants reuse `resource_grants` with
-`resource_type='workspace'`.
+`resource_type='workspace'`, and `POST`/`DELETE /api/workspaces/{workspaceId}/shares` instantiate
+the share contract defined once in slice 2 (8.4) - same role validation, same grant row, same
+`Private`/`Shared` rule. No second contract is designed here.
 
 **Depends on.** Slice 2, for `resource_grants` and `IResourceAccessPolicy`.
 
-**Verified by.** `GET /api/workspaces` returns only owned plus granted plus system-defined. A
+**Verified by.** These cases are **derived from 7.4.1**. `GET /api/workspaces` returns only owned
+plus granted plus system-defined. A
 workspace `use` without a grant is refused even when `read` is granted. A `workspaces.json` written
 by the previous build loads without the new fields and is rewritten with them on first save.
 Writing `Visibility.TenantPublished` to a workspace is rejected by the store (7.2), and
@@ -2010,17 +2228,19 @@ grantee may do neither; a tenant admin may `read` it and may not `write`, `delet
 **Ships.** `[InboundS2SAuth]` **added to `ChatModesController`** - an existing hole (2.3).
 Ownership fields on `ChatMode`; `FileChatModeStore` legacy-tolerant load; `IChatModeStore`
 filtering; `Visibility.TenantPublished` and an admin-only publish/unpublish endpoint
-(`POST`/`DELETE /api/chat-modes/{modeId}/publication`); system modes remain read-only for all. The
-7.4.1 rights table is enforced on every mode mutation, not only on publish.
+(`POST`/`DELETE /api/chat-modes/{modeId}/publication`); `POST`/`DELETE
+/api/chat-modes/{modeId}/shares` instantiating slice 2's share contract (8.4); system modes remain
+read-only for all. The 7.4.1 rights table is enforced on every mode mutation, not only on publish.
 
 **Depends on.** Slice 2.
 
 **Verified by.** A mode created by user A is invisible to user B. An admin-published mode is
 visible to every member of the tenant.
 
-The owner/non-admin matrix of 7.4.1 is asserted case by case, because a single "owner can do
-owner things" test is what let the collapse through in the first place. For a mode owned by a
-non-admin user A:
+The matrix below is **derived from 7.4.1** - it is that table's cells restated as HTTP cases, and
+if the two ever disagree the table is right and a row here is stale. It is asserted case by case
+because a single "owner can do owner things" test is what let the collapse through in the first
+place. For a mode owned by a non-admin user A:
 
 | Case | Expected |
 |---|---|
@@ -2036,12 +2256,30 @@ non-admin user A:
 | admin `write` while `Private` | `403`, reason `admin_no_write` |
 | admin `delete`, any state | `403`, reason `admin_no_delete` |
 | admin `share` | `403`, reason `admin_may_not_reshare` |
-| admin `publish`, then admin `publish` back to `Private` | both `200`; A's `write` works again after |
+| A `DELETE` the publication while `TenantPublished` | `403`, reason `publish_is_admin_only`, and `Visibility` is still `TenantPublished` afterwards |
+| grantee `DELETE` the publication while `TenantPublished` | `403`, reason `publish_is_admin_only`, visibility unchanged |
+| B holds an `editor` grant: `write` while `Private` | `200` |
+| the same grant, `write` while `TenantPublished` | `403`, reason `grant_write_frozen_by_publication` |
+| the same grant, `write` after unpublishing | `200` - the grant was retained, not revoked |
+| B holds a `viewer` grant: `write` while `Private` | `403`, reason `grant_does_not_confer_action` |
+| unrelated member C, `read` / `use` while `TenantPublished` | `200` |
+| the same C, `write` / `delete` / `share` while `TenantPublished` | `403`, reason `tenant_member_read_only` |
+| the same C, `read` while `Private` | `404` - publication is what creates the relationship, nothing else |
+| member of another tenant, `read` while `TenantPublished` | `404` `cross_tenant` - publication is tenant-wide, not global |
+| app-only caller (no `EffectiveUserId`), `read` a published mode it does not own | `404`; and it does not appear in that caller's list |
+| store refuses `TenantPublished` on a mode whose `OwnerAppId` is non-null | rejected at the store, not at the policy (8.6) |
+| user D who is **both** the owner and a tenant admin, `write` while `TenantPublished` | `200` - denied as `Owner`, allowed as `TenantAdmin`; asserts 7.4 step 3's first-allow rule across two relationships held at once |
+| admin `publish`, then admin `DELETE` the publication | both `200` |
 
-The round trip asserts one thing the individual rows cannot: named grants created before publishing
-are still present and still effective after unpublishing (8.6). Denials assert the **reason string**,
-not just the status code - two different `403`s that both read `no_grant` would let this whole
-table pass while the policy was wrong.
+Two round-trip cases assert what the individual rows cannot. With a named grant outstanding,
+unpublishing returns the mode to **`Shared`** and that grant is effective again; with every grant
+revoked first, unpublishing returns it to **`Private`** (8.6). A test that only ever checks
+`Private` would pass against an implementation that silently dropped the grants.
+
+Denials assert the **reason string**, not just the status code - two different `403`s that both read
+`no_grant` would let this whole table pass while the policy was wrong. The list/point-read agreement
+of 7.5 is asserted for the published cases too: whatever `GET /api/chat-modes` returns for C and for
+the app-only caller, the point read on those same ids agrees.
 
 A request to `/api/chat-modes` carrying `X-Sbx-App-Id` without `X-S2S-Auth` is now `401`
 where it previously succeeded. This is a deliberate breaking change to an existing endpoint's
@@ -2076,18 +2314,24 @@ A request with no `Authorization` header behaves byte-identically to today.
 
 ### Slice 6 - [#306] Usage attribution and the tenant-admin view
 
-**Ships.** `TenantId`, `PrincipalId`, `AppId` on `UsageRecord`; population from
-`AgentEntry.OwnerPrincipal`; migration step 5 creating `usage_rollup`; the `UPSERT` projection;
-`GET /api/admin/usage`; the admin UI panel.
+**Ships.** `TenantId`, `PrincipalId`, `AppId`, `OccurredAtUtc` on `UsageRecord`; population from
+`AgentEntry.OwnerPrincipal`; migration step 5 creating `usage_rollup`; the `UPSERT` projection
+keyed on a `day` derived only from `OccurredAtUtc`; `GET /api/admin/usage`; the admin UI panel.
 
 **Depends on.** Slices 1, 2, and 5 - a mode-B principal must exist before spend can be attributed
 to it.
 
 **Verified by.** Spend on a conversation created by user A rolls up to A, filtered to A's tenant.
 An agent acting on behalf of A bills to A while the audit shows the agent as actor. Replaying the
-projection twice does not double-count. A `member` calling `/api/admin/usage` is `403`. Records
-written before this slice deserialize with null attribution fields and are reported under an
-explicit "unattributed" group - not silently dropped, and not folded into an arbitrary user.
+projection twice does not double-count, **including when the replay runs on a later
+calendar day than the attempt** - the case that fails if `day` comes from the projection's run time
+rather than from `OccurredAtUtc` (9.1). Merging two observations of one attempt keeps the first
+`OccurredAtUtc` and the first principal, not the latest. A `member` calling `/api/admin/usage` is
+`403`. Records written before this slice deserialize with null attribution fields and are **not
+projected into `usage_rollup` at all** (9.2): pre-P1 spend stays readable through the existing
+per-conversation usage endpoint, and `/api/admin/usage` reports from the slice-6 cut-over forward.
+Post-cut-over spend on a still-quarantined thread *does* project, under the quarantine tenant, and
+becomes visible when that thread is adopted.
 
 ### Slice 7 - [#309] Embed token and the packaged iframe
 
