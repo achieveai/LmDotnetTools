@@ -12,7 +12,8 @@ public class UsageLedgerTests
         string model,
         long input,
         long output,
-        bool finalized = false) =>
+        bool finalized = false,
+        DateTimeOffset? occurredAt = null) =>
         new()
         {
             LogicalCallId = attemptId,
@@ -22,7 +23,10 @@ public class UsageLedgerTests
             InputTokens = input,
             OutputTokens = output,
             Finalized = finalized,
+            OccurredAtUtc = occurredAt,
         };
+
+    private static readonly DateTimeOffset DayOne = new(2026, 8, 22, 23, 50, 0, TimeSpan.Zero);
 
     [Fact]
     public void UpsertAttempt_CollapsesCumulativeObservations_ToOneRecordPerAttempt()
@@ -154,5 +158,46 @@ public class UsageLedgerTests
 
         public ModelPricing? Resolve(string modelId) =>
             string.Equals(modelId, model, StringComparison.Ordinal) ? _pricing : null;
+    }
+
+    [Fact]
+    public void UpsertAttempt_PreservesTheEarliestOccurredAtUtc_AcrossCumulativeObservations()
+    {
+        // Merge is MAX per count but must be FIRST-WINS for the timestamp: a UsageRecord is "a durable,
+        // idempotent record" of one billable attempt, and a cumulative stream re-observes that attempt many
+        // times. Last-wins would stamp when the final chunk arrived — the next UTC day here — and misfile
+        // the attempt in a per-day rollup (#307).
+        var ledger = new UsageLedger("conv-1");
+
+        ledger.UpsertAttempt(Obs("a1", "model-A", input: 40, output: 0, occurredAt: DayOne));
+        ledger.UpsertAttempt(Obs("a1", "model-A", input: 100, output: 30, occurredAt: DayOne.AddMinutes(5)));
+        var merged = ledger.UpsertAttempt(
+            Obs("a1", "model-A", input: 100, output: 55, finalized: true, occurredAt: DayOne.AddMinutes(20)));
+
+        merged.OccurredAtUtc.Should().Be(DayOne);
+        ledger.SnapshotRecords().Single().OccurredAtUtc.Should().Be(DayOne);
+    }
+
+    [Fact]
+    public void UpsertAttempt_PreservesTheEarliestOccurredAtUtc_WhenObservationsArriveOutOfOrder()
+    {
+        // Out-of-order delivery must reach the same answer — first-wins is over the value, not arrival.
+        var ledger = new UsageLedger("conv-1");
+
+        ledger.UpsertAttempt(Obs("a1", "model-A", input: 100, output: 55, occurredAt: DayOne.AddMinutes(20)));
+        ledger.UpsertAttempt(Obs("a1", "model-A", input: 100, output: 55, occurredAt: DayOne));
+
+        ledger.SnapshotRecords().Single().OccurredAtUtc.Should().Be(DayOne);
+    }
+
+    [Fact]
+    public void UpsertAttempt_KeepsTheKnownTimestamp_WhenALaterObservationHasNone()
+    {
+        var ledger = new UsageLedger("conv-1");
+
+        ledger.UpsertAttempt(Obs("a1", "model-A", input: 40, output: 0, occurredAt: DayOne));
+        ledger.UpsertAttempt(Obs("a1", "model-A", input: 100, output: 55, finalized: true));
+
+        ledger.SnapshotRecords().Single().OccurredAtUtc.Should().Be(DayOne);
     }
 }

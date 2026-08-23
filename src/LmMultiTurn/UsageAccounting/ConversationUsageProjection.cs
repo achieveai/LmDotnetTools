@@ -121,6 +121,11 @@ public static class ConversationUsageProjection
     ///     highest <see cref="UsageRecord.Revision" /> per attempt (cumulative streaming / retry). Order-
     ///     independent and idempotent, so it can never lose an attempt one writer knew about.
     /// </summary>
+    /// <remarks>
+    ///     <see cref="UsageRecord.OccurredAtUtc" /> is merged first-wins rather than inherited from the
+    ///     winning revision: across writers the higher revision is often the LATER observation of the same
+    ///     attempt, and a per-day rollup must bucket on when the attempt happened (#307).
+    /// </remarks>
     private static IReadOnlyList<UsageRecord> MergeRecords(
         IReadOnlyList<UsageRecord> persisted,
         IReadOnlyList<UsageRecord> incoming)
@@ -143,10 +148,17 @@ public static class ConversationUsageProjection
 
         foreach (var record in incoming)
         {
-            if (!byAttempt.TryGetValue(record.ProviderAttemptId, out var existing) || record.Revision >= existing.Revision)
+            if (!byAttempt.TryGetValue(record.ProviderAttemptId, out var existing))
             {
                 byAttempt[record.ProviderAttemptId] = record;
+                continue;
             }
+
+            var winner = record.Revision >= existing.Revision ? record : existing;
+            byAttempt[record.ProviderAttemptId] = winner with
+            {
+                OccurredAtUtc = UsageRecord.EarliestOccurredAt(existing.OccurredAtUtc, record.OccurredAtUtc),
+            };
         }
 
         return [.. byAttempt.Values];

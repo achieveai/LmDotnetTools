@@ -59,9 +59,10 @@ public sealed class UsageLedger : IUsageSink
 
     /// <summary>
     ///     Merges an observation into the record for its <see cref="UsageRecord.ProviderAttemptId" /> —
-    ///     cumulative MAX per count, finalized once any finalized observation is seen — assigns a fresh
-    ///     committed revision, and returns the merged record. Idempotent under replay and safe out-of-order,
-    ///     so cumulative streaming updates for one attempt collapse to a single billable record.
+    ///     cumulative MAX per count, finalized once any finalized observation is seen, and first-wins for
+    ///     <see cref="UsageRecord.OccurredAtUtc" /> — assigns a fresh committed revision, and returns the
+    ///     merged record. Idempotent under replay and safe out-of-order, so cumulative streaming updates for
+    ///     one attempt collapse to a single billable record.
     /// </summary>
     public UsageRecord UpsertAttempt(UsageRecord observation)
     {
@@ -179,6 +180,11 @@ public sealed class UsageLedger : IUsageSink
                 MaxNullable(existing.EstimatedPublicCostMicros, observation.EstimatedPublicCostMicros),
             ProviderReportedCostMicros =
                 MaxNullable(existing.ProviderReportedCostMicros, observation.ProviderReportedCostMicros),
+            // First-wins, NOT the record-with default of taking the incoming (last) value: a cumulative
+            // stream re-observes one attempt many times, so last-wins would stamp when the final chunk
+            // arrived rather than when the attempt happened — misfiling an attempt that straddles a UTC-day
+            // boundary in a per-day rollup (#307).
+            OccurredAtUtc = UsageRecord.EarliestOccurredAt(existing.OccurredAtUtc, observation.OccurredAtUtc),
             Finalized = existing.Finalized || observation.Finalized,
         };
     }

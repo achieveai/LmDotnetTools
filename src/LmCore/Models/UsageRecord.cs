@@ -71,6 +71,27 @@ public sealed record UsageRecord
     /// <summary>Per-conversation monotonic revision assigned when this record is (re)written.</summary>
     public long Revision { get; init; }
 
+    // --- Timing ---
+
+    /// <summary>
+    ///     Wall-clock UTC time at which this billable attempt was observed, or null when unknown.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         Nullable on purpose. Records persisted before this field existed carry no such value, and a
+    ///         non-nullable <see cref="DateTimeOffset" /> would deserialize them to <c>0001-01-01</c> and
+    ///         silently file them into a per-period rollup bucket. Null is the truth ("unknown") and forces
+    ///         a rollup to handle the legacy case explicitly.
+    ///     </para>
+    ///     <para>
+    ///         First-wins across every merge path (see <see cref="EarliestOccurredAt" />): cumulative
+    ///         streaming updates re-observe the same <see cref="ProviderAttemptId" /> many times, so the
+    ///         earliest known value is preserved. Last-wins would record when the final chunk arrived rather
+    ///         than when the attempt happened, misfiling an attempt that straddles a UTC-day boundary.
+    ///     </para>
+    /// </remarks>
+    public DateTimeOffset? OccurredAtUtc { get; init; }
+
     // --- Lineage ---
 
     /// <summary>The root conversation this attempt is attributed to.</summary>
@@ -128,4 +149,24 @@ public sealed record UsageRecord
 
     /// <summary>True once the terminal (final accumulated) usage for this attempt has been observed.</summary>
     public bool Finalized { get; init; }
+
+    /// <summary>
+    ///     First-wins merge of two <see cref="OccurredAtUtc" /> values: the earlier of the two when both are
+    ///     known, the known one when only one is, else null. The single definition of the rule, shared by
+    ///     every path that collapses observations of one provider attempt into one record.
+    /// </summary>
+    public static DateTimeOffset? EarliestOccurredAt(DateTimeOffset? left, DateTimeOffset? right)
+    {
+        if (left is null)
+        {
+            return right;
+        }
+
+        if (right is null)
+        {
+            return left;
+        }
+
+        return left.Value <= right.Value ? left : right;
+    }
 }

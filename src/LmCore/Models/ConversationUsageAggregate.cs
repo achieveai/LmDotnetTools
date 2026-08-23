@@ -110,11 +110,7 @@ public sealed record ConversationUsageAggregate
         long foldedRevision,
         UsageCompleteness completeness = UsageCompleteness.InProgress)
     {
-        // Dedup by attempt id — the highest revision replaces earlier ones (cumulative streaming / retry).
-        var deduped = records
-            .GroupBy(r => r.ProviderAttemptId)
-            .Select(g => g.OrderByDescending(r => r.Revision).First())
-            .ToList();
+        var deduped = DedupeByAttempt(records);
 
         var perModel = deduped
             .GroupBy(r => r.EffectiveModelId)
@@ -144,6 +140,39 @@ public sealed record ConversationUsageAggregate
             EstimatedPublicCostMicros = SumKnown(perModel.Select(m => m.EstimatedPublicCostMicros)),
             ProviderReportedCostMicros = SumKnown(perModel.Select(m => m.ProviderReportedCostMicros)),
         };
+    }
+
+    /// <summary>
+    ///     Collapses observations of one provider attempt into a single record, keyed by
+    ///     <see cref="UsageRecord.ProviderAttemptId" />: the highest <see cref="UsageRecord.Revision" />
+    ///     replaces earlier ones (cumulative streaming / retry).
+    /// </summary>
+    /// <remarks>
+    ///     <see cref="UsageRecord.OccurredAtUtc" /> is the one exception to "highest revision wins": it is
+    ///     first-wins, taking the earliest non-null value across the attempt's revisions. A later revision
+    ///     records when the last cumulative chunk arrived, not when the attempt happened, so adopting it
+    ///     would misfile an attempt straddling a UTC-day boundary in a per-day rollup. Records arriving from
+    ///     two writers (a post-restart rebuild, a second instance, a relay) can also disagree, and the
+    ///     higher-revision one is not necessarily the earlier observation.
+    /// </remarks>
+    /// <param name="records">The atomic records to collapse (may contain superseded revisions).</param>
+    public static IReadOnlyList<UsageRecord> DedupeByAttempt(IEnumerable<UsageRecord> records)
+    {
+        ArgumentNullException.ThrowIfNull(records);
+
+        return
+        [
+            .. records
+                .GroupBy(r => r.ProviderAttemptId)
+                .Select(g =>
+                {
+                    var latest = g.OrderByDescending(r => r.Revision).First();
+                    var occurredAt = g.Aggregate(
+                        (DateTimeOffset?)null,
+                        (earliest, r) => UsageRecord.EarliestOccurredAt(earliest, r.OccurredAtUtc));
+                    return latest with { OccurredAtUtc = occurredAt };
+                }),
+        ];
     }
 
     /// <summary>
