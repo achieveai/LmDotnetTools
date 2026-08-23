@@ -180,8 +180,8 @@ No owner, user, tenant, or app-id column exists on any of the eight tables.
 **There is no migration mechanism.** Every statement is `CREATE TABLE IF NOT EXISTS`, run in one
 transaction on every open (`SqliteSchemaInitializer.cs:175-210`). There is no schema-version table
 and no `PRAGMA user_version` use. The comment at `:150-151` states this is deliberate: new *tables*
-appear on next open. Adding a *column* to an existing table has no path today. Slice #302 must
-build one before it can add a column.
+appear on next open. Adding a *column* to an existing table has no path today. Slice #301 must
+build one, because the `tenants` table (8.2) lands in that slice.
 
 `ThreadMetadata` (`src/LmMultiTurn/Persistence/ThreadMetadata.cs`) carries an extensible
 `Properties` bag. **Ownership must not go in the property bag**: it is serialized into
@@ -391,8 +391,11 @@ is the tenant GUID and `oid` is the immutable object id of the user.
   `oid` values. Namespacing with `tid` makes the key globally unique and makes cross-tenant
   collision structurally impossible.
 
-`TenantId` is the Entra `tid` claim for interactive users. For host-asserted principals it is the
-tenant the app registration is onboarded to, not a value the caller supplies (section 5.1).
+`Principal.TenantId` is **our internal tenant id** (`tnt_*`), not the Entra `tid`. It is resolved by
+looking the token's `tid` up in the `tenants` table (8.2). An unresolved `tid` is a rejected
+sign-in, never an implicit new tenant (4.4). The user id keeps the Entra `tid` in its prefix
+because it must stay globally unique independently of our own records - the two ids do different
+jobs and both are needed.
 
 ### 3.4 How `Principal` flows - recommendation
 
@@ -494,7 +497,6 @@ builder.Services
     "TenantId": "organizations"
   },
   "Identity": {
-    "AllowedTenants": [ "<tenant-guid>" ],
     "Enforce": false
   }
 }
@@ -506,18 +508,34 @@ validation correctly out of the box (5.1 step 3) and because MSAL (`Microsoft.Id
 
 **`TenantId: organizations`** admits any work or school tenant but not personal Microsoft accounts.
 Issuer validation alone only proves *some* real Entra tenant signed the token - it does not prove
-the tenant is a customer. The `tid` claim is therefore checked against `Identity:AllowedTenants` as
-a separate authorization step, and an unknown `tid` is rejected with `403` and an audit record.
+the tenant is a customer. The `tid` claim is therefore resolved against the `tenants` table (8.2) as
+a separate authorization step, and an unprovisioned `tid` is rejected with `403` and an audit
+record. There is no `AllowedTenants` config list: the tenant registry is data, not configuration,
+because tenants are provisioned per customer at runtime (4.4).
 
 **Pipeline placement.** `UseAuthentication()` then `UseAuthorization()` between `Program.cs:2072`
 and `:2075`. `UseCors` inside `UseLmStreaming()` already precedes `MapControllers`; the
 `AllowedOrigins` default must change from `["*"]` to a configured list in the same slice.
 
-**Rollout.** `Identity:Enforce=false` (default) keeps every current call path working, resolving
-unauthenticated interactive requests to the legacy principal of section 8.4. `Identity:Enforce=true`
-requires a validated token on every `/api/*` route. This mirrors the `AUTH_ENFORCE` deploy
-discipline in `docs/deployment/AUTH_ENFORCE.md`: deploy with enforcement off, onboard callers, then
-flip.
+**Rollout, and the enforcement flag.**
+
+> **Decision: `Identity:Enforce` is a single, process-wide flag - global, not per tenant.**
+> This supersedes the per-tenant `IDENTITY_ENFORCE` described in
+> [#237](https://github.com/achieveai/LmDotnetTools/issues/237). Enforcement is a property of the
+> deployment, not of a customer.
+
+`Identity:Enforce=false` (the default) keeps every current call path working, resolving
+unauthenticated interactive requests to the legacy principal of section 8.5.
+`Identity:Enforce=true` requires a validated token on every `/api/*` route. This mirrors the
+`AUTH_ENFORCE` deploy discipline in `docs/deployment/AUTH_ENFORCE.md`: deploy with enforcement off,
+onboard callers, then flip.
+
+The consequence to be aware of is that a shared deployment cannot stage the flip customer by
+customer - when it flips, it flips for everyone in that process. Staging across customers is done
+by deploying them to separate instances, not by a per-tenant flag. That is the trade accepted in
+exchange for one unambiguous global answer to "is this deployment enforcing?", which a per-tenant
+flag cannot give: with per-tenant flags, no single check tells an operator whether the system as a
+whole is safe.
 
 ### 4.2 Service-to-service - app credential plus host-asserted OBO JWT
 
@@ -563,6 +581,76 @@ runs. `IConversationStore`, `IWorkspaceStore`, `IChatModeStore`, `MultiTurnAgent
 `UsageLedger`, and the authorization policy of section 7 see only `Principal`. None of them can
 observe which door was used, except through the audit-only `Principal.Source`.
 
+### 4.4 Tenant provisioning and the sign-in rejection path
+
+> **Decision: tenants are explicitly provisioned.** An operator creates the tenant and names its
+> first admin *before* anyone from that organisation can sign in. A first sign-in from an unknown
+> Entra tenant is a **rejection**, never an auto-create.
+
+Auto-creating a tenant on first sign-in would mean any person in any Entra tenant on earth could
+mint themselves an organisation on our platform by clicking sign in. Provisioning is the commercial
+onboarding step; it is deliberately manual.
+
+**Provisioning surface: an operator API endpoint.**
+
+```
+POST /api/admin/tenants
+X-S2S-Auth: <operator secret>
+Content-Type: application/json
+
+{
+  "tenantId":      "tnt_acme",
+  "entraTenantId": "<entra tid guid>",
+  "displayName":   "Acme Corp",
+  "firstAdminUpn": "dana@acme.example"
+}
+```
+
+Chosen over the two alternatives on what the repo already has:
+
+- **Config seed** would match the `FileChatModeStore` / `FileWorkspaceStore` precedent, but tenant
+  creation is a per-customer onboarding event and a config seed makes every new customer a
+  redeploy. Rejected for production; retained only as `Identity:SeedTenants`, applied idempotently
+  at startup and **only when `Identity:Enforce=false`**, for development and single-tenant installs.
+- **A CLI command** has no precedent - the sample ships no admin CLI, so this would be a new
+  surface to build, document, and secure.
+- **An API endpoint** reuses `[InboundS2SAuth]`, which already provides an authenticated
+  non-user surface with a constant-time-compared operator secret (2.3).
+
+**Why it cannot be authenticated as a tenant admin.** There is no admin until the tenant exists.
+Tenant creation therefore sits on the *operator* trust boundary (`X-S2S-Auth`), not the Entra
+sign-in boundary.
+
+**Two traps in reusing `[InboundS2SAuth]` here, both of which must be closed explicitly:**
+
+1. The guard is **marker-gated** (2.3) - `IsServiceToServiceRequest` returns false when neither
+   `X-S2S-Auth` nor `X-Sbx-App-Id` is present, and the request passes through. On
+   `TenantsController` that would let an unauthenticated browser request create a tenant. This
+   controller must require the header **unconditionally**, not inherit the marker gate.
+2. The guard **disables itself entirely** when `Auth:S2SInboundSecret` is blank. On this controller
+   that must be a hard `503`, not an open door: tenant provisioning fails closed when no operator
+   secret is configured.
+
+**The sign-in rejection path.** A token that validates but whose `tid` has no `active` row in
+`tenants`:
+
+- **Response:** `403` with `{ "error": "tenant_not_provisioned", "code": "tenant_not_provisioned" }`.
+  A suspended tenant gets the same shape with `code = "tenant_suspended"` so support can tell the
+  two apart.
+- **What the user sees:** a dedicated "your organisation is not set up yet" screen naming a contact
+  route. Explicitly **not** a redirect back to Entra. A `401`-style re-authentication redirect would
+  loop forever, because signing in again cannot fix a missing tenant - that loop is the specific
+  failure mode this path exists to avoid.
+- **What is logged:** one Warning-level audit record (7.7) carrying `entraTenantId`, `oid`,
+  `preferred_username`, `appId`, and the correlation id. This is the signal an operator uses to
+  notice that someone is waiting to be onboarded. The raw token is never logged. Records are
+  deduplicated per `tid` over a short window so a client retry loop cannot flood the log.
+
+**Binding the first admin.** On a user's first successful sign-in, if a `tenant_admins` row for that
+tenant matches their lower-cased `preferred_username` and still has `user_id IS NULL`, `user_id` is
+bound to `{tid}:{oid}` and `bound_at` is stamped. That principal then carries role `admin`. Once
+bound, the UPN is never consulted again (8.2).
+
 ---
 
 ## 5. Token validation rules for the OBO JWT
@@ -589,9 +677,9 @@ Ordered, and short-circuiting:
    resource URI.
 5. **Signature** against the key identified by `kid` (5.2).
 6. **Lifetime.** `nbf` and `exp` with the clock skew of 5.3.
-7. **Tenant.** `tid` must be present and must be in `Identity:AllowedTenants`. A well-signed token
-   from a tenant we do not serve is `403`, not `401` - it authenticated fine, it is just not a
-   customer.
+7. **Tenant.** `tid` must be present and must resolve to an `active` row in the `tenants` table
+   (8.2). A well-signed token from a tenant we have not provisioned is `403`, not `401` - it
+   authenticated fine, it is just not a customer. Resolution never creates a tenant (4.4).
 8. **Subject.** `oid` must be present; the user id is `{tid}:{oid}` (3.3).
 9. **Replay.** `jti` must be present and unseen (5.4).
 10. **Actor chain.** If `act` is present, record it into `DelegationChain` (5.5).
@@ -610,7 +698,7 @@ could assert users in every tenant.
 "Identity": {
   "Apps": {
     "acme-portal": {
-      "TenantId": "<tenant-guid>",
+      "TenantId": "tnt_acme",
       "Issuer": "https://login.microsoftonline.com/{tenantid}/v2.0",
       "Audience": "<api client id>",
       "JwksUri": "https://login.microsoftonline.com/<tenant>/discovery/v2.0/keys"
@@ -618,6 +706,9 @@ could assert users in every tenant.
   }
 }
 ```
+
+`TenantId` here is our internal tenant id (3.3), so an app registration is onboarded to a tenant we
+have already provisioned; it is the value step 11 of 5.1 compares against.
 
 `jwks_uri` is resolved from the issuer's OIDC discovery document at
 `{issuer}/.well-known/openid-configuration` rather than hardcoded, because the path is not
@@ -660,8 +751,19 @@ event, not a routine denial - a replay is evidence, and a log line that looks li
 moment the API runs more than one replica, because a replay directed at a second instance would
 succeed. The durable, shared implementation depends on the coordination core (lease, fence, CAS
 store) delivered by [#236](https://github.com/achieveai/LmDotnetTools/issues/236). Until #236 lands,
-a multi-instance deployment must either use sticky routing or accept the gap explicitly. Recorded
-as OQ-4.
+a multi-instance deployment must either use sticky routing or accept the gap explicitly.
+
+> **Deployment limitation - read this before adding a replica.** The replay defence is held in
+> process memory. A second replica behind a load balancer does not weaken it a little; it removes
+> it, because the attacker's replay simply needs to land on the instance that has not seen the
+> `jti`. Until #236's coordination core provides a shared CAS store, a deployment running more than
+> one replica MUST either pin a caller to one instance or accept that OBO tokens are replayable
+> within their lifetime.
+
+So that this cannot be missed by someone who never reads this document, the replay store reports
+itself at runtime: the diagnostics payload exposes `identity.replayStore` as `in-memory` or
+`shared`, and startup logs one Warning when the value is `in-memory`. A configuration flag alone
+would not do - the operator adding a replica is rarely the person who configured identity.
 
 ### 5.5 The `act` claim
 
@@ -842,7 +944,7 @@ the narrowest door.
 2. **Named users only.** A grant names a user id. No link sharing, no org-wide-by-default.
 3. **Tenant is an outer boundary, not a permission.** Every query filters on `tenant_id` first. A
    cross-tenant read is impossible by construction, not by policy.
-4. **Absent means denied.** A resource with no owner is not public; see the migration policy in 8.4.
+4. **Absent means denied.** A resource with no owner is not public; see the migration policy in 8.5.
 5. **Not-found, not forbidden.** A read of a resource in another tenant, or one the principal has
    no grant on, returns `404`. This matches the gateway's existing uniform-404 cross-app behaviour
    and avoids confirming that an id exists. A *write* to a resource the principal can read but not
@@ -940,7 +1042,7 @@ Separately, `ListThreadsAsync(limit, offset, ct)`
 (`src/LmMultiTurn/Persistence/IConversationStore.cs:115`) paginates by offset over
 `last_updated DESC`, a **mutable** sort key: a conversation touched between page 1 and page 2 moves
 and a row is skipped. Adding the owner filter does not cause this, but it does make it more
-visible. Recorded as OQ-5.
+visible. Recorded as OQ-2.
 
 ### 7.6 The pool guard gains a principal dimension
 
@@ -953,6 +1055,54 @@ to `409` with `code = "principal_conflict"` alongside the existing `caller_crede
 This is what makes the guard mean something in the UI, where today both sides are `null` and
 therefore always match (2.2).
 
+### 7.7 Audit records
+
+> **Decision: P1 writes audit records to the existing structured logs. They migrate to P4's durable
+> outbox when that exists.**
+
+#237 routes audit through P4's outbox. P4 does not exist, and blocking every authorization decision
+in P1 on a pillar that has not started would be the wrong trade. The interim costs nothing to build:
+the repository already runs Serilog with `CompactJsonFormatter` writing structured JSONL, and those
+logs are already queried with DuckDB (see `CLAUDE.md`).
+
+**What makes the later migration mechanical** is that the interim must not be ad-hoc logging at call
+sites. Every record goes through one sink:
+
+```csharp
+public interface IAuditSink { void Write(AuditRecord record); }
+```
+
+with a fixed field set - no call site may add or omit fields:
+
+| Field | Source |
+|---|---|
+| `decisionId` | new GUID per decision |
+| `timestamp` | `TimeProvider.GetUtcNow()` |
+| `actorKind`, `actorId` | `Principal.Actor` |
+| `onBehalfOfKind`, `onBehalfOfId` | `Principal.OnBehalfOf`, null when absent |
+| `tenantId`, `appId` | `Principal` |
+| `source` | `Principal.Source` |
+| `permission` | the `AccessAction` |
+| `resourceType`, `resourceId` | the `ResourceRef` |
+| `decision` | `allow` or `deny` |
+| `reason` | `AccessDecision.Reason` (7.4) |
+| `correlationId` | ambient request/run correlation id |
+| `eventClass` | `routine` or `security` (5.4 replays, 5.1 step 11 tenant mismatches) |
+
+Records are emitted under a fixed `SourceContext` of `Audit`, so a query selects audit lines by that
+property rather than by matching message templates. Migrating to P4 then means reimplementing
+`IAuditSink` against the outbox and changing nothing else.
+
+Two rules carried over from #237 unchanged: **both allows and denies are recorded** - a deny-only
+trail cannot answer "was this ever attempted successfully?" - and records are **not redacted at
+rest**, because redaction is applied per viewer at read time and storing pre-redacted audit destroys
+the record an incident review needs.
+
+**The honest limitation.** Log retention is an operational setting, not an audit retention
+guarantee, and structured logs are rotated and archived on a schedule chosen for debugging rather
+than for compliance. Until P4's outbox lands, this is a diagnostic-grade trail and must not be
+described to a customer as a compliance-grade one.
+
 ---
 
 ## 8. Data model changes
@@ -964,16 +1114,65 @@ migration runner. Recommendation: `PRAGMA user_version`, an ordered array of mig
 applied in a single transaction with `user_version` bumped in that same transaction.
 
 The existing `CREATE TABLE IF NOT EXISTS` block becomes migration step 1, so a database created by
-an earlier build is recognised as already at version 1 without re-running DDL.
+an earlier build is recognised as already at version 1 without re-running DDL. Steps 2-5 then add,
+in order: the tenant tables (8.2), the ownership columns (8.3), `resource_grants` (8.4), and
+`usage_rollup` (9.2).
 
 File changed: `src/LmMultiTurn/Persistence/Sqlite/SqliteSchemaInitializer.cs`.
 
-This is genuinely part of slice #302 and is the reason that slice is larger than it looks.
+**This moved.** The runner was originally scoped to slice #302, but explicit tenant provisioning
+(4.4) puts the `tenants` table in slice #301, and that table needs the runner. The runner is
+therefore built in slice 1; slice 2 only appends steps to it.
 
-### 8.2 New columns on `thread_metadata`
+### 8.2 New tables: `tenants` and `tenant_admins`
+
+Tenants are **explicitly provisioned** (4.4), so these tables exist from slice 1 - they are the
+thing every other ownership column points at.
 
 ```sql
 -- migration step 2
+CREATE TABLE IF NOT EXISTS tenants (
+    tenant_id       TEXT PRIMARY KEY,   -- our stable internal id, e.g. 'tnt_acme'
+    entra_tenant_id TEXT,               -- Entra 'tid' GUID; NULL only for the legacy tenant
+    display_name    TEXT NOT NULL,
+    status          TEXT NOT NULL,      -- 'active' | 'suspended'
+    created_at      INTEGER NOT NULL,
+    created_by      TEXT NOT NULL       -- operator identifier from the provisioning call
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_tenants_entra
+  ON tenants (entra_tenant_id) WHERE entra_tenant_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS tenant_admins (
+    tenant_id  TEXT NOT NULL,
+    upn        TEXT NOT NULL,           -- lower-cased UPN, known before first sign-in
+    user_id    TEXT,                    -- '{tid}:{oid}', NULL until first sign-in binds it
+    granted_at INTEGER NOT NULL,
+    granted_by TEXT NOT NULL,
+    bound_at   INTEGER,
+    PRIMARY KEY (tenant_id, upn)
+);
+CREATE INDEX IF NOT EXISTS ix_tenant_admins_user ON tenant_admins (user_id);
+```
+
+**The Entra-to-internal mapping is `tenants.entra_tenant_id` -> `tenants.tenant_id`.** Sign-in reads
+the token's `tid`, finds the row, and puts `tenant_id` into `Principal.TenantId` (3.3). The partial
+unique index makes it impossible for two tenants to claim the same Entra directory, while still
+permitting the one legacy row that has no Entra directory behind it at all (8.5).
+
+`entra_tenant_id` is nullable for exactly that reason - the legacy tenant predates Entra. Every
+*provisioned* tenant has one.
+
+**Why `tenant_admins` is keyed by UPN, not by user id.** The first admin must be named *before* they
+have ever signed in, so their `oid` is not yet knowable. The operator supplies a UPN or verified
+email; on that user's first successful sign-in the row's `user_id` is bound from `{tid}:{oid}` and
+`bound_at` is stamped. Matching uses the lower-cased `preferred_username` claim and happens exactly
+once. This is the only place `preferred_username` is trusted, and it is trusted only to bind - it is
+never the durable key, because it is mutable (3.3).
+
+### 8.3 New columns on `thread_metadata`
+
+```sql
+-- migration step 3
 ALTER TABLE thread_metadata ADD COLUMN tenant_id     TEXT;
 ALTER TABLE thread_metadata ADD COLUMN owner_user_id TEXT;
 ALTER TABLE thread_metadata ADD COLUMN owner_app_id  TEXT;
@@ -982,7 +1181,7 @@ CREATE INDEX IF NOT EXISTS idx_thread_metadata_owner
 ```
 
 Nullable, because SQLite cannot add a `NOT NULL` column without a default and because null is the
-signal for "legacy, unclaimed" (8.4). The index exactly matches the `WHERE` and `ORDER BY` of 7.5.
+signal for "legacy, unclaimed" (8.5). The index exactly matches the `WHERE` and `ORDER BY` of 7.5.
 
 `owner_app_id` records which app created the conversation - it is the durable form of the
 `CallerCredential` freeze, which today exists only in the in-memory pool and is lost on restart.
@@ -994,10 +1193,10 @@ Corresponding fields are added to `ThreadMetadata`
 (`src/LmMultiTurn/Persistence/ThreadMetadata.cs`) as first-class properties - **not** into
 `Properties`, which is serialized into `metadata_json` and cannot be filtered in SQL.
 
-### 8.3 New table: `resource_grants`
+### 8.4 New table: `resource_grants`
 
 ```sql
--- migration step 3
+-- migration step 4
 CREATE TABLE IF NOT EXISTS resource_grants (
     tenant_id     TEXT NOT NULL,
     resource_type TEXT NOT NULL,          -- 'conversation' | 'workspace' | 'mode'
@@ -1021,11 +1220,11 @@ painful.
 One table serves all three resource types, so #302, #303, and #304 share the sharing UI, the policy
 code, and the audit shape rather than growing three near-identical mechanisms.
 
-### 8.4 Migration of existing rows
+### 8.5 Migration of existing rows
 
 The hard question: what tenant and owner do conversations that already exist get?
 
-**They get a tenant and no owner.** Migration step 2 backfills:
+**They get a tenant and no owner.** Migration step 3 backfills:
 
 ```sql
 UPDATE thread_metadata SET tenant_id = @legacyTenantId WHERE tenant_id IS NULL;
@@ -1033,6 +1232,12 @@ UPDATE thread_metadata SET tenant_id = @legacyTenantId WHERE tenant_id IS NULL;
 
 where `@legacyTenantId` comes from `Identity:LegacyTenantId`, defaulting to the literal `"legacy"`.
 `owner_user_id` stays `NULL`, meaning **unclaimed**.
+
+Because tenants are now explicit rows (8.2), migration step 3 also **inserts the legacy tenant
+itself** - `tenant_id='legacy'`, `entra_tenant_id=NULL`, `status='active'` - before backfilling.
+Without that insert the backfilled rows would reference a tenant that does not exist and every
+legacy conversation would be unreadable by everyone. Because it has no Entra directory, nobody can
+ever sign in *as* the legacy tenant; its rows are reachable only through the policy below.
 
 Visibility of unclaimed rows is governed by `Identity:LegacyConversationPolicy`:
 
@@ -1050,7 +1255,7 @@ The migration is **additive and reversible by ignoring the columns**: with `Iden
 the new columns are written but never used as a filter, so rolling back to the previous build reads
 the same database successfully.
 
-### 8.5 Workspaces and chat modes - fields, not columns
+### 8.6 Workspaces and chat modes - fields, not columns
 
 These are JSON documents (2.6), so there is no DDL:
 
@@ -1071,18 +1276,20 @@ readable by everyone and writable by no one.
 `FileChatModeStore` is registered as a process-wide singleton (`Program.cs:597`) over one flat file.
 Per-user modes make that file a contention point. It stays a singleton in #304 - the file is small
 and writes are rare - but this is the point at which moving modes into SQLite becomes worth
-reconsidering (OQ-6).
+reconsidering (OQ-3).
 
-### 8.6 Full list of files that change
+### 8.7 Full list of files that change
 
 | File | Change |
 |---|---|
 | `src/LmCore/Identity/Principal.cs` | new - `Principal`, `PrincipalRef`, `PrincipalKind`, `PrincipalSource` |
+| `src/LmCore/Identity/ITenantStore.cs` | new - tenant lookup and admin binding (8.2) |
 | `src/LmCore/Identity/IResourceAccessPolicy.cs` | new - `ResourceRef`, `AccessAction`, `AccessDecision` |
 | `src/LmCore/Models/UsageRecord.cs` | add `TenantId`, `PrincipalId`, `AppId` |
 | `src/LmMultiTurn/Persistence/ThreadMetadata.cs` | add `TenantId`, `OwnerUserId`, `OwnerAppId` |
 | `src/LmMultiTurn/Persistence/IConversationStore.cs` | `ListThreadsAsync` takes a `Principal` |
-| `src/LmMultiTurn/Persistence/Sqlite/SqliteSchemaInitializer.cs` | migration runner + steps 2, 3, 4 |
+| `src/LmMultiTurn/Persistence/Sqlite/SqliteSchemaInitializer.cs` | migration runner (slice 1) + steps 2, 3, 4, 5 |
+| `src/LmMultiTurn/Persistence/Sqlite/SqliteTenantStore.cs` | new - `tenants` / `tenant_admins` reads and writes |
 | `src/LmMultiTurn/Persistence/Sqlite/SqliteConversationStore.cs` | read/write new columns; scoped list query |
 | `src/LmMultiTurn/Persistence/FileConversationStore.cs`, `InMemoryConversationStore.cs` | same surface, in-memory/file filter |
 | `src/LmMultiTurn/UsageAccounting/UsageLedger.cs` | carry principal onto records |
@@ -1096,10 +1303,11 @@ reconsidering (OQ-6).
 | `samples/LmStreaming.Sample/Controllers/WorkspacesController.cs` | scope all 4 endpoints |
 | `samples/LmStreaming.Sample/Controllers/ChatModesController.cs` | **add `[InboundS2SAuth]`**; scope endpoints |
 | `samples/LmStreaming.Sample/Controllers/EmbedTokensController.cs` | new - `POST /api/embed/tokens` |
+| `samples/LmStreaming.Sample/Controllers/TenantsController.cs` | new - operator tenant provisioning (4.4) |
 | `samples/LmStreaming.Sample/Models/Workspace.cs`, `Models/ChatMode.cs` | ownership fields |
 | `samples/LmStreaming.Sample/Persistence/FileWorkspaceStore.cs`, `FileChatModeStore.cs`, `IWorkspaceStore.cs`, `IChatModeStore.cs` | ownership + filtering |
 | `samples/LmStreaming.Sample/ClientApp/src/` | MSAL Browser sign-in; bearer on every fetch; sharing UI |
-| `docs/deployment/AUTH_ENFORCE.md` | document `Identity:Enforce` beside `AUTH_ENFORCE` |
+| `docs/deployment/AUTH_ENFORCE.md` | document `Identity:Enforce` and tenant provisioning beside `AUTH_ENFORCE` |
 
 ---
 
@@ -1141,7 +1349,7 @@ Usage is written today into `thread_metadata.metadata_json` under `usage.aggrega
 every thread's JSON.
 
 ```sql
--- migration step 4
+-- migration step 5
 CREATE TABLE IF NOT EXISTS usage_rollup (
     tenant_id          TEXT    NOT NULL,
     principal_id       TEXT,
@@ -1250,20 +1458,39 @@ Ordered. Each is one PR. `Identity:Enforce=false` throughout, flipped only after
 `Microsoft.Identity.Web` in the sample; `AddMicrosoftIdentityWebApi` plus `UseAuthentication` and
 `UseAuthorization` at `Program.cs:~2073`. `IPrincipalAccessor` and `PrincipalFactory`. MSAL Browser
 sign-in in ClientApp with a bearer header on every fetch. `AllowedOrigins` default changed off
-`["*"]`. The `Identity:Enforce` flag, defaulting false. **No store or schema change.**
+`["*"]`. The global `Identity:Enforce` flag, defaulting false. `IAuditSink` over structured logs
+(7.7).
+
+Explicit provisioning (4.4) adds the following to this slice, which earlier drafts deferred:
+
+- The `PRAGMA user_version` migration runner (8.1) - it moves here from slice 2, because the tenant
+  tables need it.
+- Migration step 2: `tenants` and `tenant_admins` (8.2), plus the legacy tenant row.
+- `ITenantStore` / `SqliteTenantStore`; `tid` -> internal tenant id resolution on every sign-in.
+- `TenantsController` with `POST /api/admin/tenants`, guarded unconditionally by the operator
+  secret and failing closed (`503`) when that secret is unset - both traps named in 4.4.
+- `Identity:SeedTenants`, applied idempotently at startup and only when `Enforce=false`.
+- The rejection screen in ClientApp for `tenant_not_provisioned` / `tenant_suspended`.
+- First-admin binding from `preferred_username` on first sign-in.
 
 **Depends on.** Nothing.
 
-**Verified by.** A signed-in request resolves to
-`Principal{Source=Interactive, Actor=(EndUser, "{tid}:{oid}")}`. A token from a `tid` outside
-`Identity:AllowedTenants` is `403`. With `Enforce=false` every existing integration test passes
-unchanged - this is the regression gate for the whole pillar. With `Enforce=true` an anonymous
-`/api/conversations` call is `401`.
+**Verified by.** A signed-in user from a provisioned tenant resolves to
+`Principal{Source=Interactive, Actor=(EndUser, "{tid}:{oid}"), TenantId="tnt_..."}`. A validly
+signed token from an **unprovisioned** Entra tenant is `403` `tenant_not_provisioned`, is audited,
+and does **not** create a tenant - asserted by row count before and after. A suspended tenant is
+`403` `tenant_suspended`. The rejection response does not redirect to Entra, so a client cannot
+enter a sign-in loop. `POST /api/admin/tenants` without the operator secret is `401`; with the
+secret unconfigured it is `503`, never success. The named first admin, on first sign-in, is bound
+to `{tid}:{oid}` and carries role `admin`; a second sign-in does not rebind. With `Enforce=false`
+every existing integration test passes unchanged - this is the regression gate for the whole
+pillar. With `Enforce=true` an anonymous `/api/conversations` call is `401`.
 
 ### Slice 2 - [#302] Conversation ownership
 
-**Ships.** The `PRAGMA user_version` migration runner (8.1) - the bulk of this slice. Migration
-steps 2 and 3: owner columns on `thread_metadata`, the `resource_grants` table, the owner index.
+**Ships.** Migration steps 3 and 4 - owner columns on `thread_metadata`, the `resource_grants`
+table, the owner index. The migration runner itself already exists from slice 1, which makes this
+slice smaller than it was before tenant provisioning moved the runner earlier.
 `ThreadMetadata` fields. `ListThreadsAsync(Principal, ...)` with the SQL predicate of 7.5 across all
 three store implementations. Ownership written at `POST /api/conversations`
 (`ConversationsController.cs:221`), which also closes #162. `PrincipalConflictException` and the
@@ -1315,8 +1542,9 @@ body.
 replay set, `act`-chain mapping, and the tenant-agreement check (5.1 step 11).
 `InboundS2SAuthAttribute` extended per 4.2, including the no-fallback rule on an invalid OBO token.
 
-**Depends on.** Slice 1, for `Principal`. Independent of slices 2-4, so it can run in parallel with
-them.
+**Depends on.** Slice 1, for `Principal` and for the `tenants` table that step 7 of 5.1 resolves
+against. Still independent of slices 2-4, so it can run in parallel with them - explicit
+provisioning moved the tenant registry *earlier*, into slice 1, so it did not add a dependency here.
 
 **Verified by.** A request with a valid app credential and a valid OBO JWT yields
 `Principal{Actor=(App,...), OnBehalfOf=(EndUser,...), Source=HostAsserted}`. An app holding a scope
@@ -1328,7 +1556,7 @@ security-classified audit record. A token whose `tid` differs from the app's onb
 ### Slice 6 - [#306] Usage attribution and the tenant-admin view
 
 **Ships.** `TenantId`, `PrincipalId`, `AppId` on `UsageRecord`; population from
-`AgentEntry.OwnerPrincipal`; migration step 4 creating `usage_rollup`; the `UPSERT` projection;
+`AgentEntry.OwnerPrincipal`; migration step 5 creating `usage_rollup`; the `UPSERT` projection;
 `GET /api/admin/usage`; the admin UI panel.
 
 **Depends on.** Slices 1, 2, and 5 - a mode-B principal must exist before spend can be attributed
@@ -1371,55 +1599,40 @@ the general API audience is rejected.
 
 ## 12. Open questions
 
-**OQ-1 - How is a tenant created, and who is its first admin?**
-This spec assumes `Identity:AllowedTenants` is operator-maintained configuration. That does not
-scale past a handful of customers and has no self-service story. Whether tenant onboarding is an
-admin API, a provisioning script, or driven by an Entra admin-consent callback is undecided, and it
-determines whether slice 1 needs a `tenants` table.
+Four of the nine questions in the first draft are now decided and have moved into the body of this
+spec: `Identity:Enforce` is global (4.1), tenants are explicitly provisioned (4.4), the `jti` replay
+store is in-memory and single-replica for now (5.4), and audit goes to structured logs until P4
+exists (7.7). The five below are still open.
 
-**OQ-2 - Is `Identity:Enforce` global or per tenant?**
-#237 specifies per-tenant enforcement. This spec specifies a single process-wide flag, which is
-simpler but cannot stage a rollout across customers on shared infrastructure. Per-tenant
-enforcement needs the tenant record of OQ-1, so the two are decided together.
-
-**OQ-3 - What happens to a conversation when its owner leaves the tenant?**
+**OQ-1 - What happens to a conversation when its owner leaves the tenant?**
 Options: transfer to a tenant admin, soft-delete, or leave it orphaned and admin-visible. This
-affects whether `owner_user_id` needs a foreign key to a users table, and whether a `users` table
-is needed at all - this spec stores only the opaque `{tid}:{oid}` string with no user record.
+affects whether `owner_user_id` needs a foreign key to a users table. Note that provisioning has
+partly changed the ground here: `tenant_admins` (8.2) now stores a per-user row, but only for
+admins, so there is still no general user record for an ordinary member - only the opaque
+`{tid}:{oid}` string on the rows they own.
 
-**OQ-4 - Where does the `jti` replay set live in a multi-instance deployment?**
-Section 5.4 specifies in-memory, which is correct for one instance and silently wrong for several -
-a replay directed at a second replica would succeed. The durable shared store arrives with the
-coordination core in #236. Until then: sticky routing, or an accepted and documented gap. Someone
-must choose.
-
-**OQ-5 - Offset pagination over a mutable sort key.**
+**OQ-2 - Offset pagination over a mutable sort key.**
 `ListThreadsAsync(limit, offset, ct)` (`src/LmMultiTurn/Persistence/IConversationStore.cs:115`)
 orders by `last_updated DESC`, which changes while a user pages, so rows are skipped. Pre-existing,
 not caused by P1. Fixing it means a keyset cursor and an interface change; doing it inside slice 2 -
 which already changes that signature - is cheaper than doing it later, but it widens the slice.
 
-**OQ-6 - Do modes and workspaces move into SQLite?**
+**OQ-3 - Do modes and workspaces move into SQLite?**
 Both are single flat JSON files behind process-wide singletons (2.6). Per-user data multiplies the
 entry count and makes the whole-file rewrite a contention point. Slices 3 and 4 keep the file
 stores. The threshold at which that stops being acceptable has not been measured.
 
-**OQ-7 - What tenant does a mode-C daemon operate in?**
+**OQ-4 - What tenant does a mode-C daemon operate in?**
 `CodeReviewDaemon.Sample` authenticates with an app credential and asserts no human. Its `Principal`
 is `Source=AppOnly` with `EffectiveUserId == null`, so its spend attributes to a tenant and an app
 but to no user. Whether that appears in the admin view as a first-class "service" row, or is
-excluded from per-user reporting, is a product decision that section 9.3 does not settle.
+excluded from per-user reporting, is a product decision that section 9.3 does not settle. Explicit
+provisioning sharpens this: a daemon's app registration must name a provisioned tenant before it can
+run at all, so someone has to decide whether internal daemons get their own tenant row.
 
-**OQ-8 - Are agent principals minted per run?**
+**OQ-5 - Are agent principals minted per run?**
 #237 specifies `PrincipalKind.Agent` with `OnBehalfOf` set to the initiating human, so audit can
 distinguish "the agent did X for Alice" from "Alice did X". This spec defines the enum value but no
 slice mints one - slices 1-7 only ever produce `EndUser`, `App`, or `Service` actors. Whether
 sub-agent and workflow runs get their own `Agent` principal, and whether that principal is
 persisted, is deferred and should be settled before P2 builds on it.
-
-**OQ-9 - Does the audit trail get its own store in P1?**
-Sections 5.4, 7.4, and 7.3 all require audit records, and #237 routes them through P4's outbox.
-P4 does not exist yet. Whether P1 writes audit to the existing structured logs (queryable via the
-DuckDB recipe in `CLAUDE.md`) as an interim, or introduces a durable table now, is unresolved. The
-interim choice is cheap; the risk is that a log-only audit is not retained long enough to answer an
-incident question months later.
