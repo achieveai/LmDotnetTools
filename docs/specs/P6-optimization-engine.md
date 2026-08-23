@@ -448,10 +448,13 @@ public sealed class JudgeGauntlet
    propagating; a judge that returns gives a `Ballot`.
 4. `aggregator.Aggregate(...)` with an `AggregationContext` carrying the options, the reliability
    snapshot, and the faults.
-5. **If that verdict is an unresolved `Split` and `options.ArbiterJudge` is configured**, await one
-   `JudgeAsync` on the arbiter and call `aggregator.Aggregate(...)` a **second** time — with the
-   arbiter's ballot appended to `ballots`, or, if the arbiter faulted, with a `JudgeFault` for it
-   appended to `context.Faults`. The second verdict is the emitted one.
+5. **If that verdict is an unresolved `Split` and the arbiter condition of §2.12.3 rule 1 holds**,
+   await one `JudgeAsync` on the arbiter and call `aggregator.Aggregate(...)` a **second** time — with
+   the arbiter's ballot appended to `ballots`, or, if the arbiter faulted, with a `JudgeFault` for it
+   appended to `context.Faults`. The second verdict is the emitted one. **When that condition does not
+   hold, no arbiter call is made and the second reduction does not run** — the step-4 `Split` is the
+   emitted verdict. The condition is stated once, in §2.12.3 rule 1; this step executes it and does not
+   restate it, for the same reason step 2 defers the eligibility filter to §2.12.1.
 
 **The escalation boundary is `RunAsync`, not the aggregator.** `Aggregate` is synchronous by design:
 it is a pure reduction over ballots and cannot await an `IJudge`, so the one asynchronous call
@@ -687,6 +690,14 @@ the provenance it would need, since `Degradation` is persisted per verdict.
 `ArbiterUnavailable` is the straddle case where escalation was configured but the arbiter could not
 be reached: the outcome is `Split`, and the reason distinguishes "we chose not to escalate" from "we
 tried and could not". That `Degradation` is non-null is stated once, on `Verdict` (§2.7).
+
+**"We chose not to escalate" covers both arms of §2.12.3 rule 1 not holding** — no arbiter configured,
+and an arbiter whose family is the generator's. Both make no call, so both are `Degradation = None`
+with `"split:unresolved"`, and they are deliberately **not** given separate values. The discriminator
+is already persisted: arbiter identity is fixed for a run (it is part of `EvaluatorConfigHash`,
+§5.2), so the ineligible arm is exactly the straddle rows whose `generator_family` (§6.1) equals that
+arbiter's family. That is the same derived-relation shape §3.2 uses for self-preference itself, which
+is why neither needs a column of its own.
 
 ## 3. Bias controls
 
@@ -1547,7 +1558,9 @@ ballot survives the abstain filter.
 The two-panel logic of §2.12 needs its own cases: same-side scores decide without invoking the
 arbiter (asserted against a call-counting arbiter fake); opposite-side scores escalate exactly once;
 an unavailable arbiter yields `Split` with `Degradation = ArbiterUnavailable`, distinguishable from
-the not-configured case; one judge faulting yields a verdict marked
+the not-configured case; a straddle with an arbiter configured **in the generator's family** makes
+**zero** arbiter calls and yields `"split:unresolved"` with `Degradation = None` — the case that has to
+break if step 5 ever escalates on configuration alone; one judge faulting yields a verdict marked
 `SingleJudge` with a **null** `Dispersion` (null, not 0.0 — a lone judge is not a panel in perfect
 agreement); excluding the generator's family down
 to one judge produces a `PanelComposition.Degraded` rather than throwing; and a single-judge
