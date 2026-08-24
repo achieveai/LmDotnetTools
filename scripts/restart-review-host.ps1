@@ -46,6 +46,22 @@ param(
     # Where the redirected stdout/stderr logs land. Gitignored on purpose: this directory
     # carries multi-GB live state.
     [string]$RunDir = "B:\sources\LmDotnetTools\.run",
+    # The process name this script owns on $Port. Anything ELSE listening there is a foreign
+    # service: it is reported and left alone rather than terminated, because a port collision
+    # must not become an outage of something unrelated.
+    [string]$ExpectedProcessName = "LmStreaming.Sample",
+    # Whole-operation budget for start + certification, enforced as a single deadline across
+    # every wait below. This MUST stay under ensure-services.ps1's -StartTimeoutSeconds (240s
+    # by default), which KILLS this launcher when it overruns: per-request timeouts alone let
+    # the loops compose into far longer than that, so the watchdog would kill certification in
+    # progress and leave a launched host running but unreported.
+    #
+    # The deadline is tested at the top of each loop, so a single in-flight iteration can
+    # overrun it - by at most (3s sleep + 30s request) in the collaboration poll and
+    # (2s sleep + 10s request) in the readiness wait. Worst case is therefore about
+    # 180 + 45 = 225s, which still lands inside 240s. Raising this default without raising
+    # -StartTimeoutSeconds to match reintroduces exactly the kill it exists to avoid.
+    [int]$CertifyTimeoutSeconds = 180,
     [switch]$Force,
     # Accept a host whose collaboration capability could not be verified. Off by default:
     # an unverified host is the silent-degradation case this script exists to catch, so it
@@ -154,18 +170,52 @@ catch [System.Net.WebException], [System.Net.Http.HttpRequestException] {
 # is by PORT rather than by process name: the host runs as an APPHOST
 # (LmStreaming.Sample.exe), not under dotnet.exe, so a name filter on 'dotnet' finds
 # nothing and concludes, wrongly, that the port is free.
+#
+# ESTABLISH IDENTITY BEFORE KILLING. Holding the port is a reason to look at a process, not
+# a licence to terminate it: on a port collision or a mistyped -Port this script would take
+# out an unrelated service, and the survivor check below cannot undo that - by then the
+# foreign process is already dead. So kill only what we came for, and refuse otherwise.
 $stopFailed = @()
+$foreign = @()
 Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
     Select-Object -ExpandProperty OwningProcess -Unique |
     ForEach-Object {
-        $ownerPid = $_
-        Write-Host "stopping pid $ownerPid on $Port"
-        # NOT SilentlyContinue. A stop that fails - access denied, a process we do not own,
-        # a foreign service - leaves the socket held, and the readiness loop below would
-        # then see that SURVIVING listener and call the restart a success.
+        $ownerPid = [int]$_
+
+        # Name, not Path: Path is NULL rather than an error for a process this session cannot
+        # open, so a path comparison would silently mismatch and read as foreign. A process
+        # that vanished between the socket query and here is simply gone - not our problem.
+        $owner = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
+        if ($null -eq $owner) {
+            Write-Host "pid $ownerPid on $Port exited on its own"
+            return
+        }
+        if ($owner.ProcessName -ne $ExpectedProcessName) {
+            $foreign += "$ownerPid ($($owner.ProcessName))"
+            return
+        }
+
+        Write-Host "stopping pid $ownerPid ($($owner.ProcessName)) on $Port"
+        # NOT SilentlyContinue. A stop that fails - access denied, a process we do not own -
+        # leaves the socket held, and the readiness loop below would then see that SURVIVING
+        # listener and call the restart a success.
         try { Stop-Process -Id $ownerPid -Force -ErrorAction Stop }
         catch { $stopFailed += "$ownerPid ($($_.Exception.Message))" }
     }
+
+if ($foreign.Count -gt 0) {
+    $foreign | ForEach-Object { Write-Warning "port $Port is held by a FOREIGN process: $_" }
+    if (-not $Force) {
+        throw "Refusing to restart: port $Port is held by $($foreign -join ', '), not '$ExpectedProcessName'. Killing it would take out an unrelated service. Check the port, or re-run with -Force."
+    }
+    Write-Warning "-Force given; terminating the foreign holder(s) anyway."
+    foreach ($f in $foreign) {
+        $fid = [int]($f -split ' ')[0]
+        try { Stop-Process -Id $fid -Force -ErrorAction Stop }
+        catch { $stopFailed += "$fid ($($_.Exception.Message))" }
+    }
+}
+
 Start-Sleep -Seconds 3
 
 # Never launch into an occupied port. The new host would fail to bind and exit, and
@@ -206,7 +256,14 @@ $p = Start-Process -FilePath $exe -WorkingDirectory $BinDir -PassThru -WindowSty
 # of failure this whole exercise is about.
 $listening = $false
 
-for ($i = 0; $i -lt 60; $i++) {
+# ONE deadline for everything after the launch. Bounding each request separately is not the
+# same as bounding the operation: the listen wait, the readiness wait and the collaboration
+# poll compose, and their sum has to fit inside the watchdog's patience with this script.
+$launchedAt = (Get-Date)
+$certifyDeadline = $launchedAt.AddSeconds($CertifyTimeoutSeconds)
+$outOfTime = { (Get-Date) -ge $certifyDeadline }
+
+while (-not (& $outOfTime)) {
     Start-Sleep -Seconds 2
 
     # Check OUR CHILD before the port. The old order asked "is anything listening?" first
@@ -228,7 +285,7 @@ for ($i = 0; $i -lt 60; $i++) {
             throw "port $Port is owned by pid(s) $($ownerIds -join ', '), not the host this script launched (pid $($p.Id)); refusing to report a foreign listener as a successful restart."
         }
         $listening = $true
-        Write-Host "LISTENING on $Port (pid $($p.Id)) after $($i * 2)s"
+        Write-Host "LISTENING on $Port (pid $($p.Id)) after $([int]((Get-Date) - $launchedAt).TotalSeconds)s"
 
         # Verify collaboration actually ATTACHED, rather than trusting that the
         # env bound. A live thread answers 403 unknown_target for an agent id
@@ -258,7 +315,7 @@ for ($i = 0; $i -lt 60; $i++) {
         # the host never answers would block this script forever, and with it the watchdog run
         # that invoked it. A bound is cheap; an unbounded supervision run is not recoverable.
         $ready = $false
-        for ($w = 0; $w -lt 30; $w++) {
+        while (-not (& $outOfTime)) {
             try {
                 Invoke-RestMethod -Uri "http://localhost:$Port/api/conversations" -TimeoutSec 10 | Out-Null
                 $ready = $true
@@ -267,9 +324,13 @@ for ($i = 0; $i -lt 60; $i++) {
             catch { Start-Sleep -Seconds 2 }
         }
         if (-not $ready) {
-            $collabFailure = "host listened on $Port but never answered /api/conversations within 60s, so collaboration could not be probed"
+            $collabFailure = "host listened on $Port but never answered /api/conversations within the ${CertifyTimeoutSeconds}s certification budget, so collaboration could not be probed"
         }
 
+        # Declared before the try so the cleanup below can see it even when the POST that
+        # assigns it is what failed. Under StrictMode an undeclared $tid there is an error,
+        # not an empty string.
+        $tid = $null
         try {
             if (-not $ready) { throw "host not serving" }
             $tid = (Invoke-RestMethod -Method Post -Uri "http://localhost:$Port/api/conversations" `
@@ -288,7 +349,7 @@ for ($i = 0; $i -lt 60; $i++) {
             $collabAttached = $false
             $lastCode = $null
             $probeError = $null
-            for ($k = 0; $k -lt 20; $k++) {
+            while (-not (& $outOfTime)) {
                 Start-Sleep -Seconds 3
                 try {
                     Invoke-RestMethod -Uri "http://localhost:$Port/api/conversations/$tid/agents/nonexistent/transcript" -TimeoutSec 30 | Out-Null
@@ -312,7 +373,7 @@ for ($i = 0; $i -lt 60; $i++) {
 
             if ($collabAttached) { Write-Host "collaboration ATTACHED (403 unknown_target)" }
             elseif ($lastCode -eq 200) { $collabFailure = "probe returned 200 for a nonexistent agent - the 403/404 signal no longer distinguishes anything" }
-            elseif ($lastCode -eq 404) { $collabFailure = "collaboration OFF (404 collaboration_unavailable for 60s) - the AgentCollaboration__Enabled override did not bind" }
+            elseif ($lastCode -eq 404) { $collabFailure = "collaboration OFF (404 collaboration_unavailable for the whole certification budget) - the AgentCollaboration__Enabled override did not bind" }
             elseif ($null -eq $lastCode) { $collabFailure = "probe could not reach the host: $probeError" }
             else { $collabFailure = "probe returned unexpected HTTP $lastCode" }
         }
@@ -320,6 +381,24 @@ for ($i = 0; $i -lt 60; $i++) {
         # explained why the probe could not run, the rethrow that lands here carries only its
         # own placeholder message.
         catch { if (-not $collabFailure) { $collabFailure = "probe failed before it could read a transcript: $($_.Exception.Message)" } }
+
+        # Clean up after the probe. It is a MUTATING workflow used as a capability check: it
+        # creates a real conversation and starts a real run, so without this every restart -
+        # and the watchdog restarts on its own schedule - leaves another user-visible thread
+        # behind. Eight had already accumulated on :5051 before this was added, and they are
+        # not inert: the in-flight guard at the top of this script interrogates every
+        # conversation the host reports, so probe litter makes each subsequent restart slower
+        # and gives it more chances to hit an unreadable thread and refuse.
+        #
+        # Best-effort by design, and BEFORE the certification verdict below: a cleanup failure
+        # must not change whether the restart is certified, and the throw must not skip it.
+        if ($tid) {
+            try {
+                Invoke-RestMethod -Method Delete -Uri "http://localhost:$Port/api/conversations/$tid" -TimeoutSec 15 | Out-Null
+                Write-Host "probe conversation $tid deleted"
+            }
+            catch { Write-Warning "could not delete probe conversation ${tid}: $($_.Exception.Message)" }
+        }
 
         if ($collabFailure) {
             Write-Warning "collaboration probe: $collabFailure"
@@ -355,5 +434,5 @@ for ($i = 0; $i -lt 60; $i++) {
 }
 
 if (-not $listening) {
-    throw "host never LISTENED on $Port within 120s (pid $($p.Id)); see $run\review-host-$Port.err.log"
+    throw "host never LISTENED on $Port within the ${CertifyTimeoutSeconds}s certification budget (pid $($p.Id)); see $run\review-host-$Port.err.log"
 }

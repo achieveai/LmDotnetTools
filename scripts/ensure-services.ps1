@@ -377,7 +377,27 @@ if ($MyInvocation.InvocationName -ne '.') {
     # same port down and each launch a service - exactly the duplicate this watchdog exists
     # to avoid. Whoever loses the race is a no-op, not an error: the winner is already
     # doing the work.
-    $mutex = New-Object System.Threading.Mutex($false, 'Local\LmDotnetTools.EnsureServices')
+    #
+    # GLOBAL, not Local. A 'Local\' mutex is scoped to a Windows logon SESSION, and the runs
+    # that actually collide are in different sessions: the scheduled task runs in session 0
+    # while a hand-run or RDP invocation runs in the interactive session. Under 'Local\' those
+    # two each get their own mutex, both acquire immediately, both see the same port down, and
+    # both launch a service - the exact duplicate this block claims to prevent. Restoring these
+    # services meant running the watchdog by hand while the task kept firing, so this was not a
+    # hypothetical overlap.
+    #
+    # Creating a Global mutex needs SeCreateGlobalPrivilege. If that is denied, fall back to
+    # Local and SAY SO rather than failing the run: a narrowly-scoped lock still prevents the
+    # common same-session overlap, and a watchdog that refuses to run protects nothing.
+    $mutexName = 'Global\LmDotnetTools.EnsureServices'
+    try {
+        $mutex = New-Object System.Threading.Mutex($false, $mutexName)
+    }
+    catch [System.UnauthorizedAccessException] {
+        Write-RunLog -Level WARN -Message "cannot create $mutexName (SeCreateGlobalPrivilege denied); falling back to a session-scoped lock, which does NOT exclude the scheduled task's session"
+        $mutexName = 'Local\LmDotnetTools.EnsureServices'
+        $mutex = New-Object System.Threading.Mutex($false, $mutexName)
+    }
     $acquired = $false
     try {
         try { $acquired = $mutex.WaitOne([TimeSpan]::FromSeconds(5)) }
