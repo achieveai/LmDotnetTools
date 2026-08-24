@@ -33,10 +33,15 @@
 # this file in a child pwsh rather than calling it in-process.
 
 param(
-    # Directory holding LmStreaming.Sample.exe. The historical default is the WT2 debug
-    # output and is preserved so the script still works when run bare with no arguments.
-    # The watchdog passes the published deployment instead.
-    [string]$BinDir = "B:\sources\LmDotnetTools\.worktrees\WT2\samples\LmStreaming.Sample\bin\Debug\net9.0",
+    # Directory holding LmStreaming.Sample.exe: the review host's OWN published deployment.
+    #
+    # This used to default to the WT2 worktree's bin/Debug output, which is precisely the
+    # dependency this script being tracked exists to remove - it pinned a live service to a
+    # gitignored build inside a worktree, so that worktree could never be reused or reset.
+    # It must equally NOT point at B:\published\LmStreaming.Sample: that is the interactive
+    # chat host on :5050, and starting a second instance out of its deployment makes this
+    # process exit code 0 immediately (observed 2026-08-23).
+    [string]$BinDir = "B:\published\review-host",
     [int]$Port = 5051,
     # Where the redirected stdout/stderr logs land. Gitignored on purpose: this directory
     # carries multi-GB live state.
@@ -45,6 +50,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# Matches both siblings in this directory. Without it a typo'd variable reads as $null and
+# this script silently restarts the wrong thing, or nothing.
+Set-StrictMode -Version Latest
+
 $exe = Join-Path $BinDir "LmStreaming.Sample.exe"
 if (-not (Test-Path $exe)) { throw "Host binary not found: $exe" }
 
@@ -85,7 +94,31 @@ try {
     else { Write-Host "no reviews in flight - safe to restart" }
 }
 catch [System.Net.WebException], [System.Net.Http.HttpRequestException] {
-    Write-Host "host not reachable on :$Port - nothing in flight to protect"
+    # An HTTP ERROR STATUS is not the same as an unreachable host, and conflating them is
+    # dangerous here. PowerShell 7 throws HttpResponseException for a non-2xx response, and
+    # HttpResponseException DERIVES FROM HttpRequestException - so a live host answering 500
+    # on /api/conversations lands in this same catch. Treating that as "nothing in flight"
+    # skips the guard entirely and restarts a host that may be mid-review, which is exactly
+    # the zombie this block exists to prevent (the run's persisted status stays InProgress
+    # and the daemon polls a corpse for ~30 minutes).
+    #
+    # So: only a genuine connection failure proves nothing is in flight. A reachable host we
+    # could not interrogate proves nothing either way, and must refuse without -Force.
+    $status = $null
+    if ($_.Exception.PSObject.Properties['Response'] -and $_.Exception.Response) {
+        $status = $_.Exception.Response.StatusCode
+    }
+
+    if ($null -ne $status) {
+        Write-Warning "host on :$Port answered HTTP $([int]$status) - it is UP, but its in-flight reviews could not be read."
+        if (-not $Force) {
+            throw "Refusing to restart: cannot prove no review is in flight (host answered HTTP $([int]$status)). Re-run with -Force to restart anyway."
+        }
+        Write-Warning "-Force given; restarting anyway."
+    }
+    else {
+        Write-Host "host not reachable on :$Port - nothing in flight to protect"
+    }
 }
 
 # Stop whatever holds the port. Do this by LISTENER, not by a remembered pid:

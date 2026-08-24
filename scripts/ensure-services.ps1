@@ -321,6 +321,7 @@ function Invoke-Main {
     $checked = 0
     $healthy = 0
     $started = 0
+    $wouldStart = 0
     $failed = 0
 
     Write-RunLog -Level INFO -Message ("RUN START dryRun=$($DryRun.IsPresent) reviewHostBin='$ReviewHostBinDir' daemonBin='$DaemonBinDir'")
@@ -334,8 +335,13 @@ function Invoke-Main {
         }
 
         if ($DryRun) {
+            # Counted separately from $failed on purpose. A dry run STARTS nothing, so it can
+            # never observe a start failure; scoring "down" as "failed" made -DryRun exit 1
+            # whenever any service was down, which is the normal case you run it to inspect.
+            # That makes the exit code useless exactly when you are reading it, and would make
+            # a CI or wrapper check treat a successful inspection as an error.
             Write-RunLog -Level WARN -Message ("{0}:{1} DOWN - would start (dry run; nothing launched)" -f $svc.Name, $svc.Port)
-            $failed++
+            $wouldStart++
             continue
         }
 
@@ -358,7 +364,8 @@ function Invoke-Main {
     }
 
     $exitCode = if ($failed -gt 0) { 1 } else { 0 }
-    Write-RunLog -Level INFO -Message ("RUN COMPLETE checked=$checked healthy=$healthy started=$started failed=$failed exit=$exitCode")
+    $dryPart = if ($DryRun) { " wouldStart=$wouldStart" } else { "" }
+    Write-RunLog -Level INFO -Message ("RUN COMPLETE checked=$checked healthy=$healthy started=$started$dryPart failed=$failed exit=$exitCode")
     return $exitCode
 }
 
