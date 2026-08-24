@@ -58,7 +58,7 @@ param(
     [string] $ReviewHostBinDir = 'B:\published\LmStreaming.Sample',
     [int]    $ReviewHostPort = 5051,
 
-    [string] $DaemonBinDir = 'B:\published\CodeReviewDaemon.Sample',
+    [string] $DaemonBinDir = 'B:\published\review-daemon',
     [int]    $AchieveAiPort = 5080,
     [int]    $McqdbPort = 5082,
 

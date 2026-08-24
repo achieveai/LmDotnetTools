@@ -36,7 +36,7 @@
     layer the tenant files override, so it must track the repository.
 
 .PARAMETER DestinationDirectory
-    The standalone deployment directory. Defaults to B:\published\CodeReviewDaemon.Sample,
+    The standalone deployment directory. Defaults to B:\published\review-daemon,
     the sibling of the existing B:\published\LmStreaming.Sample deployment.
 
 .PARAMETER Configuration
@@ -59,7 +59,7 @@
 
 .EXAMPLE
     ./scripts/publish-daemon.ps1
-    Publish Release and deploy to B:\published\CodeReviewDaemon.Sample.
+    Publish Release and deploy to B:\published\review-daemon.
 
 .EXAMPLE
     ./scripts/publish-daemon.ps1 -DestinationDirectory D:\scratch\daemon-test
@@ -72,7 +72,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string] $DestinationDirectory = 'B:\published\CodeReviewDaemon.Sample',
+    [string] $DestinationDirectory = 'B:\published\review-daemon',
     [ValidateSet('Debug', 'Release')]
     [string] $Configuration = 'Release',
     [string] $ProjectFile,
