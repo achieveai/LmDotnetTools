@@ -76,6 +76,10 @@ Set-StrictMode -Version Latest
 
 $exe = Join-Path $BinDir "LmStreaming.Sample.exe"
 if (-not (Test-Path $exe)) { throw "Host binary not found: $exe" }
+# Canonical form, because this is the identity every kill decision below is made against and
+# Get-Process reports a fully resolved path. A relative or differently-cased -BinDir would
+# otherwise make our own host read as foreign.
+$exe = (Resolve-Path -LiteralPath $exe).ProviderPath
 
 $run = $RunDir
 if (-not (Test-Path $run)) { New-Item -ItemType Directory -Path $run -Force | Out-Null }
@@ -182,9 +186,7 @@ Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinu
     ForEach-Object {
         $ownerPid = [int]$_
 
-        # Name, not Path: Path is NULL rather than an error for a process this session cannot
-        # open, so a path comparison would silently mismatch and read as foreign. A process
-        # that vanished between the socket query and here is simply gone - not our problem.
+        # A process that vanished between the socket query and here is simply gone.
         $owner = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
         if ($null -eq $owner) {
             Write-Host "pid $ownerPid on $Port exited on its own"
@@ -192,6 +194,24 @@ Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinu
         }
         if ($owner.ProcessName -ne $ExpectedProcessName) {
             $foreign += "$ownerPid ($($owner.ProcessName))"
+            return
+        }
+
+        # Name is not identity. A second deployment of this same host - another worktree,
+        # another published directory, an operator's own copy - carries the SAME process name,
+        # and the watchdog now invokes this script automatically, so a name-only match would
+        # let a routine five-minute tick kill an unrelated service. Compare the executable.
+        #
+        # Path reads as NULL, not an error, for a process this session cannot open. That is a
+        # reason to fail CLOSED, not a reason to skip the check: an owner whose identity cannot
+        # be established is exactly the owner we must not kill.
+        $ownerPath = $owner.Path
+        if ([string]::IsNullOrEmpty($ownerPath)) {
+            $foreign += "$ownerPid ($($owner.ProcessName), executable path unreadable)"
+            return
+        }
+        if (-not [string]::Equals($ownerPath, $exe, [StringComparison]::OrdinalIgnoreCase)) {
+            $foreign += "$ownerPid ($ownerPath)"
             return
         }
 
@@ -206,7 +226,7 @@ Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinu
 if ($foreign.Count -gt 0) {
     $foreign | ForEach-Object { Write-Warning "port $Port is held by a FOREIGN process: $_" }
     if (-not $Force) {
-        throw "Refusing to restart: port $Port is held by $($foreign -join ', '), not '$ExpectedProcessName'. Killing it would take out an unrelated service. Check the port, or re-run with -Force."
+        throw "Refusing to restart: port $Port is held by $($foreign -join ', '), which is not '$exe'. Killing it would take out an unrelated service. Check the port, or re-run with -Force."
     }
     Write-Warning "-Force given; terminating the foreign holder(s) anyway."
     foreach ($f in $foreign) {
@@ -257,6 +277,18 @@ $env:AgentCollaboration__MaxTotalAgents = "64"
 # script exists to prevent, reintroduced one layer up.
 $certMarker = Join-Path $run "review-host-$Port.certified.json"
 Remove-Item -LiteralPath $certMarker -Force -ErrorAction SilentlyContinue
+
+# LAUNCH BREADCRUMB, read by ensure-services.ps1 as the basis for its re-certification
+# backoff. Written HERE, by the party that knows: every refusal above this line - a review in
+# flight, a foreign listener, a missing binary - means no host was launched and no model run
+# was started, so it must not consume the backoff. The watchdog cannot tell those refusals
+# apart from the outside, which is why it no longer stamps the attempt itself.
+#
+# Not SilentlyContinue. If this cannot be written the backoff has no basis, and a watchdog
+# that cannot back off would retry every five minutes forever - a restart loop and a bill.
+# Failing here means nothing launched at all, which is the safe direction to fail.
+$attemptStamp = Join-Path $run "review-host-$Port.launch-attempt"
+[datetime]::UtcNow.ToString('o') | Set-Content -LiteralPath $attemptStamp -Encoding utf8
 
 $p = Start-Process -FilePath $exe -WorkingDirectory $BinDir -PassThru -WindowStyle Hidden `
     -RedirectStandardOutput (Join-Path $run "review-host-$Port.out.log") `
@@ -454,11 +486,18 @@ if (-not $listening) {
 # collaboration-attached or explicitly accepted with -AllowCollaborationOff. Record it so the
 # watchdog can tell "a host is listening" from "the host WE certified is listening" - the
 # distinction it previously could not make, and the reason a failed certification was never
-# retried. hostPid is what ties the marker to a specific process: after any restart by any
-# means, the pid changes and the stale marker stops vouching.
+# retried.
+#
+# The identity is pid + executable path + process START TIME, and it needs all three. A pid
+# alone is reusable: Windows can hand 3552 to an unrelated process, and a stale marker would
+# then vouch for a host that never passed this probe. Start time makes the pid refer to a
+# process GENERATION, and the path pins it to this deployment rather than to any same-named
+# host from another worktree or published directory.
 @{
     port                  = $Port
     hostPid               = $p.Id
+    hostPath              = $exe
+    hostStartedAtUtc      = $p.StartTime.ToUniversalTime().ToString('o')
     processName           = $ExpectedProcessName
     certifiedAtUtc        = (Get-Date).ToUniversalTime().ToString('o')
     collaborationVerified = (-not $collabFailure)

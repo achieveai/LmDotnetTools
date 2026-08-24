@@ -83,6 +83,12 @@ param(
     # launcher could not certify. The task fires every five minutes and each attempt starts a
     # real conversation and model run on the host, so retrying every tick would be both a
     # restart loop and a bill.
+    #
+    # Range-checked because zero and negative values do not mean "no backoff" here - they mean
+    # the age comparison is never less than the bound, so EVERY tick retries. That is the exact
+    # loop this parameter exists to prevent, reachable by a typo. There is no supported
+    # retry-every-tick mode; if one is ever wanted it has to be written as one.
+    [ValidateRange(1, [int]::MaxValue)]
     [int]    $RecertifyBackoffMinutes = 30,
 
     [switch] $DryRun
@@ -215,7 +221,8 @@ function Get-ReviewHostUncertifiedReason {
     param(
         [Parameter(Mandatory)] [int]    $Port,
         [Parameter(Mandatory)] [string] $RunDir,
-        [Parameter(Mandatory)] [string] $ExpectedProcessName
+        [Parameter(Mandatory)] [string] $ExpectedProcessName,
+        [Parameter(Mandatory)] [string] $ExpectedPath
     )
 
     $ownerPid = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
@@ -223,24 +230,64 @@ function Get-ReviewHostUncertifiedReason {
         Select-Object -First 1
     if ($null -eq $ownerPid) { return "nothing is listening on $Port" }
 
-    # Name, not Path: Path reads as NULL rather than raising for a process this session cannot
-    # open, so comparing paths would silently misjudge our own host as foreign.
     $proc = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
     if ($null -eq $proc) { return "the process holding $Port (pid $ownerPid) has gone" }
     if ($proc.ProcessName -ne $ExpectedProcessName) {
         return "port $Port is held by '$($proc.ProcessName)' (pid $ownerPid), not '$ExpectedProcessName'"
     }
 
+    # Path reads as NULL, and StartTime RAISES, for a process this session cannot open. Both
+    # are read defensively and both are required: an owner whose identity cannot be established
+    # is uncertified, because the alternative is vouching for a process we cannot identify.
+    # Normalised, because this is compared against a path Get-Process resolved fully. The
+    # launcher canonicalises the same way; a configured -ReviewHostBinDir carrying a trailing
+    # separator or a '..' would otherwise read as a different deployment.
+    $ExpectedPath = [System.IO.Path]::GetFullPath($ExpectedPath)
+
+    $ownerPath = $proc.Path
+    if ([string]::IsNullOrEmpty($ownerPath)) {
+        return "the executable path of pid $ownerPid on $Port cannot be read, so its identity cannot be established"
+    }
+    if (-not [string]::Equals($ownerPath, $ExpectedPath, [StringComparison]::OrdinalIgnoreCase)) {
+        return "port $Port is held by '$ownerPath' (pid $ownerPid), not the deployment at '$ExpectedPath'"
+    }
+    try { $ownerStarted = $proc.StartTime.ToUniversalTime() }
+    catch { return "the start time of pid $ownerPid on $Port cannot be read, so its identity cannot be established" }
+
     $marker = Join-Path $RunDir "review-host-$Port.certified.json"
     if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) {
         return "no certification marker at '$marker' - this host was not certified by the launcher"
     }
 
-    try { $cert = Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json }
-    catch { return "certification marker '$marker' is unreadable: $($_.Exception.Message)" }
+    # EVERY read of the marker is inside this boundary, not just the JSON parse. Under
+    # Set-StrictMode a marker of '{}' raises on the missing property and a hostPid of "abc"
+    # raises on the cast, and either would escape as a terminating error that aborts the whole
+    # watchdog run - skipping the remaining services and the RUN COMPLETE accounting - instead
+    # of doing the obvious thing. A marker we cannot make sense of is an uncertified host.
+    try {
+        $cert = Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json
+        if ($null -eq $cert) { throw "empty or null document" }
+        foreach ($field in 'hostPid', 'hostPath', 'hostStartedAtUtc') {
+            if (-not $cert.PSObject.Properties[$field]) { throw "missing '$field'" }
+        }
+        $certPid = [int]$cert.hostPid
+        $certPath = [string]$cert.hostPath
+        $certStarted = ([datetime]::Parse($cert.hostStartedAtUtc)).ToUniversalTime()
+    }
+    catch {
+        return "certification marker '$marker' is unusable ($($_.Exception.Message)) - treating the host as uncertified"
+    }
 
-    if ([int]$cert.hostPid -ne [int]$ownerPid) {
-        return "certification marker names pid $($cert.hostPid) but pid $ownerPid owns $Port - the certified host was replaced"
+    # Pid, path and start time together. A pid alone is reusable, so a stale marker could
+    # otherwise vouch for whatever process Windows next handed that number to.
+    if ($certPid -ne [int]$ownerPid) {
+        return "certification marker names pid $certPid but pid $ownerPid owns $Port - the certified host was replaced"
+    }
+    if (-not [string]::Equals($certPath, $ownerPath, [StringComparison]::OrdinalIgnoreCase)) {
+        return "certification marker names '$certPath' but pid $ownerPid runs '$ownerPath' - the marker does not describe this host"
+    }
+    if ([math]::Abs(($certStarted - $ownerStarted).TotalSeconds) -gt 2) {
+        return "certification marker names a process started $($certStarted.ToString('o')) but pid $ownerPid started $($ownerStarted.ToString('o')) - the pid was reused"
     }
 
     return $null
@@ -307,8 +354,22 @@ function Start-ReviewHost {
         }
         throw "Review-host launcher (pid $($child.Id)) did not finish within ${TimeoutSeconds}s; killed it and its tree$killSuffix."
     }
-    if ($child.ExitCode -ne 0) {
-        throw "Review-host launcher exited with code $($child.ExitCode); see $RunDir\review-host-$Port.err.log."
+    # $null is UNKNOWN here, not failure, and the difference is the whole bug. Windows
+    # PowerShell 5.1 returns $null from ExitCode for a Start-Process -PassThru object even
+    # after WaitForExit reports HasExited=True; PowerShell 7 returns the real code. Written as
+    # `if ($child.ExitCode -ne 0)`, $null compares unequal to 0, so under 5.1 EVERY successful
+    # launch threw - a host that started, certified and wrote its marker was still recorded as
+    # START FAILED and made the run exit 1. Reproduced 5/5 under 5.1 and 0/5 under 7.
+    #
+    # An unknown exit code is not a reason to guess. The caller re-applies the certification
+    # predicate immediately after this returns, and that predicate inspects the host itself
+    # rather than the messenger, so it is the better authority in exactly this case.
+    $exitCode = $child.ExitCode
+    if ($null -eq $exitCode) {
+        Write-RunLog -Level WARN -Message "review-host launcher exit code is unavailable (this shell does not report it); the certification check below decides the outcome."
+    }
+    elseif ($exitCode -ne 0) {
+        throw "Review-host launcher exited with code $exitCode; see $RunDir\review-host-$Port.err.log."
     }
 }
 
@@ -345,7 +406,11 @@ function Start-Daemon {
 
     if (-not (Wait-PortListening -Port $Port -TimeoutSeconds $TimeoutSeconds)) {
         if ($proc.HasExited) {
-            throw "Daemon '$Tenant' EXITED with code $($proc.ExitCode) without listening on $Port; see $RunDir\daemon-$Tenant.err.log."
+            # Same 5.1 quirk as in Start-ReviewHost: ExitCode can be $null even though the
+            # process has exited. Say "unavailable" rather than printing an empty code, which
+            # reads as though the daemon exited with no status at all.
+            $code = if ($null -eq $proc.ExitCode) { 'unavailable' } else { $proc.ExitCode }
+            throw "Daemon '$Tenant' EXITED (code $code) without listening on $Port; see $RunDir\daemon-$Tenant.err.log."
         }
         throw "Daemon '$Tenant' (pid $($proc.Id)) did not listen on $Port within ${TimeoutSeconds}s; see $RunDir\daemon-$Tenant.err.log."
     }
@@ -366,7 +431,7 @@ function Invoke-Main {
             Name    = 'review-host'
             Port    = $ReviewHostPort
             Start   = { Start-ReviewHost -ScriptPath $script:RestartReviewHostScriptResolved -BinDir $ReviewHostBinDir -Port $ReviewHostPort -RunDir $RunDir -TimeoutSeconds $StartTimeoutSeconds }
-            Healthy = { Get-ReviewHostUncertifiedReason -Port $ReviewHostPort -RunDir $RunDir -ExpectedProcessName 'LmStreaming.Sample' }
+            Healthy = { Get-ReviewHostUncertifiedReason -Port $ReviewHostPort -RunDir $RunDir -ExpectedProcessName 'LmStreaming.Sample' -ExpectedPath (Join-Path $ReviewHostBinDir 'LmStreaming.Sample.exe') }
         },
         [pscustomobject]@{
             Name  = 'daemon-achieveai'
@@ -414,7 +479,15 @@ function Invoke-Main {
             # will never certify, because each attempt starts a real conversation and a real
             # model run on it. So back off, and say plainly that we are backing off: a silent
             # deferral would read exactly like the "forgotten" behaviour this replaces.
-            $stampPath = Join-Path $RunDir ("{0}-{1}.recert-attempt" -f $svc.Name, $svc.Port)
+            #
+            # The stamp is written by restart-review-host.ps1 immediately before it launches,
+            # NOT here. Only that script knows whether an attempt actually reached a launch:
+            # it refuses, before starting anything, when a review is in flight, when a foreign
+            # process holds the port, or when the binary is missing. Stamping here would have
+            # charged those refusals the full backoff, so a host left uncertified while it
+            # finished a review would have waited half an hour to be re-certified - and the
+            # in-flight refusal is the one case where the retry should come quickly.
+            $stampPath = Join-Path $RunDir ("review-host-{0}.launch-attempt" -f $svc.Port)
             $lastAttempt = $null
             if (Test-Path -LiteralPath $stampPath -PathType Leaf) {
                 try { $lastAttempt = ([datetime]::Parse((Get-Content -LiteralPath $stampPath -Raw).Trim())).ToUniversalTime() }
@@ -429,9 +502,6 @@ function Invoke-Main {
             }
 
             Write-RunLog -Level WARN -Message ("{0}:{1} LISTENING BUT UNCERTIFIED - {2}; restarting to re-certify" -f $svc.Name, $svc.Port, $unhealthyReason)
-            if (-not $DryRun) {
-                [datetime]::UtcNow.ToString('o') | Set-Content -LiteralPath $stampPath -Encoding utf8
-            }
         }
 
         if ($DryRun) {
