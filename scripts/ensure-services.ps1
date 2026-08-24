@@ -55,7 +55,16 @@
 #>
 [CmdletBinding()]
 param(
-    [string] $ReviewHostBinDir = 'B:\published\LmStreaming.Sample',
+    # The review host gets its OWN deployment, deliberately NOT
+    # B:\published\LmStreaming.Sample. That directory is the interactive chat host, which
+    # runs continuously on :5050 and carries an .env written for it: a Traefik-fronted
+    # Auth:Webhook:PublicBaseUrl for the REMOTE gateway, DeepSeek and M365 secrets, and a
+    # macOS SandboxGateway:WorkspaceBasePath. Pointing the watchdog there starts a SECOND
+    # instance out of one deployment - two processes sharing one .env, one conversations/
+    # and one notify-waits.db - and hands the review host a webhook base that is not its
+    # own port, which is the exact condition that ends reviews with zero sub-agents and a
+    # 38-char "No new findings since the last review."
+    [string] $ReviewHostBinDir = 'B:\published\review-host',
     [int]    $ReviewHostPort = 5051,
 
     [string] $DaemonBinDir = 'B:\published\CodeReviewDaemon.Sample',
