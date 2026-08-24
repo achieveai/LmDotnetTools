@@ -46,7 +46,11 @@ param(
     # Where the redirected stdout/stderr logs land. Gitignored on purpose: this directory
     # carries multi-GB live state.
     [string]$RunDir = "B:\sources\LmDotnetTools\.run",
-    [switch]$Force
+    [switch]$Force,
+    # Accept a host whose collaboration capability could not be verified. Off by default:
+    # an unverified host is the silent-degradation case this script exists to catch, so it
+    # must be an explicit operator decision rather than a warning nobody reads.
+    [switch]$AllowCollaborationOff
 )
 
 $ErrorActionPreference = "Stop"
@@ -76,12 +80,25 @@ try {
     $convs = Invoke-RestMethod -Uri "http://localhost:$Port/api/conversations" -TimeoutSec 30
     $list = if ($convs -is [array]) { $convs } elseif ($convs.conversations) { $convs.conversations } else { @() }
     $busy = @()
+    # A conversation whose run-state could NOT be read is not evidence that it is idle.
+    # This loop used to `catch { }`, which is the same defect as the outer catch below, one
+    # level in: a 15s timeout, an HTTP 500, an auth failure or a response missing
+    # isInProgress all left $busy empty, the guard passed, and the host was killed under a
+    # live review. Fail CLOSED instead - unreadable is neither busy nor idle, and only
+    # -Force may proceed past it.
+    #
+    # Set-StrictMode is what makes the malformed-response case land here at all: under
+    # StrictMode reading a property the payload does not carry throws rather than
+    # evaluating to $null (which would have read as "not in progress").
+    $unreadable = @()
     foreach ($c in $list) {
         try {
             $rs = Invoke-RestMethod -Uri "http://localhost:$Port/api/conversations/$($c.threadId)/run-state" -TimeoutSec 15
             if ($rs.isInProgress) { $busy += "$($c.threadId) (run $($rs.currentRunId))" }
         }
-        catch { }
+        catch {
+            $unreadable += "$($c.threadId) ($($_.Exception.Message))"
+        }
     }
     if ($busy.Count -gt 0) {
         Write-Warning "$($busy.Count) review(s) IN FLIGHT on :$Port -"
@@ -91,7 +108,17 @@ try {
         }
         Write-Warning "-Force given; restarting anyway."
     }
-    else { Write-Host "no reviews in flight - safe to restart" }
+    if ($unreadable.Count -gt 0) {
+        Write-Warning "$($unreadable.Count) conversation(s) on :$Port could NOT be interrogated -"
+        $unreadable | ForEach-Object { Write-Warning "  $_" }
+        if (-not $Force) {
+            throw "Refusing to restart: $($unreadable.Count) conversation(s) would not report run-state, so no review can be proven idle. Re-run with -Force to restart anyway."
+        }
+        Write-Warning "-Force given; restarting anyway."
+    }
+    if ($busy.Count -eq 0 -and $unreadable.Count -eq 0) {
+        Write-Host "no reviews in flight - safe to restart"
+    }
 }
 catch [System.Net.WebException], [System.Net.Http.HttpRequestException] {
     # An HTTP ERROR STATUS is not the same as an unreachable host, and conflating them is
@@ -127,10 +154,32 @@ catch [System.Net.WebException], [System.Net.Http.HttpRequestException] {
 # is by PORT rather than by process name: the host runs as an APPHOST
 # (LmStreaming.Sample.exe), not under dotnet.exe, so a name filter on 'dotnet' finds
 # nothing and concludes, wrongly, that the port is free.
+$stopFailed = @()
 Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
     Select-Object -ExpandProperty OwningProcess -Unique |
-    ForEach-Object { Write-Host "stopping pid $_ on $Port"; Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
+    ForEach-Object {
+        $ownerPid = $_
+        Write-Host "stopping pid $ownerPid on $Port"
+        # NOT SilentlyContinue. A stop that fails - access denied, a process we do not own,
+        # a foreign service - leaves the socket held, and the readiness loop below would
+        # then see that SURVIVING listener and call the restart a success.
+        try { Stop-Process -Id $ownerPid -Force -ErrorAction Stop }
+        catch { $stopFailed += "$ownerPid ($($_.Exception.Message))" }
+    }
 Start-Sleep -Seconds 3
+
+# Never launch into an occupied port. The new host would fail to bind and exit, and
+# "something is listening on 5051" is precisely the signal the watchdog reads as health -
+# so a survivor here becomes a healthy-looking review host that no daemon can use.
+$survivorIds = @(
+    Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty OwningProcess -Unique |
+        ForEach-Object { [int]$_ }
+)
+if ($survivorIds.Count -gt 0) {
+    $stopFailed | ForEach-Object { Write-Warning "failed to stop pid $_" }
+    throw "Port $Port is still held by pid(s) $($survivorIds -join ', ') after the stop attempt; refusing to launch a host that cannot bind."
+}
 
 $env:ASPNETCORE_ENVIRONMENT = "Test"
 $env:ASPNETCORE_URLS = "http://localhost:$Port"
@@ -159,7 +208,25 @@ $listening = $false
 
 for ($i = 0; $i -lt 60; $i++) {
     Start-Sleep -Seconds 2
-    if (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue) {
+
+    # Check OUR CHILD before the port. The old order asked "is anything listening?" first
+    # and broke out of the loop on the first yes, so the exit check at the bottom was never
+    # reached when a foreign listener held the port - a dead child was reported as a
+    # successful start.
+    if ($p.HasExited) { throw "host EXITED code=$($p.ExitCode); see review-host-$Port.err.log" }
+
+    $ownerIds = @(
+        Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess -Unique |
+            ForEach-Object { [int]$_ }
+    )
+    if ($ownerIds.Count -gt 0) {
+        # The listener must be the process THIS script launched. Port occupancy is what the
+        # watchdog uses for liveness, and it is exactly what must not be conflated with
+        # "the host came up" - otherwise an unrelated process on 5051 is handed the daemons.
+        if ($ownerIds -notcontains [int]$p.Id) {
+            throw "port $Port is owned by pid(s) $($ownerIds -join ', '), not the host this script launched (pid $($p.Id)); refusing to report a foreign listener as a successful restart."
+        }
         $listening = $true
         Write-Host "LISTENING on $Port (pid $($p.Id)) after $($i * 2)s"
 
@@ -169,25 +236,98 @@ for ($i = 0; $i -lt 60; $i++) {
         # collaboration_unavailable for the same request. That pair is the only
         # cheap signal that distinguishes "host is up" from "host is up and A2A
         # works", and they differ precisely in the way that matters here.
+        # This probe GATES the restart; it is not advisory. A collaboration-off host starts
+        # cleanly, serves every other route, and degrades only the transcript reads - so
+        # warning and exiting 0 hands the daemons a host whose reviews finish with zero
+        # sub-agents and a 38-char "No new findings", indistinguishable from a clean PR.
+        # That silent degradation is the entire reason this script exists.
+        #
+        # The throw lands AFTER the host is listening, so the host stays up: this reports a
+        # restart that cannot be certified, it does not undo one. ensure-services.ps1 logs
+        # START FAILED, and its next tick sees the port healthy and leaves it alone - so a
+        # flaky probe cannot produce a restart loop.
+        $collabFailure = $null
+
+        # Wait for the host to be SERVING, not merely LISTENING, before probing. The socket
+        # binds well before the first request can be answered - that warm-up window is the
+        # documented one where daemons see connection-refused and then 503 from
+        # CreateWorkspaceAsync - so an immediate probe can fail for a reason that says nothing
+        # about collaboration. That now decides the exit code, so it has to be the real signal.
+        #
+        # Every call below is also BOUNDED. Invoke-RestMethod has no default timeout: a probe
+        # the host never answers would block this script forever, and with it the watchdog run
+        # that invoked it. A bound is cheap; an unbounded supervision run is not recoverable.
+        $ready = $false
+        for ($w = 0; $w -lt 30; $w++) {
+            try {
+                Invoke-RestMethod -Uri "http://localhost:$Port/api/conversations" -TimeoutSec 10 | Out-Null
+                $ready = $true
+                break
+            }
+            catch { Start-Sleep -Seconds 2 }
+        }
+        if (-not $ready) {
+            $collabFailure = "host listened on $Port but never answered /api/conversations within 60s, so collaboration could not be probed"
+        }
+
         try {
+            if (-not $ready) { throw "host not serving" }
             $tid = (Invoke-RestMethod -Method Post -Uri "http://localhost:$Port/api/conversations" `
-                    -ContentType "application/json" `
+                    -ContentType "application/json" -TimeoutSec 30 `
                     -Body '{"workspaceId":"default","providerId":"test","modeId":"default"}').threadId
             Invoke-RestMethod -Method Post -Uri "http://localhost:$Port/api/conversations/$tid/messages" `
-                -ContentType "application/json" -Body '{"text":"hi"}' | Out-Null
-            Start-Sleep -Seconds 8
-            try {
-                Invoke-RestMethod -Uri "http://localhost:$Port/api/conversations/$tid/agents/nonexistent/transcript" | Out-Null
-                Write-Warning "collaboration probe returned 200 for a nonexistent agent - investigate"
+                -ContentType "application/json" -TimeoutSec 30 -Body '{"text":"hi"}' | Out-Null
+            # 404 is AMBIGUOUS. It is what a collaboration-OFF host answers, and it is equally
+            # what a collaboration-ON host answers for a thread whose run has not attached
+            # collaboration state yet. Reading once after a fixed sleep therefore reads a
+            # race - survivable while this was a warning, NOT survivable now that a 404 fails
+            # the restart and the watchdog reports a failed start. So poll: a 403 is a
+            # definite attach and ends it early, and only a 404 that persists for the whole
+            # budget is reported as collaboration off. Measured 2026-08-24 on a healthy host:
+            # 403 on the first read, ~2s after the message POST.
+            $collabAttached = $false
+            $lastCode = $null
+            $probeError = $null
+            for ($k = 0; $k -lt 20; $k++) {
+                Start-Sleep -Seconds 3
+                try {
+                    Invoke-RestMethod -Uri "http://localhost:$Port/api/conversations/$tid/agents/nonexistent/transcript" -TimeoutSec 30 | Out-Null
+                    $lastCode = 200
+                    break
+                }
+                catch {
+                    # Read the status defensively for the same reason as the in-flight guard
+                    # above: a transport failure carries no Response at all, and under
+                    # StrictMode reaching through a null one throws instead of yielding $null.
+                    $lastCode = $null
+                    $probeError = $_.Exception.Message
+                    if ($_.Exception.PSObject.Properties['Response'] -and $_.Exception.Response) {
+                        $lastCode = [int]$_.Exception.Response.StatusCode
+                    }
+                    if ($lastCode -eq 403) { $collabAttached = $true; break }
+                    # Anything other than the ambiguous 404 is already conclusive.
+                    if ($lastCode -ne 404) { break }
+                }
             }
-            catch {
-                $code = $_.Exception.Response.StatusCode.value__
-                if ($code -eq 403) { Write-Host "collaboration ATTACHED (403 unknown_target)" }
-                elseif ($code -eq 404) { Write-Warning "collaboration OFF (404) - the env override did not bind" }
-                else { Write-Warning "collaboration probe returned $code" }
-            }
+
+            if ($collabAttached) { Write-Host "collaboration ATTACHED (403 unknown_target)" }
+            elseif ($lastCode -eq 200) { $collabFailure = "probe returned 200 for a nonexistent agent - the 403/404 signal no longer distinguishes anything" }
+            elseif ($lastCode -eq 404) { $collabFailure = "collaboration OFF (404 collaboration_unavailable for 60s) - the AgentCollaboration__Enabled override did not bind" }
+            elseif ($null -eq $lastCode) { $collabFailure = "probe could not reach the host: $probeError" }
+            else { $collabFailure = "probe returned unexpected HTTP $lastCode" }
         }
-        catch { Write-Warning "collaboration probe failed: $($_.Exception.Message)" }
+        # Do not overwrite a more specific diagnosis: when the readiness wait above already
+        # explained why the probe could not run, the rethrow that lands here carries only its
+        # own placeholder message.
+        catch { if (-not $collabFailure) { $collabFailure = "probe failed before it could read a transcript: $($_.Exception.Message)" } }
+
+        if ($collabFailure) {
+            Write-Warning "collaboration probe: $collabFailure"
+            if (-not $AllowCollaborationOff) {
+                throw "Refusing to certify the restart: $collabFailure. The host on :$Port is running but its A2A capability is unproven, so reviews may complete with no sub-agents. Re-run with -AllowCollaborationOff to accept it anyway."
+            }
+            Write-Warning "-AllowCollaborationOff given; accepting an uncertified host."
+        }
 
         # Discovery fan-out cannot be probed by a request - it is a push from the
         # gateway - and the announce line comes from SandboxSessionRegistry when a
@@ -212,7 +352,6 @@ for ($i = 0; $i -lt 60; $i++) {
         }
         break
     }
-    if ($p.HasExited) { throw "host EXITED code=$($p.ExitCode); see review-host-$Port.err.log" }
 }
 
 if (-not $listening) {
