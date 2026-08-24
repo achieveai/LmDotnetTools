@@ -75,6 +75,11 @@ samples/LmStreaming.Sample/.run/
 # publish-launch.ps1 standalone-publish run directories (retained, inspectable artifacts — never tracked)
 /.claude/scratchpad/lmstreaming-standalone-publish/
 
+# publish-daemon.ps1 staging run directories. Same contract as the sibling above: the script
+# retains each run for inspection instead of deleting it, so a full publish output accumulates
+# here. The entry above existed and this one did not, which is the whole defect.
+/.claude/scratchpad/codereviewdaemon-publish/
+
 # publish-launch.ps1 -DestinationDirectory deploy siblings. These exist only transiently during a
 # swap, but a deploy interrupted between its two renames leaves them behind — and a backup sibling
 # is a COMPLETE copy of a deployment, including .env, oauth-tokens/ and conversations/. If a
