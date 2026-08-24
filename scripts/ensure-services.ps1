@@ -79,6 +79,11 @@ param(
 
     [int]    $StartTimeoutSeconds = 240,
     [int]    $DaemonReadyTimeoutSeconds = 120,
+    # How long to wait before retrying certification of a host that is listening but that the
+    # launcher could not certify. The task fires every five minutes and each attempt starts a
+    # real conversation and model run on the host, so retrying every tick would be both a
+    # restart loop and a bill.
+    [int]    $RecertifyBackoffMinutes = 30,
 
     [switch] $DryRun
 )
@@ -197,6 +202,50 @@ function Wait-PortListening {
     return (Test-PortListening -Port $Port)
 }
 
+# Returns $null when the review host on $Port is the one this watchdog's launcher certified,
+# or a human-readable reason when it is not.
+#
+# A listening socket is not health. The launcher deliberately LEAVES A HOST RUNNING when it
+# fails certification - killing it would only trade a degraded reviewer for no reviewer - and
+# it exits nonzero to say so. With port occupancy as the only health signal, that nonzero exit
+# was then forgotten: the next tick five minutes later saw the port up, logged HEALTHY, and
+# never retried, so a collaboration-off host served indefinitely while this script reported
+# everything fine.
+function Get-ReviewHostUncertifiedReason {
+    param(
+        [Parameter(Mandatory)] [int]    $Port,
+        [Parameter(Mandatory)] [string] $RunDir,
+        [Parameter(Mandatory)] [string] $ExpectedProcessName
+    )
+
+    $ownerPid = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty OwningProcess -Unique |
+        Select-Object -First 1
+    if ($null -eq $ownerPid) { return "nothing is listening on $Port" }
+
+    # Name, not Path: Path reads as NULL rather than raising for a process this session cannot
+    # open, so comparing paths would silently misjudge our own host as foreign.
+    $proc = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
+    if ($null -eq $proc) { return "the process holding $Port (pid $ownerPid) has gone" }
+    if ($proc.ProcessName -ne $ExpectedProcessName) {
+        return "port $Port is held by '$($proc.ProcessName)' (pid $ownerPid), not '$ExpectedProcessName'"
+    }
+
+    $marker = Join-Path $RunDir "review-host-$Port.certified.json"
+    if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) {
+        return "no certification marker at '$marker' - this host was not certified by the launcher"
+    }
+
+    try { $cert = Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json }
+    catch { return "certification marker '$marker' is unreadable: $($_.Exception.Message)" }
+
+    if ([int]$cert.hostPid -ne [int]$ownerPid) {
+        return "certification marker names pid $($cert.hostPid) but pid $ownerPid owns $Port - the certified host was replaced"
+    }
+
+    return $null
+}
+
 # ---------------------------------------------------------------------------
 # Starters
 # ---------------------------------------------------------------------------
@@ -243,8 +292,20 @@ function Start-ReviewHost {
 
     # Bounded so a wedged launcher cannot outlive the five-minute timer and pile up.
     if (-not $child.WaitForExit($TimeoutSeconds * 1000)) {
-        try { $child.Kill($true) } catch { }
-        throw "Review-host launcher did not finish within ${TimeoutSeconds}s; killed it."
+        # Kill the TREE, and do not pretend it worked. Two things were wrong with swallowing
+        # this: the launcher starts the host as its own child, so killing only the launcher
+        # would strand a half-started host with nothing supervising it; and a failed or
+        # incomplete kill was still reported as "killed it", leaving a launcher alive that the
+        # next tick knows nothing about while the log says it is gone.
+        $killError = $null
+        try { $child.Kill($true) }
+        catch { $killError = $_.Exception.Message }
+
+        $killSuffix = if ($killError) { " (kill reported: $killError)" } else { "" }
+        if (-not $child.WaitForExit(30000)) {
+            throw "Review-host launcher (pid $($child.Id)) did not finish within ${TimeoutSeconds}s and was STILL RUNNING 30s after being killed$killSuffix; it may still be starting a host. Investigate before the next run."
+        }
+        throw "Review-host launcher (pid $($child.Id)) did not finish within ${TimeoutSeconds}s; killed it and its tree$killSuffix."
     }
     if ($child.ExitCode -ne 0) {
         throw "Review-host launcher exited with code $($child.ExitCode); see $RunDir\review-host-$Port.err.log."
@@ -302,9 +363,10 @@ function Invoke-Main {
 
     $services = @(
         [pscustomobject]@{
-            Name  = 'review-host'
-            Port  = $ReviewHostPort
-            Start = { Start-ReviewHost -ScriptPath $script:RestartReviewHostScriptResolved -BinDir $ReviewHostBinDir -Port $ReviewHostPort -RunDir $RunDir -TimeoutSeconds $StartTimeoutSeconds }
+            Name    = 'review-host'
+            Port    = $ReviewHostPort
+            Start   = { Start-ReviewHost -ScriptPath $script:RestartReviewHostScriptResolved -BinDir $ReviewHostBinDir -Port $ReviewHostPort -RunDir $RunDir -TimeoutSeconds $StartTimeoutSeconds }
+            Healthy = { Get-ReviewHostUncertifiedReason -Port $ReviewHostPort -RunDir $RunDir -ExpectedProcessName 'LmStreaming.Sample' }
         },
         [pscustomobject]@{
             Name  = 'daemon-achieveai'
@@ -322,16 +384,54 @@ function Invoke-Main {
     $healthy = 0
     $started = 0
     $wouldStart = 0
+    $deferred = 0
     $failed = 0
 
     Write-RunLog -Level INFO -Message ("RUN START dryRun=$($DryRun.IsPresent) reviewHostBin='$ReviewHostBinDir' daemonBin='$DaemonBinDir'")
 
     foreach ($svc in $services) {
         $checked++
-        if (Test-PortListening -Port $svc.Port) {
+
+        $portUp = Test-PortListening -Port $svc.Port
+
+        # Only services that declare a Healthy predicate get one; the daemons are judged by
+        # their port alone. Guarded through PSObject because under StrictMode reading a
+        # property a pscustomobject does not have is an error, not $null.
+        $unhealthyReason = $null
+        if ($portUp -and $svc.PSObject.Properties['Healthy']) {
+            $unhealthyReason = & $svc.Healthy
+        }
+
+        if ($portUp -and -not $unhealthyReason) {
             $healthy++
             Write-RunLog -Level INFO -Message ("{0}:{1} HEALTHY - already listening, not touched [{2}]" -f $svc.Name, $svc.Port, (Get-PortOwnerDescription -Port $svc.Port))
             continue
+        }
+
+        if ($portUp) {
+            # Listening, but not the host we certified. Restarting is the only way to retry
+            # certification - but it must not become a five-minute loop against a host that
+            # will never certify, because each attempt starts a real conversation and a real
+            # model run on it. So back off, and say plainly that we are backing off: a silent
+            # deferral would read exactly like the "forgotten" behaviour this replaces.
+            $stampPath = Join-Path $RunDir ("{0}-{1}.recert-attempt" -f $svc.Name, $svc.Port)
+            $lastAttempt = $null
+            if (Test-Path -LiteralPath $stampPath -PathType Leaf) {
+                try { $lastAttempt = ([datetime]::Parse((Get-Content -LiteralPath $stampPath -Raw).Trim())).ToUniversalTime() }
+                catch { $lastAttempt = $null }
+            }
+
+            if ($null -ne $lastAttempt -and ([datetime]::UtcNow - $lastAttempt).TotalMinutes -lt $RecertifyBackoffMinutes) {
+                $deferred++
+                Write-RunLog -Level WARN -Message ("{0}:{1} LISTENING BUT UNCERTIFIED - {2}; re-certification DEFERRED (last attempt {3:N1} min ago, backoff {4} min)" -f `
+                        $svc.Name, $svc.Port, $unhealthyReason, ([datetime]::UtcNow - $lastAttempt).TotalMinutes, $RecertifyBackoffMinutes)
+                continue
+            }
+
+            Write-RunLog -Level WARN -Message ("{0}:{1} LISTENING BUT UNCERTIFIED - {2}; restarting to re-certify" -f $svc.Name, $svc.Port, $unhealthyReason)
+            if (-not $DryRun) {
+                [datetime]::UtcNow.ToString('o') | Set-Content -LiteralPath $stampPath -Encoding utf8
+            }
         }
 
         if ($DryRun) {
@@ -340,17 +440,32 @@ function Invoke-Main {
             # whenever any service was down, which is the normal case you run it to inspect.
             # That makes the exit code useless exactly when you are reading it, and would make
             # a CI or wrapper check treat a successful inspection as an error.
-            Write-RunLog -Level WARN -Message ("{0}:{1} DOWN - would start (dry run; nothing launched)" -f $svc.Name, $svc.Port)
+            $what = if ($portUp) { 'would restart to re-certify' } else { 'DOWN - would start' }
+            Write-RunLog -Level WARN -Message ("{0}:{1} {2} (dry run; nothing launched)" -f $svc.Name, $svc.Port, $what)
             $wouldStart++
             continue
         }
 
-        Write-RunLog -Level WARN -Message ("{0}:{1} DOWN - starting" -f $svc.Name, $svc.Port)
+        if (-not $portUp) {
+            Write-RunLog -Level WARN -Message ("{0}:{1} DOWN - starting" -f $svc.Name, $svc.Port)
+        }
         try {
             & $svc.Start
-            if (Test-PortListening -Port $svc.Port) {
+
+            # Re-apply the SAME predicate that judged health above. Accepting a bare listening
+            # port here would reintroduce the gap one line later: a launcher can exit 0 having
+            # started something this watchdog cannot vouch for.
+            $nowUp = Test-PortListening -Port $svc.Port
+            $stillUncertified = $null
+            if ($nowUp -and $svc.PSObject.Properties['Healthy']) { $stillUncertified = & $svc.Healthy }
+
+            if ($nowUp -and -not $stillUncertified) {
                 $started++
                 Write-RunLog -Level INFO -Message ("{0}:{1} STARTED [{2}]" -f $svc.Name, $svc.Port, (Get-PortOwnerDescription -Port $svc.Port))
+            }
+            elseif ($nowUp) {
+                $failed++
+                Write-RunLog -Level ERROR -Message ("{0}:{1} STARTED BUT NOT CERTIFIED - {2}" -f $svc.Name, $svc.Port, $stillUncertified)
             }
             else {
                 $failed++
@@ -365,7 +480,10 @@ function Invoke-Main {
 
     $exitCode = if ($failed -gt 0) { 1 } else { 0 }
     $dryPart = if ($DryRun) { " wouldStart=$wouldStart" } else { "" }
-    Write-RunLog -Level INFO -Message ("RUN COMPLETE checked=$checked healthy=$healthy started=$started$dryPart failed=$failed exit=$exitCode")
+    # deferred is reported but does NOT fail the run: nothing was attempted, so there is no
+    # failure to report - only a backoff that the WARN line above already spelled out.
+    $deferPart = if ($deferred -gt 0) { " deferred=$deferred" } else { "" }
+    Write-RunLog -Level INFO -Message ("RUN COMPLETE checked=$checked healthy=$healthy started=$started$dryPart$deferPart failed=$failed exit=$exitCode")
     return $exitCode
 }
 

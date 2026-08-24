@@ -246,6 +246,18 @@ $env:AgentCollaboration__Enabled = "true"
 $env:AgentCollaboration__MaxDelegationDepth = "2"
 $env:AgentCollaboration__MaxTotalAgents = "64"
 
+# CERTIFICATION MARKER. Written only when this script certifies a host, and removed HERE -
+# before the launch - so that no failure path can leave a marker vouching for a process that
+# was never certified.
+#
+# It exists because a nonzero exit from this script was previously forgotten: the host is left
+# running on purpose when certification fails, and the watchdog's health check was port
+# occupancy alone, so the next tick logged the uncertified host as HEALTHY and never retried.
+# A collaboration-off host therefore served forever, which is the silent degradation this
+# script exists to prevent, reintroduced one layer up.
+$certMarker = Join-Path $run "review-host-$Port.certified.json"
+Remove-Item -LiteralPath $certMarker -Force -ErrorAction SilentlyContinue
+
 $p = Start-Process -FilePath $exe -WorkingDirectory $BinDir -PassThru -WindowStyle Hidden `
     -RedirectStandardOutput (Join-Path $run "review-host-$Port.out.log") `
     -RedirectStandardError  (Join-Path $run "review-host-$Port.err.log")
@@ -259,6 +271,9 @@ $listening = $false
 # ONE deadline for everything after the launch. Bounding each request separately is not the
 # same as bounding the operation: the listen wait, the readiness wait and the collaboration
 # poll compose, and their sum has to fit inside the watchdog's patience with this script.
+# Initialised out here so the marker written after the loop can read them under StrictMode
+# regardless of which branch the loop took.
+$collabFailure = $null
 $launchedAt = (Get-Date)
 $certifyDeadline = $launchedAt.AddSeconds($CertifyTimeoutSeconds)
 $outOfTime = { (Get-Date) -ge $certifyDeadline }
@@ -303,8 +318,6 @@ while (-not (& $outOfTime)) {
         # restart that cannot be certified, it does not undo one. ensure-services.ps1 logs
         # START FAILED, and its next tick sees the port healthy and leaves it alone - so a
         # flaky probe cannot produce a restart loop.
-        $collabFailure = $null
-
         # Wait for the host to be SERVING, not merely LISTENING, before probing. The socket
         # binds well before the first request can be answered - that warm-up window is the
         # documented one where daemons see connection-refused and then 503 from
@@ -436,3 +449,18 @@ while (-not (& $outOfTime)) {
 if (-not $listening) {
     throw "host never LISTENED on $Port within the ${CertifyTimeoutSeconds}s certification budget (pid $($p.Id)); see $run\review-host-$Port.err.log"
 }
+
+# Reaching here means certified: listening, owned by the process we launched, and either
+# collaboration-attached or explicitly accepted with -AllowCollaborationOff. Record it so the
+# watchdog can tell "a host is listening" from "the host WE certified is listening" - the
+# distinction it previously could not make, and the reason a failed certification was never
+# retried. hostPid is what ties the marker to a specific process: after any restart by any
+# means, the pid changes and the stale marker stops vouching.
+@{
+    port                  = $Port
+    hostPid               = $p.Id
+    processName           = $ExpectedProcessName
+    certifiedAtUtc        = (Get-Date).ToUniversalTime().ToString('o')
+    collaborationVerified = (-not $collabFailure)
+} | ConvertTo-Json | Set-Content -LiteralPath $certMarker -Encoding utf8
+Write-Host "certified: marker written to $certMarker"
