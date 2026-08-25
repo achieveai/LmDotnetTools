@@ -61,6 +61,15 @@ public static class IdentityServiceCollectionExtensions
             sp.GetRequiredService<TimeProvider>()));
 
         _ = services.AddSingleton<PrincipalFactory>();
+
+        // The service-to-service front door (#345, spec 4.2 step 1). Registered as a principal
+        // SOURCE rather than left to the endpoint filter, because a filter runs downstream of
+        // IdentityMiddleware and cannot stop a refusal that has already been written. Order within
+        // the collection is the order the middleware consults them in; this is currently the only
+        // one, and the interactive door is not in the list at all because the bearer handler has
+        // already stashed its outcome by the time the middleware runs.
+        _ = services.AddSingleton<IRequestPrincipalSource, ServiceCallerPrincipalSource>();
+
         _ = services.AddSingleton<IPrincipalAccessor, HttpContextPrincipalAccessor>();
         _ = services.AddSingleton<ConversationAuthorizer>();
         _ = services.AddHostedService<TenantSeedHostedService>();

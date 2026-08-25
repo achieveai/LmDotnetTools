@@ -76,3 +76,26 @@ describe('IdentityGate', () => {
     expect(startSignIn).toHaveBeenCalledOnce();
   });
 });
+
+describe('IdentityGate on an expired session', () => {
+  it('explains the expiry and offers a fresh sign-in', async () => {
+    const wrapper = show('expired');
+
+    expect(wrapper.find('[data-testid="identity-gate-expired"]').exists()).toBe(true);
+
+    await wrapper.find('button').trigger('click');
+    expect(startSignIn).toHaveBeenCalledOnce();
+  });
+
+  it('does not reuse the refusal wording, because the remedy is the opposite one', () => {
+    const expired = show('expired');
+    const refused = show('rejected', 'tenant_suspended');
+
+    // Expiry is fixed by signing in again; a refusal is not fixed by signing in at all. One screen
+    // for both causes would either invite a pointless sign-in loop or withhold the one control
+    // that actually works.
+    expect(expired.findAll('button')).toHaveLength(1);
+    expect(refused.findAll('button')).toHaveLength(0);
+    expect(expired.find('[data-testid="identity-gate-suspended"]').exists()).toBe(false);
+  });
+});

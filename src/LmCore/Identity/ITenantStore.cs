@@ -57,6 +57,20 @@ public sealed record TenantRecord
 }
 
 /// <summary>
+/// Outcome of <see cref="ITenantStore.NormalizeEntraTenantIdsAsync"/>: how many stored directory
+/// ids were rewritten to canonical form, and how many were left as they were.
+/// </summary>
+/// <param name="Rewritten">Rows rewritten to their lower-cased canonical form.</param>
+/// <param name="SkippedCollisions">
+/// Rows left EXACTLY as they were because folding them to canonical form would have duplicated a
+/// row that already owns that value. Each is a pre-existing data defect - two tenants claiming one
+/// directory in different shapes - that stays unreachable until an operator resolves it. Refusing
+/// to boot over it would be worse than leaving it, but a non-zero count still has to reach the log,
+/// which is the whole reason this is a distinct number rather than folded into <see cref="Rewritten"/>.
+/// </param>
+public readonly record struct EntraTenantNormalizationResult(int Rewritten, int SkippedCollisions);
+
+/// <summary>
 /// Reads and writes the tenant registry: the Entra-directory-to-internal-tenant mapping every
 /// sign-in resolves against, and the named-first-admin rows an operator seeds before anyone from
 /// that organisation has ever signed in.
@@ -126,8 +140,13 @@ public interface ITenantStore
     /// and refusing to start is a worse answer to it than leaving it exactly as broken as it was.
     /// </remarks>
     /// <param name="ct">Cancellation token.</param>
-    /// <returns>How many rows were rewritten.</returns>
-    Task<int> NormalizeEntraTenantIdsAsync(CancellationToken ct = default);
+    /// <returns>
+    /// The rows rewritten and the rows left alone because folding them would have collided. The
+    /// second count is not an error the repair can resolve, but it is one an operator must SEE:
+    /// each skipped row stays unreachable, and a return of only the rewritten count hides that
+    /// entirely from the reader who checks the log after a boot.
+    /// </returns>
+    Task<EntraTenantNormalizationResult> NormalizeEntraTenantIdsAsync(CancellationToken ct = default);
 
     /// <summary>
     /// Ensures the quarantine tenant of spec 8.5.1 exists under <paramref name="tenantId"/>, and

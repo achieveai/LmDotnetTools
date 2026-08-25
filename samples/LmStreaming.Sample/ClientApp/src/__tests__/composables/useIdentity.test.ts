@@ -217,3 +217,87 @@ describe('startSignIn from the signed-out screen', () => {
     expect(errorMessage.value).toBeNull();
   });
 });
+
+describe('a session whose token expires while the tab is open', () => {
+  async function signedIn(): Promise<void> {
+    getIdentityConfig.mockResolvedValue(CONFIGURED);
+    initialize.mockResolvedValue({ homeAccountId: 'a' });
+    acquireAccessToken.mockResolvedValue('token-xyz');
+    await initializeIdentity();
+  }
+
+  function unauthorized(): Response {
+    return { ok: false, status: 401, json: async () => ({}) } as Response;
+  }
+
+  function ok(): Response {
+    return { ok: true, status: 200, json: async () => ({}) } as Response;
+  }
+
+  it('renews silently on a 401 and leaves the user in the app', async () => {
+    await signedIn();
+    acquireAccessToken.mockResolvedValue('token-renewed');
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(unauthorized()).mockResolvedValueOnce(ok());
+
+    await apiFetch('/api/conversations');
+
+    // The whole point of the fix: an hour-old tab keeps working without the user doing anything,
+    // and without the full-page redirect that would throw away whatever they were typing.
+    expect(getAccessToken()).toBe('token-renewed');
+    expect(useIdentity().status.value).toBe('signed-in');
+    expect(signIn).not.toHaveBeenCalled();
+  });
+
+  it('shows the expired screen when the broker cannot renew silently', async () => {
+    await signedIn();
+    acquireAccessToken.mockResolvedValue(null);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(unauthorized());
+
+    await apiFetch('/api/conversations');
+
+    const { status, refusalCode, isReady } = useIdentity();
+    expect(status.value).toBe('expired');
+    expect(isReady.value).toBe(false);
+    expect(getAccessToken()).toBeNull();
+
+    // Kept apart from a refusal on purpose. An expired session is fixed by signing in again; a
+    // tenant refusal is not fixed by anything the user can do, and the two screens must not be
+    // able to reach each other's remedy.
+    expect(refusalCode.value).toBeNull();
+  });
+
+  it('unregisters the token provider so an expired session stops re-attempting renewal', async () => {
+    await signedIn();
+    acquireAccessToken.mockResolvedValue(null);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(unauthorized());
+
+    // First request drives the expiry: it 401s, the provider is asked, the broker returns null,
+    // and the session moves to 'expired'.
+    await apiFetch('/api/conversations');
+    expect(useIdentity().status.value).toBe('expired');
+
+    acquireAccessToken.mockClear();
+
+    // The point of BE3: expire() unregisters the provider, exactly as refuse() does. Left
+    // registered, this later request would 401, ask the broker AGAIN, get null AGAIN, and expire
+    // AGAIN - a paired-request trickle against a session that is equally past saving until the
+    // user signs in. With the provider gone the request takes the signed-out fast path and returns
+    // its 401 untouched.
+    await apiFetch('/api/conversations');
+    expect(acquireAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('is not registered once the state has been reset', async () => {
+    await signedIn();
+    resetIdentityState();
+    acquireAccessToken.mockClear();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(unauthorized());
+
+    await apiFetch('/api/conversations');
+
+    // resetIdentityState has to clear the token provider as well as the handlers. A provider that
+    // survives into the next test file re-acquires against that file's mocks.
+    expect(acquireAccessToken).not.toHaveBeenCalled();
+    expect(useIdentity().status.value).toBe('loading');
+  });
+});

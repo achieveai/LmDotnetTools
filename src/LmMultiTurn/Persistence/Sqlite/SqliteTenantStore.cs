@@ -242,27 +242,84 @@ public sealed class SqliteTenantStore : ITenantStore
     }
 
     /// <inheritdoc />
-    public async Task<int> NormalizeEntraTenantIdsAsync(CancellationToken ct = default)
+    public async Task<EntraTenantNormalizationResult> NormalizeEntraTenantIdsAsync(CancellationToken ct = default)
     {
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
         await using var connection = await _factory.GetConnectionAsync(ct).ConfigureAwait(false);
-        using var command = connection.CreateCommand();
 
-        // The NOT EXISTS clause is what keeps this from wedging startup. Without it, two rows that
-        // differ only in case would both fold onto one value, ux_tenants_entra would reject the
-        // UPDATE, and the host would fail to start with no in-product way out.
-        command.CommandText = """
-            UPDATE tenants
-               SET entra_tenant_id = lower(trim(entra_tenant_id))
-             WHERE entra_tenant_id IS NOT NULL
-               AND entra_tenant_id <> lower(trim(entra_tenant_id))
-               AND NOT EXISTS (
-                     SELECT 1 FROM tenants other
-                      WHERE other.entra_tenant_id = lower(trim(tenants.entra_tenant_id)));
-            """;
+        // Read-then-write in C# rather than one UPDATE, because the canonical form is no longer
+        // expressible in SQLite's expression language: `lower(trim(x))` cannot turn `{A1B2...}` or
+        // a 32-character unhyphenated id into the "D" form, and those paste variants fail exactly
+        // the way the mixed-case one does. One IMMEDIATE transaction holds the read and the writes
+        // together so a concurrent provisioning call cannot land a row between the collision check
+        // and the update it authorises.
+        using var transaction = connection.BeginTransaction(deferred: false);
 
-        return await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        var rewrites = new List<(string TenantId, string Canonical)>();
+        var occupied = new HashSet<string>(StringComparer.Ordinal);
+
+        using (var read = connection.CreateCommand())
+        {
+            read.Transaction = transaction;
+            read.CommandText =
+                "SELECT tenant_id, entra_tenant_id FROM tenants WHERE entra_tenant_id IS NOT NULL;";
+
+            using var reader = await read.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                var tenantId = reader.GetString(0);
+                var stored = reader.GetString(1);
+                var canonical = NormalizeEntraTenantId(stored);
+
+                if (canonical is null)
+                {
+                    continue;
+                }
+
+                if (string.Equals(stored, canonical, StringComparison.Ordinal))
+                {
+                    // Already canonical, and it OWNS that value - so a differently-shaped row that
+                    // folds onto it must be left alone rather than colliding with it.
+                    _ = occupied.Add(canonical);
+                    continue;
+                }
+
+                rewrites.Add((tenantId, canonical));
+            }
+        }
+
+        // Collision-aware, and it has to be, or the host fails to start with no in-product way out:
+        // two rows that differ only in shape both fold onto one value, ux_tenants_entra rejects the
+        // second UPDATE, and the exception escapes the startup repair. A row that cannot be
+        // rewritten safely is left exactly as it was - still unreachable, but visible to an
+        // operator, which is the state they can act on.
+        var claimed = new HashSet<string>(occupied, StringComparer.Ordinal);
+        var updated = 0;
+        var skipped = 0;
+
+        foreach (var (tenantId, canonical) in rewrites)
+        {
+            if (!claimed.Add(canonical))
+            {
+                // Folds onto a value another row already owns. Counted, not thrown: the row stays
+                // exactly as it was so the host still boots, but the count carries upward so the
+                // operator who reads the startup log learns the row exists and is unreachable.
+                skipped++;
+                continue;
+            }
+
+            using var update = connection.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText =
+                "UPDATE tenants SET entra_tenant_id = $canonical WHERE tenant_id = $tenantId;";
+            _ = update.Parameters.AddWithValue("$canonical", canonical);
+            _ = update.Parameters.AddWithValue("$tenantId", tenantId);
+            updated += await update.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+
+        transaction.Commit();
+        return new EntraTenantNormalizationResult(updated, skipped);
     }
 
     /// <inheritdoc />
@@ -379,14 +436,38 @@ public sealed class SqliteTenantStore : ITenantStore
     private static string Normalize(string upn) => upn.Trim().ToLowerInvariant();
 
     /// <summary>
-    /// Lower-cases and trims an Entra directory id for storage and matching (#347). The value is a
-    /// GUID, so an invariant lower-case is lossless; what it buys is that an operator who pastes an
-    /// upper-cased id out of a ticket provisions the same row a token carrying the lower-cased one
-    /// resolves to, instead of a row nobody can ever sign in against.
+    /// Reduces an Entra directory id to one canonical form for storage and matching (#347).
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The value is a GUID, so it is parsed as one and re-formatted with <c>"D"</c> - lower-case,
+    /// hyphenated, unbraced. Case-folding alone is not enough: <c>Guid.TryParse</c> also accepts
+    /// the braced <c>{...}</c>, parenthesised <c>(...)</c> and unhyphenated 32-character forms,
+    /// and every one of those is a shape an operator can paste out of a portal or a ticket. Each
+    /// has the identical failure mode - the row provisions, and then every token from that
+    /// directory carries the <c>"D"</c> form, matches nothing, and is refused
+    /// <c>tenant_not_provisioned</c> forever.
+    /// </para>
+    /// <para>
+    /// A value that is not a GUID at all falls back to trim-and-lower rather than being rejected
+    /// here. This is a normalizer, not a validator: refusing would turn an existing row nobody can
+    /// re-read into an exception on a read path, and the write path already reports a bad id
+    /// through its own validation.
+    /// </para>
+    /// </remarks>
     /// <param name="entraTenantId">The raw value, from configuration or from a token claim.</param>
-    internal static string? NormalizeEntraTenantId(string? entraTenantId) =>
-        string.IsNullOrWhiteSpace(entraTenantId) ? null : entraTenantId.Trim().ToLowerInvariant();
+    internal static string? NormalizeEntraTenantId(string? entraTenantId)
+    {
+        if (string.IsNullOrWhiteSpace(entraTenantId))
+        {
+            return null;
+        }
+
+        var trimmed = entraTenantId.Trim();
+        return Guid.TryParse(trimmed, CultureInfo.InvariantCulture, out var parsed)
+            ? parsed.ToString("D", CultureInfo.InvariantCulture)
+            : trimmed.ToLowerInvariant();
+    }
 
     private static string FormatStatus(TenantStatus status) => status switch
     {

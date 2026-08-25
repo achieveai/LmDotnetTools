@@ -108,15 +108,29 @@ public sealed class ConversationOwnershipRepairHostedService : IHostedService
             throw new LegacyTenantIdCollisionException(legacyTenantId);
         }
 
-        var normalized = await _tenantStore
+        var normalization = await _tenantStore
             .NormalizeEntraTenantIdsAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        if (normalized > 0)
+        if (normalization.Rewritten > 0)
         {
             _logger.LogInformation(
                 "Normalized {NormalizedCount} stored Entra directory id(s) to lower case.",
-                normalized);
+                normalization.Rewritten);
+        }
+
+        if (normalization.SkippedCollisions > 0)
+        {
+            // Not an error the repair can fix - it deliberately leaves the row rather than failing
+            // the boot - but not something to swallow either. Each skipped row is a directory two
+            // tenants claim in different shapes, and it is unreachable until an operator picks which
+            // one keeps it. Logged as a warning so that state is visible after a boot instead of
+            // only inferable from a rewritten count that came back lower than expected.
+            _logger.LogWarning(
+                "Left {SkippedCount} stored Entra directory id(s) un-normalized: each would collide "
+                    + "with a row that already owns its canonical form. Those tenants are unreachable "
+                    + "until the duplicate directory registration is resolved.",
+                normalization.SkippedCollisions);
         }
 
         if (_conversationStore is not IConversationOwnershipStore ownership)

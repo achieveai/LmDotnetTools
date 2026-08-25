@@ -7,6 +7,9 @@
  * so the one thing this screen must never do is offer a sign-in button. Signing in again produces
  * the identical refusal, and a client that retries automatically produces an infinite loop against
  * the identity provider.
+ *
+ * `expired` is the mirror image and is kept visibly apart for that reason: the session was fine
+ * and simply ran out, so the sign-in button is the whole point of the screen.
  */
 import { useIdentity, startSignIn } from '@/composables/useIdentity';
 
@@ -44,6 +47,17 @@ const { status, refusalCode, errorMessage } = useIdentity();
           Signing in again will not restore it.
         </p>
         <p class="identity-gate-hint">Contact your administrator or support to have it reinstated.</p>
+      </template>
+
+      <template v-else-if="status === 'expired'">
+        <h2 data-testid="identity-gate-expired">Your session has expired</h2>
+        <p>
+          You were signed in, but the session has run out and could not be renewed on its own.
+          Signing in again picks up where you left off.
+        </p>
+        <button type="button" class="identity-gate-btn" @click="startSignIn">
+          Sign in again
+        </button>
       </template>
 
       <template v-else-if="status === 'error'">

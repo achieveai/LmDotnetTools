@@ -135,6 +135,13 @@ try
     {
         options.WebSocketPath = "/ws";
         options.WriteIndentedJson = builder.Environment.IsDevelopment();
+
+        // Bound from configuration, not left at the default (#346). The default is empty, which
+        // admits no cross-origin caller - correct, and the right default - but until this line
+        // existed an operator had no way to change it, so `LmStreaming:AllowedOrigins` was a
+        // setting the deployment documentation named and the host ignored.
+        options.AllowedOrigins =
+            builder.Configuration.GetSection("LmStreaming:AllowedOrigins").Get<List<string>>() ?? [];
     });
     _ = builder.Services
         .AddOptions<AgentOutputTokenOptions>()
@@ -2092,13 +2099,21 @@ subAgentFactory,
     // Serve static files (including Vite build output)
     _ = app.UseStaticFiles();
 
+    // CORS BEFORE identity (#346), not with the rest of the LmStreaming middleware below. A CORS
+    // preflight is an OPTIONS request with no Authorization header, so an identity middleware in
+    // front of it answers 401 and the browser never sends the real request; and a 403 refusal
+    // written downstream of it would leave without Access-Control-Allow-Origin, unreadable by the
+    // cross-origin SPA the stable refusal code exists for. UseLmStreaming below sees this has
+    // already run and registers WebSockets only.
+    _ = app.UseLmStreamingCors();
+
     // P1 slice 1 (#301): authentication, authorization, then the middleware that establishes the
     // request's Principal. Placed after UseStaticFiles so the SPA — including the screen that
     // explains a refusal — stays reachable while signed out, and before the API endpoints so every
     // /api route runs with a principal already resolved.
     _ = app.UseSampleIdentity();
 
-    // Use LmStreaming middleware (enables WebSockets and CORS)
+    // Use LmStreaming middleware (enables WebSockets; CORS already registered above)
     _ = app.UseLmStreaming();
 
     // Map custom WebSocket endpoint for chat using ChatWebSocketManager

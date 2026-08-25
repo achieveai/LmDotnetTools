@@ -1,0 +1,281 @@
+using System.Net;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
+using FluentAssertions;
+using LmStreaming.Sample.E2E.Tests.Infrastructure;
+using LmStreaming.Sample.Identity;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
+using Xunit.Abstractions;
+
+namespace LmStreaming.Sample.E2E.Tests.Scenarios;
+
+/// <summary>
+/// Pins the identity boundary against the REAL host's pipeline and route table (#345, #346).
+/// </summary>
+/// <remarks>
+/// <para>
+/// Both defects were ordering defects, and ordering is a property of <c>Program.cs</c>, not of any
+/// one component. A synthetic pipeline that mirrors the intended order proves the components work
+/// when composed correctly; it cannot prove <c>Program.cs</c> composes them that way. Only the real
+/// host can, so this suite boots it.
+/// </para>
+/// <para>
+/// The route-partition test is here for a sharper reason. This repository has already shipped one
+/// "there is a single seam" claim that a sibling controller falsified, and the identity boundary is
+/// exactly that shape: a prefix guard plus a hand-maintained list of exemptions. Enumerating the
+/// host's actual <see cref="EndpointDataSource"/> - which includes controllers the SDK's generated
+/// <c>ApplicationPartAttribute</c> pulls in from referenced assemblies, not just the ones written in
+/// this sample - is the only way to notice a route that lands outside the boundary without anyone
+/// deciding it should.
+/// </para>
+/// </remarks>
+public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
+{
+    private const string Secret = "e2e-inbound-secret-value";
+    private const string DaemonAppId = "review-daemon";
+    private const string DaemonTenant = "tnt_daemon";
+    private const string ClientOrigin = "https://client.example";
+    private const string GuardedRoute = "/api/conversations";
+
+    public IdentityBoundaryPipelineTests(ITestOutputHelper output)
+        : base(output) { }
+
+    [Fact]
+    public void EveryApiRouteThisHostPublishes_IsEitherGuardedOrDeliberatelyExempt()
+    {
+        LogTestStart();
+        using var factory = NewFactory();
+
+        var apiRoutes = ApiRoutes(factory);
+        LogData("apiRoutes", apiRoutes);
+
+        // Non-vacuity first. An empty enumeration would satisfy the partition below trivially, and
+        // this test's whole value is that it fails when a NEW route appears.
+        _ = apiRoutes.Should().NotBeEmpty();
+        _ = apiRoutes.Should().Contain("api/conversations");
+
+        var guarded = apiRoutes.Where(IsGuarded).ToArray();
+        var exempt = apiRoutes.Where(route => !IsGuarded(route)).ToArray();
+
+        // Both halves must be non-empty, or a guard that admitted everything - or refused
+        // everything - would read as a pass.
+        _ = guarded.Should().NotBeEmpty();
+        _ = exempt.Should().NotBeEmpty();
+
+        // The exempt half is the security-relevant one, so it is pinned by name. A route that joins
+        // it does so by an author editing this list, never by a prefix quietly matching.
+        _ = exempt.Should().BeEquivalentTo(
+            [
+                "api/identity/config",
+                "api/admin/tenants",
+                "api/admin/tenants/{tenantId}/adopt-legacy",
+                "api/auth/webhook/{provider}",
+            ],
+            "every /api route outside the identity boundary is a deliberate, reviewed decision - "
+                + "see IdentityMiddleware.InfrastructureApiPaths for why each one is there");
+
+        // Both egress-key routes are INSIDE the boundary, not exempt (BE1). The controller presents
+        // no credential of its own - it is loopback-gated only - so leaving it outside enforcement
+        // let a credential-less loopback caller manage egress keys under Identity:Enforce. Pinned
+        // by name here as the counterpart to the exempt list: an edit that carves either back out
+        // has to defeat this assertion too, not just quietly extend a prefix.
+        _ = guarded.Should().Contain("api/auth/egress-keys");
+        _ = guarded.Should().Contain("api/auth/egress-keys/{id}");
+    }
+
+    [Fact]
+    public void WithTheLifecycleControlPlaneOn_ItsRoutesAreExemptByDecision_NotByOmission()
+    {
+        LogTestStart();
+
+        // The partition test above boots a DEFAULT host, on which the lifecycle routes do not exist
+        // (they are config-gated and absent unless both flags are set). So the carve-out for
+        // /api/lifecycle in IdentityMiddleware.InfrastructureApiPaths is invisible to it - the one
+        // route family the enumeration cannot see is the one the enumeration is meant to catch. This
+        // boots the plane ON and pins what the carve-out does: the routes are published AND land
+        // OUTSIDE the identity boundary.
+        //
+        // That exemption is a deliberate, reviewed decision (a config-gated, signature-checked
+        // service-to-service surface), and whether it should honour tenant refusal under
+        // Identity:Enforce is the subject of follow-up #402. Pinning it here means a change to it has
+        // to defeat this assertion rather than pass unnoticed because no default-boot test enumerates
+        // the plane.
+        var settings = EnforcingSettings();
+        settings["Lifecycle:Delivery:Enabled"] = "true";
+        settings["Lifecycle:Delivery:AllowedCallbackHosts:0"] = "callbacks.example.com";
+        settings["Lifecycle:Approval:Enabled"] = "true";
+
+        using var factory = NewFactory(settings);
+
+        var apiRoutes = ApiRoutes(factory);
+        LogData("apiRoutes", apiRoutes);
+
+        // Non-vacuity: the flags actually published the plane. Without this, a plane that failed to
+        // register would make the exemption assertions below trivially true.
+        _ = apiRoutes.Should().Contain("api/lifecycle/subscriptions");
+        _ = apiRoutes.Should().Contain("api/lifecycle/approvals/decisions");
+
+        // The reviewed decision, asked of the real predicate: lifecycle is infrastructure and sits
+        // outside the identity boundary.
+        _ = IsGuarded("api/lifecycle/subscriptions").Should().BeFalse(
+            "the lifecycle control plane is carved out of the identity boundary by decision (#402)");
+        _ = IsGuarded("api/lifecycle/approvals/decisions").Should().BeFalse(
+            "the lifecycle control plane is carved out of the identity boundary by decision (#402)");
+    }
+
+    [Fact]
+    public async Task WithEnforcementOn_ACorsPreflight_SurvivesTheRealPipeline()
+    {
+        LogTestStart();
+        using var factory = NewFactory(EnforcingSettings());
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Options, new Uri(GuardedRoute, UriKind.Relative));
+        request.Headers.TryAddWithoutValidation("Origin", ClientOrigin);
+        request.Headers.TryAddWithoutValidation("Access-Control-Request-Method", "GET");
+
+        var response = await client.SendAsync(request);
+
+        // A browser never attaches Authorization to a preflight, by specification. If identity runs
+        // first the preflight is 401'd, no Access-Control-Allow-Origin is written, and the browser
+        // abandons the real request before sending it.
+        _ = response.StatusCode.Should().NotBe(HttpStatusCode.Unauthorized);
+        _ = response.Headers.GetValues("Access-Control-Allow-Origin").Should().ContainSingle()
+            .Which.Should().Be(ClientOrigin);
+    }
+
+    [Fact]
+    public async Task WithEnforcementOn_ARefusalFromTheRealPipeline_IsStillReadableCrossOrigin()
+    {
+        LogTestStart();
+        using var factory = NewFactory(EnforcingSettings());
+        using var client = factory.CreateClient();
+
+        // A service caller whose secret matches but whose app id is not onboarded: authenticated,
+        // and refused by identity with a stable code. That is the refusal shape the SPA's rejection
+        // screen is built to read.
+        var request = new HttpRequestMessage(HttpMethod.Get, new Uri(GuardedRoute, UriKind.Relative));
+        request.Headers.TryAddWithoutValidation("X-S2S-Auth", Secret);
+        request.Headers.TryAddWithoutValidation("X-Sbx-App-Id", "not-onboarded");
+        request.Headers.TryAddWithoutValidation("Origin", ClientOrigin);
+
+        var response = await client.SendAsync(request);
+
+        _ = response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        _ = response.Headers.GetValues(IdentityMiddleware.RefusalCodeHeader).Should().ContainSingle()
+            .Which.Should().Be(ServiceCallerPrincipalSource.AppNotRegisteredCode);
+        _ = response.Headers.GetValues("Access-Control-Allow-Origin").Should().ContainSingle()
+            .Which.Should().Be(
+                ClientOrigin,
+                "a refusal written downstream of the CORS middleware leaves without this header, "
+                    + "and a cross-origin client then sees an opaque network error instead of the "
+                    + "explanation the refusal exists to give it");
+    }
+
+    [Fact]
+    public async Task WithEnforcementOn_TheDaemonsHeaderShape_ReachesTheEndpointOnTheRealPipeline()
+    {
+        LogTestStart();
+        using var factory = NewFactory(EnforcingSettings());
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Get, new Uri(GuardedRoute, UriKind.Relative));
+        request.Headers.TryAddWithoutValidation("X-S2S-Auth", Secret);
+        request.Headers.TryAddWithoutValidation("X-Sbx-App-Id", DaemonAppId);
+        request.Headers.TryAddWithoutValidation("X-Sbx-App-Key", "app-key-value");
+
+        var response = await client.SendAsync(request);
+
+        // The whole point of #345: this exact request used to be 401'd by the identity middleware
+        // before the endpoint's own S2S guard ever ran.
+        _ = response.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task WithEnforcementOn_AnAnonymousBrowserRequest_IsStillRefused()
+    {
+        LogTestStart();
+        using var factory = NewFactory(EnforcingSettings());
+        using var client = factory.CreateClient();
+
+        // The non-vacuity partner of the test above. Without this, a build that simply stopped
+        // guarding /api would pass every other assertion here.
+        var response = await client.GetAsync(new Uri(GuardedRoute, UriKind.Relative));
+
+        _ = response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        _ = response.Headers.GetValues(IdentityMiddleware.RefusalCodeHeader).Should().ContainSingle()
+            .Which.Should().Be("authentication_required");
+    }
+
+    [Fact]
+    public async Task WithEnforcementOn_EgressKeyManagement_IsRefusedWithoutACredential()
+    {
+        LogTestStart();
+        using var factory = NewFactory(EnforcingSettings());
+        using var client = factory.CreateClient();
+
+        // BE1. The egress-key controller carries no credential of its own - it is loopback-gated
+        // only, and TestServer's null remote address reads as loopback - so identity enforcement is
+        // the ONLY thing standing between an anonymous caller and the key inventory. Before the fix
+        // this route was in InfrastructureApiPaths, so this GET returned 200 and leaked the masked
+        // inventory (and POST/DELETE could plant and destroy keys); with the carve-out removed the
+        // identity middleware refuses it exactly like any other management route.
+        var response = await client.GetAsync(
+            new Uri("/api/auth/egress-keys", UriKind.Relative));
+
+        _ = response.StatusCode.Should().Be(
+            HttpStatusCode.Unauthorized,
+            "an unauthenticated caller must not reach egress-key management under Identity:Enforce");
+        _ = response.Headers.GetValues(IdentityMiddleware.RefusalCodeHeader).Should().ContainSingle()
+            .Which.Should().Be("authentication_required");
+    }
+
+    /// <summary>
+    /// Asks the real predicate rather than restating the rule, so an edit to the exemption list
+    /// cannot agree with a copy of itself.
+    /// </summary>
+    private static bool IsGuarded(string route) =>
+        IdentityMiddleware.IsGuardedApiPath(new PathString("/" + route));
+
+    private static IReadOnlyList<string> ApiRoutes(E2EWebAppFactory factory) =>
+        [..
+            factory
+                .Services.GetRequiredService<EndpointDataSource>()
+                .Endpoints.OfType<RouteEndpoint>()
+                // TrimStart the leading slash before filtering. A controller route's RawText is
+                // "api/..." with no slash, but a minimal-API route mapped as "/api/..." keeps its
+                // slash - so a bare StartsWith("api/") silently drops every minimal-API /api route,
+                // and this coverage test would never see one land outside the boundary. There are
+                // none today; normalising here means adding one cannot hide it.
+                .Select(endpoint => (endpoint.RoutePattern.RawText ?? string.Empty).TrimStart('/'))
+                .Where(route => route.StartsWith("api/", StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(route => route, StringComparer.Ordinal),
+        ];
+
+    private static Dictionary<string, string?> EnforcingSettings() =>
+        new(StringComparer.Ordinal)
+        {
+            ["Identity:Enforce"] = "true",
+            ["Identity:DatabasePath"] = Path.Combine(
+                Path.GetTempPath(),
+                $"identity_e2e_{Guid.NewGuid():N}.db"),
+            ["Identity:Apps:" + DaemonAppId + ":TenantId"] = DaemonTenant,
+            ["Auth:S2SInboundSecret"] = Secret,
+            ["LmStreaming:AllowedOrigins:0"] = ClientOrigin,
+        };
+
+    private static E2EWebAppFactory NewFactory(IDictionary<string, string?>? settings = null)
+    {
+        // Any scripted handler works - nothing here creates an agent.
+        var responder = ScriptedSseResponder
+            .New()
+            .ForRole("noop", _ => true)
+            .Turn(t => t.Text("ok"))
+            .Build();
+
+        return new E2EWebAppFactory("test", new ScriptedBuilder(responder.AsAnthropicHandler()), settings);
+    }
+}

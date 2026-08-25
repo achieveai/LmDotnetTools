@@ -50,6 +50,47 @@ public sealed class IdentityOptions
 
     /// <summary>Audit-record content controls.</summary>
     public IdentityAuditOptions Audit { get; set; } = new();
+
+    /// <summary>
+    /// Service callers onboarded to this deployment, keyed by the app id they present in
+    /// <c>X-Sbx-App-Id</c> (spec 4.2). A caller presenting only <c>X-S2S-Auth</c> and no app id
+    /// resolves against <see cref="DefaultServiceAppKey"/>.
+    /// </summary>
+    /// <remarks>
+    /// Consulted only while <see cref="Enforce"/> is true. With enforcement off a service caller
+    /// resolves to the development principal exactly as it did before this section existed, so an
+    /// empty <c>Identity:Apps</c> changes nothing for any current deployment.
+    /// </remarks>
+    public IDictionary<string, ServiceAppOptions> Apps { get; } =
+        new Dictionary<string, ServiceAppOptions>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Reserved key in <see cref="Apps"/> for a service caller that presents the inbound S2S
+    /// secret and no app id. Not a wildcard: it names ONE registration, and a caller that does
+    /// present an app id never falls back to it.
+    /// </summary>
+    public const string DefaultServiceAppKey = "default";
+}
+
+/// <summary>One onboarded service caller.</summary>
+public sealed class ServiceAppOptions
+{
+    /// <summary>
+    /// Our internal tenant id (<c>tnt_*</c>) this app's calls operate within.
+    /// </summary>
+    /// <remarks>
+    /// Required, and it must not be <see cref="IdentityOptions.LegacyTenantId"/>. Spec 8.5.2 is
+    /// explicit that no principal may ever carry the quarantine tenant: those rows are reachable
+    /// by being MOVED, never by a rule being relaxed, and minting a principal inside that tenant
+    /// would hand a service caller every unadopted conversation on the deployment.
+    /// </remarks>
+    public string? TenantId { get; set; }
+
+    /// <summary>
+    /// Scopes this app holds. Already the app's full set; an on-behalf-of token can only narrow it
+    /// (spec 3.2), which is slice 5's half of the door.
+    /// </summary>
+    public IList<string> Scopes { get; } = [];
 }
 
 /// <summary>One tenant to create at startup if it does not already exist.</summary>

@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using LmStreaming.Sample.Identity;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 
@@ -60,12 +61,41 @@ internal sealed class UnavailableTenantStore : ITenantStore
     public Task<bool> IsTenantAdminAsync(string tenantId, string userId, CancellationToken ct = default) =>
         throw Fail();
 
-    public Task<int> NormalizeEntraTenantIdsAsync(CancellationToken ct = default) => throw Fail();
+    public Task<EntraTenantNormalizationResult> NormalizeEntraTenantIdsAsync(CancellationToken ct = default) => throw Fail();
 
     public Task<bool> TryEnsureQuarantineTenantAsync(
         string tenantId,
         DateTimeOffset createdAt,
         CancellationToken ct = default) => throw Fail();
+}
+
+/// <summary>Captures log entries so a test can assert on an operator-visible warning.</summary>
+internal sealed class CapturingLogger<T> : ILogger<T>
+{
+    public List<(LogLevel Level, string Message)> Entries { get; } = [];
+
+    public IDisposable BeginScope<TState>(TState state)
+        where TState : notnull => NullScope.Instance;
+
+    public bool IsEnabled(LogLevel logLevel) => true;
+
+    public void Log<TState>(
+        LogLevel logLevel,
+        EventId eventId,
+        TState state,
+        Exception? exception,
+        Func<TState, Exception?, string> formatter)
+    {
+        ArgumentNullException.ThrowIfNull(formatter);
+        Entries.Add((logLevel, formatter(state, exception)));
+    }
+
+    private sealed class NullScope : IDisposable
+    {
+        public static readonly NullScope Instance = new();
+
+        public void Dispose() { }
+    }
 }
 
 /// <summary>
@@ -139,6 +169,14 @@ public sealed class PrincipalFactoryTests : IAsyncLifetime
             Options.Create(options ?? new IdentityOptions()),
             _time,
             NullLogger<PrincipalFactory>.Instance);
+
+    private PrincipalFactory CreateFactory(ILogger<PrincipalFactory> logger, IdentityOptions? options = null) =>
+        new(
+            _store,
+            _audit,
+            Options.Create(options ?? new IdentityOptions()),
+            _time,
+            logger);
 
     private static ClaimsPrincipal Token(
         string? tid = EntraTenant,
@@ -395,6 +433,129 @@ public sealed class PrincipalFactoryTests : IAsyncLifetime
         _ = principal.TenantId.Should().Be("legacy");
         _ = principal.Source.Should().Be(PrincipalSource.Interactive);
         _ = principal.Actor.Kind.Should().Be(PrincipalKind.EndUser);
+    }
+
+    /// <summary>
+    /// Builds a token whose identifier claim is carried under an arbitrary claim type, so a test
+    /// can present <c>email</c> or the mapped <c>ClaimTypes.Email</c>/<c>ClaimTypes.Upn</c> URI
+    /// with no <c>preferred_username</c> at all - the exact shape #349 is about.
+    /// </summary>
+    private static ClaimsPrincipal TokenWithIdentifierClaim(string claimType, string value)
+    {
+        List<Claim> claims =
+        [
+            new Claim("tid", EntraTenant),
+            new Claim("oid", ObjectId),
+            new Claim(claimType, value),
+            new Claim("jti", "jti-349"),
+        ];
+
+        return new ClaimsPrincipal(new ClaimsIdentity(claims, "TestBearer"));
+    }
+
+    /// <summary>
+    /// Spec 8.2 and <see cref="ITenantStore.TryBindFirstAdminAsync"/> both say
+    /// <c>preferred_username</c> is the ONLY claim the first-admin binding trusts. These are the
+    /// claims that used to be trusted alongside it (#349).
+    /// </summary>
+    /// <remarks>
+    /// <c>MapInboundClaims</c> defaults to true, so a raw <c>email</c> claim arrives as
+    /// <see cref="ClaimTypes.Email"/> and a raw <c>upn</c> as <see cref="ClaimTypes.Upn"/>. Both
+    /// forms are asserted, because a fix that narrows only the short names would still admit the
+    /// mapped ones - and the mapped ones are what the pipeline actually delivers.
+    /// </remarks>
+    public static TheoryData<string> ClaimsThatMustNotBindTheFirstAdmin() =>
+        [ClaimTypes.Email, ClaimTypes.Upn, "email", "upn"];
+
+    [Theory]
+    [MemberData(nameof(ClaimsThatMustNotBindTheFirstAdmin))]
+    public async Task AClaimOtherThanPreferredUsername_DoesNotBindTheFirstAdmin(string claimType)
+    {
+        _ = await ProvisionAsync();
+
+        // The value MATCHES the recorded firstAdminUpn exactly. That is the point: the binding must
+        // be refused on the strength of WHICH claim carried it, not on the value being wrong.
+        var resolution = await CreateFactory()
+            .ResolveInteractiveAsync(TokenWithIdentifierClaim(claimType, AdminUpn), "corr-349");
+
+        // The sign-in itself still succeeds - this is about the one-shot admin grant, not about
+        // admitting the user.
+        _ = resolution.Principal.Should().NotBeNull();
+        _ = (await ReadBoundUserIdAsync()).Should().BeNull();
+        _ = (await ReadBoundAtAsync()).Should().BeNull();
+        _ = resolution.Principal!.Roles.Should().NotContain("admin");
+    }
+
+    [Fact]
+    public async Task AnInteractiveTokenMissingPreferredUsername_WarnsSoTheLockoutIsNotSilent()
+    {
+        // BE2 (#349). A tenant is provisioned expecting a first admin, but the admin's app
+        // registration issues v1.0 tokens: upn is present, preferred_username is not. Binding is
+        // correctly skipped - but before the fix it was skipped in total silence, so the tenant
+        // never acquired an admin and no signal said why. The warning is the recovery breadcrumb.
+        _ = await ProvisionAsync();
+
+        var logger = new CapturingLogger<PrincipalFactory>();
+        var resolution = await CreateFactory(logger)
+            .ResolveInteractiveAsync(TokenWithIdentifierClaim(ClaimTypes.Upn, AdminUpn), "corr-be2");
+
+        // The sign-in still succeeds as a member; the lockout is about the admin grant, not access.
+        _ = resolution.Principal.Should().NotBeNull();
+        _ = resolution.Principal!.Roles.Should().NotContain("admin");
+        _ = (await ReadBoundUserIdAsync()).Should().BeNull();
+
+        var warning = logger.Entries.Should().ContainSingle(e => e.Level == LogLevel.Warning).Which;
+        _ = warning.Message.Should().Contain("preferred_username");
+        _ = warning.Message.Should().Contain(InternalTenant);
+    }
+
+    [Fact]
+    public async Task AnInteractiveTokenCarryingPreferredUsername_DoesNotWarn()
+    {
+        // Non-vacuity for the warning above. A warning that fired on every sign-in - including the
+        // ones that DO bind - would be noise, not a signal, and would satisfy the assertion above
+        // just as well.
+        _ = await ProvisionAsync();
+
+        var logger = new CapturingLogger<PrincipalFactory>();
+        _ = await CreateFactory(logger)
+            .ResolveInteractiveAsync(TokenWithIdentifierClaim("preferred_username", AdminUpn), "corr-be2b");
+
+        _ = logger.Entries.Should().NotContain(e => e.Level == LogLevel.Warning);
+    }
+
+    [Fact]
+    public async Task PreferredUsername_StillBindsTheFirstAdmin()
+    {
+        // The non-vacuity half of the theory above: with the narrowing in place the ONE claim the
+        // spec names must still work, or the theory would pass just as well against a binding path
+        // that had been deleted outright.
+        _ = await ProvisionAsync();
+
+        var resolution = await CreateFactory()
+            .ResolveInteractiveAsync(TokenWithIdentifierClaim("preferred_username", AdminUpn), "corr-349b");
+
+        _ = (await ReadBoundUserIdAsync()).Should().Be($"{EntraTenant}:{ObjectId}");
+        _ = resolution.Principal!.Roles.Should().Contain("admin");
+    }
+
+    [Fact]
+    public async Task ARejectedSignInStillAudits_TheWiderIdentifierClaim()
+    {
+        // The narrowing applies to BINDING, not to the audit trail. An operator diagnosing a
+        // refusal needs a human-readable identifier, and that value authorizes nothing - so the
+        // wide claim set stays wide exactly here, and nowhere else.
+        var factory = CreateFactory(new IdentityOptions
+        {
+            Audit = new IdentityAuditOptions { IncludeUpn = true },
+        });
+
+        // No tenant provisioned, so this rejects with tenant_not_provisioned.
+        _ = await factory.ResolveInteractiveAsync(
+            TokenWithIdentifierClaim(ClaimTypes.Email, AdminUpn),
+            "corr-349c");
+
+        _ = _audit.Authentications.Should().ContainSingle().Subject.ClaimedUpn.Should().Be(AdminUpn);
     }
 
     private async Task<string?> ReadBoundUserIdAsync()
