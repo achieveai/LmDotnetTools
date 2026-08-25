@@ -71,6 +71,15 @@ public sealed class JudgeHarnessAdapterTests
                 "0 is a legitimate worst score under this rubric, so persisting one for an "
                     + "unreadable reply makes every stored verdict ambiguous after the fact"
             );
+        recorded
+            .RootElement.GetProperty("BallotCount")
+            .GetInt32()
+            .Should()
+            .Be(
+                0,
+                "a null score alone does not say whether no ballot survived or the reduction "
+                    + "declined to score the ones that did"
+            );
 
         logger.CountAtLevel(LogLevel.Warning, "no usable score").Should().Be(1);
     }
@@ -291,5 +300,6 @@ public sealed class JudgeHarnessAdapterTests
         payload.RootElement.GetProperty("JudgeModelId").GetString().Should().Be(judgeModelId);
         payload.RootElement.GetProperty("GeneratorModelId").GetString().Should().Be("openai/gpt-5");
         payload.RootElement.GetProperty("SelfGraded").GetBoolean().Should().Be(selfGraded);
+        payload.RootElement.GetProperty("BallotCount").GetInt32().Should().Be(1);
     }
 }
