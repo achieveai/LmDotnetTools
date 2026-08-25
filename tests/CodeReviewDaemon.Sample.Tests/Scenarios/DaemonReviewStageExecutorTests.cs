@@ -182,6 +182,78 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task ContextReady_caps_the_file_manifest_on_a_record_boundary_not_character_exact()
+    {
+        // #257: BuildFileManifestAsync must select SandboxLimits.CapRecordListing (cuts between records,
+        // keeping the last kept record's own newline) rather than CapArtifactPayload (character-exact,
+        // can halve a record). Nothing pinned WHICH cap this call site selects before this test — a future
+        // refactor could swap it back to CapArtifactPayload and no other test would fail, yet the agent
+        // Reads manifest paths verbatim, so a halved record would name a file that does not exist.
+        //
+        // Three 5-char records with a 10-char cap land the two caps on visibly different cuts: the
+        // character-exact cap cuts mid-record ("AAAAA\nBBBB" + marker); the record-boundary cap backs up
+        // to the newline after the first record ("AAAAA\n" + marker) instead.
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions
+            {
+                Limits = new CodeReviewDaemon.Sample.Configuration.SandboxLimits { MaxArtifactPayloadChars = 10 },
+            });
+        fixture.Runner.OnArgvContains(
+            "ls-files", new SandboxCommandResult(0, "AAAAA\nBBBBB\nCCCCC\n", string.Empty));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var artifact = fixture.Store.GetArtifacts(run.Id).Should().ContainSingle().Subject;
+        var manifest = JsonDocument.Parse(artifact.Payload).RootElement.GetProperty("FileManifest").GetString()!;
+        AssertCappedOnRecordBoundary(manifest);
+    }
+
+    [Fact]
+    public async Task ContextReady_caps_the_changed_paths_listing_on_a_record_boundary_not_character_exact()
+    {
+        // #257: the same seam as the file manifest test above, pinned separately because
+        // BuildChangedPathsAsync makes its OWN CapRecordListing call, independent of the manifest's — a
+        // refactor could regress either call site without the other.
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions
+            {
+                Limits = new CodeReviewDaemon.Sample.Configuration.SandboxLimits { MaxArtifactPayloadChars = 10 },
+            });
+        // Registered FIRST: the fixture's broad "diff" rule would otherwise answer the listing with a patch.
+        fixture.Runner.OnArgvContainsFirst(
+            "diff --name-only", new SandboxCommandResult(0, "AAAAA\nBBBBB\nCCCCC\n", string.Empty));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var artifact = fixture.Store.GetArtifacts(run.Id).Should().ContainSingle().Subject;
+        var changedPaths = JsonDocument.Parse(artifact.Payload).RootElement.GetProperty("ChangedPaths").GetString()!;
+        AssertCappedOnRecordBoundary(changedPaths);
+    }
+
+    /// <summary>
+    /// Asserts <paramref name="capped"/> was truncated by <see cref="CodeReviewDaemon.Sample.Configuration.SandboxLimits.CapRecordListing"/>
+    /// (cuts between records) rather than <see cref="CodeReviewDaemon.Sample.Configuration.SandboxLimits.CapArtifactPayload"/>
+    /// (character-exact) — the seam #257 asks for. <c>TruncationMarker</c> begins with '\n', so a clean
+    /// record-boundary cut leaves an EMPTY line in front of the marker (the surviving record's own newline,
+    /// immediately followed by the marker's), while a character-exact cut leaves a non-empty stump there
+    /// instead. This is the same signal <c>KnowledgeDigest.SplitCappedLines</c> reads downstream.
+    /// </summary>
+    private static void AssertCappedOnRecordBoundary(string capped)
+    {
+        var markerIndex = capped.IndexOf(
+            CodeReviewDaemon.Sample.Configuration.SandboxLimits.TruncationMarker, StringComparison.Ordinal);
+        markerIndex.Should().BeGreaterThanOrEqualTo(0, "the payload was expected to be capped");
+        capped[..markerIndex].Should().EndWith(
+            "\n",
+            "a record-boundary cut (CapRecordListing) keeps the prior record's own newline; a "
+                + "character-exact cut (CapArtifactPayload) would leave a non-empty stump here instead");
+    }
+
+    [Fact]
     public async Task Reviewed_sends_the_changed_paths_not_the_patch_or_the_tracked_file_manifest()
     {
         using var fixture = Fixture.GitHub(LoggerFactory);
