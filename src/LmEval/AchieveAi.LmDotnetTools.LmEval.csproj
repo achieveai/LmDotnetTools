@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- NuGet Package Metadata -->
+    <PackageId>AchieveAi.LmDotnetTools.LmEval</PackageId>
+    <Description>Shared judge harness: a deterministic gate, a rubric-scoring judge, and a two-family panel vote with a tie-break arbiter, over a versioned rubric.</Description>
+    <PackageTags>$(PackageTags);eval;judge;rubric;llm-as-a-judge</PackageTags>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="LmEval.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- LmCore + LmMultiTurn ONLY. The harness is a leaf reachable from both the daemon and
+         LmWorkflow without a cycle (P6 spec §2.1); LmMultiTurn is required because judges are
+         driven through IMultiTurnAgent. -->
+    <ProjectReference Include="..\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
+    <ProjectReference Include="..\LmMultiTurn\AchieveAi.LmDotnetTools.LmMultiTurn.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,14 +1,15 @@
 using System.Text;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 
-namespace CodeReviewDaemon.Sample.Agents;
+namespace AchieveAi.LmDotnetTools.LmMultiTurn;
 
 /// <summary>
-/// The one collect-only drive of an <see cref="IMultiTurnAgent"/> shared by the daemon agents
-/// (Review, Judge, Knowledge). It sends the prompt as a single user turn and gathers the assistant's
-/// prose. Thinking text (<see cref="TextMessage.IsThinking"/> / <see cref="TextUpdateMessage.IsThinking"/>)
+/// The one collect-only drive of an <see cref="IMultiTurnAgent"/>: it sends the prompt as a single
+/// user turn and gathers the assistant's prose. Shared by every headless consumer that needs an
+/// agent's answer as a string — the code-review daemon's agents and the LmEval judge harness alike —
+/// because the generation-id reconstruction below is subtle enough that a second implementation
+/// would drift from this one rather than agree with it. Thinking text (<see cref="TextMessage.IsThinking"/> / <see cref="TextUpdateMessage.IsThinking"/>)
 /// is the agent's scratch work, not output, and is skipped.
 /// <para>
 /// A headless consumer of <see cref="IMultiTurnAgent.ExecuteRunAsync"/> must gather the streamed
@@ -22,8 +23,12 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// No posting, no provider/sandbox wiring — only the agent seam — so each agent's logic stays verifiable
 /// against a fake.
 /// </summary>
-internal static class AgentTextCollector
+public static class AgentTextCollector
 {
+    /// <summary>Drives one collect-only turn and returns the assistant text it produced.</summary>
+    /// <param name="agent">The agent to drive. Its lifetime stays with the caller.</param>
+    /// <param name="input">The single user turn to send.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
     public static async Task<AgentTextResult> CollectAsync(
         IMultiTurnAgent agent,
         string input,
@@ -124,4 +129,4 @@ internal static class AgentTextCollector
 /// agent's <see cref="IMultiTurnAgent.CurrentRunId"/>), and how many assistant messages were joined (a
 /// finalized-message count, or 1 when the text was assembled from streaming deltas).
 /// </summary>
-internal sealed record AgentTextResult(string Text, string? RunId, int AssistantMessageCount);
+public sealed record AgentTextResult(string Text, string? RunId, int AssistantMessageCount);
