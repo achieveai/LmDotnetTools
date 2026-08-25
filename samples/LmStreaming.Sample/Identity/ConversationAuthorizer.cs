@@ -219,6 +219,15 @@ public sealed class ConversationAuthorizer
     /// paths this pads are the silent ones by design, and a log line here would reintroduce the
     /// same oracle in a place an operator can read.
     /// </para>
+    /// <para>
+    /// A known consequence, accepted on purpose: a refusal that previously did no I/O can now fail
+    /// if the grant registry is unavailable, turning a <c>404</c> into a <c>500</c>. It is NOT
+    /// wrapped in a catch. A swallow here would restore the very asymmetry this removes - the
+    /// same-tenant path does not swallow, so a registry outage would once again make the two
+    /// answers distinguishable, and this time by a difference an attacker can provoke at will. Only
+    /// requests that were going to be refused anyway are affected; no request that would have
+    /// succeeded now fails.
+    /// </para>
     /// </remarks>
     private async Task EqualizeGrantLookupAsync(
         Principal principal,
