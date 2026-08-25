@@ -62,6 +62,22 @@ public sealed class WeightedMeanAggregator : IBallotAggregator
             }
         }
 
+        // An all-zero calibration makes the weighted mean undefined, so the reduction falls back to
+        // the unweighted one. §2.6/§6.1 persist AppliedWeight so a past verdict stays auditable
+        // after the weights are refitted, which means the row has to recompute FROM ITSELF — and
+        // stamping zeros the score demonstrably did not use gives sum(w.s)/sum(w) = 0/0 against a
+        // recorded number. The uniform weight the fallback actually applied is stamped instead, so
+        // the row records what it did rather than what the calibration claimed. Not subsumed by the
+        // [0,1] range check: 0.0 is inside the range.
+        if (counted.Count > 0 && counted.Sum(b => b.AppliedWeight ?? 1.0) <= 0.0)
+        {
+            var uniform = 1.0 / counted.Count;
+            for (var i = 0; i < counted.Count; i++)
+            {
+                counted[i] = counted[i] with { AppliedWeight = uniform };
+            }
+        }
+
         var panelFaults = context.Faults.Where(f => !IsArbiter(f.JudgeId, arbiterId)).ToList();
         var arbiterFault = context.Faults.FirstOrDefault(f => IsArbiter(f.JudgeId, arbiterId));
 
@@ -109,7 +125,13 @@ public sealed class WeightedMeanAggregator : IBallotAggregator
                 dispersion: null,
                 tieBreakRule: TieBreakRules.SingleJudge,
                 degradation: PanelDegradation.SingleJudge,
+                // A Full composition where one judge ABSTAINED has no fault to name and is not a
+                // Degraded composition, so neither of the two existing writers filled this in and
+                // the most interesting degradation there is — the panel was healthy and a judge
+                // declined — reached persistence as a blank. The excluded ballots carry the answer.
+                // The fault stays ahead of them: it is the strictly more specific fact.
                 degradationReason: FaultReason("judge-faulted", panelFaults)
+                    ?? ExclusionReason(excluded)
             );
         }
 
@@ -212,12 +234,16 @@ public sealed class WeightedMeanAggregator : IBallotAggregator
         panelBallots.Any(b => b.WeightedScore >= rubric.PassThreshold)
         && panelBallots.Any(b => b.WeightedScore < rubric.PassThreshold);
 
+    /// <summary>
+    /// The weighted mean over counted ballots. The all-zero-weight fallback lives at the
+    /// normalisation step in <see cref="Aggregate"/> rather than here, because the fallback has to
+    /// change what the verdict RECORDS and not only what it returns — a score computed one way and
+    /// weights recorded another is exactly the unreproducible row §6.1 forbids.
+    /// </summary>
     private static double WeightedMean(IReadOnlyList<Ballot> counted)
     {
         var totalWeight = counted.Sum(b => b.AppliedWeight ?? 1.0);
-        return totalWeight <= 0
-            ? counted.Average(b => b.WeightedScore)
-            : counted.Sum(b => (b.AppliedWeight ?? 1.0) * b.WeightedScore) / totalWeight;
+        return counted.Sum(b => (b.AppliedWeight ?? 1.0) * b.WeightedScore) / totalWeight;
     }
 
     /// <summary>
@@ -244,6 +270,18 @@ public sealed class WeightedMeanAggregator : IBallotAggregator
         faults.Count == 0
             ? null
             : string.Join(",", faults.Select(f => $"{prefix}:{f.ModelFamily}:{f.Reason}"));
+
+    /// <summary>
+    /// Stable, non-sensitive text naming why ballots were left out of the tally — the same rail as
+    /// <see cref="FaultReason"/>, built from the exclusion reasons the partition already recorded.
+    /// </summary>
+    private static string? ExclusionReason(IReadOnlyList<ExcludedBallot> excluded) =>
+        excluded.Count == 0
+            ? null
+            : string.Join(
+                ",",
+                excluded.Select(e => $"judge-excluded:{e.Ballot.ModelFamily}:{e.ExclusionReason}")
+            );
 
     private static Verdict Build(
         Candidate candidate,
