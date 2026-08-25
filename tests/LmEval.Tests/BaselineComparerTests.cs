@@ -50,6 +50,38 @@ public class BaselineComparerTests
             },
         };
 
+    /// <summary>An item the run holds no verdict for at all — a judge-provider outage.</summary>
+    private static EvalItemResult Faulted(string id) =>
+        new()
+        {
+            CandidateId = id,
+            Verdict = null,
+            FaultReason = nameof(HttpRequestException),
+            Exclusion = ScoreExclusion.Faulted,
+        };
+
+    /// <summary>An item the panel could not decide AND could not fully staff.</summary>
+    private static EvalItemResult UndecidedAndDegraded(string id) =>
+        new()
+        {
+            CandidateId = id,
+            Exclusion = ScoreExclusion.NoDecision,
+            Verdict = new Verdict
+            {
+                CandidateId = id,
+                Outcome = VerdictOutcome.NoDecision,
+                Score = null,
+                GateDecisions = [],
+                Ballots = [],
+                ExcludedBallots = [],
+                RubricId = "test-rubric",
+                RubricVersion = "1.0",
+                TieBreakRule = TieBreakRules.NoDecision,
+                Degradation = PanelDegradation.PanelUnavailable,
+                DegradationReason = "judge-faulted:openai:HttpRequestException",
+            },
+        };
+
     private static EvalRun Run(
         IReadOnlyList<EvalItemResult> items,
         string corpusHash = "corpus-hash",
@@ -517,5 +549,132 @@ public class BaselineComparerTests
 
         narrow.Should().BeLessThan(wide);
         narrow.Should().BePositive();
+    }
+
+    // ---- segmentation when an outage and a decision failure coincide (#380) -------------------
+
+    /// <summary>
+    /// The exclusion arms are ordered outcome-first, deliberately: flipping them would relabel
+    /// every plain NoDecision as Degraded the moment a single judge faulted. But a verdict that is
+    /// both NoDecision AND PanelUnavailable matches the earlier arm and never reaches the
+    /// degradation one, so §5.3's segmentation count — the count that exists precisely so a reader
+    /// can tell "the panel disagreed" from "the panel was down" — misses the case where those two
+    /// coincide. A second, independent count over the verdict's own degradation is the fix; the
+    /// exclusion-based count keeps its documented meaning.
+    /// </summary>
+    [Fact]
+    public void A_no_decision_that_was_also_a_panel_outage_is_visible_to_the_degradation_segment()
+    {
+        var run = Run(
+            [
+                .. Enumerable.Range(0, 8).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+                UndecidedAndDegraded("i8"),
+                Undecided("i9"),
+            ]
+        );
+
+        run.DegradedCount.Should().Be(0, "the exclusion arm it matched is NoDecision, as documented");
+        run.NoDecisionCount.Should().Be(2);
+        run.DegradedVerdictCount
+            .Should()
+            .Be(1, "one verdict was produced by a panel that could not be fully staffed");
+    }
+
+    [Fact]
+    public void A_clean_run_has_no_degraded_verdicts()
+    {
+        UniformRun(passing: 8).DegradedVerdictCount.Should().Be(0);
+    }
+
+    // ---- a judge outage is not a candidate regression (#380) ----------------------------------
+
+    /// <summary>
+    /// A faulted item carries a null verdict, so it does not raise NoDecisionRate — null is not
+    /// NoDecision — and it is not scored, so it leaves the pass rate's numerator while staying in
+    /// its denominator. When the judge provider is having a bad hour the report therefore reads:
+    /// pass rate collapsed, no-decision rate flat, PassRateDrop fired. Nothing got worse; the
+    /// harness could not reach its judges.
+    /// <para>
+    /// The coverage floor catches only the severe case — a floor of 0.9 lets a 10% fault rate
+    /// through untouched, and 10% of a corpus flipping from pass to not-counted is a large delta.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void A_judge_outage_is_refused_rather_than_reported_as_a_pass_rate_drop()
+    {
+        var baseline = Baseline(UniformRun(passing: 20, size: 20), minCoverage: 0.8);
+
+        // 4 of 20 items faulted: coverage is 0.8, exactly on the floor, so the floor waves it
+        // through — and the pass rate falls from 1.0 to 0.8, four times the default margin.
+        var outage = Run(
+            [
+                .. Enumerable.Range(0, 16).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+                .. Enumerable.Range(16, 4).Select(i => Faulted($"i{i}")),
+            ]
+        );
+
+        outage.FaultRate.Should().BeApproximately(0.2, 1e-9);
+        outage.Coverage.Should().BeApproximately(0.8, 1e-9);
+
+        var comparison = BaselineComparer.Compare(outage, baseline);
+
+        comparison.Refusal.Should().Be(ComparisonRefusal.FaultRateAboveMaximum);
+        comparison.Triggers.Should().Be(RegressionTrigger.None, "a refusal is never a regression");
+        comparison.PassRateDelta.Should().BeNull();
+    }
+
+    /// <summary>
+    /// A fault rate under the bound is not refused: an occasional transport failure is normal and
+    /// refusing on it would make the whole comparison unusable.
+    /// </summary>
+    [Fact]
+    public void A_fault_rate_within_the_bound_still_compares()
+    {
+        var baseline = Baseline(UniformRun(passing: 20, size: 20), minCoverage: 0.5);
+
+        var occasional = Run(
+            [
+                .. Enumerable.Range(0, 19).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+                Faulted("i19"),
+            ]
+        );
+
+        var comparison = BaselineComparer.Compare(occasional, baseline);
+
+        occasional.FaultRate.Should().BeApproximately(0.05, 1e-9);
+        comparison.IsRefused.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The bound lives on the baseline for the same reason MinCoverage does: the run being judged
+    /// must not be able to relax the bar it is judged against.
+    /// </summary>
+    [Fact]
+    public void The_fault_rate_bound_is_the_baselines_to_set()
+    {
+        var strict = EvalBaseline.From(
+            "base-1",
+            UniformRun(passing: 20, size: 20),
+            minCoverage: 0.5,
+            maxFaultRate: 0.01
+        );
+        var lenient = EvalBaseline.From(
+            "base-1",
+            UniformRun(passing: 20, size: 20),
+            minCoverage: 0.5,
+            maxFaultRate: 0.5
+        );
+
+        var run = Run(
+            [
+                .. Enumerable.Range(0, 19).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+                Faulted("i19"),
+            ]
+        );
+
+        BaselineComparer.Compare(run, strict).Refusal
+            .Should()
+            .Be(ComparisonRefusal.FaultRateAboveMaximum);
+        BaselineComparer.Compare(run, lenient).IsRefused.Should().BeFalse();
     }
 }

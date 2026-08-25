@@ -79,6 +79,27 @@ public sealed record EvalBaseline
     public required double MinCoverage { get; init; }
 
     /// <summary>
+    /// Most of the corpus a candidate run may lose to faults and still be compared, in [0,1]. It
+    /// lives on the baseline for the same reason <see cref="MinCoverage"/> does: the run being
+    /// judged must not be able to relax the bar it is judged against.
+    /// <para>
+    /// Distinct from the coverage floor, and not subsumed by it. The floor catches only the severe
+    /// case — a floor of 0.9 lets a 10% fault rate through untouched, and 10% of a corpus flipping
+    /// from pass to not-counted is a large pass-rate delta. The floor also cannot say <i>why</i>
+    /// the run is thin, and an infrastructure outage read as a candidate regression is the exact
+    /// misreading this whole refusal machinery exists to prevent.
+    /// </para>
+    /// </summary>
+    public double MaxFaultRate { get; init; } = DefaultMaxFaultRate;
+
+    /// <summary>
+    /// The default fault-rate bound. Low, because a fault is an item the harness never measured at
+    /// all: an occasional transport failure is normal and refusing on it would make the comparison
+    /// unusable, but a rate in the tens of percent is an outage.
+    /// </summary>
+    public const double DefaultMaxFaultRate = 0.05;
+
+    /// <summary>
     /// Freezes a completed run as the baseline for its task type. This is the only supported way to
     /// mint one from measurement: every metric is copied from the run that produced it, so a
     /// baseline can never claim a coverage or a hash belonging to some other run.
@@ -86,9 +107,18 @@ public sealed record EvalBaseline
     /// <param name="baselineId">Stable identity for the new baseline.</param>
     /// <param name="run">The run to freeze.</param>
     /// <param name="minCoverage">The coverage floor to impose on future candidate runs, in [0,1].</param>
-    /// <exception cref="ArgumentOutOfRangeException"><paramref name="minCoverage"/> is outside [0,1].</exception>
+    /// <param name="maxFaultRate">
+    /// The fault-rate bound to impose on future candidate runs, in [0,1]. Defaults to
+    /// <see cref="DefaultMaxFaultRate"/>.
+    /// </param>
+    /// <exception cref="ArgumentOutOfRangeException">A bound is outside [0,1].</exception>
     /// <exception cref="ArgumentException">The run scored nothing, so it has no conditional metrics.</exception>
-    public static EvalBaseline From(string baselineId, EvalRun run, double minCoverage)
+    public static EvalBaseline From(
+        string baselineId,
+        EvalRun run,
+        double minCoverage,
+        double maxFaultRate = DefaultMaxFaultRate
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(baselineId);
         ArgumentNullException.ThrowIfNull(run);
@@ -99,6 +129,15 @@ public sealed record EvalBaseline
                 nameof(minCoverage),
                 minCoverage,
                 "A coverage floor is a fraction of the corpus and must be in [0,1]."
+            );
+        }
+
+        if (double.IsNaN(maxFaultRate) || maxFaultRate < 0.0 || maxFaultRate > 1.0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(maxFaultRate),
+                maxFaultRate,
+                "A fault-rate bound is a fraction of the corpus and must be in [0,1]."
             );
         }
 
@@ -128,6 +167,7 @@ public sealed record EvalBaseline
             CorpusSnapshotHash = run.CorpusSnapshotHash,
             EvaluatorConfigHash = run.EvaluatorConfigHash,
             MinCoverage = minCoverage,
+            MaxFaultRate = maxFaultRate,
         };
     }
 }

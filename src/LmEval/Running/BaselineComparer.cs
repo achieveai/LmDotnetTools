@@ -26,6 +26,12 @@ public enum ComparisonRefusal
 
     /// <summary>The run's coverage is below the floor the baseline imposes.</summary>
     CoverageBelowMinimum,
+
+    /// <summary>
+    /// Too much of the run faulted. The harness could not reach its judges, which is an
+    /// infrastructure fact about the run and not a fact about the candidate.
+    /// </summary>
+    FaultRateAboveMaximum,
 }
 
 /// <summary>Which regression trigger fired.</summary>
@@ -263,6 +269,22 @@ public static class BaselineComparer
                 "a score-affecting evaluator input moved — a judge model, a gate bound, or the "
                     + "reliability snapshot. The candidate side may be identical and the scores "
                     + "will still differ, so this must not read as a candidate regression"
+            );
+        }
+
+        // Ahead of the coverage floor because it names the CAUSE where the floor names only the
+        // symptom, and because the floor catches this case at all only when it is severe: a floor
+        // of 0.9 lets a 10% fault rate through untouched. A faulted item leaves the pass rate's
+        // numerator and stays in its denominator, so an outage reads as a pass-rate collapse with
+        // a flat no-decision rate — a candidate regression's exact signature.
+        if (run.FaultRate > baseline.MaxFaultRate)
+        {
+            return Refused(
+                ComparisonRefusal.FaultRateAboveMaximum,
+                $"run fault rate {run.FaultRate:F4} is above the baseline's bound "
+                    + $"{baseline.MaxFaultRate:F4}; {run.FaultedCount} of {run.CorpusSize} items "
+                    + "hold no verdict at all, so the harness could not reach its judges and this "
+                    + "must not read as a candidate regression"
             );
         }
 

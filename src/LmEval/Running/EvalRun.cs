@@ -193,8 +193,29 @@ public sealed record EvalRun
     /// <summary>
     /// Rows excluded from the aggregates because the panel degraded. Reported, never pooled with
     /// clean rows, and never removed from the denominator.
+    /// <para>
+    /// This counts the <b>exclusion</b>, whose arms are ordered outcome-first, so a verdict that is
+    /// both <see cref="VerdictOutcome.NoDecision"/> and degraded matches the earlier arm and is not
+    /// in here. That ordering is deliberate — flipping it would relabel every plain no-decision as
+    /// degraded the moment a single judge faulted — so §5.3's "was the panel down" question is
+    /// answered by <see cref="DegradedVerdictCount"/> instead.
+    /// </para>
     /// </summary>
     public int DegradedCount => Items.Count(i => i.Exclusion == ScoreExclusion.Degraded);
+
+    /// <summary>
+    /// Rows whose verdict was produced by a panel that could not be fully staffed, counted over
+    /// <see cref="Verdict.Degradation"/> directly and therefore <b>independent</b> of which
+    /// exclusion arm the row matched.
+    /// <para>
+    /// §5.3 exists so a reader can tell "the panel disagreed" from "the panel was down", and the
+    /// case where those coincide — a no-decision on an unavailable panel, a straddle the arbiter
+    /// could not resolve — is exactly the one an exclusion-based count cannot see. A faulted item
+    /// has no verdict at all and is counted by <see cref="FaultedCount"/>, not here.
+    /// </para>
+    /// </summary>
+    public int DegradedVerdictCount =>
+        Items.Count(i => i.Verdict is { Degradation: not PanelDegradation.None });
 
     /// <summary>
     /// Rows excluded because the candidate declared no generator family, so the generator-exclusion
@@ -208,6 +229,18 @@ public sealed record EvalRun
 
     /// <summary>Items that faulted, so the run holds no verdict for them.</summary>
     public int FaultedCount => Items.Count(i => i.Exclusion == ScoreExclusion.Faulted);
+
+    /// <summary>
+    /// The faulted count as a fraction of the corpus — the signal that separates "the candidate got
+    /// worse" from "the harness could not reach its judges".
+    /// <para>
+    /// A faulted item has a null verdict, so it does not raise <see cref="NoDecisionRate"/>, and it
+    /// is not scored, so it leaves <see cref="PassRate"/>'s numerator while staying in its
+    /// denominator. A bad hour at the judge provider therefore reads as a pass-rate collapse with a
+    /// flat no-decision rate, which is precisely a candidate regression's signature.
+    /// </para>
+    /// </summary>
+    public double FaultRate => (double)FaultedCount / CorpusSize;
 
     /// <summary>Total host-recorded cost across the corpus, in USD micro-units.</summary>
     public long TotalCostMicros => Items.Sum(i => i.CostMicros ?? 0L);
