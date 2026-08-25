@@ -677,4 +677,77 @@ public class BaselineComparerTests
             .Be(ComparisonRefusal.FaultRateAboveMaximum);
         BaselineComparer.Compare(run, lenient).IsRefused.Should().BeFalse();
     }
+
+    // ---- the invariants the factory used to hold alone (#381) ---------------------------------
+
+    /// <summary>
+    /// CorpusSnapshot.Create refuses an empty item list, and its message says why: "an empty
+    /// denominator makes each of them undefined rather than zero". But EvalRun is a public record
+    /// with required init members and no private constructor, so a caller — or a JSON deserializer
+    /// — can mint one with no items. Coverage and NoDecisionRate then yield NaN and flow into a
+    /// comparison silently, and MeanCostMicros is long division and throws. The invariant belongs
+    /// on the record that carries it, not only on the factory that usually builds it.
+    /// </summary>
+    [Fact]
+    public void An_eval_run_with_no_items_is_refused_at_construction()
+    {
+        var construct = () => Run([]);
+
+        construct.Should().Throw<ArgumentException>().WithMessage("*denominator*");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void An_eval_run_with_a_blank_identity_hash_is_refused_at_construction(string blank)
+    {
+        var corpus = () => Run([Scored("i0", 8.0, VerdictOutcome.Pass)], corpusHash: blank);
+        var evaluator = () => Run([Scored("i0", 8.0, VerdictOutcome.Pass)], evaluatorHash: blank);
+
+        corpus.Should().Throw<ArgumentException>();
+        evaluator.Should().Throw<ArgumentException>();
+    }
+
+    /// <summary>
+    /// The comparability check is <c>string.Equals(a, b, Ordinal)</c>, and that is <b>true</b> for
+    /// two nulls — so two runs whose evaluator configuration is UNKNOWN would be declared
+    /// comparable. The properties are declared non-nullable required strings, which the compiler
+    /// checks at construction sites it can see; a deserializer filling a missing property bypasses
+    /// the declaration entirely, which is the path #321 introduces.
+    /// </summary>
+    [Fact]
+    public void An_eval_run_with_a_null_identity_hash_is_refused_at_construction()
+    {
+        var construct = () => Run([Scored("i0", 8.0, VerdictOutcome.Pass)], evaluatorHash: null!);
+
+        construct.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void A_baseline_with_an_empty_corpus_is_refused_at_construction()
+    {
+        var construct = () =>
+            Baseline(UniformRun(passing: 8)) with
+            {
+                CorpusSize = 0,
+            };
+
+        construct.Should().Throw<ArgumentException>().WithMessage("*denominator*");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(null)]
+    public void A_baseline_with_a_blank_evaluator_config_hash_is_refused_at_construction(
+        string? blank
+    )
+    {
+        var construct = () =>
+            Baseline(UniformRun(passing: 8)) with
+            {
+                EvaluatorConfigHash = blank!,
+            };
+
+        construct.Should().Throw<ArgumentException>();
+    }
 }

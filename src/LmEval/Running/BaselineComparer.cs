@@ -241,6 +241,10 @@ public static class BaselineComparer
             );
         }
 
+        // Ordinal equality is the right test only because both sides are guaranteed non-blank at
+        // construction: string.Equals is TRUE for two nulls, so without that guarantee two runs
+        // whose provenance was never recorded would be declared comparable — the one pairing where
+        // a refusal matters most.
         if (
             !string.Equals(
                 run.CorpusSnapshotHash,

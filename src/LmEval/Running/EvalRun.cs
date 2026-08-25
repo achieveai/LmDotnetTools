@@ -92,11 +92,40 @@ public sealed record EvalRun
     /// <summary>The corpus replayed.</summary>
     public required string CorpusId { get; init; }
 
-    /// <summary>Identity of the exact snapshot replayed.</summary>
-    public required string CorpusSnapshotHash { get; init; }
+    /// <summary>
+    /// Identity of the exact snapshot replayed. Never blank: <see cref="BaselineComparer"/> decides
+    /// comparability with an ordinal string comparison, and that returns <b>true</b> for two
+    /// unknowns — so a pair of runs whose provenance was never recorded would be declared
+    /// comparable. <c>required</c> is checked by the compiler at construction sites it can see and
+    /// not by a deserializer filling a missing property, which is exactly how an unknown gets in.
+    /// </summary>
+    public required string CorpusSnapshotHash
+    {
+        get => _corpusSnapshotHash;
+        init
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(value);
+            _corpusSnapshotHash = value;
+        }
+    }
 
-    /// <summary>Identity of every score-affecting evaluator input.</summary>
-    public required string EvaluatorConfigHash { get; init; }
+    /// <summary>
+    /// Identity of every score-affecting evaluator input. Never blank, for the reason on
+    /// <see cref="CorpusSnapshotHash"/>.
+    /// </summary>
+    public required string EvaluatorConfigHash
+    {
+        get => _evaluatorConfigHash;
+        init
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(value);
+            _evaluatorConfigHash = value;
+        }
+    }
+
+    private readonly string _corpusSnapshotHash = string.Empty;
+    private readonly string _evaluatorConfigHash = string.Empty;
+    private readonly IReadOnlyList<EvalItemResult> _items = [];
 
     /// <summary>The rubric scored against.</summary>
     public required string RubricId { get; init; }
@@ -104,8 +133,38 @@ public sealed record EvalRun
     /// <summary>Its exact version.</summary>
     public required string RubricVersion { get; init; }
 
-    /// <summary>Every item's outcome, in corpus order.</summary>
-    public required IReadOnlyList<EvalItemResult> Items { get; init; }
+    /// <summary>
+    /// Every item's outcome, in corpus order. Never empty.
+    /// <para>
+    /// <see cref="Corpus.CorpusSnapshot.Create"/> already refuses an empty item list, and says why:
+    /// an empty denominator makes every rate over it undefined rather than zero. But this record is
+    /// public with settable members, so a caller — or a deserializer — can mint one the factory
+    /// never saw, and then <see cref="Coverage"/> and <see cref="NoDecisionRate"/> yield NaN and
+    /// flow into a comparison silently while <see cref="MeanCostMicros"/> divides by zero. The
+    /// invariant belongs on the type that carries it, not only on the factory that usually builds
+    /// it.
+    /// </para>
+    /// </summary>
+    public required IReadOnlyList<EvalItemResult> Items
+    {
+        get => _items;
+        init
+        {
+            ArgumentNullException.ThrowIfNull(value);
+
+            if (value.Count == 0)
+            {
+                throw new ArgumentException(
+                    "A run over no items has an empty denominator, which makes every rate over it "
+                        + "undefined rather than zero — and NaN compares false against every "
+                        + "threshold, so such a run would clear every regression trigger silently.",
+                    nameof(value)
+                );
+            }
+
+            _items = value;
+        }
+    }
 
     /// <summary>The denominator: the snapshot's item count.</summary>
     public int CorpusSize => Items.Count;
