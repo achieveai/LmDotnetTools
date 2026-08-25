@@ -147,7 +147,12 @@ public sealed class InboundS2SAuthAttribute : Attribute, IAsyncActionFilter
     /// <c>AuthSharedSecret</c>. Returns false when <paramref name="presented"/> is
     /// null/empty (the "missing header" case).
     /// </summary>
-    private static bool ConstantTimeEquals(string expected, string? presented)
+    /// <remarks>
+    /// <c>internal</c> rather than private so the operator-secret guard on the tenant admin surface
+    /// reuses this exact comparison. A second hand-written copy is how one of the two ends up
+    /// comparing with <c>==</c> after a later edit.
+    /// </remarks>
+    internal static bool ConstantTimeEquals(string expected, string? presented)
     {
         if (string.IsNullOrEmpty(presented))
         {
