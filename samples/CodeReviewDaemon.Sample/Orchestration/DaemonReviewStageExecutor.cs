@@ -3048,6 +3048,11 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // the S2S factory still requires a workspaceId to provision the hosted conversation.
         var judgeWorkspace = await EnsurePreparedAsync(run, repo, provider, cancellationToken)
             .ConfigureAwait(false);
+        // TODO(#322): judge shares the generator's model — self-preference, see P6 §3.2.
+        // Left as-is on purpose: swapping the judge model changes what the scores mean, which is a
+        // behaviour change. It is why the Candidate built in JudgeAgent sets no GeneratorFamily —
+        // there is no second family here to exclude, and claiming one would assert an independence
+        // that does not hold.
         await using var loop = _loopFactory.Create(
             profile, run.ModelId, ThreadId(run, DaemonAgentFactory.JudgeProfileId), reviewWorkspace: judgeWorkspace);
         var judge = new JudgeAgent(loop, _store, _loggerFactory.CreateLogger<JudgeAgent>());
