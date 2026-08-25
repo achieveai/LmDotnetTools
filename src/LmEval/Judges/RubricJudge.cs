@@ -43,6 +43,21 @@ public sealed record RubricJudgeOptions
     /// </summary>
     public string? PromptTemplateHash { get; init; }
 
+    /// <summary>
+    /// Stable identity of every score-affecting setting on the transport this judge drives —
+    /// sampling temperature, top-p, the concrete deployment behind <see cref="ModelId"/>, a system
+    /// prompt the host prepends. Required for the judge to enter an <c>EvaluatorConfig</c>.
+    /// <para>
+    /// The transport is a <see cref="JudgeReplyTransport"/>: an opaque delegate holding no field
+    /// the judge could read back. Two judges over the same model at different temperatures produce
+    /// different ballots, and with nothing declared they produced the same fingerprint and
+    /// therefore the same evaluator hash — so a temperature change read as a candidate regression.
+    /// Only the host that built the transport knows this, so only the host can state it, and a
+    /// judge that has not been told refuses rather than hashing under a constant.
+    /// </para>
+    /// </summary>
+    public string? TransportFingerprint { get; init; }
+
     /// <summary>True when <see cref="PromptRenderer"/> is still the built-in one.</summary>
     internal bool UsesDefaultRenderer =>
         PromptRenderer.Method == DefaultRenderer.Method
@@ -103,14 +118,26 @@ public sealed class RubricJudge : IJudge, Running.IConfigurationFingerprint
     }
 
     /// <summary>
-    /// This judge's score-affecting configuration: which prompt template it renders. Null when a
-    /// host supplied its own renderer without naming it — see
-    /// <see cref="RubricJudgeOptions.PromptTemplateHash"/>.
+    /// This judge's score-affecting configuration: which prompt template it renders and how its
+    /// transport is configured. Null — and therefore refused by <c>EvaluatorConfig</c> — when
+    /// either is undeclared, since a constant substituted for an unknown hashes two different
+    /// configurations identically. See <see cref="RubricJudgeOptions.PromptTemplateHash"/> and
+    /// <see cref="RubricJudgeOptions.TransportFingerprint"/>.
     /// </summary>
-    public string? ConfigurationFingerprint =>
-        _options.PromptTemplateHash is { } declared ? $"prompt={declared}"
-        : _options.UsesDefaultRenderer ? $"prompt=builtin:{nameof(RubricPromptRenderer)}"
-        : null;
+    public string? ConfigurationFingerprint
+    {
+        get
+        {
+            var prompt =
+                _options.PromptTemplateHash is { } declared ? declared
+                : _options.UsesDefaultRenderer ? $"builtin:{nameof(RubricPromptRenderer)}"
+                : null;
+
+            return prompt is null || _options.TransportFingerprint is not { } transport
+                ? null
+                : $"prompt={prompt};transport={transport}";
+        }
+    }
 
     /// <inheritdoc />
     public string JudgeId => _options.JudgeId;

@@ -162,4 +162,60 @@ public class CorpusSnapshotTests
                 .NotBe(baseHash, "moving only {0} must move the corpus hash", field);
         }
     }
+
+    /// <summary>
+    /// The corpus digest concatenates unescaped candidate fields, separates them with U+001F and
+    /// terminates each record with a newline. The separator stops a value forging a FIELD boundary;
+    /// nothing stopped one forging a RECORD boundary, so a candidate whose last field carries a
+    /// newline and a hand-built second record hashes exactly as a two-item corpus does — and the
+    /// refusal that keeps a comparison over two different corpora from happening never fires.
+    /// <para>
+    /// Rejecting newlines is not available here: a candidate's task input and content legitimately
+    /// contain them. Each field is length-prefixed instead, so its extent is stated rather than
+    /// inferred from a delimiter its own content can supply.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void A_candidate_field_cannot_forge_a_second_record()
+    {
+        const char Sep = '\u001f';
+
+        var honest = CorpusSnapshot.Create(
+            "corpus-1",
+            [
+                new Candidate
+                {
+                    CandidateId = "c1",
+                    TaskType = "code-review",
+                    TaskInput = "i1",
+                    Content = "x1",
+                },
+                new Candidate
+                {
+                    CandidateId = "c2",
+                    TaskType = "code-review",
+                    TaskInput = "i2",
+                    Content = "x2",
+                },
+            ]
+        );
+
+        var forged = CorpusSnapshot.Create(
+            "corpus-1",
+            [
+                new Candidate
+                {
+                    CandidateId = "c1",
+                    TaskType = "code-review",
+                    TaskInput = "i1",
+                    Content = "x1",
+                    Reference =
+                        $"\nc2{Sep}code-review{Sep}{Sep}{Sep}{Sep}i2{Sep}x2{Sep}",
+                },
+            ]
+        );
+
+        forged.Size.Should().Be(1, "the forgery is one item claiming to be two");
+        forged.SnapshotHash.Should().NotBe(honest.SnapshotHash);
+    }
 }

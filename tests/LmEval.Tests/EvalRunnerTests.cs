@@ -22,12 +22,14 @@ public class EvalRunnerTests
         Func<Candidate, double?> first,
         Func<Candidate, double?> second,
         IJudge? arbiter = null,
-        IReadOnlyList<IGate>? gates = null
+        IReadOnlyList<IGate>? gates = null,
+        IReadOnlyDictionary<string, double>? reliabilityWeights = null
     ) =>
         EvalFixtures.Config(
             gates,
             [Judge("j-a", "anthropic", first), Judge("j-b", "google", second)],
-            new HarnessOptions { ArbiterJudge = arbiter }
+            new HarnessOptions { ArbiterJudge = arbiter },
+            reliabilityWeights: reliabilityWeights
         );
 
     [Fact]
@@ -531,18 +533,51 @@ public class EvalRunnerTests
         // this class at its 1.0 default and nothing proves the runner hands it to the reduction at
         // all. Here the two judges disagree and the weights decide the answer: an unweighted mean
         // of 10 and 2 is 6.0, and the weighted one is (10*1.0 + 2*0.25) / 1.25 = 8.4.
-        var runner = new EvalRunner(Panel(first: _ => 10.0, second: _ => 2.0));
+        var weights = new Dictionary<string, double> { ["j-a"] = 1.0, ["j-b"] = 0.25 };
+        var runner = new EvalRunner(
+            Panel(first: _ => 10.0, second: _ => 2.0, reliabilityWeights: weights)
+        );
 
         var run = await runner.RunAsync(
             "run-1",
             EvalFixtures.Snapshot(EvalFixtures.Item("a")),
             HarnessFixtures.Rubric(),
-            new Dictionary<string, double> { ["j-a"] = 1.0, ["j-b"] = 0.25 },
+            weights,
             null,
             CancellationToken.None
         );
 
         run.Items.Single().Verdict!.Score.Should().BeApproximately(8.4, 1e-9);
+    }
+
+    /// <summary>
+    /// The evaluator hash covers the weights by content, which is worth something only if the run
+    /// cannot then execute under a different set. A hash describing a configuration other than the
+    /// one executing is worse than no hash: every refusal built on it checks the wrong fact.
+    /// </summary>
+    [Fact]
+    public async Task Weights_the_frozen_configuration_did_not_declare_are_refused()
+    {
+        var judge = new ScoringJudge("j-a", "anthropic", _ => 8.0);
+        var runner = new EvalRunner(
+            EvalFixtures.Config(
+                judges: [judge, Judge("j-b", "google", _ => 8.0)],
+                reliabilityWeights: new Dictionary<string, double> { ["j-a"] = 1.0 }
+            )
+        );
+
+        var act = async () =>
+            await runner.RunAsync(
+                "run-1",
+                EvalFixtures.Snapshot(EvalFixtures.Item("a"), EvalFixtures.Item("b")),
+                HarnessFixtures.Rubric(),
+                new Dictionary<string, double> { ["j-a"] = 0.25 },
+                null,
+                CancellationToken.None
+            );
+
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*froze*");
+        judge.SeenCandidateIds.Should().BeEmpty("no judge is billed on the way to finding out");
     }
 
     [Fact]

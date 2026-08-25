@@ -210,7 +210,8 @@ internal static class EvalFixtures
         IReadOnlyList<IJudge>? judges = null,
         HarnessOptions? options = null,
         string reliabilitySnapshotId = "snap-1",
-        IBallotAggregator? aggregator = null
+        IBallotAggregator? aggregator = null,
+        IReadOnlyDictionary<string, double>? reliabilityWeights = null
     ) =>
         EvaluatorConfig.Create(
             gates ?? [],
@@ -221,7 +222,8 @@ internal static class EvalFixtures
                 ],
             aggregator ?? new WeightedMeanAggregator(),
             options ?? new HarnessOptions(),
-            reliabilitySnapshotId
+            reliabilitySnapshotId,
+            reliabilityWeights ?? new Dictionary<string, double>()
         );
 
     /// <summary>A run over the given items with a single non-generator-family judge.</summary>

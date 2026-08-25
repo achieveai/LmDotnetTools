@@ -18,7 +18,8 @@ public class EvaluatorConfigTests
         IReadOnlyList<IJudge>? judges = null,
         HarnessOptions? options = null,
         string reliabilitySnapshotId = "snap-1",
-        IReadOnlyList<string>? humanSignalSources = null
+        IReadOnlyList<string>? humanSignalSources = null,
+        IReadOnlyDictionary<string, double>? reliabilityWeights = null
     ) =>
         EvaluatorConfig.Create(
             gates ?? [],
@@ -26,6 +27,7 @@ public class EvaluatorConfigTests
             new WeightedMeanAggregator(),
             options ?? new HarnessOptions(),
             reliabilitySnapshotId,
+            reliabilityWeights ?? new Dictionary<string, double>(),
             humanSignalSources
         );
 
@@ -170,6 +172,7 @@ public class EvaluatorConfigTests
                 JudgeId = "j-default",
                 ModelId = "m",
                 ModelFamily = "anthropic",
+                TransportFingerprint = "temperature=0",
             },
             (_, _) => Task.FromResult("SCORE: 8")
         );
@@ -189,6 +192,7 @@ public class EvaluatorConfigTests
                     ModelFamily = "anthropic",
                     PromptRenderer = (_, _, _) => "a hand-rolled prompt",
                     PromptTemplateHash = templateHash,
+                    TransportFingerprint = "temperature=0",
                 },
                 (_, _) => Task.FromResult("SCORE: 8")
             );
@@ -295,5 +299,131 @@ public class EvaluatorConfigTests
                 .Hash.Should()
                 .NotBe(baseline.Hash, "moving only {0} must move the evaluator hash", field);
         }
+    }
+
+    // ---- the hash must move when the evaluator does (#379) -----------------------------------
+
+    /// <summary>
+    /// The weights themselves never entered the digest — only a caller-supplied snapshot id. A
+    /// caller who refits and reuses the id, trivially one like "latest" or one derived from a date
+    /// that has not rolled, hashes two materially different weightings identically, and the one
+    /// refusal that exists to stop a refit reading as a candidate regression does not fire.
+    /// </summary>
+    [Fact]
+    public void Refitting_the_weights_moves_the_hash_even_when_the_snapshot_id_does_not()
+    {
+        var before = Build(
+            reliabilitySnapshotId: "latest",
+            reliabilityWeights: new Dictionary<string, double> { ["j-a"] = 0.9 }
+        );
+        var after = Build(
+            reliabilitySnapshotId: "latest",
+            reliabilityWeights: new Dictionary<string, double> { ["j-a"] = 0.4 }
+        );
+
+        after.Hash.Should().NotBe(before.Hash);
+    }
+
+    /// <summary>The same weights in a different enumeration order are the same weights.</summary>
+    [Fact]
+    public void The_declared_weights_hash_by_content_and_not_by_enumeration_order()
+    {
+        var forward = Build(
+            reliabilityWeights: new Dictionary<string, double> { ["j-a"] = 0.9, ["j-b"] = 0.4 }
+        );
+        var reverse = Build(
+            reliabilityWeights: new Dictionary<string, double> { ["j-b"] = 0.4, ["j-a"] = 0.9 }
+        );
+
+        forward.Hash.Should().Be(reverse.Hash);
+    }
+
+    /// <summary>
+    /// The weights are validated where the configuration is frozen, not once per corpus item: a
+    /// misfitted refit is a fact about the run, and left to the per-item path it came back as a
+    /// corpus that scored nothing.
+    /// </summary>
+    [Fact]
+    public void A_weight_off_its_scale_is_refused_when_the_configuration_is_frozen()
+    {
+        var act = () =>
+            Build(reliabilityWeights: new Dictionary<string, double> { ["j-a"] = 1.5 });
+
+        act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    /// <summary>
+    /// Two judges over agents at different temperatures — or different sampling settings, or a
+    /// different deployment behind the same ModelId — produce different ballots and used to produce
+    /// the same fingerprint, because the transport is an opaque delegate holding no field the judge
+    /// could report.
+    /// </summary>
+    [Fact]
+    public void Two_judges_whose_transports_are_configured_differently_do_not_hash_the_same()
+    {
+        static RubricJudge Judge(string transport) =>
+            new(
+                new RubricJudgeOptions
+                {
+                    JudgeId = "j-1",
+                    ModelId = "m",
+                    ModelFamily = "anthropic",
+                    TransportFingerprint = transport,
+                },
+                (_, _) => Task.FromResult("SCORE: 8")
+            );
+
+        Build([], [Judge("temperature=1.0")])
+            .Hash.Should()
+            .NotBe(Build([], [Judge("temperature=0.0")]).Hash);
+    }
+
+    /// <summary>
+    /// And a judge that cannot describe its transport at all is refused rather than hashed under a
+    /// constant, for the same reason an undeclared custom renderer is.
+    /// </summary>
+    [Fact]
+    public void A_judge_that_cannot_describe_its_transport_is_refused()
+    {
+        var judge = new RubricJudge(
+            new RubricJudgeOptions
+            {
+                JudgeId = "j-1",
+                ModelId = "m",
+                ModelFamily = "anthropic",
+            },
+            (_, _) => Task.FromResult("SCORE: 8")
+        );
+
+        var act = () => Build([], [judge]);
+
+        act.Should().Throw<ArgumentException>().WithMessage("*null configuration fingerprint*");
+    }
+
+    /// <summary>
+    /// The unit separator stops a value forging a FIELD boundary. Records are newline-delimited and
+    /// nothing was escaped, so a judge id or a host-supplied fingerprint carrying a newline could
+    /// still forge a record boundary and make two different configurations hash the same. Refused
+    /// at the point the configuration is frozen, which is the only place that can see it.
+    /// </summary>
+    [Theory]
+    [InlineData("j\na")]
+    [InlineData("j\u001fa")]
+    public void An_id_that_could_forge_a_hash_boundary_is_refused(string forged)
+    {
+        var act = () => Build([], [new ScoringJudge(forged, "anthropic", _ => 8.0)]);
+
+        act.Should().Throw<ArgumentException>().WithMessage("*boundary*");
+    }
+
+    [Theory]
+    [InlineData("v\n1")]
+    [InlineData("v\u001f1")]
+    public void A_fingerprint_that_could_forge_a_hash_boundary_is_refused(string forged)
+    {
+        var act = () =>
+            Build([], [new ScoringJudge("j-a", "anthropic", _ => 8.0, fingerprint: forged)]);
+
+        act.Should().Throw<ArgumentException>().WithMessage("*boundary*");
     }
 }

@@ -26,6 +26,14 @@ public sealed class EvaluatorConfig
     /// Field separator inside the hashed text. A unit separator rather than a printable
     /// character, so that no id or fingerprint can forge a field boundary and hash as a
     /// different configuration.
+    /// <para>
+    /// It does not, on its own, stop a value forging a <b>record</b> boundary: records here are
+    /// newline-delimited. Every appended value therefore goes through <see cref="Field"/>, which
+    /// refuses both characters outright. Refusal rather than escaping is available here because
+    /// every value in this digest is an identifier or a fingerprint — a newline in one is
+    /// pathological, unlike a candidate's prose, which is why the corpus digest length-prefixes
+    /// instead.
+    /// </para>
     /// </summary>
     private const char Separator = '\u001f';
 
@@ -35,10 +43,12 @@ public sealed class EvaluatorConfig
         IBallotAggregator aggregator,
         HarnessOptions options,
         string reliabilitySnapshotId,
+        IReadOnlyDictionary<string, double> reliabilityWeights,
         IReadOnlyList<string> humanSignalSources,
         string hash
     )
     {
+        ReliabilityWeights = reliabilityWeights;
         Gates = gates;
         Judges = judges;
         Aggregator = aggregator;
@@ -72,6 +82,19 @@ public sealed class EvaluatorConfig
     /// </summary>
     public IReadOnlyList<string> HumanSignalSources { get; }
 
+    /// <summary>
+    /// The per-judge weights <see cref="ReliabilitySnapshotId"/> names, in the hash by <b>content</b>
+    /// rather than by that id alone.
+    /// <para>
+    /// The id was the only thing hashed, and it is caller-supplied: a refit published under an id
+    /// like <c>latest</c>, or one derived from a date that has not rolled, hashed identically to
+    /// the weighting it replaced — and the one refusal that exists to stop a refit reading as a
+    /// candidate regression did not fire. The id stays because it is what a human correlates back
+    /// to a stored snapshot; the weights are what actually move the scores.
+    /// </para>
+    /// </summary>
+    public IReadOnlyDictionary<string, double> ReliabilityWeights { get; }
+
     /// <summary>The frozen hash of every field above.</summary>
     public string Hash { get; }
 
@@ -83,10 +106,18 @@ public sealed class EvaluatorConfig
     /// <param name="aggregator">The reduction rule.</param>
     /// <param name="options">The harness options in force.</param>
     /// <param name="reliabilitySnapshotId">Identity of the reliability snapshot.</param>
+    /// <param name="reliabilityWeights">
+    /// The per-judge weights that snapshot holds; a judge absent from it weighs 1.0. Hashed by
+    /// content, and checked against the weights the run is given.
+    /// </param>
     /// <param name="humanSignalSources">Sources that snapshot was fitted over.</param>
     /// <exception cref="ArgumentException">
     /// A gate or judge does not implement <see cref="IConfigurationFingerprint"/> or returns null
-    /// from it; or the arbiter shares a <see cref="IJudge.JudgeId"/> with a panel judge.
+    /// from it; the arbiter shares a <see cref="IJudge.JudgeId"/> with a panel judge; or a hashed
+    /// id or fingerprint carries a character that could forge a boundary in the hashed text.
+    /// </exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// A reliability weight is NaN or outside [0,1], or an option bound is off its own scale.
     /// </exception>
     public static EvaluatorConfig Create(
         IReadOnlyList<IGate> gates,
@@ -94,6 +125,7 @@ public sealed class EvaluatorConfig
         IBallotAggregator aggregator,
         HarnessOptions options,
         string reliabilitySnapshotId,
+        IReadOnlyDictionary<string, double> reliabilityWeights,
         IReadOnlyList<string>? humanSignalSources = null
     )
     {
@@ -101,7 +133,14 @@ public sealed class EvaluatorConfig
         ArgumentNullException.ThrowIfNull(judges);
         ArgumentNullException.ThrowIfNull(aggregator);
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(reliabilityWeights);
         ArgumentException.ThrowIfNullOrWhiteSpace(reliabilitySnapshotId);
+
+        // Where the configuration is FROZEN, not once per corpus item. A misfitted refit is a fact
+        // about the whole run, and the per-item path records it as a faulted corpus item and
+        // repeats that for every remaining one -- so the operator is told their corpus is
+        // unscoreable when what was rejected is their configuration.
+        AggregationContext.ValidateReliability(reliabilityWeights, nameof(reliabilityWeights));
 
         // Delegated rather than restated: panel size, family disjointness, judge-id uniqueness
         // and the arbiter-versus-panel id collision are one coherent set of configuration rules,
@@ -113,6 +152,11 @@ public sealed class EvaluatorConfig
         var arbiter = options.ArbiterJudge;
 
         var humanSources = (humanSignalSources ?? []).ToList();
+        var weights = reliabilityWeights.ToDictionary(
+            kv => kv.Key,
+            kv => kv.Value,
+            StringComparer.Ordinal
+        );
 
         var builder = new StringBuilder();
 
@@ -120,16 +164,18 @@ public sealed class EvaluatorConfig
         foreach (var gate in gates)
         {
             _ = builder
-                .Append(gate.GateId)
+                .Append(Field(gate.GateId, "Gate id", gate.GateId))
                 .Append(Separator)
                 .Append(
                     string.Join(
                         ',',
-                        gate.AppliesTo.OrderBy(t => t, StringComparer.Ordinal)
+                        gate
+                            .AppliesTo.OrderBy(t => t, StringComparer.Ordinal)
+                            .Select(t => Field(t, "Gate task type", gate.GateId))
                     )
                 )
                 .Append(Separator)
-                .Append(FingerprintOf(gate, "Gate", gate.GateId))
+                .Append(Field(FingerprintOf(gate, "Gate", gate.GateId), "Gate fingerprint", gate.GateId))
                 .Append('\n');
         }
 
@@ -137,13 +183,19 @@ public sealed class EvaluatorConfig
         foreach (var judge in judges)
         {
             _ = builder
-                .Append(judge.JudgeId)
+                .Append(Field(judge.JudgeId, "Judge id", judge.JudgeId))
                 .Append(Separator)
-                .Append(judge.ModelId)
+                .Append(Field(judge.ModelId, "Judge model id", judge.JudgeId))
                 .Append(Separator)
-                .Append(judge.ModelFamily)
+                .Append(Field(judge.ModelFamily, "Judge model family", judge.JudgeId))
                 .Append(Separator)
-                .Append(FingerprintOf(judge, "Judge", judge.JudgeId))
+                .Append(
+                    Field(
+                        FingerprintOf(judge, "Judge", judge.JudgeId),
+                        "Judge fingerprint",
+                        judge.JudgeId
+                    )
+                )
                 .Append('\n');
         }
 
@@ -155,12 +207,22 @@ public sealed class EvaluatorConfig
             .Append(
                 arbiter is null
                     ? "none"
-                    : $"{arbiter.JudgeId}{Separator}{arbiter.ModelId}{Separator}{arbiter.ModelFamily}"
-                        + $"{Separator}{FingerprintOf(arbiter, "Arbiter", arbiter.JudgeId)}"
+                    : $"{Field(arbiter.JudgeId, "Arbiter id", arbiter.JudgeId)}{Separator}"
+                        + $"{Field(arbiter.ModelId, "Arbiter model id", arbiter.JudgeId)}{Separator}"
+                        + $"{Field(arbiter.ModelFamily, "Arbiter model family", arbiter.JudgeId)}"
+                        + $"{Separator}"
+                        + Field(
+                            FingerprintOf(arbiter, "Arbiter", arbiter.JudgeId),
+                            "Arbiter fingerprint",
+                            arbiter.JudgeId
+                        )
             )
             .Append('\n');
 
-        _ = builder.Append("aggregator\n").Append(aggregator.RuleId).Append('\n');
+        _ = builder
+            .Append("aggregator\n")
+            .Append(Field(aggregator.RuleId, "Aggregator rule id", aggregator.RuleId))
+            .Append('\n');
 
         // Only the options that decide EXCLUSION. A dispersion alarm excludes nothing today, but it
         // is in the hash because the spec puts it there and because the field it flags is one a
@@ -177,11 +239,36 @@ public sealed class EvaluatorConfig
             )
             .Append('\n');
 
-        _ = builder.Append("reliability\n").Append(reliabilitySnapshotId).Append('\n');
+        // The snapshot id AND the weights it names. The count leads the entries so that a judge id
+        // equal to a section header cannot shift where the next section is read to begin.
+        _ = builder
+            .Append("reliability\n")
+            .Append(Field(reliabilitySnapshotId, "Reliability snapshot id", reliabilitySnapshotId))
+            .Append(Separator)
+            .Append(weights.Count.ToString(System.Globalization.CultureInfo.InvariantCulture))
+            .Append('\n');
+
+        foreach (var weight in weights.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+        {
+            _ = builder
+                .Append(Field(weight.Key, "Reliability weight judge id", weight.Key))
+                .Append(Separator)
+                .Append(
+                    weight.Value.ToString("R", System.Globalization.CultureInfo.InvariantCulture)
+                )
+                .Append('\n');
+        }
 
         _ = builder
             .Append("human-signal-sources\n")
-            .Append(string.Join(Separator, humanSources.OrderBy(s => s, StringComparer.Ordinal)))
+            .Append(
+                string.Join(
+                    Separator,
+                    humanSources
+                        .OrderBy(s => s, StringComparer.Ordinal)
+                        .Select(s => Field(s, "Human signal source", s))
+                )
+            )
             .Append('\n');
 
         var digest = SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()));
@@ -192,6 +279,7 @@ public sealed class EvaluatorConfig
             aggregator,
             options,
             reliabilitySnapshotId,
+            weights,
             humanSources,
             Convert.ToHexString(digest).ToLowerInvariant()
         );
@@ -202,6 +290,31 @@ public sealed class EvaluatorConfig
     public JudgeGauntlet BuildGauntlet(
         Microsoft.Extensions.Logging.ILogger<JudgeGauntlet>? logger = null
     ) => new(Gates, Judges, Aggregator, Options, logger);
+
+    /// <summary>
+    /// One value on its way into the digest, refused if it could forge a boundary there.
+    /// <para>
+    /// The unit separator argument covers field boundaries only. Records are newline-delimited and
+    /// nothing was escaped, so a judge id or a host-supplied fingerprint carrying a newline — or a
+    /// literal unit separator — could still make two different configurations hash the same, and
+    /// the comparison refusal built on that hash would pass a genuinely incomparable pair.
+    /// </para>
+    /// </summary>
+    private static string Field(string value, string kind, string owner)
+    {
+        if (value.Contains('\n') || value.Contains(Separator))
+        {
+            throw new ArgumentException(
+                $"{kind} for '{owner}' contains a newline or a unit separator. Either can forge a "
+                    + "record or field boundary inside the evaluator config hash, making two "
+                    + "different configurations hash identically — and the comparison refusal "
+                    + "built on that hash would then pass a genuinely incomparable pair.",
+                nameof(value)
+            );
+        }
+
+        return value;
+    }
 
     private static string FingerprintOf(object component, string kind, string id)
     {
