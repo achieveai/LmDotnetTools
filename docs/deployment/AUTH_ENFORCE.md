@@ -227,9 +227,47 @@ as "tenant data is isolated" until that ships.
    works and is exercised, but nothing is refused.
 2. Set `LMSTREAMING_IDENTITY_OPERATOR_SECRET` and provision every tenant that will need one.
    Confirm each expected user signs in and resolves to the tenant you expect.
-3. Set `Identity:Enforce` true. Anonymous `/api` requests now get `401`.
+3. Set `Identity:Enforce` true. Anonymous `/api` requests now get `401` — **and so does every
+   service-to-service caller**, including ones that authenticate correctly with `X-S2S-Auth`. Read
+   "Service callers are refused" below before taking this step. Do not take it at all on a host
+   that serves S2S traffic.
 
-### Known gap
+### Known gaps
+
+Two things `Identity:Enforce` does not do that its name suggests it might. Both are open.
+
+#### Service callers are refused (#345)
+
+`Identity:Enforce=true` answers `401` to every caller under `/api` that does not present an Entra
+bearer token — including callers that authenticate correctly by another mechanism.
+
+`IdentityMiddleware` guards the whole `/api` prefix and builds a principal from exactly one source:
+the resolution the JWT bearer handler stashes while validating an Entra token. `InboundS2SAuthAttribute`
+is an `IAsyncActionFilter`, so it runs at endpoint execution — long after the middleware has already
+written the `401`. A correct S2S request never reaches its own guard.
+
+Concretely, with `Enforce` true these all get `401`:
+
+| Caller | Route | How it authenticates |
+|---|---|---|
+| Any S2S caller | `/api/conversations*` and every other guarded route | `X-S2S-Auth` (+ `X-Sbx-App-Id`) |
+| Sandbox gateway deferred-auth callback | `/api/auth/webhook/{provider}` | A session secret in `Authorization` — which the JWT handler will also fail to parse |
+| Egress key issuance | `/api/auth/egress-keys` | Its own guard |
+| Lifecycle approvals / subscriptions | `/api/lifecycle/*` | Its own guard |
+
+The `/api/identity/config`, `/api/admin/tenants` and `/api/health` prefixes are exempt and stay
+reachable; nothing else is.
+
+**The Code-Review Daemon's review host is a live instance of this.** The daemon stamps `X-S2S-Auth`
+and `X-Sbx-App-Id` on every call to that host's `/api/conversations` routes and holds no Entra token.
+Flipping `Identity:Enforce` true there stops the daemon reviewing.
+
+This is fail-closed, not a bypass — no unauthenticated caller gets in. But it is a total outage for
+non-browser callers, so **do not flip `Identity:Enforce` on a host serving S2S traffic** until #345
+lands. The fix is a principal path for service callers (spec §4.2, slice 5 / #305), not an exemption
+list in the middleware.
+
+#### The WebSocket transports carry no token
 
 The two WebSocket transports (`/ws` and `/ws/subagent`) carry no token: the browser WebSocket API
 admits no custom headers, and `/ws` sits outside the `/api` prefix the identity middleware guards.

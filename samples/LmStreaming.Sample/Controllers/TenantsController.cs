@@ -24,9 +24,16 @@ namespace LmStreaming.Sample.Controllers;
 /// same-origin UI path that would otherwise break, and exactly wrong here: the failure mode of an
 /// operator who forgets to set it would be a world-writable tenant registry.
 /// </para>
+/// <para>
+/// RUNS FIRST. <see cref="ApiControllerAttribute"/> installs MVC's model-state validation filter at
+/// <c>Order = -2000</c>. An unordered attribute filter sits at <c>Order = 0</c>, so without
+/// <see cref="Order"/> below <c>-2000</c> a malformed body would be answered <c>400</c> before this
+/// guard ever ran - an unauthenticated caller could probe the route's existence and its request
+/// schema, and reach the JSON deserializer, by sending nonsense with no header at all.
+/// </para>
 /// </remarks>
 [AttributeUsage(AttributeTargets.Class)]
-public sealed class OperatorSecretAuthAttribute : Attribute, IAsyncActionFilter
+public sealed class OperatorSecretAuthAttribute : Attribute, IAsyncActionFilter, IOrderedFilter
 {
     /// <summary>Configuration key the operator secret is read from.</summary>
     public const string SecretConfigKey = "Identity:OperatorSecret";
@@ -36,6 +43,13 @@ public sealed class OperatorSecretAuthAttribute : Attribute, IAsyncActionFilter
 
     /// <summary>Header the caller must present the operator secret in.</summary>
     public const string HeaderName = "X-Operator-Secret";
+
+    /// <summary>
+    /// Runs ahead of MVC's model-state validation filter (<c>Order = -2000</c>) so an
+    /// unauthenticated caller is refused before model binding, validation or JSON deserialization
+    /// can answer on the route's behalf.
+    /// </summary>
+    public int Order => -2100;
 
     /// <inheritdoc />
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
@@ -136,6 +150,10 @@ public sealed class TenantsController : ControllerBase
         [FromBody] ProvisionTenantRequest request,
         CancellationToken ct)
     {
+        // Unreachable in practice: [ApiController] makes a [FromBody] parameter implicitly
+        // required, so a missing or null body is answered 400 by model validation long before this
+        // line. It stays because CA1062 is an error in this repo and every other [FromBody] action
+        // in this sample carries the same line - it is an analyzer contract, not a live guard.
         ArgumentNullException.ThrowIfNull(request);
 
         var record = new TenantRecord

@@ -121,7 +121,13 @@ public sealed class TenantsControllerTests
             FirstAdminUpn = "ada@acme.example",
         };
 
-    private static Task<HttpResponseMessage> PostAsync(TestServer server, string? presentedSecret)
+    private static Task<HttpResponseMessage> PostAsync(TestServer server, string? presentedSecret) =>
+        PostBodyAsync(server, presentedSecret, ValidRequest());
+
+    private static Task<HttpResponseMessage> PostBodyAsync<TBody>(
+        TestServer server,
+        string? presentedSecret,
+        TBody body)
     {
         var client = server.CreateClient();
         if (presentedSecret is not null)
@@ -129,10 +135,14 @@ public sealed class TenantsControllerTests
             client.DefaultRequestHeaders.Add(OperatorSecretAuthAttribute.HeaderName, presentedSecret);
         }
 
-        return client.PostAsJsonAsync(
-            new Uri("/api/admin/tenants", UriKind.Relative),
-            ValidRequest());
+        return client.PostAsJsonAsync(new Uri("/api/admin/tenants", UriKind.Relative), body);
     }
+
+    /// <summary>
+    /// A body that binds but fails every <c>[Required]</c> clause on
+    /// <see cref="ProvisionTenantRequest"/>, so model validation has something to reject.
+    /// </summary>
+    private static object InvalidRequest() => new { };
 
     [Fact]
     public async Task WithoutTheOperatorSecretHeader_TheRequestIsRefused_AndNoTenantIsCreated()
@@ -210,4 +220,47 @@ public sealed class TenantsControllerTests
         _ = _audit.Administrations.Should().ContainSingle()
             .Which.Outcome.Should().Be(AdministrationOutcome.Rejected);
     }
+
+    [Fact]
+    public async Task WithAnInvalidBodyAndNoOperatorSecret_TheGuardAnswersFirst_WithA401()
+    {
+        using var server = await StartAsync(Secret);
+
+        // [ApiController] installs model-state validation at Order = -2000. An unordered attribute
+        // filter runs at Order = 0, so a guard that does not declare an order is answered over:
+        // the caller learns the route exists and learns its schema, and reaches the JSON
+        // deserializer, without ever presenting a secret. Every other test here sends a WELL-FORMED
+        // body, which takes the one path where the ordering does not matter.
+        var response = await PostBodyAsync(server, presentedSecret: null, InvalidRequest());
+
+        _ = response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        _ = _store.Provisioned.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task WithAnInvalidBodyAndTheOperatorSecretUnconfigured_TheRouteIsStillUnavailable()
+    {
+        using var server = await StartAsync(secret: null);
+
+        // The fail-closed 503 has to outrank model validation for the same reason the 401 does: a
+        // 400 here would answer a caller that the route is one an operator forgot to configure.
+        var response = await PostBodyAsync(server, presentedSecret: null, InvalidRequest());
+
+        _ = response.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+        _ = _store.Provisioned.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task WithTheCorrectOperatorSecret_AnInvalidBodyStillGetsIts400()
+    {
+        using var server = await StartAsync(Secret);
+
+        // Ordering the guard first must not suppress validation, only defer it. An authenticated
+        // operator sending nonsense still gets the model-state 400 they need to fix their request.
+        var response = await PostBodyAsync(server, Secret, InvalidRequest());
+
+        _ = response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        _ = _store.Provisioned.Should().BeEmpty();
+    }
 }
+
