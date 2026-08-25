@@ -255,6 +255,33 @@ public sealed class PublishLaunchDestinationTests : IDisposable
             "[System.IO.Directory]::Move($From, $To) }";
     }
 
+    /// <summary>
+    /// A move delegate that: succeeds on call 1 (rename 1, destination -&gt; backup); fails call 2
+    /// (rename 2, candidate -&gt; destination) with a bare, non-transient throw, so the swap enters
+    /// <c>Invoke-CandidateSwap</c>'s rollback branch; then fails the ROLLBACK move
+    /// (backup -&gt; destination, calls 3 onward) with <paramref name="rollbackTransientFailureCount"/>
+    /// real, wrapped <see cref="System.IO.IOException"/>s -- the same #371 failure shape as
+    /// <see cref="MoveDelegateThatFailsTransientlyThenSucceeds"/> -- before letting it succeed.
+    /// Targets the rollback move specifically: issue #371's actual flake was on the rollback rename
+    /// (call 3, inside <c>Invoke-CandidateSwap</c>'s guarded catch block), not the first rename that
+    /// <see cref="MoveDelegateThatFailsTransientlyThenSucceeds"/> exercises.
+    /// </summary>
+    private static string MoveDelegateThatFailsSwapThenRecoversRollbackViaRetry(
+        int rollbackTransientFailureCount,
+        string markerFrom,
+        string markerExisting)
+    {
+        var quotedMarkerFrom = PublishLaunchScriptHost.QuoteSingle(markerFrom);
+        var quotedMarkerExisting = PublishLaunchScriptHost.QuoteSingle(markerExisting);
+        var lastTransientCall = 2 + rollbackTransientFailureCount;
+        return "{ param($From, $To) " +
+            "if (-not (Get-Variable -Name __pldSwapRollbackCallCount -Scope Script -ErrorAction SilentlyContinue)) { $script:__pldSwapRollbackCallCount = 0 }; " +
+            "$script:__pldSwapRollbackCallCount++; " +
+            "if ($script:__pldSwapRollbackCallCount -eq 2) { throw ('Simulated non-transient swap failure on call ' + $script:__pldSwapRollbackCallCount) }; " +
+            $"if ($script:__pldSwapRollbackCallCount -ge 3 -and $script:__pldSwapRollbackCallCount -le {lastTransientCall}) {{ [System.IO.Directory]::Move('{quotedMarkerFrom}', '{quotedMarkerExisting}') }}; " +
+            "[System.IO.Directory]::Move($From, $To) }";
+    }
+
     /// <summary>A probe delegate that always reports the executable as free (nothing holds it).</summary>
     private const string ProbeDelegateReportingNotHeld = "{ param($Path) return $false }";
 
@@ -814,6 +841,50 @@ public sealed class PublishLaunchDestinationTests : IDisposable
             "a successful swap -- retried or not -- must still remove the backup sibling");
         FindSiblingWithSuffix(_root, "transient-retry-dest", "candidate-").Should().BeNull(
             "a successful swap -- retried or not -- must still leave no candidate sibling behind");
+    }
+
+    [Fact]
+    public void Deploy_Recognized_RecoversFromTransientRollbackMoveFailure_ViaRetry()
+    {
+        // #396 review (B4): the test above only pins recovery on the FIRST rename (call 1,
+        // destination -> backup). Issue #371's ACTUAL flake was on the ROLLBACK move (call 3
+        // onward, inside Invoke-CandidateSwap's guarded catch block, ~line 930) -- the same
+        // transient sharing-violation shape, but on the rename that only runs after the swap
+        // itself has already failed. This pins recovery there specifically: rename 1 succeeds,
+        // rename 2 (the swap) fails non-transiently to force entry into the rollback branch, and
+        // the rollback move itself then fails with two real, wrapped IOExceptions before
+        // Invoke-AtomicMove's retry lets it succeed on its third attempt -- landing the "rolled
+        // back" recovery message, not the "ALSO FAILED" double-failure message a permanently
+        // failing rollback would produce.
+        var staged = CreateStagedDirectory(_root, "transientrollback1");
+        var destination = CreateRecognizedDestination(_root, "transient-rollback-dest", "oldTRB");
+        var appsettingsHashBefore = Hash(Path.Combine(destination, "appsettings.json"));
+        var conversationsHashBefore = Hash(Path.Combine(destination, "conversations", "thread-1.json"));
+        var markerFrom = Directory.CreateDirectory(Path.Combine(_root, "transient-rollback-marker-from")).FullName;
+        var markerExisting = Directory.CreateDirectory(Path.Combine(_root, "transient-rollback-marker-existing")).FullName;
+
+        var result = PublishLaunchScriptHost.InvokeForEffect(
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
+            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' " +
+            $"-MoveDelegate {MoveDelegateThatFailsSwapThenRecoversRollbackViaRetry(2, markerFrom, markerExisting)}");
+
+        result.Succeeded.Should().BeFalse(
+            "the swap itself was made to fail deterministically, so the deploy as a whole still reports failure even though the rollback recovered");
+        result.StandardError.Should().Contain(
+            "rolled back",
+            "two transient IOExceptions on the ROLLBACK move must be absorbed by the same retry that #371 added, landing the successful-rollback message rather than the double-failure one");
+        result.StandardError.Should().NotContain(
+            "ALSO FAILED",
+            "a recovered rollback must not report the double-failure path");
+
+        Directory.Exists(destination).Should().BeTrue("the destination must exist after a recovered rollback");
+        Hash(Path.Combine(destination, "appsettings.json")).Should().Be(appsettingsHashBefore, "destination content must be byte-identical to its pre-run state once the retried rollback completes");
+        Hash(Path.Combine(destination, "conversations", "thread-1.json")).Should().Be(conversationsHashBefore, "preserved data must also be byte-identical after the recovered rollback");
+
+        FindSiblingWithSuffix(_root, "transient-rollback-dest", "backup-").Should().BeNull(
+            "a recovered rollback -- retried or not -- must still rename the backup back onto the destination path, leaving no backup sibling");
+        var candidate = FindSiblingWithSuffix(_root, "transient-rollback-dest", "candidate-");
+        candidate.Should().NotBeNull("the assembled candidate must still be retained on disk for inspection after a recovered rollback");
     }
 
     // ----------------------------------------------------------------------------------------

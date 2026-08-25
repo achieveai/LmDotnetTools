@@ -625,7 +625,8 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         _ = await restartTask.WaitAsync(TimeSpan.FromSeconds(10));
 
         // TryArmRunning must NOT resurrect the faulted run: status stays exactly "error", never "running".
-        JsonDocument.Parse(_manager.Peek(agentId)).RootElement.GetProperty("status").GetString()
+        using var finalDoc = JsonDocument.Parse(_manager.Peek(agentId));
+        finalDoc.RootElement.GetProperty("status").GetString()
             .Should().Be("error", "a monitor fault recorded against the run generation must block TryArmRunning from restoring Running");
     }
 
@@ -789,6 +790,133 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         elapsed.Elapsed.Should().BeLessThan(
             TimeSpan.FromSeconds(2),
             "a RunTask that never observes cancellation must be abandoned at the per-agent ceiling, not awaited forever");
+    }
+
+    [Fact]
+    public async Task DisposeAsync_BoundsACleanupStuckOnATokenIgnoringRunTask_RatherThanHangingForever()
+    {
+        // #373 review follow-up (PR #396): the original #373 fix bounded DisposeAsync's own per-agent
+        // teardown loop, but CleanupFailedSpawnAsync -- reached whenever a spawn's own SendAsync fails
+        // AFTER its RunTask/MonitorTask already started -- still awaited those same two tasks
+        // UNBOUNDED. That is reachable from DisposeAsync itself: disposal cancels the spawn pump's own
+        // token FIRST (before awaiting the pump task), and a BACKGROUND queued spawn's SendAsync is
+        // called with exactly that pump token. If cancelling it unblocks SendAsync into this failure
+        // path while the spawn's RunTask separately ignores ITS OWN token (simulated here via
+        // RunImpl), the unbounded await inside CleanupFailedSpawnAsync used to hang forever -- which
+        // hangs the pump loop awaiting it, which hangs DisposeAsync's own await of the pump behind
+        // that. Three unreturning awaits stacked on one wedged background task.
+        var manager = CreateManagerWithTemplates(1, new Dictionary<string, SubAgentTemplate>
+        {
+            ["filler"] = DummyTemplate("filler"),
+            ["wedged"] = DummyTemplate("wedged"),
+        });
+        manager.TestPerAgentBackgroundTaskDisposeCeiling = TimeSpan.FromMilliseconds(200);
+
+        var releaseFiller = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sendEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        manager.TestAgentFactoryOverride = (spawnedAgentId, template) => template.Name == "filler"
+            ? new FakeMultiTurnAgent
+            {
+                // Holds the sole permit until the test says otherwise, so "wedged" below is
+                // deterministically defer-queued rather than racing the inline fast path.
+                SubscribeImpl = (_, ct) =>
+                    FakeMultiTurnAgent.WaitThenCompleteStream(releaseFiller.Task, "filler-run", ct),
+            }
+            : new FakeMultiTurnAgent
+            {
+                // Called with the PUMP's own token (queued.RunInBackground => pumpCt), not any
+                // caller token -- this is what makes DisposeAsync's own pump-cancel the thing that
+                // unblocks it, exactly as the deadlock scenario requires.
+                SendWithTokenImpl = async (callIndex, sendCt) =>
+                {
+                    sendEntered.TrySetResult(true);
+                    await Task.Delay(Timeout.InfiniteTimeSpan, sendCt);
+                    return new SendReceipt($"unreachable-{callIndex}", null, DateTimeOffset.UtcNow);
+                },
+                // Ignores its OWN per-agent token entirely -- CleanupFailedSpawnAsync's
+                // state.Cts.CancelAsync() can never make this RunTask return on its own.
+                RunImpl = _ => Task.Delay(Timeout.InfiniteTimeSpan, CancellationToken.None),
+            };
+        _manager = manager;
+
+        _ = await manager.SpawnAsync("filler", "task", runInBackground: true);
+
+        var wedgedJson = await manager.SpawnAsync("wedged", "task", runInBackground: true);
+        using var wedgedDoc = JsonDocument.Parse(wedgedJson);
+        wedgedDoc.RootElement.GetProperty("status").GetString().Should().Be(
+            "queued",
+            "the filler must still hold the only permit when 'wedged' is requested, or the pump's own "
+                + "token never becomes 'wedged's SendAsync token");
+
+        // Frees the permit: the pump dequeues "wedged" and starts it via StartWithHeldPermitAsync,
+        // which reaches SendAsync (blocked on the pump's token) with RunTask/MonitorTask already live.
+        releaseFiller.SetResult(true);
+        await sendEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        await manager.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+        elapsed.Stop();
+
+        elapsed.Elapsed.Should().BeLessThan(
+            TimeSpan.FromSeconds(2),
+            "cancelling the pump must unblock SendAsync into CleanupFailedSpawnAsync, whose own "
+                + "RunTask await must itself be bounded by the same per-agent ceiling -- otherwise "
+                + "disposal hangs on 'await _pumpTask' forever, behind a spawn that never even "
+                + "finished registering");
+    }
+
+    [Fact]
+    public async Task DisposeAsync_ActuallyAwaitsARunTaskThatFinishesShortlyAfterCancellation_NotJustAbandonsIt()
+    {
+        // #396 review addendum: mutating the PRODUCTION PerAgentBackgroundTaskDisposeCeiling constant
+        // (SubAgentManager.cs) to TimeSpan.Zero still passed the entire LmMultiTurn.Tests suite
+        // (1252/1252) before this test existed. Every other ceiling test
+        // (DisposeAsync_BoundsAWedgedRunTask..., DisposeAsync_BoundsACleanupStuckOn...) sets
+        // TestPerAgentBackgroundTaskDisposeCeiling to a short override AND uses a RunTask that NEVER
+        // completes, so they only prove a bounding mechanism exists -- none of them can tell "abandoned
+        // instantly" apart from "waited the real ceiling, then abandoned", because both look identical
+        // when the task never finishes either way, and none of them exercise the production constant's
+        // actual value since they all override it. This test deliberately does NOT set the test
+        // override, so it exercises the real production ceiling directly. Its RunTask DOES finish
+        // shortly after its token is cancelled -- well within the real 10s ceiling -- and asserts a side
+        // effect of that completion is observable once DisposeAsync returns, so the ceiling's ACTUAL
+        // VALUE (not just the bounding code's existence) is what a regression here would break.
+        var manager = CreateManagerWithTemplates(1, new Dictionary<string, SubAgentTemplate>
+        {
+            ["worker"] = DummyTemplate("worker"),
+        });
+
+        var completedAfterCancel = false;
+        manager.TestAgentFactoryOverride = (_, _) => new FakeMultiTurnAgent
+        {
+            RunImpl = async ct =>
+            {
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Real cleanup work that takes a moment after cancellation is observed (flushing a
+                    // buffer, closing a connection) rather than returning the instant the token fires --
+                    // still comfortably inside the real 10s production ceiling.
+                    await Task.Delay(TimeSpan.FromMilliseconds(300), CancellationToken.None);
+                    completedAfterCancel = true;
+                    throw;
+                }
+            },
+        };
+        _manager = manager;
+
+        _ = await manager.SpawnAsync("worker", "task", runInBackground: true);
+
+        await manager.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+
+        completedAfterCancel.Should().BeTrue(
+            "a RunTask that finishes shortly after cancellation -- well within the per-agent ceiling -- "
+                + "must actually be awaited to completion during disposal, not abandoned the instant "
+                + "cancellation is requested");
     }
 
     #region Helpers

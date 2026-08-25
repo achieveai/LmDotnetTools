@@ -1581,8 +1581,11 @@ public class SubAgentManagerTests : IAsyncLifetime
         resumeDoc.RootElement.GetProperty("status").GetString().Should().Be("resumed");
 
         await Wait.UntilAsync(
-            () => JsonDocument.Parse(_manager!.Peek(agentId)).RootElement.GetProperty("status").GetString()
-                == "completed",
+            () =>
+            {
+                using var doc = JsonDocument.Parse(_manager!.Peek(agentId));
+                return doc.RootElement.GetProperty("status").GetString() == "completed";
+            },
             "the sub-agent reported completed",
             TimeSpan.FromSeconds(10));
     }

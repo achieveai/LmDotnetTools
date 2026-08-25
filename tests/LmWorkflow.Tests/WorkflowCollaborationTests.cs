@@ -422,7 +422,8 @@ public class WorkflowCollaborationTests
         await Wait.UntilAsync(
             () => caller.Directory.Capacity.InUse == 0,
             "the controller's permit was released",
-            TimeSpan.FromSeconds(10));
+            TimeSpan.FromSeconds(10),
+            observed: () => $"caller.Directory.Capacity.InUse={caller.Directory.Capacity.InUse}");
 
         caller.Directory.Capacity.InUse.Should().Be(0, "the permit must not wait on an unbounded store flush");
         disposal.IsCompleted.Should().BeFalse("non-vacuity: teardown is still inside the blocked flush");

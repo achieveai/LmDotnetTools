@@ -99,12 +99,15 @@ public class SqliteConnectionFactoryTests : IDisposable
         // released only once; the point is that the pool is still whole after repeated use.
         //
         // The acquire loop and the release loop are split by a `try`/`finally` (#372): without it, a
-        // throw partway through acquiring `maxConnections` connections -- or from an assertion this
-        // test grows later -- would leave whatever was already acquired holding its permit forever.
-        // SqliteConnectionFactory.DisposeAsync then drains the pool by re-acquiring every permit with
-        // no timeout, so even ONE leaked permit here wedges this test's own `await using factory`
-        // teardown, which escalates from a failing test to an aborted assembly (#362's failure mode,
-        // reached through a different door).
+        // throw partway through acquiring `maxConnections` connections would leave whatever was
+        // already acquired holding its permit forever. The `try` body today contains only the acquire
+        // loop itself -- no assertion currently lives inside it -- but the guard is written around the
+        // loop rather than around each individual `GetConnectionAsync()` call so that anything added
+        // inside this block later (an assertion, another acquire) stays covered by the same release
+        // without the guard needing to be re-drawn. SqliteConnectionFactory.DisposeAsync then drains
+        // the pool by re-acquiring every permit with no timeout, so even ONE leaked permit here wedges
+        // this test's own `await using factory` teardown, which escalates from a failing test to an
+        // aborted assembly (#362's failure mode, reached through a different door).
         for (var cycle = 0; cycle < 3; cycle++)
         {
             var connections = new List<SqliteConnection>();

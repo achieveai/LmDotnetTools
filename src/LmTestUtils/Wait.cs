@@ -34,6 +34,14 @@ namespace AchieveAi.LmDotnetTools.LmTestUtils;
 public static class Wait
 {
     /// <summary>Deadline used when a caller does not name one.</summary>
+    /// <remarks>
+    /// 10s: long enough that a healthy async handoff (a task hop, a channel read, a real
+    /// subscription firing) never trips it under normal CI load, short enough that a genuinely
+    /// wedged condition still fails the one test that stalled in seconds, not in whatever's left of
+    /// the run's overall timeout budget. Callers waiting on something slower by nature (a teardown
+    /// that drains several agents, a multi-step integration flow) pass an explicit longer timeout
+    /// rather than pushing this default up for everyone else.
+    /// </remarks>
     public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(10);
 
     /// <summary>Ceiling for a teardown that is not allowed to wedge the run.</summary>
@@ -100,7 +108,7 @@ public static class Wait
             $"Timed out after {budget.TotalSeconds:0.###}s waiting until {because}. "
                 + $"Waiter: {waiter} ({Path.GetFileName(file)}:{line}). The condition never held, so "
                 + "whatever this wait was a precondition for was never actually reached."
-                + (observed is null ? string.Empty : $" Last observed: {observed()}.")
+                + DescribeObserved(observed)
         );
     }
 
@@ -138,8 +146,36 @@ public static class Wait
             $"Timed out after {budget.TotalSeconds:0.###}s waiting until {because}. "
                 + $"Waiter: {waiter} ({Path.GetFileName(file)}:{line}). The condition never held, so "
                 + "whatever this wait was a precondition for was never actually reached."
-                + (observed is null ? string.Empty : $" Last observed: {observed()}.")
+                + DescribeObserved(observed)
         );
+    }
+
+    /// <summary>
+    /// Renders <paramref name="observed"/> for a timeout message, tolerating a supplier that itself
+    /// throws. A caller's <c>observed</c> callback typically reads live state that is, definitionally,
+    /// still unsettled at the moment of a timeout -- so it throwing is a real, expected outcome, not a
+    /// programming error. Without this guard that exception replaces the <see cref="TimeoutException"/>
+    /// entirely: the caller sees the supplier's exception instead, with no mention of the timeout, the
+    /// waiter, or the file/line that would otherwise point straight at the stalled wait.
+    /// </summary>
+    private static string DescribeObserved(Func<string>? observed)
+    {
+        if (observed is null)
+        {
+            return string.Empty;
+        }
+
+        string observedText;
+        try
+        {
+            observedText = observed();
+        }
+        catch (Exception ex)
+        {
+            observedText = $"<observed supplier threw: {ex.Message}>";
+        }
+
+        return $" Last observed: {observedText}.";
     }
 
     /// <summary>

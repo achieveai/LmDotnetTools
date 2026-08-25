@@ -82,14 +82,31 @@ public sealed class LiveGatewayFixture : IAsyncLifetime
         }
 
         var isHttp = string.Equals(serverAddress.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase);
-        var options = new SandboxClientOptions(
-            serverAddress,
-            appId,
-            appKey,
-            executionTimeout: TimeSpan.FromSeconds(60),
-            transportTimeout: TimeSpan.FromSeconds(30),
-            allowInsecureDevelopmentTransport: isHttp
-        );
+        SandboxClientOptions options;
+        try
+        {
+            // SANDBOX_APP_KEY is present (checked above) but its CONTENT is unvalidated until this
+            // constructor runs -- a present-but-malformed secret (bad base64, too short) throws
+            // ArgumentException here. Without this guard that exception propagates straight out of
+            // InitializeAsync, which xUnit turns into an ERROR on the fixture itself rather than a
+            // skip -- failing every one of this collection's tests with a misleading "the fixture
+            // threw" report instead of the same clean, actionable skip a genuinely missing variable
+            // gets. The exception's own message is already redacted (never includes the key value),
+            // so it is safe to fold into the skip reason.
+            options = new SandboxClientOptions(
+                serverAddress,
+                appId,
+                appKey,
+                executionTimeout: TimeSpan.FromSeconds(60),
+                transportTimeout: TimeSpan.FromSeconds(30),
+                allowInsecureDevelopmentTransport: isHttp
+            );
+        }
+        catch (ArgumentException ex)
+        {
+            Unavailable(required, $"SANDBOX_APP_KEY is present but invalid: {ex.Message}");
+            return;
+        }
 
         _ownedClient = new SandboxClient(options);
         Client = _ownedClient;
