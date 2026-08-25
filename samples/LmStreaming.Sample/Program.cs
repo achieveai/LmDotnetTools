@@ -47,6 +47,7 @@ using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
 using LmStreaming.Sample.Auth;
 using LmStreaming.Sample.Configuration;
 using LmStreaming.Sample.Controllers;
+using LmStreaming.Sample.Identity;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
 using LmStreaming.Sample.Services;
@@ -158,6 +159,26 @@ try
     // this host supplied the application part, so the method leaves the rest of that assembly alone.
     _ = builder.Services.AddControllers().AddLifecycleControlPlane(builder.Configuration);
     _ = builder.Services.AddEndpointsApiExplorer();
+
+    // P1 slice 1 (#301): the tenant registry, the principal pipeline and — only when an Entra app
+    // registration is configured — the JWT bearer handler. Inert by default: with Identity:Enforce
+    // false every request resolves to the development principal, which is what keeps the existing
+    // surface working unchanged.
+    _ = builder.Services.AddSampleIdentity(builder.Configuration);
+
+    // The operator secret is set through a flat env var for the same reason the S2S inbound secret
+    // is: the standard env-var provider maps only `Identity__OperatorSecret` into that section key,
+    // and operators reach for the flat name.
+    var operatorSecret = Environment.GetEnvironmentVariable(
+        OperatorSecretAuthAttribute.SecretEnvironmentVariable);
+    if (!string.IsNullOrWhiteSpace(operatorSecret))
+    {
+        _ = builder.Configuration.AddInMemoryCollection(
+            new Dictionary<string, string?>
+            {
+                [OperatorSecretAuthAttribute.SecretConfigKey] = operatorSecret,
+            });
+    }
 
     // Raise the request-body ceiling so the file browser's multipart upload (WI #195) can carry a file of
     // exactly MaxFileBytes (64 MiB) plus a fixed 8 KiB framing allowance. The exact inclusive per-file cap
@@ -2070,6 +2091,12 @@ subAgentFactory,
 
     // Serve static files (including Vite build output)
     _ = app.UseStaticFiles();
+
+    // P1 slice 1 (#301): authentication, authorization, then the middleware that establishes the
+    // request's Principal. Placed after UseStaticFiles so the SPA — including the screen that
+    // explains a refusal — stays reachable while signed out, and before the API endpoints so every
+    // /api route runs with a principal already resolved.
+    _ = app.UseSampleIdentity();
 
     // Use LmStreaming middleware (enables WebSockets and CORS)
     _ = app.UseLmStreaming();

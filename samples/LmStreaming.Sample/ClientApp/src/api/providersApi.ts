@@ -1,11 +1,12 @@
 import type { ProvidersResponse, SwitchProviderResponse } from '@/types/providers';
+import { apiFetch } from '@/api/http';
 
 /**
  * Fetches the list of providers available in the current process and the default
  * provider id. The default is used when the user does not explicitly pick one.
  */
 export async function listProviders(): Promise<ProvidersResponse> {
-  const response = await fetch('/api/providers');
+  const response = await apiFetch('/api/providers');
   if (!response.ok) {
     throw new Error(`Failed to fetch providers: ${response.statusText}`);
   }
@@ -20,7 +21,7 @@ export async function switchConversationProvider(
   threadId: string,
   providerId: string
 ): Promise<SwitchProviderResponse> {
-  const response = await fetch(
+  const response = await apiFetch(
     `/api/conversations/${encodeURIComponent(threadId)}/provider`,
     {
       method: 'POST',

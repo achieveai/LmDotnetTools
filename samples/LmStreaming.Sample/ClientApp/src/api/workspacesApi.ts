@@ -4,6 +4,7 @@ import type {
   WorkspaceListResponse,
   WorkspaceUpdate,
 } from '@/types/workspace';
+import { apiFetch } from '@/api/http';
 
 /**
  * Raised on HTTP 409 `workspace_revision_conflict`: the `pluginsRevision` we echoed back is stale
@@ -100,7 +101,7 @@ async function classifyFailure(response: Response, operation: string): Promise<E
  * Fetches all workspaces from the backend.
  */
 export async function listWorkspaces(): Promise<WorkspaceListResponse> {
-  const response = await fetch('/api/workspaces');
+  const response = await apiFetch('/api/workspaces');
   if (!response.ok) {
     throw new Error(`Failed to fetch workspaces: ${response.statusText}`);
   }
@@ -111,7 +112,7 @@ export async function listWorkspaces(): Promise<WorkspaceListResponse> {
  * Fetches a specific workspace by ID. Returns null on 404.
  */
 export async function getWorkspace(id: string): Promise<Workspace | null> {
-  const response = await fetch(`/api/workspaces/${encodeURIComponent(id)}`);
+  const response = await apiFetch(`/api/workspaces/${encodeURIComponent(id)}`);
   if (response.status === 404) {
     return null;
   }
@@ -131,7 +132,7 @@ export async function getWorkspace(id: string): Promise<Workspace | null> {
  * @throws {UnsupportedPluginsError} on 400 unsupported_plugins.
  */
 export async function createWorkspace(dto: WorkspaceCreate): Promise<Workspace> {
-  const response = await fetch('/api/workspaces', {
+  const response = await apiFetch('/api/workspaces', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(dto),
@@ -157,7 +158,7 @@ export async function updateWorkspace(
   id: string,
   dto: WorkspaceUpdate
 ): Promise<Workspace> {
-  const response = await fetch(`/api/workspaces/${encodeURIComponent(id)}`, {
+  const response = await apiFetch(`/api/workspaces/${encodeURIComponent(id)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(dto),

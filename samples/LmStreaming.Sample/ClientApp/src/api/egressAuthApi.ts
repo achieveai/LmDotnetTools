@@ -1,10 +1,11 @@
 import type { EgressKeyView, EgressKeyRequest } from '@/types/egressAuth';
+import { apiFetch } from '@/api/http';
 
 /**
  * Fetches all pre-defined egress keys (masked) from the backend.
  */
 export async function listEgressKeys(): Promise<EgressKeyView[]> {
-  const response = await fetch('/api/auth/egress-keys');
+  const response = await apiFetch('/api/auth/egress-keys');
   if (!response.ok) {
     throw new Error(`Failed to fetch egress keys: ${response.statusText}`);
   }
@@ -16,7 +17,7 @@ export async function listEgressKeys(): Promise<EgressKeyView[]> {
  * `error` body on a non-ok response.
  */
 export async function upsertEgressKey(req: EgressKeyRequest): Promise<EgressKeyView> {
-  const response = await fetch('/api/auth/egress-keys', {
+  const response = await apiFetch('/api/auth/egress-keys', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(req),
@@ -33,7 +34,7 @@ export async function upsertEgressKey(req: EgressKeyRequest): Promise<EgressKeyV
  * response (e.g. 404 for an unknown id).
  */
 export async function deleteEgressKey(id: string): Promise<void> {
-  const response = await fetch(`/api/auth/egress-keys/${encodeURIComponent(id)}`, {
+  const response = await apiFetch(`/api/auth/egress-keys/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   });
   if (!response.ok) {
