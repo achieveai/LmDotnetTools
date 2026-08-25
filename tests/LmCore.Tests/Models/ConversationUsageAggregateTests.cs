@@ -179,4 +179,44 @@ public class ConversationUsageAggregateTests
 
         ConversationUsageAggregate.DedupeByAttempt(records)[0].OccurredAtUtc.Should().BeNull();
     }
+
+    [Fact]
+    public void Fold_MixedPricing_ConversationCost_IsNull_NotAConfidentUndercount()
+    {
+        // model-A is priced; model-B is not (its cost fields are null). The per-model rows keep their own
+        // subtotals, but the CONVERSATION total must not present a confident partial that silently omits B —
+        // for a cost figure, "cheaper than it was" is the direction that goes unquestioned (#377).
+        var records = new[]
+        {
+            Record("a1", "model-A", input: 100, output: 40, estimated: 6000, reported: 3000),
+            Record("b1", "model-B", input: 200, output: 60),
+        };
+
+        var agg = ConversationUsageAggregate.Fold("conv-1", records, foldedRevision: 2);
+
+        // The priced model still reports its own subtotal; the unpriced model reports null.
+        agg.PerModel.Single(m => m.ModelId == "model-A").EstimatedPublicCostMicros.Should().Be(6000);
+        agg.PerModel.Single(m => m.ModelId == "model-B").EstimatedPublicCostMicros.Should().BeNull();
+
+        // Any unpriced model poisons the conversation total for BOTH cost dimensions.
+        agg.EstimatedPublicCostMicros.Should().BeNull();
+        agg.ProviderReportedCostMicros.Should().BeNull();
+    }
+
+    [Fact]
+    public void Fold_AllModelsPriced_ConversationCost_SumsAcrossModels()
+    {
+        // The complement of the mixed-pricing case: when every model is priced, the strict conversation
+        // fold still sums across models rather than collapsing to null.
+        var records = new[]
+        {
+            Record("a1", "model-A", input: 100, output: 40, estimated: 6000, reported: 3000),
+            Record("b1", "model-B", input: 200, output: 60, estimated: 1500, reported: 900),
+        };
+
+        var agg = ConversationUsageAggregate.Fold("conv-1", records, foldedRevision: 2);
+
+        agg.EstimatedPublicCostMicros.Should().Be(7500);
+        agg.ProviderReportedCostMicros.Should().Be(3900);
+    }
 }

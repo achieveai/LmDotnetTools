@@ -141,11 +141,37 @@ public sealed class UsageLedger : IUsageSink
         {
             foreach (var record in records)
             {
-                _ = _byAttempt.TryAdd(record.ProviderAttemptId, record);
+                _ = _byAttempt.TryAdd(record.ProviderAttemptId, WithDerivedProvenance(record));
             }
 
             _watermark.SeedPrefix(foldedRevision);
         }
+    }
+
+    private static UsageRecord WithDerivedProvenance(UsageRecord record)
+    {
+        // A row persisted before CostProvenance existed (#367) deserializes with the default Unavailable even
+        // when a real cost sits right beside it. Re-derive the provenance on seed from which cost field is
+        // populated — the same "higher information wins" reasoning the merge path uses — rather than restoring
+        // the misleading default verbatim (#393). Provider-reported outranks a public estimate; a row with no
+        // cost at all has nothing to derive and stays Unavailable. Only the default is derived over: an
+        // explicitly stamped provenance is trusted as-is.
+        if (record.CostProvenance != CostProvenance.Unavailable)
+        {
+            return record;
+        }
+
+        if (record.ProviderReportedCostMicros is not null)
+        {
+            return record with { CostProvenance = CostProvenance.ProviderReported };
+        }
+
+        if (record.EstimatedPublicCostMicros is not null)
+        {
+            return record with { CostProvenance = CostProvenance.PublicEstimate };
+        }
+
+        return record;
     }
 
     private UsageRecord WithEstimatedCost(UsageRecord record)

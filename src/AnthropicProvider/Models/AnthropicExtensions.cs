@@ -33,15 +33,29 @@ public static class AnthropicExtensions
         // Add usage information as a separate message if available
         if (response.Usage != null)
         {
+            // Preserve cache metrics the same way the streaming parser does, so the streaming and
+            // non-streaming paths surface identical cache details to the accounting layer (#116):
+            // cache-read tokens ride the nested InputTokenDetails, cache-creation (billed separately,
+            // additive) rides an ExtraProperty.
+            var usage = new Usage
+            {
+                PromptTokens = response.Usage.InputTokens,
+                CompletionTokens = response.Usage.OutputTokens,
+                TotalTokens = response.Usage.InputTokens + response.Usage.OutputTokens,
+                InputTokenDetails = response.Usage.CacheReadInputTokens > 0
+                    ? new InputTokenDetails { CachedTokens = response.Usage.CacheReadInputTokens }
+                    : null,
+            };
+
+            if (response.Usage.CacheCreationInputTokens > 0)
+            {
+                usage = usage.SetExtraProperty("cache_creation_input_tokens", response.Usage.CacheCreationInputTokens);
+            }
+
             messages.Add(
                 new UsageMessage
                 {
-                    Usage = new Usage
-                    {
-                        PromptTokens = response.Usage.InputTokens,
-                        CompletionTokens = response.Usage.OutputTokens,
-                        TotalTokens = response.Usage.InputTokens + response.Usage.OutputTokens,
-                    },
+                    Usage = usage,
                     Role = Role.Assistant,
                     FromAgent = agentName,
                     GenerationId = response.Id,
