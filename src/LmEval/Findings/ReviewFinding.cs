@@ -6,14 +6,25 @@ namespace AchieveAi.LmDotnetTools.LmEval.Findings;
 /// One citation recovered from a review's prose, with the text that surrounds it.
 /// </summary>
 /// <param name="Path">The cited file path, exactly as written.</param>
-/// <param name="Line">The cited line number.</param>
+/// <param name="Line">
+/// The cited line number, or <b>null</b> when the citation named one this parser could not read —
+/// an overflowing number, most plausibly a hallucinated one. Null is "cited but not resolvable",
+/// which is a different review defect from not citing at all, and §4.3(2) measures anchor
+/// resolution, so the two must not collapse into the same absence.
+/// </param>
 /// <param name="Severity">
-/// The severity tag on the same line, lowercased, when one is present. Null when the review used no
-/// tag — never a default like "info", because a review that stated no severity has not stated a low
-/// one.
+/// The severity tag governing this citation, lowercased, when one is present. Null when the review
+/// used no tag — never a default like "info", because a review that stated no severity has not
+/// stated a low one.
+/// <para>
+/// Scoped to the citation, not to the line: a line carrying two tags gives each anchor the nearest
+/// tag that <i>precedes</i> it. A line carrying one tag gives it to every anchor on the line,
+/// whichever side of them it sits on, because a reviewer who stated one severity stated it about
+/// the whole line.
+/// </para>
 /// </param>
 /// <param name="Excerpt">The line the citation appeared on, trimmed.</param>
-public sealed record ReviewFinding(string Path, int Line, string? Severity, string Excerpt);
+public sealed record ReviewFinding(string Path, int? Line, string? Severity, string Excerpt);
 
 /// <summary>
 /// Recovers <see cref="ReviewFinding"/>s from a review's Markdown prose.
@@ -73,28 +84,30 @@ public static partial class ReviewFindingParser
                 continue;
             }
 
-            var severity = SeverityOf(line);
+            var severities = SeveritiesOn(line);
 
             foreach (Match match in AnchorPattern().Matches(line))
             {
-                if (
-                    int.TryParse(
-                        match.Groups["line"].Value,
-                        System.Globalization.NumberStyles.None,
-                        System.Globalization.CultureInfo.InvariantCulture,
-                        out var lineNumber
-                    )
+                // An unreadable number does not drop the citation. The anchor pattern already
+                // decided this text is a citation; how well its line number resolves is the
+                // measurement, not the admission criterion.
+                var lineNumber = int.TryParse(
+                    match.Groups["line"].Value,
+                    System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out var parsed
                 )
-                {
-                    findings.Add(
-                        new ReviewFinding(
-                            match.Groups["path"].Value,
-                            lineNumber,
-                            severity,
-                            line
-                        )
-                    );
-                }
+                    ? parsed
+                    : (int?)null;
+
+                findings.Add(
+                    new ReviewFinding(
+                        match.Groups["path"].Value,
+                        lineNumber,
+                        SeverityFor(severities, match.Index),
+                        line
+                    )
+                );
             }
         }
 
@@ -102,22 +115,60 @@ public static partial class ReviewFindingParser
     }
 
     /// <summary>
-    /// The severity tag on one line, or null. Matched against a closed vocabulary rather than "any
-    /// bracketed word", so that an ordinary bracketed reference does not read as a severity and
-    /// silently populate a field a caller then segments on.
+    /// Every severity tag on one line with the offset it sits at, in order. Matched against a
+    /// closed vocabulary rather than "any bracketed word", so that an ordinary bracketed reference
+    /// does not read as a severity and silently populate a field a caller then segments on.
     /// </summary>
-    private static string? SeverityOf(string line)
+    private static List<(int Offset, string Value)> SeveritiesOn(string line)
     {
+        var found = new List<(int Offset, string Value)>();
+
         foreach (Match match in SeverityPattern().Matches(line))
         {
             var candidate = match.Groups["severity"].Value.ToLowerInvariant();
             if (Array.IndexOf(KnownSeverities, candidate) >= 0)
             {
-                return candidate;
+                found.Add((match.Index, candidate));
             }
         }
 
-        return null;
+        return found;
+    }
+
+    /// <summary>
+    /// The tag governing the citation at <paramref name="anchorOffset"/>: the nearest one that
+    /// precedes it, falling back to the line's first tag when none does.
+    /// <para>
+    /// The fallback is what keeps a trailing tag covering the whole line, which is the common
+    /// single-tag shape. It is a fallback, NOT a pairing: on a line whose tags all trail its
+    /// citations — <c>a.cs:1 b.cs:2 [must] [nit]</c> — every citation takes the first tag and the
+    /// rest are dropped, because nothing in the text says which citation a trailing tag belongs to.
+    /// That is the deliberate cost of not smearing the last tag forward: a confident wrong pairing
+    /// reads as a measurement, while a coarse one is at least the severity the line leads with.
+    /// </para>
+    /// </summary>
+    private static string? SeverityFor(
+        List<(int Offset, string Value)> severities,
+        int anchorOffset
+    )
+    {
+        if (severities.Count == 0)
+        {
+            return null;
+        }
+
+        string? nearest = null;
+        foreach (var (offset, value) in severities)
+        {
+            if (offset >= anchorOffset)
+            {
+                break;
+            }
+
+            nearest = value;
+        }
+
+        return nearest ?? severities[0].Value;
     }
 
     /// <summary>

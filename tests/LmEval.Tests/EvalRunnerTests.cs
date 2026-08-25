@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmEval.Aggregation;
 using AchieveAi.LmDotnetTools.LmEval.Running;
 using AchieveAi.LmDotnetTools.LmEval.Tests.Infrastructure;
 
@@ -21,12 +22,14 @@ public class EvalRunnerTests
         Func<Candidate, double?> first,
         Func<Candidate, double?> second,
         IJudge? arbiter = null,
-        IReadOnlyList<IGate>? gates = null
+        IReadOnlyList<IGate>? gates = null,
+        IReadOnlyDictionary<string, double>? reliabilityWeights = null
     ) =>
         EvalFixtures.Config(
             gates,
             [Judge("j-a", "anthropic", first), Judge("j-b", "google", second)],
-            new HarnessOptions { ArbiterJudge = arbiter }
+            new HarnessOptions { ArbiterJudge = arbiter },
+            reliabilityWeights: reliabilityWeights
         );
 
     [Fact]
@@ -196,14 +199,18 @@ public class EvalRunnerTests
     }
 
     [Fact]
-    public async Task One_throwing_gate_does_not_take_out_the_batch()
+    public async Task One_throwing_reducer_does_not_take_out_the_batch()
     {
         // A corpus is host data of unknown quality. Losing every item's work to one item's fault is
         // an operational failure, not a measurement — and the faulted item keeps its place in the
         // denominator, so the loss cannot flatter the result.
+        //
+        // The reducer, not a gate: the gauntlet now contains a gate fault into an inconclusive
+        // decision the same way it already contained a judge fault, so neither of those reaches
+        // this isolation any more. The injected reducer is the remaining seam that genuinely can.
         var run = await EvalFixtures.RunAsync(
             EvalFixtures.Config(
-                [new MarkerGate(EvalFixtures.RejectMarker, throwOnCandidateId: "poison")]
+                aggregator: new ThrowingAggregator("poison", new WeightedMeanAggregator())
             ),
             EvalFixtures.Snapshot(
                 EvalFixtures.Item("before"),
@@ -226,6 +233,38 @@ public class EvalRunnerTests
 
         // The items after the poison one were still evaluated: isolation, not a short-circuit.
         run.Items.Single(i => i.CandidateId == "after").IsScored.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A gate that throws costs the run one gate DECISION, not one corpus item. Before the gauntlet
+    /// contained the fault, the candidate was lost entirely — it left the pass rate's numerator,
+    /// stayed in its denominator, and read as an item nothing could be measured about.
+    /// </summary>
+    [Fact]
+    public async Task One_throwing_gate_costs_a_gate_decision_and_not_the_item()
+    {
+        var run = await EvalFixtures.RunAsync(
+            EvalFixtures.Config(
+                [new MarkerGate(EvalFixtures.RejectMarker, throwOnCandidateId: "poison")]
+            ),
+            EvalFixtures.Snapshot(
+                EvalFixtures.Item("before"),
+                EvalFixtures.Item("poison"),
+                EvalFixtures.Item("after")
+            )
+        );
+
+        var poison = run.Items.Single(i => i.CandidateId == "poison");
+        poison.Exclusion.Should().Be(ScoreExclusion.None);
+        poison.IsScored.Should().BeTrue();
+        poison
+            .Verdict!.GateDecisions.Should()
+            .ContainSingle()
+            .Which.Outcome.Should()
+            .Be(GateOutcome.Inconclusive);
+
+        run.FaultedCount.Should().Be(0);
+        run.ScoredItems.Should().Be(3);
     }
 
     [Fact]
@@ -494,18 +533,51 @@ public class EvalRunnerTests
         // this class at its 1.0 default and nothing proves the runner hands it to the reduction at
         // all. Here the two judges disagree and the weights decide the answer: an unweighted mean
         // of 10 and 2 is 6.0, and the weighted one is (10*1.0 + 2*0.25) / 1.25 = 8.4.
-        var runner = new EvalRunner(Panel(first: _ => 10.0, second: _ => 2.0));
+        var weights = new Dictionary<string, double> { ["j-a"] = 1.0, ["j-b"] = 0.25 };
+        var runner = new EvalRunner(
+            Panel(first: _ => 10.0, second: _ => 2.0, reliabilityWeights: weights)
+        );
 
         var run = await runner.RunAsync(
             "run-1",
             EvalFixtures.Snapshot(EvalFixtures.Item("a")),
             HarnessFixtures.Rubric(),
-            new Dictionary<string, double> { ["j-a"] = 1.0, ["j-b"] = 0.25 },
+            weights,
             null,
             CancellationToken.None
         );
 
         run.Items.Single().Verdict!.Score.Should().BeApproximately(8.4, 1e-9);
+    }
+
+    /// <summary>
+    /// The evaluator hash covers the weights by content, which is worth something only if the run
+    /// cannot then execute under a different set. A hash describing a configuration other than the
+    /// one executing is worse than no hash: every refusal built on it checks the wrong fact.
+    /// </summary>
+    [Fact]
+    public async Task Weights_the_frozen_configuration_did_not_declare_are_refused()
+    {
+        var judge = new ScoringJudge("j-a", "anthropic", _ => 8.0);
+        var runner = new EvalRunner(
+            EvalFixtures.Config(
+                judges: [judge, Judge("j-b", "google", _ => 8.0)],
+                reliabilityWeights: new Dictionary<string, double> { ["j-a"] = 1.0 }
+            )
+        );
+
+        var act = async () =>
+            await runner.RunAsync(
+                "run-1",
+                EvalFixtures.Snapshot(EvalFixtures.Item("a"), EvalFixtures.Item("b")),
+                HarnessFixtures.Rubric(),
+                new Dictionary<string, double> { ["j-a"] = 0.25 },
+                null,
+                CancellationToken.None
+            );
+
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*froze*");
+        judge.SeenCandidateIds.Should().BeEmpty("no judge is billed on the way to finding out");
     }
 
     [Fact]
@@ -663,5 +735,67 @@ public class EvalRunnerTests
         comparison.Refusal.Should().Be(ComparisonRefusal.CoverageBelowMinimum);
         comparison.RefusalDetail.Should().Contain("scored no items at all");
         comparison.PassRateDelta.Should().BeNull();
+    }
+
+    // ---- gate scoping (IGate.AppliesTo) -------------------------------------------------------
+
+    /// <summary>
+    /// <see cref="IGate.AppliesTo"/> decides whether a gate participates at all, and a gate that
+    /// runs short-circuits to a fail with no score that stays in the pass rate's denominator.
+    /// Silently not running is therefore a large, quiet move in the reported rate — and every gate
+    /// fixture in this assembly declared the set empty, so nothing anywhere exercised it.
+    /// </summary>
+    [Fact]
+    public async Task A_gate_scoped_to_another_task_type_sees_no_candidate_and_moves_no_rate()
+    {
+        var elsewhere = new MarkerGate(
+            EvalFixtures.RejectMarker,
+            gateId: "scoped",
+            appliesTo: ["summarization"]
+        );
+
+        var run = await EvalFixtures.RunAsync(
+            EvalFixtures.Config([elsewhere]),
+            EvalFixtures.Snapshot(
+                EvalFixtures.Item("clean"),
+                EvalFixtures.Item("dirty", content: EvalFixtures.RejectMarker)
+            )
+        );
+
+        run.Items.Should().OnlyContain(i => i.Verdict!.GateDecisions.Count == 0);
+        run.GateRejectedCount.Should().Be(0, "a gate scoped elsewhere cannot reject anything here");
+        run.ScoredItems.Should().Be(2);
+        run.PassRate.Should().Be(1.0);
+    }
+
+    /// <summary>
+    /// The other half: scoped to the corpus's OWN task type, the same gate runs against every
+    /// candidate and the rejection lands. Read against the test above, the pair is what makes the
+    /// scoping field behaviourally pinned rather than merely present.
+    /// </summary>
+    [Fact]
+    public async Task A_gate_scoped_to_the_corpus_task_type_sees_every_candidate()
+    {
+        var here = new MarkerGate(
+            EvalFixtures.RejectMarker,
+            gateId: "scoped",
+            appliesTo: [HarnessFixtures.TaskType]
+        );
+
+        var run = await EvalFixtures.RunAsync(
+            EvalFixtures.Config([here]),
+            EvalFixtures.Snapshot(
+                EvalFixtures.Item("clean"),
+                EvalFixtures.Item("dirty", content: EvalFixtures.RejectMarker)
+            )
+        );
+
+        run.Items.Should().OnlyContain(i => i.Verdict!.GateDecisions.Count == 1);
+        run.GateRejectedCount.Should().Be(1);
+        run.Items.Single(i => i.CandidateId == "dirty")
+            .Exclusion.Should()
+            .Be(ScoreExclusion.GateRejected);
+        run.ScoredItems.Should().Be(1);
+        run.PassRate.Should().Be(0.5, "the rejected item leaves the numerator and stays in the denominator");
     }
 }

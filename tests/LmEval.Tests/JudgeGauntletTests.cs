@@ -57,6 +57,75 @@ public sealed class JudgeGauntletTests
         construct.Should().Throw<ArgumentException>();
     }
 
+    /// <summary>
+    /// Confidence is in [0,1], and AbstainFloor is compared straight against it. Writing the
+    /// default as a percentage — 34 rather than 0.34 — puts EVERY ballot below the floor, so every
+    /// candidate becomes NoDecision with a null score and an entire corpus run produces nothing and
+    /// reports success. The class doc already claims options are "validated once at construction".
+    /// </summary>
+    [Fact]
+    public void An_abstain_floor_written_as_a_percentage_throws_at_construction()
+    {
+        var construct = () =>
+            Gauntlet([], [new FakeJudge("a", "anthropic")], new HarnessOptions { AbstainFloor = 34 });
+
+        construct
+            .Should()
+            .Throw<ArgumentOutOfRangeException>()
+            .WithMessage("*confidence*");
+    }
+
+    /// <summary>The mirror image: a negative floor silently disables the filter entirely.</summary>
+    [Fact]
+    public void A_negative_abstain_floor_throws_at_construction()
+    {
+        var construct = () =>
+            Gauntlet(
+                [],
+                [new FakeJudge("a", "anthropic")],
+                new HarnessOptions { AbstainFloor = -1.0 }
+            );
+
+        construct.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void The_abstain_floor_may_sit_on_either_end_of_its_range()
+    {
+        var atZero = () =>
+            Gauntlet(
+                [],
+                [new FakeJudge("a", "anthropic")],
+                new HarnessOptions { AbstainFloor = 0.0 }
+            );
+        var atOne = () =>
+            Gauntlet(
+                [],
+                [new FakeJudge("a", "anthropic")],
+                new HarnessOptions { AbstainFloor = 1.0 }
+            );
+
+        atZero.Should().NotThrow();
+        atOne.Should().NotThrow();
+    }
+
+    /// <summary>
+    /// The alarm is compared against a population standard deviation, which is never negative, so
+    /// a negative bound is an alarm that fires on every verdict that has one at all.
+    /// </summary>
+    [Fact]
+    public void A_negative_dispersion_alarm_throws_at_construction()
+    {
+        var construct = () =>
+            Gauntlet(
+                [],
+                [new FakeJudge("a", "anthropic")],
+                new HarnessOptions { DispersionAlarm = -0.5 }
+            );
+
+        construct.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
     // ---- gates (§2.4) ------------------------------------------------------------------------
 
     /// <summary>
@@ -119,6 +188,73 @@ public sealed class JudgeGauntletTests
         other.Calls.Should().Be(0);
         verdict.GateDecisions.Should().BeEmpty();
         judge.Calls.Should().Be(1);
+    }
+
+    /// <summary>
+    /// §2.4 — <see cref="GateOutcome.Inconclusive"/> exists to say "the gate could not decide", and
+    /// the most common way a real gate fails to decide is by throwing: a missing tool or an absent
+    /// checkout surfaces as an <c>IOException</c>, not as a returned Inconclusive. The judge path
+    /// already contains a fault into a <see cref="JudgeFault"/> so one outage degrades the verdict
+    /// instead of losing it; the gate path must be symmetric or the candidate is lost entirely.
+    /// </summary>
+    [Fact]
+    public async Task A_gate_that_throws_is_recorded_as_inconclusive_and_the_run_continues()
+    {
+        var boom = new MarkerGate("never", gateId: "boom", throwOnCandidateId: "cand-1");
+        var later = new CountingGate("after", GateOutcome.Pass);
+        var judge = new FakeJudge("a", "anthropic", score: 8.0);
+
+        var verdict = await Run(
+            Gauntlet([boom, later], [judge]),
+            HarnessFixtures.Candidate()
+        );
+
+        verdict.GateDecisions.Should().HaveCount(2);
+        var thrown = verdict.GateDecisions[0];
+        thrown.GateId.Should().Be("boom");
+        thrown.Outcome.Should().Be(GateOutcome.Inconclusive);
+        thrown.Reason.Should().Contain(nameof(InvalidOperationException));
+        later.Calls.Should().Be(1, "a gate that could not decide does not stop the ones after it");
+        judge.Calls.Should().Be(1);
+        verdict.Outcome.Should().Be(VerdictOutcome.Pass);
+    }
+
+    /// <summary>
+    /// The gate reason is persisted, so it is held to the same stable, non-sensitive rail as every
+    /// other persisted diagnostic: the exception's TYPE, never its message.
+    /// </summary>
+    [Fact]
+    public async Task A_thrown_gate_reason_carries_the_exception_type_and_not_its_message()
+    {
+        var boom = new MarkerGate("never", gateId: "boom", throwOnCandidateId: "cand-1");
+
+        var verdict = await Run(
+            Gauntlet([boom], [new FakeJudge("a", "anthropic")]),
+            HarnessFixtures.Candidate()
+        );
+
+        verdict.GateDecisions[0].Reason.Should().NotContain("gate blew up");
+    }
+
+    /// <summary>
+    /// A caller's cancellation is never a gate failure: recording it as an inconclusive decision
+    /// would put a gate record on a run nobody tried to complete.
+    /// </summary>
+    [Fact]
+    public async Task A_cancelled_gate_propagates_rather_than_becoming_inconclusive()
+    {
+        using var source = new CancellationTokenSource();
+        var gauntlet = Gauntlet([new CancellingGate(source)], [new FakeJudge("a", "anthropic")]);
+
+        var run = async () =>
+            await gauntlet.RunAsync(
+                HarnessFixtures.Candidate(),
+                Rubric,
+                NoReliability,
+                source.Token
+            );
+
+        await run.Should().ThrowAsync<OperationCanceledException>();
     }
 
     // ---- panel fan-out and degradation (§2.12.6) ----------------------------------------------
@@ -233,6 +369,83 @@ public sealed class JudgeGauntletTests
         verdict.Degradation.Should().Be(PanelDegradation.SingleJudge);
         verdict.Dispersion.Should().BeNull();
         verdict.Score.Should().Be(8.0);
+    }
+
+    /// <summary>
+    /// §2.12.3 — the reduction partitions ballots into panel and arbiter by <c>JudgeId</c> equality
+    /// alone, so an arbiter sharing a panel judge's id makes that judge's ballot read as the
+    /// arbiter's. The panel then has one ballot left, which can never straddle: a genuine 9-vs-3
+    /// disagreement records as a consensus and the straddle rate — the headline diagnostic this
+    /// slice exists to produce — reads silently low.
+    /// </summary>
+    [Fact]
+    public void An_arbiter_sharing_a_panel_judge_id_throws_at_construction()
+    {
+        var construct = () =>
+            Gauntlet(
+                [],
+                [new FakeJudge("a", "anthropic"), new FakeJudge("b", "openai")],
+                new HarnessOptions { ArbiterJudge = new FakeJudge("a", "google") }
+            );
+
+        construct.Should().Throw<ArgumentException>().WithMessage("*is also a panel judge id*");
+    }
+
+    /// <summary>
+    /// The same partitioning reads a judge id as an identity, so two panel judges sharing one make
+    /// every reliability weight, every exclusion record and every arbiter test ambiguous.
+    /// </summary>
+    [Fact]
+    public void Two_panel_judges_sharing_a_judge_id_throw_at_construction()
+    {
+        var construct = () =>
+            Gauntlet([], [new FakeJudge("a", "anthropic"), new FakeJudge("a", "openai")]);
+
+        construct.Should().Throw<ArgumentException>().WithMessage("*judge id*");
+    }
+
+    /// <summary>
+    /// §2.12.6 — the two <see cref="PanelDegradation.None"/> arms are "no arbiter configured" and
+    /// "arbiter in the generator's own family", told apart post-hoc from the arbiter's family. An
+    /// arbiter that RAN and declined to decide satisfies neither, so recording it as None makes an
+    /// escalation that happened and failed indistinguishable from one that was never attempted.
+    /// </summary>
+    [Fact]
+    public async Task An_arbiter_that_abstains_is_ArbiterUnavailable_rather_than_a_chosen_non_escalation()
+    {
+        var arbiter = new FakeJudge("arb", "google", score: 3.0, abstained: true);
+        var first = new FakeJudge("a", "anthropic", score: 9.0);
+        var second = new FakeJudge("b", "openai", score: 3.0);
+
+        var verdict = await Run(
+            Gauntlet([], [first, second], new HarnessOptions { ArbiterJudge = arbiter }),
+            HarnessFixtures.Candidate()
+        );
+
+        arbiter.Calls.Should().Be(1, "we tried");
+        verdict.Outcome.Should().Be(VerdictOutcome.Split);
+        verdict.Degradation.Should().Be(PanelDegradation.ArbiterUnavailable);
+        verdict.DegradationReason.Should().Contain("abstained");
+    }
+
+    /// <summary>
+    /// Abstention and below-floor confidence are two separate exclusion channels, and an arbiter
+    /// whose ballot lands on the second one is just as absent from the tally as one that abstained.
+    /// </summary>
+    [Fact]
+    public async Task An_arbiter_below_the_abstain_floor_is_ArbiterUnavailable()
+    {
+        var arbiter = new FakeJudge("arb", "google", score: 3.0, confidence: 0.1);
+        var first = new FakeJudge("a", "anthropic", score: 9.0);
+        var second = new FakeJudge("b", "openai", score: 3.0);
+
+        var verdict = await Run(
+            Gauntlet([], [first, second], new HarnessOptions { ArbiterJudge = arbiter }),
+            HarnessFixtures.Candidate()
+        );
+
+        verdict.Degradation.Should().Be(PanelDegradation.ArbiterUnavailable);
+        verdict.DegradationReason.Should().Contain("confidence-below-floor");
     }
 
     // ---- the two-panel logic and the arbiter (§2.12.3) ----------------------------------------

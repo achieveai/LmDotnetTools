@@ -87,6 +87,22 @@ public sealed class EvalRunner
         // and read as an unscoreable corpus, when what had been rejected was the configuration.
         AggregationContext.ValidateReliability(reliability, nameof(reliability));
 
+        // And they must be the weights the frozen configuration NAMES. The hash covers the weights
+        // by content, which is only worth anything if the run cannot then be executed under a
+        // different set: a hash describing a configuration other than the one executing is worse
+        // than no hash, since every refusal built on it is checking the wrong fact.
+        if (!SameWeights(reliability, _config.ReliabilityWeights))
+        {
+            throw new ArgumentException(
+                $"The reliability weights handed to this run are not the ones evaluator config "
+                    + $"'{_config.Hash}' froze under snapshot "
+                    + $"'{_config.ReliabilitySnapshotId}'. Running under undeclared weights would "
+                    + "produce scores the config hash does not describe, so the refusal that stops "
+                    + "a refit reading as a candidate regression would be checking the wrong fact.",
+                nameof(reliability)
+            );
+        }
+
         if (!string.Equals(snapshot.TaskType, rubric.TaskType, StringComparison.Ordinal))
         {
             throw new ArgumentException(
@@ -120,6 +136,15 @@ public sealed class EvalRunner
             Items = items,
         };
     }
+
+    private static bool SameWeights(
+        IReadOnlyDictionary<string, double> run,
+        IReadOnlyDictionary<string, double> declared
+    ) =>
+        run.Count == declared.Count
+        && run.All(w =>
+            declared.TryGetValue(w.Key, out var weight) && weight.Equals(w.Value)
+        );
 
     private async Task<EvalItemResult> EvaluateAsync(
         Candidate candidate,

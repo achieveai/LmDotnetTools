@@ -81,6 +81,14 @@ public sealed record Verdict
     /// </summary>
     public double? Dispersion { get; init; }
 
+    /// <summary>
+    /// True when <see cref="Dispersion"/> exceeded <see cref="HarnessOptions.DispersionAlarm"/> —
+    /// §2.8's "flagged for human review". False whenever no alarm is configured and whenever
+    /// dispersion is undefined, so the flag reads as "the host asked to be told about this much
+    /// disagreement" rather than as "this is a lot of disagreement".
+    /// </summary>
+    public bool DispersionAlarmed { get; init; }
+
     /// <summary>The rubric this verdict was produced under.</summary>
     public required string RubricId { get; init; }
 

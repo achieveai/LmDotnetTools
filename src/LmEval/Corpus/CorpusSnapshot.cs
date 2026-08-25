@@ -19,6 +19,10 @@ public sealed record CorpusSnapshot
     /// Field separator inside the hashed text. A unit separator rather than a printable character,
     /// so that no candidate's own content can forge a field boundary and hash as a different
     /// corpus.
+    /// <para>
+    /// It is a readability aid rather than the guarantee: every field is length-prefixed, and the
+    /// length is what actually bounds it. See <see cref="Field"/>.
+    /// </para>
     /// </summary>
     private const char Separator = '\u001f';
 
@@ -119,34 +123,49 @@ public sealed record CorpusSnapshot
     private static string ComputeHash(string corpusId, IReadOnlyList<Candidate> items)
     {
         var builder = new StringBuilder();
-        _ = builder.Append(corpusId).Append('\n');
+        _ = Field(builder, corpusId).Append('\n');
 
         // Ordered by id rather than by position: reading the same corpus back in a different row
         // order is the same corpus, and a hash that said otherwise would refuse a comparison that
         // is entirely legitimate.
         foreach (var item in items.OrderBy(i => i.CandidateId, StringComparer.Ordinal))
         {
-            _ = builder
-                .Append(item.CandidateId)
-                .Append(Separator)
-                .Append(item.TaskType)
-                .Append(Separator)
-                .Append(item.VariantId ?? string.Empty)
-                .Append(Separator)
-                .Append(item.ModelId ?? string.Empty)
-                .Append(Separator)
-                .Append(item.GeneratorFamily ?? string.Empty)
-                .Append(Separator)
-                .Append(item.TaskInput)
-                .Append(Separator)
-                .Append(item.Content)
-                .Append(Separator)
-                .Append(item.Reference ?? string.Empty)
-                .Append('\n');
+            _ = Field(builder, item.CandidateId);
+            _ = Field(builder, item.TaskType);
+            _ = Field(builder, item.VariantId);
+            _ = Field(builder, item.ModelId);
+            _ = Field(builder, item.GeneratorFamily);
+            _ = Field(builder, item.TaskInput);
+            _ = Field(builder, item.Content);
+            _ = Field(builder, item.Reference);
+            _ = builder.Append('\n');
         }
 
         var digest = SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()));
         return Convert.ToHexString(digest).ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// Appends one field as its length, then the field, so its extent is <i>stated</i> rather than
+    /// inferred from a delimiter its own content can supply.
+    /// <para>
+    /// The unit separator stops a value forging a FIELD boundary. Records here are newline
+    /// delimited, and a candidate's task input, content and reference are prose that legitimately
+    /// contains newlines — so a candidate whose last field carried one plus a hand-built second
+    /// record hashed exactly as a two-item corpus did, and the refusal that keeps a comparison over
+    /// two different corpora from happening never fired. Rejecting the character is not available
+    /// here, unlike in the evaluator digest where every value is an identifier; the length is.
+    /// </para>
+    /// </summary>
+    private static StringBuilder Field(StringBuilder builder, string? value)
+    {
+        var text = value ?? string.Empty;
+
+        return builder
+            .Append(text.Length.ToString(System.Globalization.CultureInfo.InvariantCulture))
+            .Append(Separator)
+            .Append(text)
+            .Append(Separator);
     }
 }
 

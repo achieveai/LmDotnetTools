@@ -123,4 +123,56 @@ public class ReviewFindingParserTests
         findings[0].Severity.Should().Be("blocker");
         findings[1].Severity.Should().BeNull();
     }
+
+    /// <summary>
+    /// §4.3(2) measures anchor RESOLUTION. A line number that overflows an int made the Add
+    /// disappear entirely, so a review citing <c>src/Foo.cs:99999999999</c> scored identically to
+    /// one citing nothing there — and a malformed citation and an absent one are different review
+    /// defects. The citation is recorded with a null line: cited, not resolvable.
+    /// </summary>
+    [Fact]
+    public void An_unreadable_line_number_is_recorded_as_unresolvable_rather_than_dropped()
+    {
+        var finding = ReviewFindingParser
+            .Parse("[Blocker] src/Foo/Bar.cs:99999999999 is off the end of the file.")
+            .Should()
+            .ContainSingle()
+            .Subject;
+
+        finding.Path.Should().Be("src/Foo/Bar.cs");
+        finding.Line.Should().BeNull();
+        finding.Severity.Should().Be("blocker");
+    }
+
+    /// <summary>
+    /// The severity was computed once per LINE and reused for every anchor on it, so a line naming
+    /// two files where only the first is a blocker tagged both as blockers. Each anchor takes the
+    /// nearest tag that precedes it instead.
+    /// </summary>
+    [Fact]
+    public void Two_severities_on_one_line_do_not_smear_across_each_others_citations()
+    {
+        var findings = ReviewFindingParser.Parse(
+            "[Blocker] src/Foo/A.cs:1 is broken; [Nit] src/Foo/B.cs:2 is merely untidy."
+        );
+
+        findings.Should().HaveCount(2);
+        findings[0].Severity.Should().Be("blocker");
+        findings[1].Severity.Should().Be("nit");
+    }
+
+    /// <summary>
+    /// A single tag still covers every citation on its line, whichever side of them it sits on: a
+    /// reviewer who stated one severity stated it about the whole line.
+    /// </summary>
+    [Fact]
+    public void One_severity_still_covers_every_citation_on_its_line()
+    {
+        var trailing = ReviewFindingParser.Parse(
+            "src/Foo/A.cs:1 and src/Foo/B.cs:2 are both wrong. **Blocker**"
+        );
+
+        trailing.Should().HaveCount(2);
+        trailing.Should().OnlyContain(f => f.Severity == "blocker");
+    }
 }

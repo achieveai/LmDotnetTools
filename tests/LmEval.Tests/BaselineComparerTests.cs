@@ -50,6 +50,38 @@ public class BaselineComparerTests
             },
         };
 
+    /// <summary>An item the run holds no verdict for at all — a judge-provider outage.</summary>
+    private static EvalItemResult Faulted(string id) =>
+        new()
+        {
+            CandidateId = id,
+            Verdict = null,
+            FaultReason = nameof(HttpRequestException),
+            Exclusion = ScoreExclusion.Faulted,
+        };
+
+    /// <summary>An item the panel could not decide AND could not fully staff.</summary>
+    private static EvalItemResult UndecidedAndDegraded(string id) =>
+        new()
+        {
+            CandidateId = id,
+            Exclusion = ScoreExclusion.NoDecision,
+            Verdict = new Verdict
+            {
+                CandidateId = id,
+                Outcome = VerdictOutcome.NoDecision,
+                Score = null,
+                GateDecisions = [],
+                Ballots = [],
+                ExcludedBallots = [],
+                RubricId = "test-rubric",
+                RubricVersion = "1.0",
+                TieBreakRule = TieBreakRules.NoDecision,
+                Degradation = PanelDegradation.PanelUnavailable,
+                DegradationReason = "judge-faulted:openai:HttpRequestException",
+            },
+        };
+
     private static EvalRun Run(
         IReadOnlyList<EvalItemResult> items,
         string corpusHash = "corpus-hash",
@@ -373,5 +405,402 @@ public class BaselineComparerTests
         var act = () => EvalBaseline.From("base-1", UniformRun(passing: 8), minCoverage);
 
         act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    // ---- pinning what the survivors of the #364 mutation audit left unpinned ------------------
+
+    /// <summary>
+    /// §5.4's third trigger says the no-decision rate <b>rises</b> materially. Nothing supplied a
+    /// FALLING rate, so <c>noDecisionDelta &gt; margin</c> survived becoming
+    /// <c>Math.Abs(noDecisionDelta) &gt; margin</c> — under which a run that got materially BETTER
+    /// at deciding is reported as a regression.
+    /// </summary>
+    [Fact]
+    public void A_no_decision_rate_that_falls_past_the_margin_is_not_a_regression()
+    {
+        // Baseline: half the corpus undecided. Candidate: all of it decided. The delta is -0.5,
+        // five times the default margin in the improving direction.
+        var noisy = Run(
+            [
+                .. Enumerable.Range(0, 5).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+                .. Enumerable.Range(5, 5).Select(i => Undecided($"i{i}")),
+            ]
+        );
+        var baseline = Baseline(noisy, minCoverage: 0.4);
+
+        var comparison = BaselineComparer.Compare(UniformRun(passing: 10, size: 10), baseline);
+
+        comparison.IsRefused.Should().BeFalse();
+        comparison.NoDecisionRateDelta.Should().BeApproximately(-0.5, 1e-9);
+        comparison
+            .Triggers.Should()
+            .NotHaveFlag(
+                RegressionTrigger.NoDecisionRise,
+                "a panel that got BETTER at deciding has not stopped being able to judge"
+            );
+    }
+
+    /// <summary>
+    /// <c>BaselineCoverage</c> survived being replaced by <c>run.Coverage</c>, because every test
+    /// asserting on it used a fully-scored baseline against a fully-scored run, where both are 1.0.
+    /// This is the comparison where the two genuinely differ.
+    /// </summary>
+    [Fact]
+    public void The_baselines_own_coverage_is_reported_and_is_not_the_runs()
+    {
+        // Baseline: 6 of 10 scored. Candidate: 9 of 10 scored. Two different numbers, both asserted.
+        var thin = Run(
+            [
+                .. Enumerable.Range(0, 6).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+                .. Enumerable.Range(6, 4).Select(i => Undecided($"i{i}")),
+            ]
+        );
+        var baseline = Baseline(thin, minCoverage: 0.5);
+
+        var candidate = Run(
+            [
+                .. Enumerable.Range(0, 9).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+                .. Enumerable.Range(9, 1).Select(i => Undecided($"i{i}")),
+            ]
+        );
+
+        var comparison = BaselineComparer.Compare(candidate, baseline);
+
+        comparison.IsRefused.Should().BeFalse();
+        comparison.BaselineCoverage.Should().BeApproximately(0.6, 1e-9);
+        comparison.Coverage.Should().BeApproximately(0.9, 1e-9);
+        comparison.BaselineCoverage.Should().NotBe(comparison.Coverage);
+    }
+
+    /// <summary>
+    /// The refusal path reports both coverages too, and it is a separate construction site — so it
+    /// can drift from the comparing one without any test noticing.
+    /// </summary>
+    [Fact]
+    public void A_refusal_also_reports_the_baselines_own_coverage_and_not_the_runs()
+    {
+        var thin = Run(
+            [
+                .. Enumerable.Range(0, 6).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+                .. Enumerable.Range(6, 4).Select(i => Undecided($"i{i}")),
+            ]
+        );
+        var baseline = Baseline(thin, minCoverage: 0.5);
+
+        var comparison = BaselineComparer.Compare(
+            UniformRun(passing: 8, rubricVersion: "9.9"),
+            baseline
+        );
+
+        comparison.Refusal.Should().Be(ComparisonRefusal.RubricVersionDiffers);
+        comparison.BaselineCoverage.Should().BeApproximately(0.6, 1e-9);
+        comparison.Coverage.Should().Be(1.0);
+    }
+
+    /// <summary>
+    /// The 2.5th-percentile index survived becoming the median: the only test touching the interval
+    /// pinned that two calls AGREE, which a reproducibly-wrong index satisfies perfectly, since the
+    /// seed is fixed and the result is reproducible by construction.
+    /// <para>
+    /// Pinned here against facts derived independently of the implementation: a lower bound of a 95%
+    /// interval sits strictly BELOW the point estimate the resampling is centred on (the median does
+    /// not), and it brackets that estimate on both sides.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void The_bootstrap_lower_bound_sits_strictly_below_the_point_estimate()
+    {
+        // A 50% pass rate over 10 items is the highest-variance case available, so the resampled
+        // distribution is wide and its 2.5th percentile is far from its median.
+        var baseline = Baseline(UniformRun(passing: 10, size: 10), minCoverage: 0.4);
+        var candidate = UniformRun(passing: 5, size: 10);
+
+        var comparison = BaselineComparer.Compare(candidate, baseline);
+
+        var pointEstimate = comparison.PassRateDelta!.Value;
+        comparison
+            .PassRateDeltaLower!.Value.Should()
+            .BeLessThan(
+                pointEstimate,
+                "the 2.5th percentile of the resampled deltas is below their centre; the MEDIAN is at it"
+            );
+        comparison.PassRateDeltaUpper!.Value.Should().BeGreaterThan(pointEstimate);
+    }
+
+    /// <summary>
+    /// The other half of the same claim: a 95% interval narrows as the corpus grows, because the
+    /// sampling error it measures does. A wrong-but-reproducible percentile index does not have to.
+    /// </summary>
+    [Fact]
+    public void The_bootstrap_interval_narrows_as_the_corpus_grows()
+    {
+        static double Width(int size)
+        {
+            var baseline = Baseline(UniformRun(passing: size, size: size), minCoverage: 0.4);
+            var comparison = BaselineComparer.Compare(
+                UniformRun(passing: size / 2, size: size),
+                baseline
+            );
+            return comparison.PassRateDeltaUpper!.Value - comparison.PassRateDeltaLower!.Value;
+        }
+
+        var narrow = Width(400);
+        var wide = Width(20);
+
+        narrow.Should().BeLessThan(wide);
+        narrow.Should().BePositive();
+    }
+
+    // ---- segmentation when an outage and a decision failure coincide (#380) -------------------
+
+    /// <summary>
+    /// The exclusion arms are ordered outcome-first, deliberately: flipping them would relabel
+    /// every plain NoDecision as Degraded the moment a single judge faulted. But a verdict that is
+    /// both NoDecision AND PanelUnavailable matches the earlier arm and never reaches the
+    /// degradation one, so §5.3's segmentation count — the count that exists precisely so a reader
+    /// can tell "the panel disagreed" from "the panel was down" — misses the case where those two
+    /// coincide. A second, independent count over the verdict's own degradation is the fix; the
+    /// exclusion-based count keeps its documented meaning.
+    /// </summary>
+    [Fact]
+    public void A_no_decision_that_was_also_a_panel_outage_is_visible_to_the_degradation_segment()
+    {
+        var run = Run(
+            [
+                .. Enumerable.Range(0, 8).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+                UndecidedAndDegraded("i8"),
+                Undecided("i9"),
+            ]
+        );
+
+        run.DegradedCount.Should().Be(0, "the exclusion arm it matched is NoDecision, as documented");
+        run.NoDecisionCount.Should().Be(2);
+        run.DegradedVerdictCount
+            .Should()
+            .Be(1, "one verdict was produced by a panel that could not be fully staffed");
+    }
+
+    [Fact]
+    public void A_clean_run_has_no_degraded_verdicts()
+    {
+        UniformRun(passing: 8).DegradedVerdictCount.Should().Be(0);
+    }
+
+    // ---- a judge outage is not a candidate regression (#380) ----------------------------------
+
+    /// <summary>
+    /// A faulted item carries a null verdict, so it does not raise NoDecisionRate — null is not
+    /// NoDecision — and it is not scored, so it leaves the pass rate's numerator while staying in
+    /// its denominator. When the judge provider is having a bad hour the report therefore reads:
+    /// pass rate collapsed, no-decision rate flat, PassRateDrop fired. Nothing got worse; the
+    /// harness could not reach its judges.
+    /// <para>
+    /// The coverage floor catches only the severe case — a floor of 0.9 lets a 10% fault rate
+    /// through untouched, and 10% of a corpus flipping from pass to not-counted is a large delta.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void A_judge_outage_is_refused_rather_than_reported_as_a_pass_rate_drop()
+    {
+        var baseline = Baseline(UniformRun(passing: 20, size: 20), minCoverage: 0.8);
+
+        // 4 of 20 items faulted: coverage is 0.8, exactly on the floor, so the floor waves it
+        // through — and the pass rate falls from 1.0 to 0.8, four times the default margin.
+        var outage = Run(
+            [
+                .. Enumerable.Range(0, 16).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+                .. Enumerable.Range(16, 4).Select(i => Faulted($"i{i}")),
+            ]
+        );
+
+        outage.FaultRate.Should().BeApproximately(0.2, 1e-9);
+        outage.Coverage.Should().BeApproximately(0.8, 1e-9);
+
+        var comparison = BaselineComparer.Compare(outage, baseline);
+
+        comparison.Refusal.Should().Be(ComparisonRefusal.FaultRateAboveMaximum);
+        comparison.Triggers.Should().Be(RegressionTrigger.None, "a refusal is never a regression");
+        comparison.PassRateDelta.Should().BeNull();
+    }
+
+    /// <summary>
+    /// A fault rate under the bound is not refused: an occasional transport failure is normal and
+    /// refusing on it would make the whole comparison unusable.
+    /// </summary>
+    [Fact]
+    public void A_fault_rate_within_the_bound_still_compares()
+    {
+        var baseline = Baseline(UniformRun(passing: 20, size: 20), minCoverage: 0.5);
+
+        var occasional = Run(
+            [
+                .. Enumerable.Range(0, 19).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+                Faulted("i19"),
+            ]
+        );
+
+        var comparison = BaselineComparer.Compare(occasional, baseline);
+
+        occasional.FaultRate.Should().BeApproximately(0.05, 1e-9);
+        comparison.IsRefused.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A severe outage breaches BOTH bounds, and only one refusal is reported. It must be the fault
+    /// rate: the floor says the run is too thin to compare, which is true of a genuinely thin corpus
+    /// too, while the fault rate says the harness could not reach its judges — the cause, and the
+    /// one a reader can act on. Order is the whole of the behaviour here, so it needs a case that
+    /// distinguishes the two; the outage test above sits exactly ON the floor, which is precisely
+    /// the input that cannot tell the orderings apart.
+    /// </summary>
+    [Fact]
+    public void A_run_breaching_both_bounds_is_refused_for_the_cause_not_the_symptom()
+    {
+        var baseline = Baseline(UniformRun(passing: 20, size: 20), minCoverage: 0.9);
+
+        // 8 of 20 faulted: fault rate 0.4 (over the 0.05 default) AND coverage 0.6 (under the 0.9
+        // floor). Both refusals apply; only the one naming the cause is worth reporting.
+        var outage = Run(
+            [
+                .. Enumerable.Range(0, 12).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+                .. Enumerable.Range(12, 8).Select(i => Faulted($"i{i}")),
+            ]
+        );
+
+        outage.FaultRate.Should().BeApproximately(0.4, 1e-9);
+        outage.Coverage.Should().BeApproximately(0.6, 1e-9);
+        outage.Coverage.Should().BeLessThan(baseline.MinCoverage);
+
+        BaselineComparer.Compare(outage, baseline).Refusal
+            .Should()
+            .Be(ComparisonRefusal.FaultRateAboveMaximum);
+    }
+
+    /// <summary>
+    /// The bound lives on the baseline for the same reason MinCoverage does: the run being judged
+    /// must not be able to relax the bar it is judged against.
+    /// </summary>
+    /// <summary>
+    /// <c>From</c> validates both bounds; the init accessors did not, so a <c>with</c> expression
+    /// walked straight past them. A NaN bound is the worst of the reachable values because every
+    /// comparison against it is false: <c>run.FaultRate &gt; NaN</c> never fires, so the refusal is
+    /// permanently disarmed and every subsequent outage reads as a candidate regression — silently,
+    /// since a disarmed check produces no output to notice.
+    /// </summary>
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(-0.1)]
+    [InlineData(1.1)]
+    public void A_bound_cannot_be_rewritten_past_the_validation_its_factory_applied(double bad)
+    {
+        var baseline = Baseline(UniformRun(passing: 20, size: 20), minCoverage: 0.8);
+
+        var faultRate = () => baseline with { MaxFaultRate = bad };
+        var coverage = () => baseline with { MinCoverage = bad };
+
+        faultRate.Should().Throw<ArgumentOutOfRangeException>();
+        coverage.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void The_fault_rate_bound_is_the_baselines_to_set()
+    {
+        var strict = EvalBaseline.From(
+            "base-1",
+            UniformRun(passing: 20, size: 20),
+            minCoverage: 0.5,
+            maxFaultRate: 0.01
+        );
+        var lenient = EvalBaseline.From(
+            "base-1",
+            UniformRun(passing: 20, size: 20),
+            minCoverage: 0.5,
+            maxFaultRate: 0.5
+        );
+
+        var run = Run(
+            [
+                .. Enumerable.Range(0, 19).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+                Faulted("i19"),
+            ]
+        );
+
+        BaselineComparer.Compare(run, strict).Refusal
+            .Should()
+            .Be(ComparisonRefusal.FaultRateAboveMaximum);
+        BaselineComparer.Compare(run, lenient).IsRefused.Should().BeFalse();
+    }
+
+    // ---- the invariants the factory used to hold alone (#381) ---------------------------------
+
+    /// <summary>
+    /// CorpusSnapshot.Create refuses an empty item list, and its message says why: "an empty
+    /// denominator makes each of them undefined rather than zero". But EvalRun is a public record
+    /// with required init members and no private constructor, so a caller — or a JSON deserializer
+    /// — can mint one with no items. Coverage and NoDecisionRate then yield NaN and flow into a
+    /// comparison silently, and MeanCostMicros is long division and throws. The invariant belongs
+    /// on the record that carries it, not only on the factory that usually builds it.
+    /// </summary>
+    [Fact]
+    public void An_eval_run_with_no_items_is_refused_at_construction()
+    {
+        var construct = () => Run([]);
+
+        construct.Should().Throw<ArgumentException>().WithMessage("*denominator*");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void An_eval_run_with_a_blank_identity_hash_is_refused_at_construction(string blank)
+    {
+        var corpus = () => Run([Scored("i0", 8.0, VerdictOutcome.Pass)], corpusHash: blank);
+        var evaluator = () => Run([Scored("i0", 8.0, VerdictOutcome.Pass)], evaluatorHash: blank);
+
+        corpus.Should().Throw<ArgumentException>();
+        evaluator.Should().Throw<ArgumentException>();
+    }
+
+    /// <summary>
+    /// The comparability check is <c>string.Equals(a, b, Ordinal)</c>, and that is <b>true</b> for
+    /// two nulls — so two runs whose evaluator configuration is UNKNOWN would be declared
+    /// comparable. The properties are declared non-nullable required strings, which the compiler
+    /// checks at construction sites it can see; a deserializer filling a missing property bypasses
+    /// the declaration entirely, which is the path #321 introduces.
+    /// </summary>
+    [Fact]
+    public void An_eval_run_with_a_null_identity_hash_is_refused_at_construction()
+    {
+        var construct = () => Run([Scored("i0", 8.0, VerdictOutcome.Pass)], evaluatorHash: null!);
+
+        construct.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void A_baseline_with_an_empty_corpus_is_refused_at_construction()
+    {
+        var construct = () =>
+            Baseline(UniformRun(passing: 8)) with
+            {
+                CorpusSize = 0,
+            };
+
+        construct.Should().Throw<ArgumentException>().WithMessage("*denominator*");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(null)]
+    public void A_baseline_with_a_blank_evaluator_config_hash_is_refused_at_construction(
+        string? blank
+    )
+    {
+        var construct = () =>
+            Baseline(UniformRun(passing: 8)) with
+            {
+                EvaluatorConfigHash = blank!,
+            };
+
+        construct.Should().Throw<ArgumentException>();
     }
 }

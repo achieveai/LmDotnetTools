@@ -375,4 +375,175 @@ public sealed class WeightedMeanAggregatorTests
         verdict.RubricVersion.Should().Be("1.0");
         verdict.CandidateId.Should().Be("cand-1");
     }
+
+    // ---- degradation reasons and the audit trail (#353) ---------------------------------------
+
+    /// <summary>
+    /// §2.12.6 — Verdict.DegradationReason names WHY, whenever Degradation is not None. A Full
+    /// composition where one judge abstained has no fault to name and is not a Degraded
+    /// composition, so both existing writers left it null: the panel was healthy and a judge
+    /// declined, which is arguably the most interesting degradation there is, and a consumer
+    /// segmenting degraded rows by reason got a blank for it.
+    /// </summary>
+    [Fact]
+    public void A_SingleJudge_verdict_caused_by_an_abstention_names_the_abstention()
+    {
+        var verdict = Aggregate(
+            [Ballot("a", "anthropic", 9.0), Ballot("b", "openai", 0.0, abstained: true)]
+        );
+
+        verdict.Degradation.Should().Be(PanelDegradation.SingleJudge);
+        verdict.DegradationReason.Should().NotBeNull();
+        verdict.DegradationReason.Should().Contain("abstained");
+    }
+
+    [Fact]
+    public void A_SingleJudge_verdict_caused_by_low_confidence_names_the_floor()
+    {
+        var verdict = Aggregate(
+            [Ballot("a", "anthropic", 9.0), Ballot("b", "openai", 4.0, confidence: 0.1)]
+        );
+
+        verdict.Degradation.Should().Be(PanelDegradation.SingleJudge);
+        verdict.DegradationReason.Should().Contain("confidence-below-floor");
+    }
+
+    /// <summary>
+    /// A fault is a strictly more specific answer than an exclusion, so it keeps priority: the
+    /// exclusion fallback fills a blank rather than competing for the field.
+    /// </summary>
+    [Fact]
+    public void A_fault_still_outranks_an_exclusion_in_the_degradation_reason()
+    {
+        var verdict = Aggregate(
+            [Ballot("a", "anthropic", 9.0)],
+            Context(faults: new JudgeFault("b", "openai", "HttpRequestException"))
+        );
+
+        verdict.Degradation.Should().Be(PanelDegradation.SingleJudge);
+        verdict.DegradationReason.Should().Contain("judge-faulted");
+    }
+
+    /// <summary>
+    /// §2.6/§6.1 — AppliedWeight is persisted so a past verdict stays auditable after the weights
+    /// are refitted, which means the row must recompute FROM ITSELF. All-zero weights make the
+    /// weighted mean undefined and the reduction falls back to the unweighted one; stamping the
+    /// zeros the score demonstrably did not use left sum(w.s)/sum(w) = 0/0 against a recorded 9.0.
+    /// <para>
+    /// Not subsumed by the [0,1] range check: 0.0 is inside the range.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void All_zero_reliability_weights_leave_a_row_that_recomputes_to_its_own_score()
+    {
+        var verdict = Aggregate(
+            [Ballot("a", "anthropic", 10.0), Ballot("b", "openai", 8.0)],
+            Context(reliability: new Dictionary<string, double> { ["a"] = 0.0, ["b"] = 0.0 })
+        );
+
+        verdict.Score.Should().Be(9.0);
+
+        var totalWeight = verdict.Ballots.Sum(b => b.AppliedWeight!.Value);
+        totalWeight.Should().BePositive("a persisted row whose weights sum to zero cannot recompute");
+
+        var recomputed =
+            verdict.Ballots.Sum(b => b.AppliedWeight!.Value * b.WeightedScore) / totalWeight;
+        recomputed.Should().BeApproximately(verdict.Score!.Value, 1e-9);
+    }
+
+    /// <summary>
+    /// The uniform weight the fallback actually used is what gets stamped, so the row says what it
+    /// did rather than what the calibration claimed.
+    /// </summary>
+    [Fact]
+    public void The_all_zero_fallback_stamps_the_uniform_weight_it_actually_used()
+    {
+        var verdict = Aggregate(
+            [Ballot("a", "anthropic", 10.0), Ballot("b", "openai", 8.0)],
+            Context(reliability: new Dictionary<string, double> { ["a"] = 0.0, ["b"] = 0.0 })
+        );
+
+        verdict.Ballots.Should().OnlyContain(b => b.AppliedWeight == 0.5);
+    }
+
+    /// <summary>
+    /// A partially-zero calibration is NOT the fallback: one non-zero weight still normalises, so
+    /// the fitted weights stand exactly as fitted.
+    /// </summary>
+    [Fact]
+    public void One_zero_weight_beside_a_nonzero_one_is_not_the_fallback()
+    {
+        var verdict = Aggregate(
+            [Ballot("a", "anthropic", 10.0), Ballot("b", "openai", 8.0)],
+            Context(reliability: new Dictionary<string, double> { ["a"] = 0.0, ["b"] = 1.0 })
+        );
+
+        verdict.Score.Should().Be(8.0);
+        verdict.Ballots.Single(b => b.JudgeId == "a").AppliedWeight.Should().Be(0.0);
+        verdict.Ballots.Single(b => b.JudgeId == "b").AppliedWeight.Should().Be(1.0);
+    }
+
+    // ---- the dispersion alarm (#354) ----------------------------------------------------------
+
+    /// <summary>
+    /// §2.8 — a host that sets DispersionAlarm expects the verdict to be flagged for human review.
+    /// The option shipped read by nothing at all, so it produced a verdict indistinguishable from
+    /// one where the alarm was never configured: a promise the type made and the harness did not
+    /// keep.
+    /// </summary>
+    [Fact]
+    public void Dispersion_above_the_alarm_flags_the_verdict_for_review()
+    {
+        var verdict = Aggregate(
+            [Ballot("a", "anthropic", 10.0), Ballot("b", "openai", 2.0)],
+            Context(new HarnessOptions { DispersionAlarm = 2.0 })
+        );
+
+        verdict.Dispersion.Should().Be(4.0);
+        verdict.DispersionAlarmed.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Dispersion_at_or_below_the_alarm_does_not_flag_the_verdict()
+    {
+        var verdict = Aggregate(
+            [Ballot("a", "anthropic", 8.0), Ballot("b", "openai", 4.0)],
+            Context(new HarnessOptions { DispersionAlarm = 2.0 })
+        );
+
+        verdict.Dispersion.Should().Be(2.0);
+        verdict.DispersionAlarmed.Should().BeFalse("the alarm is a bound the dispersion must EXCEED");
+    }
+
+    /// <summary>
+    /// Null disables the alarm, so an unconfigured harness never flags however far the panel
+    /// disagreed. Without this the flag would read as "high dispersion" rather than as "the host
+    /// asked to be told about this much dispersion".
+    /// </summary>
+    [Fact]
+    public void No_configured_alarm_never_flags_however_wide_the_disagreement()
+    {
+        var verdict = Aggregate(
+            [Ballot("a", "anthropic", 10.0), Ballot("b", "openai", 0.0)]
+        );
+
+        verdict.Dispersion.Should().Be(5.0);
+        verdict.DispersionAlarmed.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// Dispersion is undefined below two counted ballots — null, never 0.0 — so there is nothing
+    /// for the alarm to compare against and a lone judge can never be flagged.
+    /// </summary>
+    [Fact]
+    public void A_single_counted_ballot_is_never_flagged_because_dispersion_is_undefined()
+    {
+        var verdict = Aggregate(
+            [Ballot("a", "anthropic", 10.0), Ballot("b", "openai", 0.0, abstained: true)],
+            Context(new HarnessOptions { DispersionAlarm = 0.0 })
+        );
+
+        verdict.Dispersion.Should().BeNull();
+        verdict.DispersionAlarmed.Should().BeFalse();
+    }
 }

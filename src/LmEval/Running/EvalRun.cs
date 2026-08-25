@@ -92,11 +92,40 @@ public sealed record EvalRun
     /// <summary>The corpus replayed.</summary>
     public required string CorpusId { get; init; }
 
-    /// <summary>Identity of the exact snapshot replayed.</summary>
-    public required string CorpusSnapshotHash { get; init; }
+    /// <summary>
+    /// Identity of the exact snapshot replayed. Never blank: <see cref="BaselineComparer"/> decides
+    /// comparability with an ordinal string comparison, and that returns <b>true</b> for two
+    /// unknowns — so a pair of runs whose provenance was never recorded would be declared
+    /// comparable. <c>required</c> is checked by the compiler at construction sites it can see and
+    /// not by a deserializer filling a missing property, which is exactly how an unknown gets in.
+    /// </summary>
+    public required string CorpusSnapshotHash
+    {
+        get => _corpusSnapshotHash;
+        init
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(value);
+            _corpusSnapshotHash = value;
+        }
+    }
 
-    /// <summary>Identity of every score-affecting evaluator input.</summary>
-    public required string EvaluatorConfigHash { get; init; }
+    /// <summary>
+    /// Identity of every score-affecting evaluator input. Never blank, for the reason on
+    /// <see cref="CorpusSnapshotHash"/>.
+    /// </summary>
+    public required string EvaluatorConfigHash
+    {
+        get => _evaluatorConfigHash;
+        init
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(value);
+            _evaluatorConfigHash = value;
+        }
+    }
+
+    private readonly string _corpusSnapshotHash = string.Empty;
+    private readonly string _evaluatorConfigHash = string.Empty;
+    private readonly IReadOnlyList<EvalItemResult> _items = [];
 
     /// <summary>The rubric scored against.</summary>
     public required string RubricId { get; init; }
@@ -104,8 +133,38 @@ public sealed record EvalRun
     /// <summary>Its exact version.</summary>
     public required string RubricVersion { get; init; }
 
-    /// <summary>Every item's outcome, in corpus order.</summary>
-    public required IReadOnlyList<EvalItemResult> Items { get; init; }
+    /// <summary>
+    /// Every item's outcome, in corpus order. Never empty.
+    /// <para>
+    /// <see cref="Corpus.CorpusSnapshot.Create"/> already refuses an empty item list, and says why:
+    /// an empty denominator makes every rate over it undefined rather than zero. But this record is
+    /// public with settable members, so a caller — or a deserializer — can mint one the factory
+    /// never saw, and then <see cref="Coverage"/> and <see cref="NoDecisionRate"/> yield NaN and
+    /// flow into a comparison silently while <see cref="MeanCostMicros"/> divides by zero. The
+    /// invariant belongs on the type that carries it, not only on the factory that usually builds
+    /// it.
+    /// </para>
+    /// </summary>
+    public required IReadOnlyList<EvalItemResult> Items
+    {
+        get => _items;
+        init
+        {
+            ArgumentNullException.ThrowIfNull(value);
+
+            if (value.Count == 0)
+            {
+                throw new ArgumentException(
+                    "A run over no items has an empty denominator, which makes every rate over it "
+                        + "undefined rather than zero — and NaN compares false against every "
+                        + "threshold, so such a run would clear every regression trigger silently.",
+                    nameof(value)
+                );
+            }
+
+            _items = value;
+        }
+    }
 
     /// <summary>The denominator: the snapshot's item count.</summary>
     public int CorpusSize => Items.Count;
@@ -193,8 +252,29 @@ public sealed record EvalRun
     /// <summary>
     /// Rows excluded from the aggregates because the panel degraded. Reported, never pooled with
     /// clean rows, and never removed from the denominator.
+    /// <para>
+    /// This counts the <b>exclusion</b>, whose arms are ordered outcome-first, so a verdict that is
+    /// both <see cref="VerdictOutcome.NoDecision"/> and degraded matches the earlier arm and is not
+    /// in here. That ordering is deliberate — flipping it would relabel every plain no-decision as
+    /// degraded the moment a single judge faulted — so §5.3's "was the panel down" question is
+    /// answered by <see cref="DegradedVerdictCount"/> instead.
+    /// </para>
     /// </summary>
     public int DegradedCount => Items.Count(i => i.Exclusion == ScoreExclusion.Degraded);
+
+    /// <summary>
+    /// Rows whose verdict was produced by a panel that could not be fully staffed, counted over
+    /// <see cref="Verdict.Degradation"/> directly and therefore <b>independent</b> of which
+    /// exclusion arm the row matched.
+    /// <para>
+    /// §5.3 exists so a reader can tell "the panel disagreed" from "the panel was down", and the
+    /// case where those coincide — a no-decision on an unavailable panel, a straddle the arbiter
+    /// could not resolve — is exactly the one an exclusion-based count cannot see. A faulted item
+    /// has no verdict at all and is counted by <see cref="FaultedCount"/>, not here.
+    /// </para>
+    /// </summary>
+    public int DegradedVerdictCount =>
+        Items.Count(i => i.Verdict is { Degradation: not PanelDegradation.None });
 
     /// <summary>
     /// Rows excluded because the candidate declared no generator family, so the generator-exclusion
@@ -208,6 +288,18 @@ public sealed record EvalRun
 
     /// <summary>Items that faulted, so the run holds no verdict for them.</summary>
     public int FaultedCount => Items.Count(i => i.Exclusion == ScoreExclusion.Faulted);
+
+    /// <summary>
+    /// The faulted count as a fraction of the corpus — the signal that separates "the candidate got
+    /// worse" from "the harness could not reach its judges".
+    /// <para>
+    /// A faulted item has a null verdict, so it does not raise <see cref="NoDecisionRate"/>, and it
+    /// is not scored, so it leaves <see cref="PassRate"/>'s numerator while staying in its
+    /// denominator. A bad hour at the judge provider therefore reads as a pass-rate collapse with a
+    /// flat no-decision rate, which is precisely a candidate regression's signature.
+    /// </para>
+    /// </summary>
+    public double FaultRate => (double)FaultedCount / CorpusSize;
 
     /// <summary>Total host-recorded cost across the corpus, in USD micro-units.</summary>
     public long TotalCostMicros => Items.Sum(i => i.CostMicros ?? 0L);

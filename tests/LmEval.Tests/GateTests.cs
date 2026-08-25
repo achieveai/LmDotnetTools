@@ -184,6 +184,55 @@ public sealed class GateTests
         decision.Reason.Should().NotContain("sk-abcdef");
     }
 
+    /// <summary>
+    /// §3.3 — the gate is the structural half of the anti-verbosity rule, and a repetitive-list
+    /// attack that restates ONE finding N times is precisely the shape it must not credit. The
+    /// parameter is documented as "how many DISTINCT citations", so occurrence counting is the bug.
+    /// </summary>
+    [Fact]
+    public async Task RequiredAnchorGate_does_not_credit_one_citation_repeated()
+    {
+        var gate = new RequiredAnchorGate(minimumAnchors: 3);
+
+        var decision = await Evaluate(
+            gate,
+            HarnessFixtures.Candidate(content: "src/a.cs:1 bad. src/a.cs:1 bad. src/a.cs:1 bad.")
+        );
+
+        decision.Outcome.Should().Be(GateOutcome.Reject);
+    }
+
+    /// <summary>
+    /// Distinctness is ORDINAL: a path that differs only in case is a different citation on a
+    /// case-sensitive filesystem, and collapsing the two would let a repetition attack pass by
+    /// re-casing.
+    /// </summary>
+    [Fact]
+    public async Task RequiredAnchorGate_counts_case_differing_paths_as_distinct_citations()
+    {
+        var gate = new RequiredAnchorGate(minimumAnchors: 2);
+
+        var decision = await Evaluate(
+            gate,
+            HarnessFixtures.Candidate(content: "src/a.cs:1 and src/A.cs:1")
+        );
+
+        decision.IsPass.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task RequiredAnchorGate_still_counts_genuinely_distinct_citations()
+    {
+        var gate = new RequiredAnchorGate(minimumAnchors: 2);
+
+        var decision = await Evaluate(
+            gate,
+            HarnessFixtures.Candidate(content: "src/a.cs:1 and src/a.cs:2 and src/a.cs:1")
+        );
+
+        decision.IsPass.Should().BeTrue();
+    }
+
     // ---- applicability ------------------------------------------------------------------------
 
     [Fact]

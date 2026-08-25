@@ -24,7 +24,12 @@ public sealed partial class RequiredAnchorGate : GateBase, IConfigurationFingerp
     private readonly int _minimumAnchors;
 
     /// <summary>Creates the gate.</summary>
-    /// <param name="minimumAnchors">How many distinct citations the content must carry.</param>
+    /// <param name="minimumAnchors">
+    /// How many distinct citations the content must carry. Distinct is compared <b>ordinally</b> on
+    /// the matched <c>path:line</c> text: a path differing only in case is a different citation on a
+    /// case-sensitive filesystem, and folding the two together would let a repetition attack clear
+    /// the floor by re-casing one path.
+    /// </param>
     /// <param name="appliesTo">Task types this gate applies to; empty means all.</param>
     public RequiredAnchorGate(int minimumAnchors = 1, IEnumerable<string>? appliesTo = null)
         : base(Id, appliesTo)
@@ -39,16 +44,23 @@ public sealed partial class RequiredAnchorGate : GateBase, IConfigurationFingerp
     /// <inheritdoc />
     protected override GateDecision Evaluate(Candidate candidate)
     {
-        var found = AnchorPattern().Matches(candidate.Content).Count;
+        // DISTINCT, not occurrences. Match count credits one citation restated N times, and a
+        // repetitive-list attack that restates a single finding is exactly the shape §3.3 puts this
+        // gate here to refuse — so counting occurrences credits the attack perfectly.
+        var found = AnchorPattern()
+            .Matches(candidate.Content)
+            .Select(m => m.Value)
+            .Distinct(StringComparer.Ordinal)
+            .Count();
 
         // The COUNT is reported, never the anchors themselves: a file path is candidate content and
         // the reason string is persisted.
         return found < _minimumAnchors
             ? GateDecision.Reject(
                 Id,
-                $"found {found} file:line citations, fewer than the {_minimumAnchors} required"
+                $"found {found} distinct file:line citations, fewer than the {_minimumAnchors} required"
             )
-            : GateDecision.Pass(Id, $"found {found} file:line citations");
+            : GateDecision.Pass(Id, $"found {found} distinct file:line citations");
     }
 
     /// <summary>

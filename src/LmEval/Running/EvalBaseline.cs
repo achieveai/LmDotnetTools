@@ -24,8 +24,34 @@ public sealed record EvalBaseline
     /// <summary>Its exact version. A comparison across versions is refused, not warned about.</summary>
     public required string RubricVersion { get; init; }
 
-    /// <summary>The corpus item count — the denominator every rate below is over.</summary>
-    public required int CorpusSize { get; init; }
+    /// <summary>
+    /// The corpus item count — the denominator every rate below is over. Always positive: a zero
+    /// denominator makes the comparer's baseline-coverage division NaN, and NaN compares false
+    /// against every threshold, so the refusal that exists to catch a thin comparison would wave it
+    /// through instead.
+    /// </summary>
+    public required int CorpusSize
+    {
+        get => _corpusSize;
+        init
+        {
+            if (value <= 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(value),
+                    value,
+                    "A baseline over no items has an empty denominator, which makes every rate it "
+                        + "froze undefined rather than zero."
+                );
+            }
+
+            _corpusSize = value;
+        }
+    }
+
+    private readonly int _corpusSize = 1;
+    private readonly string _corpusSnapshotHash = string.Empty;
+    private readonly string _evaluatorConfigHash = string.Empty;
 
     /// <summary>
     /// How many of <see cref="CorpusSize"/> yielded a counted score, so the baseline's own coverage
@@ -64,19 +90,89 @@ public sealed record EvalBaseline
     public required double NoDecisionRate { get; init; }
 
     /// <summary>Identity of the corpus snapshot. A comparison across two values is refused.</summary>
-    public required string CorpusSnapshotHash { get; init; }
+    public required string CorpusSnapshotHash
+    {
+        get => _corpusSnapshotHash;
+        init
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(value);
+            _corpusSnapshotHash = value;
+        }
+    }
 
     /// <summary>
     /// Identity of every score-affecting <i>evaluator</i> input. A comparison across two different
     /// values is refused, not warned about.
     /// </summary>
-    public required string EvaluatorConfigHash { get; init; }
+    public required string EvaluatorConfigHash
+    {
+        get => _evaluatorConfigHash;
+        init
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(value);
+            _evaluatorConfigHash = value;
+        }
+    }
 
     /// <summary>
     /// Least coverage a candidate run may have and still be compared. It lives on the baseline so
     /// the run being judged cannot relax the bar it is judged against.
     /// </summary>
-    public required double MinCoverage { get; init; }
+    public required double MinCoverage
+    {
+        get => _minCoverage;
+        init => _minCoverage = Fraction(value, nameof(MinCoverage), "A coverage floor");
+    }
+
+    /// <summary>
+    /// Most of the corpus a candidate run may lose to faults and still be compared, in [0,1]. It
+    /// lives on the baseline for the same reason <see cref="MinCoverage"/> does: the run being
+    /// judged must not be able to relax the bar it is judged against.
+    /// <para>
+    /// Distinct from the coverage floor, and not subsumed by it. The floor catches only the severe
+    /// case — a floor of 0.9 lets a 10% fault rate through untouched, and 10% of a corpus flipping
+    /// from pass to not-counted is a large pass-rate delta. The floor also cannot say <i>why</i>
+    /// the run is thin, and an infrastructure outage read as a candidate regression is the exact
+    /// misreading this whole refusal machinery exists to prevent.
+    /// </para>
+    /// </summary>
+    public double MaxFaultRate
+    {
+        get => _maxFaultRate;
+        init => _maxFaultRate = Fraction(value, nameof(MaxFaultRate), "A fault-rate bound");
+    }
+
+    private readonly double _minCoverage;
+    private readonly double _maxFaultRate = DefaultMaxFaultRate;
+
+    /// <summary>
+    /// A bound in [0,1], refused at the accessor rather than only in <see cref="From"/>. A record
+    /// built by a factory is still rewritable through a <c>with</c> expression, which walks straight
+    /// past the factory's checks, and NaN is the reachable value that does the most damage: every
+    /// comparison against it is false, so <c>run.FaultRate &gt; NaN</c> never fires and the refusal
+    /// is permanently disarmed. A disarmed check emits nothing, so the loss shows up only as
+    /// outages read as candidate regressions.
+    /// </summary>
+    private static double Fraction(double value, string name, string what)
+    {
+        if (double.IsNaN(value) || value < 0.0 || value > 1.0)
+        {
+            throw new ArgumentOutOfRangeException(
+                name,
+                value,
+                $"{what} is a fraction of the corpus and must be in [0,1]."
+            );
+        }
+
+        return value;
+    }
+
+    /// <summary>
+    /// The default fault-rate bound. Low, because a fault is an item the harness never measured at
+    /// all: an occasional transport failure is normal and refusing on it would make the comparison
+    /// unusable, but a rate in the tens of percent is an outage.
+    /// </summary>
+    public const double DefaultMaxFaultRate = 0.05;
 
     /// <summary>
     /// Freezes a completed run as the baseline for its task type. This is the only supported way to
@@ -86,9 +182,18 @@ public sealed record EvalBaseline
     /// <param name="baselineId">Stable identity for the new baseline.</param>
     /// <param name="run">The run to freeze.</param>
     /// <param name="minCoverage">The coverage floor to impose on future candidate runs, in [0,1].</param>
-    /// <exception cref="ArgumentOutOfRangeException"><paramref name="minCoverage"/> is outside [0,1].</exception>
+    /// <param name="maxFaultRate">
+    /// The fault-rate bound to impose on future candidate runs, in [0,1]. Defaults to
+    /// <see cref="DefaultMaxFaultRate"/>.
+    /// </param>
+    /// <exception cref="ArgumentOutOfRangeException">A bound is outside [0,1].</exception>
     /// <exception cref="ArgumentException">The run scored nothing, so it has no conditional metrics.</exception>
-    public static EvalBaseline From(string baselineId, EvalRun run, double minCoverage)
+    public static EvalBaseline From(
+        string baselineId,
+        EvalRun run,
+        double minCoverage,
+        double maxFaultRate = DefaultMaxFaultRate
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(baselineId);
         ArgumentNullException.ThrowIfNull(run);
@@ -99,6 +204,15 @@ public sealed record EvalBaseline
                 nameof(minCoverage),
                 minCoverage,
                 "A coverage floor is a fraction of the corpus and must be in [0,1]."
+            );
+        }
+
+        if (double.IsNaN(maxFaultRate) || maxFaultRate < 0.0 || maxFaultRate > 1.0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(maxFaultRate),
+                maxFaultRate,
+                "A fault-rate bound is a fraction of the corpus and must be in [0,1]."
             );
         }
 
@@ -128,6 +242,7 @@ public sealed record EvalBaseline
             CorpusSnapshotHash = run.CorpusSnapshotHash,
             EvaluatorConfigHash = run.EvaluatorConfigHash,
             MinCoverage = minCoverage,
+            MaxFaultRate = maxFaultRate,
         };
     }
 }
