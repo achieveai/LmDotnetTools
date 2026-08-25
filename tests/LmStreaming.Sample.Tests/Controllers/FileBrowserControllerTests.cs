@@ -51,7 +51,7 @@ public class FileBrowserControllerTests
         store.Setup(s => s.LoadMetadataAsync(ThreadId, It.IsAny<CancellationToken>())).ReturnsAsync(metadata);
 
         var browser = new FakeFileBrowser();
-        var controller = new FileBrowserController(store.Object, browser, NullLogger<FileBrowserController>.Instance)
+        var controller = new FileBrowserController(store.Object, browser, TestAuthorizers.Disabled(), NullLogger<FileBrowserController>.Instance)
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() },
         };
@@ -63,7 +63,7 @@ public class FileBrowserControllerTests
         var store = new Mock<IConversationStore>();
         store.Setup(s => s.LoadMetadataAsync(ThreadId, It.IsAny<CancellationToken>())).ReturnsAsync((ThreadMetadata?)null);
         var browser = new FakeFileBrowser();
-        var controller = new FileBrowserController(store.Object, browser, NullLogger<FileBrowserController>.Instance)
+        var controller = new FileBrowserController(store.Object, browser, TestAuthorizers.Disabled(), NullLogger<FileBrowserController>.Instance)
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() },
         };
@@ -154,7 +154,7 @@ public class FileBrowserControllerTests
         store.Setup(s => s.LoadMetadataAsync(ThreadId, It.IsAny<CancellationToken>())).ReturnsAsync(roundTripped);
         var browser = new FakeFileBrowser();
         browser.Listings[""] = [File("a.txt")];
-        var controller = new FileBrowserController(store.Object, browser, NullLogger<FileBrowserController>.Instance)
+        var controller = new FileBrowserController(store.Object, browser, TestAuthorizers.Disabled(), NullLogger<FileBrowserController>.Instance)
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() },
         };
@@ -188,7 +188,7 @@ public class FileBrowserControllerTests
         var store = new Mock<IConversationStore>();
         store.Setup(s => s.LoadMetadataAsync(ThreadId, It.IsAny<CancellationToken>())).ReturnsAsync(metadata);
         var browser = new FakeFileBrowser();
-        var controller = new FileBrowserController(store.Object, browser, NullLogger<FileBrowserController>.Instance)
+        var controller = new FileBrowserController(store.Object, browser, TestAuthorizers.Disabled(), NullLogger<FileBrowserController>.Instance)
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() },
         };

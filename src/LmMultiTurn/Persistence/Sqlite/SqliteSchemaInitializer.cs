@@ -306,12 +306,15 @@ public static class SqliteSchemaInitializer
     /// not already taken.
     /// </summary>
     /// <remarks>
-    /// Every step runs in one transaction together with its own <c>user_version</c> bump, so a
-    /// step either commits whole or is retried whole. The version is re-read INSIDE that
-    /// transaction, which is taken with <c>BEGIN IMMEDIATE</c>: two processes opening the same file
-    /// concurrently would otherwise both read the old version and both apply the step, which is
-    /// harmless for a <c>CREATE ... IF NOT EXISTS</c> and is not harmless for the <c>ALTER TABLE</c>
-    /// and data-backfill steps that follow in later slices.
+    /// ONE transaction spans the whole ladder, not one per step: it is opened before the loop and
+    /// committed after the last step, so every outstanding step and every <c>user_version</c> bump
+    /// commits together or none of them does. A run that fails partway therefore leaves the file at
+    /// the version it started at, and is retried from there in full - there is no intermediate
+    /// version a reader can observe. The version is re-read INSIDE that transaction, which is taken
+    /// with <c>BEGIN IMMEDIATE</c>: two processes opening the same file concurrently would otherwise
+    /// both read the old version and both apply the step, which is harmless for a
+    /// <c>CREATE ... IF NOT EXISTS</c> and is not harmless for the <c>ALTER TABLE</c> and
+    /// data-backfill steps that follow in later slices.
     /// </remarks>
     /// <param name="connection">An open SQLite connection.</param>
     /// <param name="ct">Cancellation token.</param>

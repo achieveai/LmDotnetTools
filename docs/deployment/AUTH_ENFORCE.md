@@ -212,9 +212,12 @@ Read this before turning it on anywhere real.
 With `Identity:Enforce` true:
 
 - Every `/api` request must carry a valid token from a **provisioned** tenant (slice 1).
-- Every conversation route resolves the caller against the conversation's owner columns before
-  answering (slice 2, #302). Reads, writes, deletes and shares of another tenant's conversation are
-  refused, and the conversation listing returns only what the caller may see.
+- Every conversation **REST** route resolves the caller against the conversation's owner columns
+  before answering (slice 2, #302) — both `ConversationsController` and the workspace file browser at
+  `/api/conversations/{threadId}/files`, which addresses the same conversations by the same ids.
+  Reads, writes, deletes and shares of another tenant's conversation are refused, and the
+  conversation listing returns only what the caller may see. The WebSocket transports are the
+  exception and are listed under "Known gaps" below.
 
 A refusal that would otherwise confirm a conversation id exists answers `404` with the same body an
 id that was never minted produces. That is deliberate: conversation ids are guessable enough that a
@@ -246,6 +249,12 @@ claimed first. Two mechanisms do this, and both are needed:
    If `Identity:LegacyTenantId` names a tenant that already exists and is not the quarantine tenant,
    the host **refuses to start** and writes nothing. Stamping real customer data with a real
    customer's tenant id would hand that customer's admins read access to it. Pick an unused id.
+
+   Agent-owned threads — the `subagent-*` and `workflow-*` ids the agent pool creates rather than
+   the provisioning route — are **not** stamped at creation, so a run produces fresh untenanted rows
+   that this repair only claims at the NEXT boot. They fail closed in the meantime (`404`, like any
+   untenanted row), which is the right direction but is not the same as "every conversation carries a
+   tenant". Tracked as a #302 follow-up.
 
 2. **Adoption.** `POST /api/admin/tenants/{tenantId}/adopt-legacy` moves conversations out of the
    quarantine tenant into a real one, optionally assigning an owner. It takes the operator secret,
@@ -295,7 +304,9 @@ changes what any caller sees.
 
 ### Known gaps
 
-Three things `Identity:Enforce` does not do that its name suggests it might. All are open.
+Three things `Identity:Enforce` does not do that its name suggests it might. All are open. The list
+is exhaustive over the REST surface: every other `/api` route that names a conversation goes through
+the authorizer.
 
 #### Service callers are refused (#345)
 

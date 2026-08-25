@@ -2,9 +2,11 @@ using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
+using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.Sandbox;
 using LmStreaming.Sample.FileBrowser;
+using LmStreaming.Sample.Identity;
 using Microsoft.AspNetCore.Mvc;
 
 namespace LmStreaming.Sample.Controllers;
@@ -16,12 +18,21 @@ namespace LmStreaming.Sample.Controllers;
 /// time against the gateway's authoritative listing (exactly one non-lossy ordinal match per level, using
 /// the server-returned type). Client-supplied workspace/session/app ids and entry types are never trusted.
 /// </summary>
+/// <remarks>
+/// This controller addresses a conversation's workspace by the SAME id
+/// <c>ConversationsController</c> addresses its messages by, so it authorizes through the same
+/// <see cref="ConversationAuthorizer"/> (P1 spec 7.4). Without that, its routes would be a way around
+/// conversation isolation rather than through it: the id is all a caller needs, and the workspace holds
+/// the conversation's own transcript. Every route declares its own <see cref="AccessAction"/> - the three
+/// content routes read, the three mutating routes write.
+/// </remarks>
 [ApiController]
 [Route("api/conversations/{threadId}/files")]
 [InboundS2SAuth]
 public sealed class FileBrowserController(
     IConversationStore store,
     IWorkspaceFileBrowser fileBrowser,
+    ConversationAuthorizer authorizer,
     ILogger<FileBrowserController> logger
 ) : ControllerBase
 {
@@ -49,7 +60,7 @@ public sealed class FileBrowserController(
     [HttpGet]
     public async Task<IActionResult> List(string threadId, [FromQuery] string? path, CancellationToken ct)
     {
-        var context = await ResolveSessionAsync(threadId, isListing: true, ct);
+        var context = await ResolveSessionAsync(threadId, AccessAction.Read, isListing: true, ct);
         if (!context.Ok)
         {
             return context.Error!;
@@ -89,7 +100,7 @@ public sealed class FileBrowserController(
     [HttpGet("download")]
     public async Task<IActionResult> Download(string threadId, [FromQuery] string? path, CancellationToken ct)
     {
-        var context = await ResolveSessionAsync(threadId, isListing: false, ct);
+        var context = await ResolveSessionAsync(threadId, AccessAction.Read, isListing: false, ct);
         if (!context.Ok)
         {
             return context.Error!;
@@ -135,7 +146,7 @@ public sealed class FileBrowserController(
     [HttpGet("preview")]
     public async Task<IActionResult> Preview(string threadId, [FromQuery] string? path, CancellationToken ct)
     {
-        var context = await ResolveSessionAsync(threadId, isListing: false, ct);
+        var context = await ResolveSessionAsync(threadId, AccessAction.Read, isListing: false, ct);
         if (!context.Ok)
         {
             return context.Error!;
@@ -223,7 +234,7 @@ public sealed class FileBrowserController(
     [RequestFormLimits(MultipartBodyLengthLimit = FileBrowserLimits.MaxUploadRequestBytes)]
     public async Task<IActionResult> Upload(string threadId, [FromQuery] string? path, [FromForm(Name = "file")] IFormFile? file, [FromForm(Name = "relativePath")] string? relativePath, CancellationToken ct)
     {
-        var context = await ResolveSessionAsync(threadId, isListing: false, ct);
+        var context = await ResolveSessionAsync(threadId, AccessAction.Write, isListing: false, ct);
         if (!context.Ok)
         {
             return context.Error!;
@@ -324,7 +335,7 @@ public sealed class FileBrowserController(
     [HttpPost("directory")]
     public async Task<IActionResult> CreateDirectory(string threadId, [FromQuery] string? path, [FromBody] CreateDirectoryRequest? request, CancellationToken ct)
     {
-        var context = await ResolveSessionAsync(threadId, isListing: false, ct);
+        var context = await ResolveSessionAsync(threadId, AccessAction.Write, isListing: false, ct);
         if (!context.Ok)
         {
             return context.Error!;
@@ -408,7 +419,7 @@ public sealed class FileBrowserController(
     [HttpDelete]
     public async Task<IActionResult> Delete(string threadId, [FromQuery] string? path, CancellationToken ct)
     {
-        var context = await ResolveSessionAsync(threadId, isListing: false, ct);
+        var context = await ResolveSessionAsync(threadId, AccessAction.Write, isListing: false, ct);
         if (!context.Ok)
         {
             return context.Error!;
@@ -464,12 +475,41 @@ public sealed class FileBrowserController(
 
     // -------- Prologue / resolution --------
 
-    private async Task<SessionContext> ResolveSessionAsync(string threadId, bool isListing, CancellationToken ct)
+    /// <summary>
+    /// Loads the conversation, decides <paramref name="action"/> on it, and resolves its sandbox session -
+    /// in that order, and only in that order.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The authorization runs BEFORE the workspace id is read and before a single call reaches the gateway,
+    /// so a refused caller and a caller naming an id that was never minted do exactly the same work: none.
+    /// Nothing between the two branches logs, resolves, or lists, because any of those would put a
+    /// measurable difference between "forbidden" and "unknown" that the identical bodies below then fail
+    /// to hide.
+    /// </para>
+    /// <para>
+    /// An existence-hiding refusal returns the SAME <c>unknown_thread</c> body the missing-row branch three
+    /// lines above returns - same status, same object, same property order. That body is this controller's
+    /// own and deliberately not <c>ConversationsController</c>'s: what has to match is the sibling refusal
+    /// on THIS route, since a caller can only compare two answers from the same endpoint.
+    /// </para>
+    /// </remarks>
+    /// <param name="threadId">The conversation whose workspace is addressed.</param>
+    /// <param name="action">What this route does to the conversation: read for content, write for changes.</param>
+    /// <param name="isListing">Whether a missing sandbox session is a 200 state (listing) or a 409.</param>
+    /// <param name="ct">Cancellation token.</param>
+    private async Task<SessionContext> ResolveSessionAsync(string threadId, AccessAction action, bool isListing, CancellationToken ct)
     {
         var metadata = await store.LoadMetadataAsync(threadId, ct);
         if (metadata is null)
         {
-            return new SessionContext(false, null, null, NotFound(new { error = "unknown_thread", code = "unknown_thread", threadId }), false);
+            return UnknownThreadContext(threadId);
+        }
+
+        var access = await authorizer.AuthorizeAsync(threadId, metadata, action, ct);
+        if (!access.Allowed)
+        {
+            return RefusalContext(threadId, access);
         }
 
         var workspaceId = ReadWorkspaceId(metadata);
@@ -525,6 +565,53 @@ public sealed class FileBrowserController(
             default:
                 return new SessionContext(true, resolution.Session, workspaceId, null, false);
         }
+    }
+
+    /// <summary>The one 404 both the missing-row branch and an existence-hiding refusal answer with.</summary>
+    private SessionContext UnknownThreadContext(string threadId) =>
+        new(false, null, null, NotFound(new { error = "unknown_thread", code = "unknown_thread", threadId }), false);
+
+    /// <summary>
+    /// Turns one refused decision into the response that carries it.
+    /// </summary>
+    /// <remarks>
+    /// The status mapping mirrors <c>ConversationsController</c>: a refusal that must hide the
+    /// conversation's existence is the unknown-thread 404 verbatim, an unauthenticated request is 401, and
+    /// every remaining refusal - a viewer-grantee attempting an upload, say - is a 403 that names its
+    /// policy reason. Only the 403 path logs: it has already admitted the conversation exists, whereas a
+    /// log line on the 404 path would be a record that distinguishes the two cases the 404 exists to make
+    /// identical.
+    /// </remarks>
+    private SessionContext RefusalContext(string threadId, ConversationAccessResult access)
+    {
+        if (access.HidesExistence)
+        {
+            return UnknownThreadContext(threadId);
+        }
+
+        if (string.Equals(access.Reason, ConversationAuthorizer.UnauthenticatedReason, StringComparison.Ordinal))
+        {
+            return new SessionContext(
+                false,
+                null,
+                null,
+                StatusCode(StatusCodes.Status401Unauthorized, new { error = "unauthorized", code = access.Reason }),
+                false
+            );
+        }
+
+        logger.LogWarning(
+            "File browser refused thread {ThreadId} for the current principal: {Reason}",
+            threadId,
+            access.Reason
+        );
+        return new SessionContext(
+            false,
+            null,
+            null,
+            StatusCode(StatusCodes.Status403Forbidden, new { error = "forbidden", code = access.Reason, threadId }),
+            false
+        );
     }
 
     private SessionContext NoSessionContext(bool isListing, string? workspaceId)

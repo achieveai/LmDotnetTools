@@ -25,7 +25,15 @@ public sealed record ConversationAccessResult(bool Allowed, string Reason, bool 
 /// Injected as a SINGLE dependency rather than as its four collaborators so that
 /// <c>ConversationsController</c> gains one constructor parameter instead of four - and, more
 /// importantly, so no route can assemble its own variation of the decision. Every conversation
-/// route resolves through <see cref="AuthorizeAsync"/> or <see cref="CreateListScopeAsync"/>.
+/// REST route - <c>ConversationsController</c>'s and <c>FileBrowserController</c>'s alike -
+/// resolves through <see cref="AuthorizeAsync"/> or <see cref="CreateListScopeAsync"/>.
+/// </para>
+/// <para>
+/// The REST surface is not the whole surface. The WebSocket transports <c>/ws</c> and
+/// <c>/ws/subagent</c> do NOT pass through here and perform no per-conversation authorization at
+/// all; that is the disclosed gap tracked as issue #301 and recorded under "Known gaps" in
+/// <c>docs/deployment/AUTH_ENFORCE.md</c>. Anyone reading this type as "the single seam" should
+/// read it as "the single seam for the REST routes", which is what it currently is.
 /// </para>
 /// <para>
 /// Note what this does NOT do: it never decides on its own contents. Every allow and every deny
