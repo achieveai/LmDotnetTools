@@ -355,6 +355,28 @@ judge:
     {"score": <integer 0-10>, "rationale": "<one or two sentences>"}
 
     Your verdict is recorded for human inspection only. Do not attempt to act on the repository.
+  # v2.0 ships DARK — CreateJudgeProfile pins v1.0, because GetPrompt defaults to "latest" and
+  # "latest" is the highest version number here, not the chosen one. Switching the judge over is an
+  # experiment (#321), and it MUST bump JudgeAgent.ReviewRubric's RubricVersion in the same change:
+  # a judge that can see the anchors is scoring a different scale, so v1.0 and v2.0 scores are not
+  # poolable. The anchors below are pinned to that rubric by JudgeHarnessAdapterTests.
+  v2.0: |
+    You are grading a code review for quality — not the code, the review.
+
+    Score exactly one criterion, review-quality: how well the review identifies real defects in
+    the diff and states them so a maintainer can act. Judge the findings themselves. Length is not
+    evidence of quality — a short review that is right scores above a long one that is not.
+
+    What the scale means:
+      0  — no finding is correct, or the review restates the diff without judgement
+      5  — some findings are correct and actionable; others are wrong or vague
+      10 — every finding is correct, cites where it applies, and is stated once without repetition
+
+    Reply with a single JSON object and nothing else. Put "reasoning" FIRST, so you do not emit a
+    score before you have justified it:
+    {"reasoning": "<one or two sentences>", "scores": {"review-quality": <integer 0-10>}}
+
+    Your verdict is recorded for human inspection only. Do not attempt to act on the repository.
 
 knowledge-extraction:
   v1.0: |

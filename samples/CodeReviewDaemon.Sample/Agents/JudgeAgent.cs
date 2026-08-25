@@ -1,4 +1,7 @@
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmEval;
+using AchieveAi.LmDotnetTools.LmEval.Aggregation;
+using AchieveAi.LmDotnetTools.LmEval.Judges;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
@@ -7,12 +10,20 @@ namespace CodeReviewDaemon.Sample.Agents;
 
 /// <summary>
 /// Grades a completed review (plan §15, AC#7). The judge drives one collect-only run over an
-/// <see cref="IMultiTurnAgent"/>, parses the model's verdict, and <b>persists only</b> a
-/// <c>judge</c> <see cref="ReviewArtifact"/> carrying exactly <c>{score, rationale, variant_id}</c>.
+/// <see cref="IMultiTurnAgent"/>, scores the reply through the shared LmEval harness, and
+/// <b>persists only</b> a <c>judge</c> <see cref="ReviewArtifact"/> carrying exactly
+/// <c>{score, rationale, variant_id}</c>.
 /// <para>
 /// "Judge feedback v1 = persist only": the verdict is recorded for later human inspection — it is
 /// NEVER used to auto-route work, rewrite skills, or gate posting. The bounded payload shape is the
 /// guardrail that keeps it that way.
+/// </para>
+/// <para>
+/// This type is now an <b>adapter</b>, not a judge: parsing, abstention and scoring live in
+/// <see cref="JudgeGauntlet"/> so Revobot and the offline gauntlet cannot drift into two different
+/// definitions of what a score means. What stays here is everything Revobot-specific — the artifact
+/// shape, the run-id log line, and the mapping from a harness verdict back onto the v1 integer
+/// score this daemon has always persisted.
 /// </para>
 /// </summary>
 internal sealed class JudgeAgent
@@ -22,8 +33,54 @@ internal sealed class JudgeAgent
 
     public const string JudgeArtifactKind = "judge";
 
-    private static readonly JsonSerializerOptions ParseOptions =
-        new() { PropertyNameCaseInsensitive = true };
+    /// <summary>
+    /// The harness partition key for everything this daemon judges. Scores are comparable only
+    /// within a task type, so every Revobot verdict shares one.
+    /// </summary>
+    internal const string JudgeTaskType = "code-review";
+
+    /// <summary>
+    /// The v1 scoring contract, restated as a rubric. It is deliberately a <b>single</b> criterion
+    /// on the 0-10 scale: that is exactly what the shipped <c>judge: v1.0</c> prompt asks for, and a
+    /// single-criterion rubric is what lets the harness accept that prompt's flat
+    /// <c>{"score", "rationale"}</c> reply unchanged. Splitting it into real dimensions is a prompt
+    /// change, and a prompt change is a rubric version bump — deferred to <c>judge: v2.0</c>.
+    /// </summary>
+    internal static readonly Rubric ReviewRubric = new()
+    {
+        RubricId = "revobot-review",
+        RubricVersion = "1.0",
+        TaskType = JudgeTaskType,
+        MinScore = 0,
+        MaxScore = 10,
+        // Inert with one judge — nothing straddles a threshold on its own. Recorded so a second
+        // judge can be added later without inventing a boundary at that moment.
+        PassThreshold = 6,
+        Criteria =
+        [
+            new RubricCriterion
+            {
+                CriterionId = "review-quality",
+                Description =
+                    "How well the review identifies real defects in the diff and states them so a "
+                    + "maintainer can act, judged on the findings themselves rather than on length.",
+                Anchors = new Dictionary<int, string>
+                {
+                    [0] = "no finding is correct, or the review restates the diff without judgement",
+                    [5] = "some findings are correct and actionable; others are wrong or vague",
+                    [10] =
+                        "every finding is correct, cites where it applies, and is stated once "
+                        + "without repetition",
+                },
+            },
+        ],
+    };
+
+    /// <summary>
+    /// No calibration data. Revobot runs one judge, so a reliability weight would multiply the only
+    /// ballot there is and change nothing; the harness reads an absent judge as weight 1.0.
+    /// </summary>
+    private static readonly Dictionary<string, double> NoReliabilityData = [];
 
     private readonly IMultiTurnAgent _agent;
     private readonly ReviewStore _store;
@@ -37,18 +94,50 @@ internal sealed class JudgeAgent
     }
 
     /// <summary>
-    /// Sends <paramref name="request"/>'s judging material as one user turn, collects the model's
-    /// verdict, and persists a <c>judge</c> artifact holding only the score, rationale, and variant id.
+    /// Sends <paramref name="request"/>'s judging material as one user turn, scores the model's
+    /// verdict through the harness, and persists a <c>judge</c> artifact holding only the score,
+    /// rationale, and variant id.
     /// </summary>
     public async Task<JudgeVerdict> JudgeAsync(JudgeRequest request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        // The turn is driven HERE, before the harness, for two reasons: the run id only exists on
+        // this side of the collect and is load-bearing in the log line below, and a transport
+        // failure must keep propagating to the caller rather than being caught by the gauntlet and
+        // recorded as a judge fault.
         var collected = await AgentTextCollector
             .CollectAsync(_agent, request.JudgingInput, cancellationToken)
             .ConfigureAwait(false);
 
-        var (score, rationale) = ParseVerdict(collected.Text);
+        var verdict = await ScoreAsync(request, collected.Text, cancellationToken)
+            .ConfigureAwait(false);
+
+        // Exactly one ballot exists: the transport below is an already-completed task over text
+        // collected above, so the judge cannot fault. It is counted when the reply parsed and
+        // excluded when it did not.
+        var ballot = verdict.Ballots.Count > 0
+            ? verdict.Ballots[0]
+            : verdict.ExcludedBallots[0].Ballot;
+
+        // A reply the harness could not read is an ABSTENTION, not a zero. v1 persists it as a
+        // zero and continues to, because changing a persisted score is a data change — but the
+        // warning makes the two distinguishable in the log, which they were not before.
+        if (ballot.Abstained)
+        {
+            _logger.LogWarning(
+                "Judge run {RunId} could not be read ({AbstainReason}) for variant '{Variant}'; "
+                    + "recording score 0. This is an unscored reply, not a worst-possible review.",
+                collected.RunId,
+                ballot.AbstainReason,
+                request.VariantId
+            );
+        }
+
+        var score = verdict.Score is { } weighted
+            ? (int)Math.Round(weighted, MidpointRounding.AwayFromZero)
+            : 0;
+        var rationale = ballot.Reasoning;
 
         // Persist ONLY {score, rationale, variant_id} — AC#7. No auto-routing, no skill rewriting.
         var payload = new JudgeArtifactPayload(score, rationale, request.VariantId);
@@ -73,63 +162,49 @@ internal sealed class JudgeAgent
     }
 
     /// <summary>
-    /// Extracts <c>{score, rationale}</c> from the model's verdict. The judge is prompted to answer with
-    /// a JSON object; a fenced <c>```json</c> block (if the model wrapped it) is unwrapped first. A
-    /// missing score defaults to 0 and a missing rationale to the raw text, so a malformed verdict is
-    /// still recorded rather than throwing.
+    /// Runs the already-collected reply through the harness: no gates (v1 grades whatever the
+    /// review stage produced) and one judge, whose prompt renderer is the identity so the bytes the
+    /// model actually saw are the bytes recorded, not a re-render of them.
+    /// <para>
+    /// <see cref="Candidate.GeneratorFamily"/> is left null on purpose. Revobot's judge currently
+    /// runs on the reviewing run's own model, so there is no second family to exclude and claiming
+    /// one would assert an independence that does not hold — see the TODO at the judge stage.
+    /// </para>
     /// </summary>
-    private static (int Score, string Rationale) ParseVerdict(string verdictText)
+    private static Task<Verdict> ScoreAsync(
+        JudgeRequest request,
+        string reply,
+        CancellationToken cancellationToken
+    )
     {
-        var json = UnwrapJson(verdictText);
-        if (json.Length == 0)
+        var candidate = new Candidate
         {
-            return (0, verdictText.Trim());
-        }
+            CandidateId = $"{request.ReviewRunId}:{request.VariantId}",
+            TaskType = JudgeTaskType,
+            TaskInput = request.JudgingInput,
+            Content = request.JudgingInput,
+            VariantId = request.VariantId,
+        };
 
-        try
-        {
-            using var document = JsonDocument.Parse(json);
-            var root = document.RootElement;
-
-            var score = root.TryGetProperty("score", out var scoreElement)
-                && scoreElement.ValueKind == JsonValueKind.Number
-                && scoreElement.TryGetInt32(out var parsedScore)
-                ? parsedScore
-                : 0;
-
-            var rationale = root.TryGetProperty("rationale", out var rationaleElement)
-                && rationaleElement.ValueKind == JsonValueKind.String
-                ? rationaleElement.GetString() ?? string.Empty
-                : verdictText.Trim();
-
-            return (score, rationale);
-        }
-        catch (JsonException)
-        {
-            return (0, verdictText.Trim());
-        }
-    }
-
-    /// <summary>Returns the JSON span of <paramref name="text"/>: a fenced block's body if present,
-    /// otherwise the substring between the first <c>{</c> and last <c>}</c>, otherwise empty.</summary>
-    private static string UnwrapJson(string text)
-    {
-        var trimmed = text.Trim();
-
-        var fenceStart = trimmed.IndexOf("```", StringComparison.Ordinal);
-        if (fenceStart >= 0)
-        {
-            var bodyStart = trimmed.IndexOf('\n', fenceStart);
-            var fenceEnd = trimmed.LastIndexOf("```", StringComparison.Ordinal);
-            if (bodyStart > 0 && fenceEnd > bodyStart)
+        var judge = new RubricJudge(
+            new RubricJudgeOptions
             {
-                trimmed = trimmed[(bodyStart + 1)..fenceEnd].Trim();
-            }
-        }
+                JudgeId = "revobot-judge",
+                ModelId = request.Provider,
+                ModelFamily = request.Provider,
+                PromptRenderer = static (c, _, _) => c.Content,
+            },
+            (_, _) => Task.FromResult(reply)
+        );
 
-        var open = trimmed.IndexOf('{');
-        var close = trimmed.LastIndexOf('}');
-        return open >= 0 && close > open ? trimmed[open..(close + 1)] : string.Empty;
+        var gauntlet = new JudgeGauntlet(
+            gates: [],
+            judges: [judge],
+            aggregator: new WeightedMeanAggregator(),
+            options: new HarnessOptions()
+        );
+
+        return gauntlet.RunAsync(candidate, ReviewRubric, NoReliabilityData, cancellationToken);
     }
 }
 

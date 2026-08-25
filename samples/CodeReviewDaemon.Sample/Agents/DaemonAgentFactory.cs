@@ -132,12 +132,18 @@ internal static class DaemonAgentFactory
     /// <summary>
     /// Builds the judge-agent profile (grades a review, emits a bounded JSON verdict). Like the
     /// reviewer it needs no built-in tools and defers any MCP allow-list to the executor.
+    /// <para>
+    /// The version is PINNED rather than left to default. <c>GetPrompt</c> defaults to
+    /// <c>"latest"</c>, which resolves to the highest version number present — so adding the
+    /// anchored <c>judge: v2.0</c> alongside it would have rerouted the live judge with no code
+    /// change and nothing failing. v2.0 ships dark until #321 switches it on deliberately.
+    /// </para>
     /// </summary>
     public static AgentProfile CreateJudgeProfile() =>
         new(
             Id: JudgeProfileId,
             Name: "Judge Agent",
-            SystemPrompt: Prompts.GetPrompt("judge").PromptText(),
+            SystemPrompt: Prompts.GetPrompt("judge", "v1.0").PromptText(),
             EnabledTools: null,
             EnabledBuiltInTools: []);
 

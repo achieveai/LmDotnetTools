@@ -33,6 +33,9 @@
     <!-- CopilotModelCatalogLogger uses the Copilot credential + catalog parsing types for diagnostic model
          discovery at daemon startup. No MultiTurnAgent dependency — only auth + model wrappers. -->
     <ProjectReference Include="..\..\src\GithubCopilotProvider\AchieveAi.LmDotnetTools.GithubCopilotProvider.csproj" />
+    <!-- JudgeAgent scores through the shared eval harness (P6 §4.2) rather than owning a second
+         private copy of verdict parsing. LmEval is a leaf over LmCore + LmMultiTurn. -->
+    <ProjectReference Include="..\..\src\LmEval\AchieveAi.LmDotnetTools.LmEval.csproj" />
   </ItemGroup>
   <ItemGroup>
     <!-- The route-exposure test (AC#4) boots this host via WebApplicationFactory<Program> and
