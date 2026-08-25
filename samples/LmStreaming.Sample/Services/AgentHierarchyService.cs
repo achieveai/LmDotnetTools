@@ -486,7 +486,14 @@ public sealed class AgentHierarchyService(
         string threadId,
         CancellationToken ct)
     {
-        var threads = await store.ListThreadsAsync(SubAgentScanMaxThreads + 1, 0, ct) ?? [];
+        // Narrowed by the database, not in memory (#388a). The scope comes from the ROOT row's own
+        // tenant - see SubAgentScanScope for why a principal is not available here and would be the
+        // wrong thing to use if it were. A root with no tenant falls back to the unscoped overload
+        // rather than guessing at a sentinel one.
+        var scope = await SubAgentScanScope.ForRootAsync(store, threadId, ct);
+        var threads = (scope is null
+            ? await store.ListThreadsAsync(SubAgentScanMaxThreads + 1, 0, ct)
+            : await store.ListThreadsAsync(scope, SubAgentScanMaxThreads + 1, 0, ct)) ?? [];
 
         var scanned = Math.Min(threads.Count, SubAgentScanMaxThreads);
         var found = new List<SubAgentSummary>();

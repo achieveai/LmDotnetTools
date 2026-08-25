@@ -332,7 +332,14 @@ public sealed class ConversationDescendantScanner
         string requestingThreadId,
         CancellationToken ct)
     {
-        var threads = await _store.ListThreadsAsync(SubAgentScanMaxThreads + 1, 0, ct) ?? [];
+        // Narrowed by the database, not in memory (#388a). The scope comes from the ROOT row's own
+        // tenant - see SubAgentScanScope for why a principal is not available here and would be the
+        // wrong thing to use if it were. A root with no tenant falls back to the unscoped overload
+        // rather than guessing at a sentinel one.
+        var scope = await SubAgentScanScope.ForRootAsync(_store, requestingThreadId, ct);
+        var threads = (scope is null
+            ? await _store.ListThreadsAsync(SubAgentScanMaxThreads + 1, 0, ct)
+            : await _store.ListThreadsAsync(scope, SubAgentScanMaxThreads + 1, 0, ct)) ?? [];
 
         var scanned = Math.Min(threads.Count, SubAgentScanMaxThreads);
         var found = new List<SubAgentSummary>();

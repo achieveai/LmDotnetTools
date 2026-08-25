@@ -90,6 +90,66 @@ internal sealed class InMemoryResourceGrantStore : IResourceGrantStore
             && (g.ExpiresAt is null || g.ExpiresAt > now));
 }
 
+/// <summary>
+/// A forwarding <see cref="IResourceGrantStore"/> that counts grant lookups, so a test can assert
+/// the SHAPE of the work a refusal does rather than its wall-clock duration (#389).
+/// </summary>
+/// <remarks>
+/// Counting is the only honest way to pin this. A timing assertion on a single grant lookup is
+/// dominated by scheduling noise on any machine, so it would either be flaky or - far more likely -
+/// be widened until it passes for both shapes and proves nothing at all.
+/// </remarks>
+/// <param name="inner">The real store every call is forwarded to.</param>
+internal sealed class CountingResourceGrantStore(IResourceGrantStore inner) : IResourceGrantStore
+{
+    private int _findGrantCalls;
+
+    /// <summary>How many times <see cref="FindGrantAsync"/> has been called.</summary>
+    public int FindGrantCallCount => Volatile.Read(ref _findGrantCalls);
+
+    public Task<GrantRole?> FindGrantAsync(
+        string tenantId,
+        ResourceRef resource,
+        string subjectId,
+        DateTimeOffset now,
+        CancellationToken ct = default)
+    {
+        _ = Interlocked.Increment(ref _findGrantCalls);
+        return inner.FindGrantAsync(tenantId, resource, subjectId, now, ct);
+    }
+
+    public Task<IReadOnlyList<string>> ListGrantedResourceIdsAsync(
+        string tenantId,
+        string subjectId,
+        string resourceType,
+        DateTimeOffset now,
+        CancellationToken ct = default) =>
+        inner.ListGrantedResourceIdsAsync(tenantId, subjectId, resourceType, now, ct);
+
+    public Task<IReadOnlyList<ResourceGrant>> ListGrantsForResourceAsync(
+        string tenantId,
+        ResourceRef resource,
+        CancellationToken ct = default) =>
+        inner.ListGrantsForResourceAsync(tenantId, resource, ct);
+
+    public Task GrantAsync(ResourceGrant grant, CancellationToken ct = default) =>
+        inner.GrantAsync(grant, ct);
+
+    public Task<bool> RevokeAsync(
+        string tenantId,
+        ResourceRef resource,
+        string subjectId,
+        CancellationToken ct = default) =>
+        inner.RevokeAsync(tenantId, resource, subjectId, ct);
+
+    public Task<bool> HasAnyGrantAsync(
+        string tenantId,
+        ResourceRef resource,
+        DateTimeOffset now,
+        CancellationToken ct = default) =>
+        inner.HasAnyGrantAsync(tenantId, resource, now, ct);
+}
+
 /// <summary>Builds <see cref="ConversationAuthorizer"/> instances for controller tests.</summary>
 internal static class TestAuthorizers
 {

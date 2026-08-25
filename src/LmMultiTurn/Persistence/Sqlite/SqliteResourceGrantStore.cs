@@ -153,12 +153,22 @@ public sealed class SqliteResourceGrantStore : IResourceGrantStore
         await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         while (await reader.ReadAsync(ct).ConfigureAwait(false))
         {
+            if (ParseRole(reader.GetString(1)) is not { } role)
+            {
+                // Skipped, not defaulted to Viewer. Defaulting made this listing disagree with
+                // FindGrantAsync about the same row: the point read denies it, so presenting it
+                // here as a viewer grant tells the owner someone has access that nothing will
+                // actually honour. `continue`, never `break` - one unreadable row must not hide
+                // every valid grant ordered after it.
+                continue;
+            }
+
             grants.Add(new ResourceGrant
             {
                 TenantId = tenantId,
                 Resource = resource,
                 SubjectId = reader.GetString(0),
-                Role = ParseRole(reader.GetString(1)) ?? GrantRole.Viewer,
+                Role = role,
                 GrantedBy = reader.GetString(2),
                 GrantedAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3)),
                 ExpiresAt = reader.IsDBNull(4)
