@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
@@ -13,6 +14,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using AchieveAi.LmDotnetTools.LmAgentInfra;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
+using LmStreaming.Sample.Identity;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
 using LmStreaming.Sample.Services;
@@ -177,6 +179,7 @@ public class ConversationsController(
     ConversationStatusResolver statusResolver,
     TimeProvider timeProvider,
     WorkflowRunRegistry workflowRunRegistry,
+    ConversationAuthorizer authorizer,
     ILogger<ConversationsController> logger,
     ILogger<AgentHierarchyService> hierarchyLogger,
     SubAgentScanCoverageCache scanCoverageCache,
@@ -289,7 +292,10 @@ public class ConversationsController(
                     propertiesBuilder["sample.authWebhookRegisteredAt"] = now.ToUnixTimeMilliseconds();
                 }
 
-                return new ThreadMetadata
+                // Ownership is stamped HERE, at creation, not by a later repair (spec 8.3, and
+                // this is what closes #162). The startup repair exists for rows written before
+                // identity did; a row this build creates must never need it.
+                return authorizer.StampOwnership(new ThreadMetadata
                 {
                     ThreadId = threadId,
                     CurrentRunId = existing?.CurrentRunId,
@@ -297,7 +303,11 @@ public class ConversationsController(
                     LastUpdated = now.ToUnixTimeMilliseconds(),
                     SessionMappings = existing?.SessionMappings,
                     Properties = propertiesBuilder.ToImmutable(),
-                };
+                    TenantId = existing?.TenantId,
+                    OwnerUserId = existing?.OwnerUserId,
+                    OwnerAppId = existing?.OwnerAppId,
+                    Visibility = existing?.Visibility,
+                });
             },
             ct);
 
@@ -310,7 +320,13 @@ public class ConversationsController(
         int offset = 0,
         CancellationToken ct = default)
     {
-        var threads = await store.ListThreadsAsync(limit, offset, ct);
+        // Listing is a FILTER, not a loop (spec 7.5): the scope is pushed into the store so the
+        // page is trimmed by the query. Filtering the returned page instead would silently return
+        // short pages - and, worse, would make "page 2 is empty" mean nothing.
+        var scope = await authorizer.CreateListScopeAsync(ct);
+        var threads = scope is null
+            ? await store.ListThreadsAsync(limit, offset, ct)
+            : await store.ListThreadsAsync(scope, limit, offset, ct);
         var result = threads
             // Sub-agent and workflow-controller conversations use the sample's reserved agent-owned
             // thread-id space and are surfaced only through the sub-agent panel (GET .../subagents +
@@ -377,6 +393,11 @@ public class ConversationsController(
         if (RefuseMachineCaller(threadId, AgentOwnedThreadReadCode, viewer) is { } refusal)
         {
             return refusal;
+        }
+
+        if (await AuthorizeAsync(threadId, AccessAction.Read, ct) is { } denied)
+        {
+            return denied;
         }
 
         var messages = await store.LoadMessagesAsync(threadId, ct);
@@ -459,6 +480,11 @@ public class ConversationsController(
     [HttpGet("{threadId}/usage")]
     public async Task<IActionResult> GetUsage(string threadId, CancellationToken ct = default)
     {
+        if (await AuthorizeAsync(threadId, AccessAction.Read, ct) is { } denied)
+        {
+            return denied;
+        }
+
         var usage = await ConversationUsageProjection.LoadAsync(store, threadId, ct);
         return usage is null ? NotFound() : Ok(usage);
     }
@@ -471,8 +497,16 @@ public class ConversationsController(
     /// in-memory run state, not persisted metadata, so it reflects the actual live run.
     /// </summary>
     [HttpGet("{threadId}/run-state")]
-    public IActionResult GetRunState(string threadId)
+    public async Task<IActionResult> GetRunState(string threadId, CancellationToken ct = default)
     {
+        // Whether a conversation is streaming right now is a fact ABOUT that conversation, so it is
+        // gated like any other read. Left open it is a liveness oracle: poll another tenant's ids
+        // and learn which of them are real and busy.
+        if (await AuthorizeAsync(threadId, AccessAction.Read, ct) is { } denied)
+        {
+            return denied;
+        }
+
         var runState = agentPool.GetRunStateInfo(threadId);
         return Ok(new ConversationRunState
         {
@@ -514,6 +548,11 @@ public class ConversationsController(
         string? viewer = null,
         CancellationToken ct = default)
     {
+        if (await AuthorizeAsync(threadId, AccessAction.Read, ct) is { } denied)
+        {
+            return denied;
+        }
+
         if (recursive)
         {
             return await BuildDescendantTreeAsync(threadId, ct);
@@ -546,6 +585,15 @@ public class ConversationsController(
         string? viewer = null,
         CancellationToken ct = default)
     {
+        // The root conversation is checked FIRST, before the #244 transcript policy: that policy
+        // decides which agent inside a hierarchy may read a sibling's words, and answering it at all
+        // presumes the caller is entitled to the hierarchy. Reversed, a caller from another tenant
+        // would learn the shape of this one's agent tree from the refusal codes alone.
+        if (await AuthorizeAsync(threadId, AccessAction.Read, ct) is { } denied)
+        {
+            return denied;
+        }
+
         var result = await _hierarchy.ReadTranscriptAsync(threadId, agentId, viewer, ct);
         return result.Outcome switch
         {
@@ -667,6 +715,12 @@ public class ConversationsController(
             return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
         }
 
+        if (Refuse(threadId, await authorizer.AuthorizeAsync(threadId, metadata, AccessAction.Write, ct))
+            is { } denied)
+        {
+            return denied;
+        }
+
         var persistedModeId =
             metadata.Properties?.TryGetValue(MultiTurnAgentPool.ModePropertyKey, out var modeObj) == true
                 ? modeObj?.ToString()
@@ -694,7 +748,8 @@ public class ConversationsController(
                 mode,
                 requestedProviderId: null,
                 requestResponseDumpFileName: null,
-                callerCredential: callerCredential);
+                callerCredential: callerCredential,
+                ownerUserId: CallerUserId);
 
             // A pooled agent can outlive the sandbox session it was bound to — a workspace
             // plugin-selection change replaces the session underneath it. GetOrCreateAgent returns
@@ -709,7 +764,11 @@ public class ConversationsController(
             // the default null matches. Here the entry is created WITH this caller's credential, so
             // omitting it would compare a non-null app id against null and raise a bogus
             // SandboxCredentialConflictException against the very caller that owns the thread.
-            var refresh = await agentPool.EnsureCurrentAgentAsync(threadId, callerCredential, ct);
+            var refresh = await agentPool.EnsureCurrentAgentAsync(
+                threadId,
+                callerCredential,
+                ct,
+                ownerUserId: CallerUserId);
             if (refresh.Status == MultiTurnAgentPool.AgentRefreshStatus.RefreshDeferred)
             {
                 // RefreshDeferred means the pooled entry has an ACTIVE run, so the refresh could not
@@ -762,6 +821,10 @@ public class ConversationsController(
                 ex.RequestedAppId ?? "(none)");
             return Conflict(
                 new { error = "caller_credential_conflict", code = "caller_credential_conflict", detail = ex.Message, threadId });
+        }
+        catch (PrincipalConflictException ex)
+        {
+            return PrincipalConflict(threadId, "SendMessage", ex);
         }
 
         var userMessage = new TextMessage { Role = Role.User, Text = request.Text };
@@ -1183,6 +1246,12 @@ public class ConversationsController(
             return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
         }
 
+        if (Refuse(threadId, await authorizer.AuthorizeAsync(threadId, metadata, AccessAction.Read, ct))
+            is { } denied)
+        {
+            return denied;
+        }
+
         var result = runId != null
             ? await statusResolver.ResolveByRunIdAsync(threadId, runId, ct)
             : await statusResolver.ResolveByInputIdAsync(threadId, inputId!, ct);
@@ -1220,6 +1289,11 @@ public class ConversationsController(
             return refusal;
         }
 
+        if (await AuthorizeAsync(threadId, AccessAction.Write, ct) is { } denied)
+        {
+            return denied;
+        }
+
         // Atomic read-modify-write: a title/preview edit races with the pool's binding persistence
         // (provider/workspace/mode written when the agent is created for the first message). Doing a
         // separate LoadMetadata + SaveMetadata here would drop whichever write lost the interleave —
@@ -1242,6 +1316,9 @@ public class ConversationsController(
                     propertiesBuilder["preview"] = update.Preview;
                 }
 
+                // Ownership is CARRIED, not recomputed. This projection rebuilds the whole row
+                // from `existing`, so leaving the four owner columns off would silently unstamp the
+                // conversation on every rename - and an unstamped row is one nobody can read.
                 return new ThreadMetadata
                 {
                     ThreadId = threadId,
@@ -1250,6 +1327,10 @@ public class ConversationsController(
                     LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     SessionMappings = existing?.SessionMappings,
                     Properties = propertiesBuilder.ToImmutable(),
+                    TenantId = existing?.TenantId,
+                    OwnerUserId = existing?.OwnerUserId,
+                    OwnerAppId = existing?.OwnerAppId,
+                    Visibility = existing?.Visibility,
                 };
             },
             ct);
@@ -1270,6 +1351,11 @@ public class ConversationsController(
         if (RefuseMachineCaller(threadId, AgentOwnedThreadWriteCode) is { } refusal)
         {
             return refusal;
+        }
+
+        if (await AuthorizeAsync(threadId, AccessAction.Delete, ct) is { } denied)
+        {
+            return denied;
         }
 
         await agentPool.RemoveAgentAsync(threadId);
@@ -1297,6 +1383,11 @@ public class ConversationsController(
         if (RefuseMachineCaller(threadId, AgentOwnedThreadWriteCode) is { } refusal)
         {
             return refusal;
+        }
+
+        if (await AuthorizeAsync(threadId, AccessAction.Write, ct) is { } denied)
+        {
+            return denied;
         }
 
         var mode = await modeStore.GetModeAsync(request.ModeId, ct);
@@ -1355,7 +1446,11 @@ public class ConversationsController(
         var callerCredential = TryBuildCallerCredential(HttpContext?.Request?.Headers);
         try
         {
-            _ = await agentPool.RecreateAgentWithModeAsync(threadId, mode, callerCredential);
+            _ = await agentPool.RecreateAgentWithModeAsync(
+                threadId,
+                mode,
+                callerCredential,
+                CallerUserId);
         }
         catch (SandboxCredentialConflictException ex)
         {
@@ -1369,6 +1464,10 @@ public class ConversationsController(
                 ex.RequestedAppId ?? "(none)");
             return Conflict(
                 new { error = "caller_credential_conflict", code = "caller_credential_conflict", detail = ex.Message, threadId });
+        }
+        catch (PrincipalConflictException ex)
+        {
+            return PrincipalConflict(threadId, "Mode switch", ex);
         }
         catch (SandboxSessionUnavailableException ex)
         {
@@ -1420,6 +1519,11 @@ public class ConversationsController(
         if (RefuseMachineCaller(threadId, AgentOwnedThreadWriteCode) is { } refusal)
         {
             return refusal;
+        }
+
+        if (await AuthorizeAsync(threadId, AccessAction.Write, ct) is { } denied)
+        {
+            return denied;
         }
 
         var runState = agentPool.GetRunStateInfo(threadId);
@@ -1494,7 +1598,12 @@ public class ConversationsController(
         var callerCredential = TryBuildCallerCredential(HttpContext?.Request?.Headers);
         try
         {
-            _ = await agentPool.RecreateAgentWithProviderAsync(threadId, request.ProviderId, currentMode, callerCredential);
+            _ = await agentPool.RecreateAgentWithProviderAsync(
+                threadId,
+                request.ProviderId,
+                currentMode,
+                callerCredential,
+                CallerUserId);
         }
         catch (SandboxCredentialConflictException ex)
         {
@@ -1508,6 +1617,10 @@ public class ConversationsController(
                 ex.RequestedAppId ?? "(none)");
             return Conflict(
                 new { error = "caller_credential_conflict", code = "caller_credential_conflict", detail = ex.Message, threadId });
+        }
+        catch (PrincipalConflictException ex)
+        {
+            return PrincipalConflict(threadId, "Provider switch", ex);
         }
         catch (ProviderUnavailableException ex)
         {
@@ -1539,6 +1652,317 @@ public class ConversationsController(
             Warning = hadArmedWait ? ArmedWaitDiscardedWarning : null,
         });
     }
+
+
+    /// <summary>
+    /// The end user this request is attributed to, or null for an app-only or unauthenticated
+    /// caller. Handed to <see cref="MultiTurnAgentPool"/> as the principal half of its freeze.
+    /// </summary>
+    private string? CallerUserId => authorizer.Current?.EffectiveUserId;
+
+    /// <summary>
+    /// Loads the conversation's row and decides one action on it, returning the refusal to send or
+    /// null when the request may proceed.
+    /// </summary>
+    /// <remarks>
+    /// The row is loaded only while enforcement is on. With it off the decision is
+    /// <c>enforcement_disabled</c> for every input, so a read here would be work done purely to be
+    /// discarded on the pre-rollout path every existing test runs under.
+    /// </remarks>
+    /// <param name="threadId">The conversation being addressed.</param>
+    /// <param name="action">The action being attempted.</param>
+    /// <param name="ct">Cancellation token.</param>
+    private async Task<IActionResult?> AuthorizeAsync(
+        string threadId,
+        AccessAction action,
+        CancellationToken ct)
+    {
+        if (!authorizer.IsEnforced)
+        {
+            return null;
+        }
+
+        var metadata = await store.LoadMetadataAsync(threadId, ct);
+        return Refuse(threadId, await authorizer.AuthorizeAsync(threadId, metadata, action, ct));
+    }
+
+    /// <summary>
+    /// Turns one access decision into the response that carries it, or null when it allowed.
+    /// </summary>
+    /// <remarks>
+    /// The 404 body is BYTE-IDENTICAL to the one a genuinely unknown thread produces, down to the
+    /// <c>unknown_thread</c> code and the interpolated id. Any difference - a distinct code, a
+    /// different phrasing, even a different field order - would turn the route back into the
+    /// existence oracle the 404 is there to close.
+    /// </remarks>
+    /// <param name="threadId">The conversation being addressed.</param>
+    /// <param name="result">The decision.</param>
+    private IActionResult? Refuse(string threadId, ConversationAccessResult result)
+    {
+        if (result.Allowed)
+        {
+            return null;
+        }
+
+        if (result.HidesExistence)
+        {
+            logger.LogWarning(
+                "Conversation {ThreadId} refused as unknown for the current principal: {Reason}",
+                threadId,
+                result.Reason);
+            return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
+        }
+
+        if (string.Equals(result.Reason, ConversationAuthorizer.UnauthenticatedReason, StringComparison.Ordinal))
+        {
+            return StatusCode(
+                StatusCodes.Status401Unauthorized,
+                new { error = "unauthorized", code = result.Reason });
+        }
+
+        logger.LogWarning(
+            "Conversation {ThreadId} refused: {Reason}",
+            threadId,
+            result.Reason);
+
+        return StatusCode(
+            StatusCodes.Status403Forbidden,
+            new { error = "forbidden", code = result.Reason, threadId });
+    }
+
+    /// <summary>
+    /// The principal half of the pool's freeze, answered exactly like its app-id sibling: a
+    /// <c>409</c> naming what conflicted, never a <c>403</c>. The caller may well be authorized -
+    /// what it cannot have is this conversation's LIVE agent, which is bound to another person.
+    /// </summary>
+    /// <param name="threadId">The conversation being addressed.</param>
+    /// <param name="operation">Which route hit the conflict, for the log line.</param>
+    /// <param name="ex">The conflict.</param>
+    private ConflictObjectResult PrincipalConflict(
+        string threadId,
+        string operation,
+        PrincipalConflictException ex)
+    {
+        logger.LogWarning(
+            "{Operation} for thread {ThreadId} rejected: principal conflict (existing user {ExistingUserId}, requested user {RequestedUserId})",
+            operation,
+            threadId,
+            ex.ExistingUserId ?? "(none)",
+            ex.RequestedUserId ?? "(none)");
+
+        return Conflict(new
+        {
+            error = "principal_conflict",
+            code = "principal_conflict",
+            detail = ex.Message,
+            threadId,
+        });
+    }
+
+    /// <summary>Lists the grants on a conversation. Reading the roster is a read of the resource.</summary>
+    /// <param name="threadId">The conversation.</param>
+    /// <param name="ct">Cancellation token.</param>
+    [HttpGet("{threadId}/shares")]
+    public async Task<IActionResult> ListShares(string threadId, CancellationToken ct = default)
+    {
+        if (await AuthorizeAsync(threadId, AccessAction.Read, ct) is { } denied)
+        {
+            return denied;
+        }
+
+        var tenantId = authorizer.Current?.TenantId;
+        if (tenantId is null)
+        {
+            return Ok(Array.Empty<ConversationShareResponse>());
+        }
+
+        var grants = await authorizer.Grants
+            .ListGrantsForResourceAsync(tenantId, ConversationAuthorizer.ConversationRef(threadId), ct);
+
+        return Ok(grants.Select(g => new ConversationShareResponse
+        {
+            ThreadId = threadId,
+            SubjectId = g.SubjectId,
+            Role = g.Role == GrantRole.Editor ? "editor" : "viewer",
+            GrantedBy = g.GrantedBy,
+            GrantedAtUnixMs = g.GrantedAt.ToUnixTimeMilliseconds(),
+            ExpiresAtUnixMs = g.ExpiresAt?.ToUnixTimeMilliseconds(),
+        }).ToArray());
+    }
+
+    /// <summary>
+    /// Shares a conversation with one named person (spec 8.4). Idempotent: re-sharing with a
+    /// different role replaces the grant rather than adding a second one.
+    /// </summary>
+    /// <remarks>
+    /// <c>Share</c> is its own action, not a flavour of <c>Write</c>: by the rights table of 7.4.1
+    /// a grantee - including an <c>editor</c> - may not re-share, and a tenant admin may not share
+    /// on the owner's behalf. Routing this through <c>Write</c> would hand both of them the right.
+    /// </remarks>
+    /// <param name="threadId">The conversation.</param>
+    /// <param name="request">Who to share with, and as what.</param>
+    /// <param name="ct">Cancellation token.</param>
+    [HttpPost("{threadId}/shares")]
+    public async Task<IActionResult> AddShare(
+        string threadId,
+        [FromBody] ConversationShareRequest request,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (ParseGrantRole(request.Role) is not { } role)
+        {
+            return BadRequest(new
+            {
+                error = "invalid_role",
+                code = "invalid_role",
+                detail = "Role must be 'viewer' or 'editor'.",
+                threadId,
+            });
+        }
+
+        if (string.IsNullOrWhiteSpace(request.SubjectId))
+        {
+            return BadRequest(new
+            {
+                error = "invalid_subject",
+                code = "invalid_subject",
+                detail = "SubjectId must be the '{tid}:{oid}' pair of the person to share with.",
+                threadId,
+            });
+        }
+
+        var metadata = await store.LoadMetadataAsync(threadId, ct);
+        if (Refuse(threadId, await authorizer.AuthorizeAsync(threadId, metadata, AccessAction.Share, ct))
+            is { } denied)
+        {
+            return denied;
+        }
+
+        // Reachable only while enforcement is off, where the whole model is inert; a grant written
+        // with no principal would name nobody as its grantor.
+        if (authorizer.Current is not { } principal || metadata is null)
+        {
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                new
+                {
+                    error = "sharing_unavailable",
+                    code = "sharing_unavailable",
+                    detail = "Sharing requires Identity:Enforce and an authenticated principal.",
+                    threadId,
+                });
+        }
+
+        var now = authorizer.Clock.GetUtcNow();
+
+        await authorizer.Grants.GrantAsync(
+            new ResourceGrant
+            {
+                TenantId = principal.TenantId,
+                Resource = ConversationAuthorizer.ConversationRef(threadId),
+                SubjectId = request.SubjectId,
+                Role = role,
+                GrantedBy = principal.EffectiveUserId ?? principal.Actor.Id,
+                GrantedAt = now,
+                ExpiresAt = request.ExpiresAtUnixMs is { } expires
+                    ? DateTimeOffset.FromUnixTimeMilliseconds(expires)
+                    : null,
+            },
+            ct);
+
+        await SetVisibilityAsync(threadId, Visibility.Shared, ct);
+
+        logger.LogInformation(
+            "Conversation {ThreadId} shared with {SubjectId} as {Role}.",
+            threadId,
+            request.SubjectId,
+            role);
+
+        return Ok(new ConversationShareResponse
+        {
+            ThreadId = threadId,
+            SubjectId = request.SubjectId,
+            Role = role == GrantRole.Editor ? "editor" : "viewer",
+            GrantedBy = principal.EffectiveUserId ?? principal.Actor.Id,
+            GrantedAtUnixMs = now.ToUnixTimeMilliseconds(),
+            ExpiresAtUnixMs = request.ExpiresAtUnixMs,
+        });
+    }
+
+    /// <summary>Revokes one person's grant on a conversation.</summary>
+    /// <remarks>
+    /// Answers <c>204</c> whether or not a row was removed. A revoke is a statement about the end
+    /// state, and a <c>404</c> for "there was no grant" would let anyone entitled to revoke
+    /// enumerate who a conversation is shared with without reading the roster.
+    /// </remarks>
+    /// <param name="threadId">The conversation.</param>
+    /// <param name="subjectId">The person whose grant is removed.</param>
+    /// <param name="ct">Cancellation token.</param>
+    [HttpDelete("{threadId}/shares/{subjectId}")]
+    public async Task<IActionResult> RemoveShare(
+        string threadId,
+        string subjectId,
+        CancellationToken ct = default)
+    {
+        if (await AuthorizeAsync(threadId, AccessAction.Share, ct) is { } denied)
+        {
+            return denied;
+        }
+
+        if (authorizer.Current is not { } principal)
+        {
+            return NoContent();
+        }
+
+        var resource = ConversationAuthorizer.ConversationRef(threadId);
+        _ = await authorizer.Grants.RevokeAsync(principal.TenantId, resource, subjectId, ct);
+
+        // Visibility is STORED, not derived (spec 8.3), so the transition back to Private has to be
+        // made by whoever removed the last grant - otherwise `Shared` outlives the sharing, and a
+        // conversation reads as shared with nobody forever.
+        if (!await authorizer.Grants.HasAnyGrantAsync(
+                principal.TenantId,
+                resource,
+                authorizer.Clock.GetUtcNow(),
+                ct))
+        {
+            await SetVisibilityAsync(threadId, Visibility.Private, ct);
+        }
+
+        return NoContent();
+    }
+
+    /// <summary>Parses the wire role. An unrecognised value is refused, never defaulted.</summary>
+    private static GrantRole? ParseGrantRole(string? role) => role switch
+    {
+        "viewer" => GrantRole.Viewer,
+        "editor" => GrantRole.Editor,
+        _ => null,
+    };
+
+    /// <summary>
+    /// Moves a conversation between <see cref="Visibility.Private"/> and
+    /// <see cref="Visibility.Shared"/> through the store's atomic read-modify-write, so the change
+    /// cannot clobber a concurrent title edit or binding write.
+    /// </summary>
+    private Task SetVisibilityAsync(string threadId, Visibility visibility, CancellationToken ct) =>
+        store.UpdateMetadataAsync(
+            threadId,
+            existing => new ThreadMetadata
+            {
+                ThreadId = threadId,
+                CurrentRunId = existing?.CurrentRunId,
+                LatestRunId = existing?.LatestRunId,
+                LastUpdated = existing?.LastUpdated ?? timeProvider.GetUtcNow().ToUnixTimeMilliseconds(),
+                SessionMappings = existing?.SessionMappings,
+                Properties = existing?.Properties,
+                TenantId = existing?.TenantId,
+                OwnerUserId = existing?.OwnerUserId,
+                OwnerAppId = existing?.OwnerAppId,
+                Visibility = visibility,
+            },
+            ct);
 
     /// <summary>
     /// Reads the caller-forwarded <c>X-Sbx-App-Id</c> / <c>X-Sbx-App-Key</c> headers (the same names

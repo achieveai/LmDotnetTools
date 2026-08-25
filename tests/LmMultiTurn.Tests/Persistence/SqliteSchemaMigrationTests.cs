@@ -80,7 +80,10 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
 
         (await ReadUserVersionAsync(connection))
             .Should().Be(SqliteSchemaInitializer.LatestSchemaVersion);
-        SqliteSchemaInitializer.LatestSchemaVersion.Should().Be(2, "slice 1 takes the database to user_version 2");
+        SqliteSchemaInitializer.LatestSchemaVersion.Should().Be(
+            4,
+            "slice 2 adds the thread_metadata owner columns (3) and resource_grants (4) on top of "
+                + "slice 1's two steps");
     }
 
     [Fact]
@@ -125,8 +128,10 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
         await using var connection = await OpenAsync();
         await SqliteSchemaInitializer.InitializeSchemaAsync(connection);
 
-        (await ReadUserVersionAsync(connection)).Should().Be(2);
+        (await ReadUserVersionAsync(connection))
+            .Should().Be(SqliteSchemaInitializer.LatestSchemaVersion);
         (await TableExistsAsync(connection, "tenants")).Should().BeTrue();
+        (await TableExistsAsync(connection, "resource_grants")).Should().BeTrue();
 
         using var read = connection.CreateCommand();
         read.CommandText = "SELECT last_updated FROM thread_metadata WHERE thread_id = 'legacy-thread';";
@@ -178,13 +183,26 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
     public async Task APartiallyMigratedDatabase_AppliesOnlyTheStepsItHasNotTaken()
     {
         // The test above stops at the runner's already-at-latest fast path and so never reaches
-        // the per-step guard inside the loop. This one does: stamped at 1 with no tables at all,
-        // the runner must enter the loop, skip step 1 because 1 <= 1, and apply step 2 only. A
-        // runner that dropped the per-step guard would create the step-1 tables as well.
+        // the per-step guard inside the loop. This one does: stamped at 1, the runner must enter
+        // the loop, skip step 1 because 1 <= 1, and apply the rest. A runner that dropped the
+        // per-step guard would re-run step 1 as well, which `messages` below detects.
+        //
+        // The fixture creates thread_metadata by hand rather than leaving the database empty.
+        // Slice 2's step 3 ALTERs that table, so an empty database stamped at 1 is not a state the
+        // runner can migrate - and it is not a state that exists: user_version 1 asserts step 1
+        // ran. Before slice 2 the distinction did not matter, because every step was a CREATE.
         await using (var stamp = await OpenAsync())
         {
             using var command = stamp.CreateCommand();
-            command.CommandText = "PRAGMA user_version = 1;";
+            command.CommandText = """
+                CREATE TABLE thread_metadata (
+                    thread_id      TEXT PRIMARY KEY,
+                    current_run_id TEXT,
+                    last_updated   INTEGER NOT NULL,
+                    metadata_json  TEXT
+                );
+                PRAGMA user_version = 1;
+                """;
             _ = await command.ExecuteNonQueryAsync();
         }
 
@@ -193,9 +211,12 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
 
         (await TableExistsAsync(connection, "tenants"))
             .Should().BeTrue("step 2 had not been applied");
-        (await TableExistsAsync(connection, "thread_metadata"))
+        (await TableExistsAsync(connection, "resource_grants"))
+            .Should().BeTrue("step 4 had not been applied");
+        (await TableExistsAsync(connection, "messages"))
             .Should().BeFalse("step 1 was already recorded as applied, so it must be skipped");
-        (await ReadUserVersionAsync(connection)).Should().Be(2);
+        (await ReadUserVersionAsync(connection))
+            .Should().Be(SqliteSchemaInitializer.LatestSchemaVersion);
     }
 
     [Fact]
@@ -219,7 +240,8 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
         count.CommandText = "SELECT COUNT(*) FROM tenants;";
         Convert.ToInt64(await count.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture)
             .Should().Be(1);
-        (await ReadUserVersionAsync(connection)).Should().Be(2);
+        (await ReadUserVersionAsync(connection))
+            .Should().Be(SqliteSchemaInitializer.LatestSchemaVersion);
     }
 
     [Fact]

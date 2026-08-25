@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Identity;
 using Microsoft.Data.Sqlite;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
@@ -9,7 +10,12 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 /// Uses a factory pattern for connection pooling and lazy schema initialization.
 /// </summary>
 public sealed class SqliteConversationStore
-    : IConversationStore, IRunLedgerStore, IRunLifecycleStore, IInputAcceptanceStore, IAsyncDisposable
+    : IConversationStore,
+        IConversationOwnershipStore,
+        IRunLedgerStore,
+        IRunLifecycleStore,
+        IInputAcceptanceStore,
+        IAsyncDisposable
 {
     private readonly ISqliteConnectionFactory _connectionFactory;
     private readonly bool _ownsFactory;
@@ -208,18 +214,33 @@ public sealed class SqliteConversationStore
 
         using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO thread_metadata (thread_id, current_run_id, last_updated, metadata_json)
-            VALUES ($thread_id, $current_run_id, $last_updated, $metadata_json)
+            INSERT INTO thread_metadata (
+                thread_id, current_run_id, last_updated, metadata_json,
+                tenant_id, owner_user_id, owner_app_id, visibility)
+            VALUES (
+                $thread_id, $current_run_id, $last_updated, $metadata_json,
+                $tenant_id, $owner_user_id, $owner_app_id, $visibility)
             ON CONFLICT(thread_id) DO UPDATE SET
                 current_run_id = excluded.current_run_id,
                 last_updated = excluded.last_updated,
-                metadata_json = excluded.metadata_json;
+                metadata_json = excluded.metadata_json,
+                tenant_id = excluded.tenant_id,
+                owner_user_id = excluded.owner_user_id,
+                owner_app_id = excluded.owner_app_id,
+                visibility = excluded.visibility;
             """;
 
         _ = command.Parameters.AddWithValue("$thread_id", threadId);
         _ = command.Parameters.AddWithValue("$current_run_id", (object?)metadata.CurrentRunId ?? DBNull.Value);
         _ = command.Parameters.AddWithValue("$last_updated", metadata.LastUpdated);
         _ = command.Parameters.AddWithValue("$metadata_json", (object?)metadataJson ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue("$tenant_id", (object?)metadata.TenantId ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue(
+            "$owner_user_id", (object?)metadata.OwnerUserId ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue(
+            "$owner_app_id", (object?)metadata.OwnerAppId ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue(
+            "$visibility", (object?)metadata.Visibility?.ToString() ?? DBNull.Value);
 
         _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
@@ -238,7 +259,8 @@ public sealed class SqliteConversationStore
 
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT thread_id, current_run_id, last_updated, metadata_json
+            SELECT thread_id, current_run_id, last_updated, metadata_json,
+                   tenant_id, owner_user_id, owner_app_id, visibility
             FROM thread_metadata
             WHERE thread_id = $thread_id;
             """;
@@ -322,7 +344,8 @@ public sealed class SqliteConversationStore
 
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT thread_id, current_run_id, last_updated, metadata_json
+            SELECT thread_id, current_run_id, last_updated, metadata_json,
+                   tenant_id, owner_user_id, owner_app_id, visibility
             FROM thread_metadata
             ORDER BY last_updated DESC
             LIMIT $limit OFFSET $offset;
@@ -339,6 +362,196 @@ public sealed class SqliteConversationStore
         }
 
         return metadataList;
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+        ConversationListScope scope,
+        int limit = 50,
+        int offset = 0,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
+            .ConfigureAwait(false);
+
+        // The grant branch is a bound id list rather than an EXISTS over resource_grants: that
+        // table is not guaranteed to live in this database file. See ConversationListScope.
+        var grantParameters = scope.UserId is null
+            ? []
+            : scope.GrantedThreadIds
+                .Select((_, index) => FormattableString.Invariant($"$grant{index}"))
+                .ToArray();
+
+        var grantClause = grantParameters.Length == 0
+            ? "0"
+            : FormattableString.Invariant(
+                $"($userId IS NOT NULL AND t.thread_id IN ({string.Join(", ", grantParameters)}))");
+
+        using var command = connection.CreateCommand();
+
+        // The `@userId IS NOT NULL` guards are the SQL spelling of spec 7.4 step 3: without them an
+        // app-only principal would fall through into the grant branch with a NULL subject. They do
+        // NOT protect against a null OWNER - SQL already handles that, because NULL = $userId
+        // evaluates to NULL and never satisfies the WHERE.
+        command.CommandText = FormattableString.Invariant($"""
+            SELECT thread_id, current_run_id, last_updated, metadata_json,
+                   tenant_id, owner_user_id, owner_app_id, visibility
+            FROM thread_metadata t
+            WHERE t.tenant_id = $tenantId
+              AND ( $isTenantAdmin = 1
+                    OR ($userId IS NOT NULL AND t.owner_user_id = $userId)
+                    OR ($userId IS NULL AND $appId IS NOT NULL AND t.owner_app_id = $appId)
+                    OR {grantClause} )
+            ORDER BY t.last_updated DESC
+            LIMIT $limit OFFSET $offset;
+            """);
+
+        _ = command.Parameters.AddWithValue("$tenantId", scope.TenantId);
+        _ = command.Parameters.AddWithValue("$userId", (object?)scope.UserId ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue("$appId", (object?)scope.AppId ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue("$isTenantAdmin", scope.IsTenantAdmin ? 1 : 0);
+        _ = command.Parameters.AddWithValue("$limit", limit);
+        _ = command.Parameters.AddWithValue("$offset", offset);
+
+        if (scope.UserId is not null)
+        {
+            var index = 0;
+            foreach (var threadId in scope.GrantedThreadIds)
+            {
+                _ = command.Parameters.AddWithValue(
+                    FormattableString.Invariant($"$grant{index++}"), threadId);
+            }
+        }
+
+        var metadataList = new List<ThreadMetadata>();
+
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            metadataList.Add(ReadMetadata(reader));
+        }
+
+        return metadataList;
+    }
+
+    /// <inheritdoc />
+    public async Task<int> StampUnownedThreadsAsync(
+        string quarantineTenantId,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(quarantineTenantId);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
+            .ConfigureAwait(false);
+
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            "UPDATE thread_metadata SET tenant_id = $tenantId WHERE tenant_id IS NULL;";
+        _ = command.Parameters.AddWithValue("$tenantId", quarantineTenantId);
+
+        return await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<string>> ListThreadIdsByTenantAsync(
+        string tenantId,
+        IReadOnlyCollection<string>? threadIds,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
+            .ConfigureAwait(false);
+
+        using var command = connection.CreateCommand();
+        var restriction = BuildThreadIdRestriction(command, threadIds);
+        command.CommandText = FormattableString.Invariant(
+            $"SELECT thread_id FROM thread_metadata WHERE tenant_id = $tenantId{restriction} ORDER BY thread_id;");
+        _ = command.Parameters.AddWithValue("$tenantId", tenantId);
+
+        var ids = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            ids.Add(reader.GetString(0));
+        }
+
+        return ids;
+    }
+
+    /// <inheritdoc />
+    public async Task<int> AdoptThreadsAsync(
+        string fromTenantId,
+        string toTenantId,
+        string? ownerUserId,
+        IReadOnlyCollection<string>? threadIds,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fromTenantId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(toTenantId);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
+            .ConfigureAwait(false);
+
+        using var command = connection.CreateCommand();
+        var restriction = BuildThreadIdRestriction(command, threadIds);
+
+        // Selecting on the SOURCE tenant is what makes a repeated call idempotent: a row already
+        // adopted into a real tenant no longer matches, so it is never re-stamped. COALESCE keeps
+        // an owner already assigned when the second call names none.
+        command.CommandText = FormattableString.Invariant($"""
+            UPDATE thread_metadata
+               SET tenant_id = $toTenantId,
+                   owner_user_id = COALESCE($ownerUserId, owner_user_id)
+             WHERE tenant_id = $fromTenantId{restriction};
+            """);
+        _ = command.Parameters.AddWithValue("$fromTenantId", fromTenantId);
+        _ = command.Parameters.AddWithValue("$toTenantId", toTenantId);
+        _ = command.Parameters.AddWithValue("$ownerUserId", (object?)ownerUserId ?? DBNull.Value);
+
+        return await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Builds the optional <c>AND thread_id IN (...)</c> restriction and binds its parameters.
+    /// Returns an empty string when the caller named no ids, which means "every eligible row".
+    /// </summary>
+    private static string BuildThreadIdRestriction(
+        SqliteCommand command,
+        IReadOnlyCollection<string>? threadIds)
+    {
+        if (threadIds is null)
+        {
+            return string.Empty;
+        }
+
+        if (threadIds.Count == 0)
+        {
+            // An explicitly EMPTY list means "these zero resources", not "all of them". Returning
+            // the unrestricted form here would turn a caller's empty selection into a full adoption.
+            return " AND 0";
+        }
+
+        var names = new List<string>(threadIds.Count);
+        var index = 0;
+        foreach (var threadId in threadIds)
+        {
+            var name = FormattableString.Invariant($"$tid{index++}");
+            names.Add(name);
+            _ = command.Parameters.AddWithValue(name, threadId);
+        }
+
+        return FormattableString.Invariant($" AND thread_id IN ({string.Join(", ", names)})");
     }
 
     /// <inheritdoc />
@@ -1391,8 +1604,20 @@ public sealed class SqliteConversationStore
             LastUpdated = lastUpdated,
             SessionMappings = sessionMappings,
             Properties = properties,
+            TenantId = reader.IsDBNull(4) ? null : reader.GetString(4),
+            OwnerUserId = reader.IsDBNull(5) ? null : reader.GetString(5),
+            OwnerAppId = reader.IsDBNull(6) ? null : reader.GetString(6),
+            Visibility = ParseVisibility(reader.IsDBNull(7) ? null : reader.GetString(7)),
         };
     }
+
+    /// <summary>
+    /// Reads the stored visibility. A null - and anything unrecognised - reads as null, which the
+    /// policy treats as <see cref="Visibility.Private"/>: an unreadable value must never widen
+    /// access.
+    /// </summary>
+    private static Visibility? ParseVisibility(string? stored) =>
+        Enum.TryParse<Visibility>(stored, ignoreCase: false, out var parsed) ? parsed : null;
 
     private static string? SerializeMetadataExtensions(ThreadMetadata metadata)
     {

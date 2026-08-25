@@ -12,7 +12,7 @@ namespace LmStreaming.Sample.Services;
 /// <remarks>
 ///     <para>
 ///         The traversal is lifted verbatim out of <c>ConversationsController.BuildDescendantTreeAsync</c>
-///         (issue #251, phase 2): one bounded <see cref="IConversationStore.ListThreadsAsync"/> paging
+///         (issue #251, phase 2): one bounded <see cref="IConversationStore.ListThreadsAsync(int, int, CancellationToken)"/> paging
 ///         scan, one in-memory parent→children index built from it, then a visited-set BFS from the root.
 ///         Deliberately persisted-only — no live <c>SubAgentManager</c> union — because no current spawn
 ///         path creates a depth-&gt;1 tree anyway (nested live Agent delegation stays disabled); this
@@ -21,7 +21,7 @@ namespace LmStreaming.Sample.Services;
 ///     </para>
 ///     <para>
 ///         <b>Why the cache is mandatory, not an optimisation.</b>
-///         <see cref="FileConversationStore.ListThreadsAsync"/> has no offset index: every call enumerates
+///         <see cref="FileConversationStore.ListThreadsAsync(int, int, CancellationToken)"/> has no offset index: every call enumerates
 ///         EVERY thread directory, deserializes every <c>metadata.json</c> (falling back to deserializing
 ///         a whole <c>messages.json</c> when metadata is missing), sorts the lot, and only then applies
 ///         <c>Skip(offset).Take(limit)</c>. A scan therefore costs TotalThreadsInStore file reads, all
@@ -316,7 +316,7 @@ public sealed class ConversationDescendantScanner
     /// </summary>
     /// <remarks>
     ///     <b>One call, deliberately — not a paging loop.</b> Offset pagination over this store is unsound
-    ///     here, and not only in theory: <see cref="IConversationStore.ListThreadsAsync"/> is CONTRACTUALLY
+    ///     here, and not only in theory: <see cref="IConversationStore.ListThreadsAsync(int, int, CancellationToken)"/> is CONTRACTUALLY
     ///     "ordered by last updated descending", so every implementation sorts on a column that the live
     ///     conversations being scanned are mutating underneath the scan. A thread touched between page N
     ///     and page N+1 moves toward the front and pushes an unread neighbour backwards across the offset

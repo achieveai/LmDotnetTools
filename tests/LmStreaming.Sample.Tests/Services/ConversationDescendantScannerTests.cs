@@ -438,7 +438,7 @@ public sealed class ConversationDescendantScannerTests
 
     /// <summary>
     /// A conversation touched WHILE the scan is running must not be able to hide a sibling from the
-    /// roster. <see cref="IConversationStore.ListThreadsAsync"/> is contractually "ordered by last updated
+    /// roster. <see cref="IConversationStore.ListThreadsAsync(int, int, CancellationToken)"/> is contractually "ordered by last updated
     /// descending", so an offset-paged scan sorts on a column the live system is mutating underneath it:
     /// a thread that moves toward the front pushes an unread neighbour backwards across the offset
     /// boundary, and the next page's offset steps straight over it. What makes it more than a lost read is
@@ -558,6 +558,7 @@ public sealed class ConversationDescendantScannerTests
             new ConversationStatusResolver(store, new InMemoryConversationStore()),
             TimeProvider.System,
             new WorkflowRunRegistry(),
+            TestAuthorizers.Disabled(),
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
             new SubAgentScanCoverageCache(),

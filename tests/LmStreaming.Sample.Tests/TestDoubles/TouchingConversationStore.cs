@@ -4,7 +4,7 @@ namespace LmStreaming.Sample.Tests.TestDoubles;
 /// A forwarding <see cref="IConversationStore"/> view that models the one thing a persisted-thread scan
 /// cannot assume away: the store keeps changing while the scan reads it. After every
 /// <see cref="ListThreadsAsync"/> call it bumps one thread's <c>LastUpdated</c>, which — because
-/// <see cref="IConversationStore.ListThreadsAsync"/> is contractually "ordered by last updated
+/// <see cref="IConversationStore.ListThreadsAsync(int, int, CancellationToken)"/> is contractually "ordered by last updated
 /// descending" — moves that thread to the front of the ordering the next call will see.
 /// </summary>
 /// <remarks>

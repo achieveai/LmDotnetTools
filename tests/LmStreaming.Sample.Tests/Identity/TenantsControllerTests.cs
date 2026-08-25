@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using AchieveAi.LmDotnetTools.LmCore.Identity;
+using LmStreaming.Sample.Identity;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
@@ -49,6 +50,21 @@ internal sealed class RecordingTenantStore : ITenantStore
 
     public Task<bool> IsTenantAdminAsync(string tenantId, string userId, CancellationToken ct = default) =>
         Task.FromResult(false);
+
+    public Task<int> NormalizeEntraTenantIdsAsync(CancellationToken ct = default) =>
+        Task.FromResult(0);
+
+    /// <summary>
+    /// Whether the configured quarantine tenant id is free. False models the collision the startup
+    /// repair refuses to write through - an id that already names a real customer.
+    /// </summary>
+    public bool QuarantineAvailable { get; set; } = true;
+
+    public Task<bool> TryEnsureQuarantineTenantAsync(
+        string tenantId,
+        DateTimeOffset createdAt,
+        CancellationToken ct = default) =>
+        Task.FromResult(QuarantineAvailable);
 }
 
 /// <summary>
@@ -99,6 +115,12 @@ public sealed class TenantsControllerTests
                     _ = services.AddSingleton<ITenantStore>(_store);
                     _ = services.AddSingleton<IAuditSink>(_audit);
                     _ = services.AddSingleton(TimeProvider.System);
+
+                    // Added when TenantsController gained the adopt-legacy route (#302). These
+                    // tests are about the operator-secret guard and are unchanged by it; the
+                    // registrations exist only so the controller can be constructed.
+                    _ = services.AddSingleton<IConversationStore>(new InMemoryConversationStore());
+                    _ = services.Configure<IdentityOptions>(_ => { });
                     _ = services.AddControllers()
                         .AddApplicationPart(typeof(TenantsController).Assembly);
                 })

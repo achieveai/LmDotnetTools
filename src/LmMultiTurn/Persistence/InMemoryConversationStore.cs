@@ -7,7 +7,11 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 /// Thread-safe using ConcurrentDictionary.
 /// </summary>
 public sealed class InMemoryConversationStore
-    : IConversationStore, IRunLedgerStore, IRunLifecycleStore, IInputAcceptanceStore
+    : IConversationStore,
+        IConversationOwnershipStore,
+        IRunLedgerStore,
+        IRunLifecycleStore,
+        IInputAcceptanceStore
 {
     private readonly ConcurrentDictionary<string, List<PersistedMessage>> _messages = new();
     private readonly ConcurrentDictionary<string, ThreadMetadata> _metadata = new();
@@ -210,6 +214,102 @@ public sealed class InMemoryConversationStore
             .ToList();
 
         return Task.FromResult<IReadOnlyList<ThreadMetadata>>(result);
+    }
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+        ConversationListScope scope,
+        int limit = 50,
+        int offset = 0,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+
+        // Filter BEFORE the page is taken. Applying the scope to an already-trimmed page would
+        // return short pages whose length depends on who is asking.
+        var result = _metadata.Values
+            .Where(scope.Admits)
+            .OrderByDescending(m => m.LastUpdated)
+            .Skip(offset)
+            .Take(limit)
+            .ToList();
+
+        return Task.FromResult<IReadOnlyList<ThreadMetadata>>(result);
+    }
+
+    /// <inheritdoc />
+    public Task<int> StampUnownedThreadsAsync(
+        string quarantineTenantId,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(quarantineTenantId);
+
+        var stamped = 0;
+        foreach (var (threadId, metadata) in _metadata.ToArray())
+        {
+            if (metadata.TenantId is not null)
+            {
+                continue;
+            }
+
+            _metadata[threadId] = metadata with { TenantId = quarantineTenantId };
+            stamped++;
+        }
+
+        return Task.FromResult(stamped);
+    }
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<string>> ListThreadIdsByTenantAsync(
+        string tenantId,
+        IReadOnlyCollection<string>? threadIds,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
+
+        var result = _metadata.Values
+            .Where(m => string.Equals(m.TenantId, tenantId, StringComparison.Ordinal))
+            .Where(m => threadIds is null || threadIds.Contains(m.ThreadId))
+            .Select(m => m.ThreadId)
+            .OrderBy(id => id, StringComparer.Ordinal)
+            .ToList();
+
+        return Task.FromResult<IReadOnlyList<string>>(result);
+    }
+
+    /// <inheritdoc />
+    public Task<int> AdoptThreadsAsync(
+        string fromTenantId,
+        string toTenantId,
+        string? ownerUserId,
+        IReadOnlyCollection<string>? threadIds,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fromTenantId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(toTenantId);
+
+        var adopted = 0;
+        foreach (var (threadId, metadata) in _metadata.ToArray())
+        {
+            if (!string.Equals(metadata.TenantId, fromTenantId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (threadIds is not null && !threadIds.Contains(threadId))
+            {
+                continue;
+            }
+
+            _metadata[threadId] = metadata with
+            {
+                TenantId = toTenantId,
+                OwnerUserId = ownerUserId ?? metadata.OwnerUserId,
+            };
+            adopted++;
+        }
+
+        return Task.FromResult(adopted);
     }
 
     /// <inheritdoc />

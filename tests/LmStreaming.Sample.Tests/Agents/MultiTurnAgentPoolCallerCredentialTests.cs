@@ -6,7 +6,7 @@ namespace LmStreaming.Sample.Tests.Agents;
 /// Covers issue #153 M2's cross-actor caller-credential guard on <see cref="MultiTurnAgentPool"/>:
 /// <see cref="MultiTurnAgentPool.AgentCreationContext.CallerCredential"/> reaching the factory, the
 /// credential staying frozen across a mode/provider recreate, and the in-lock conflict guard in
-/// <see cref="MultiTurnAgentPool.GetOrCreateAgent(string, AgentProfile, string?, string?, string?, SandboxCredential?)"/>
+/// <see cref="MultiTurnAgentPool.GetOrCreateAgent(string, AgentProfile, string?, string?, string?, SandboxCredential?, string?)"/>
 /// matching the Cross-Actor Resume Matrix. Kept in its own file — separate from
 /// <see cref="MultiTurnAgentPoolTests"/> — per the issue's test-strategy split.
 /// </summary>
@@ -515,4 +515,91 @@ public class MultiTurnAgentPoolCallerCredentialTests
         thrown.RequestedAppId.Should().Be("intruder-b");
         thrown.Message.Should().NotContain("key-a").And.NotContain("key-b");
     }
+
+    /// <summary>
+    /// A live agent bound to one user refuses a second user's request on the same thread (#302,
+    /// P1 spec 7.6). The pool caches an agent per thread id, so without this guard the second
+    /// caller would be handed the first caller's agent - including its sandbox and its history.
+    /// </summary>
+    [Fact]
+    public async Task GetOrCreateAgent_RefusesADifferentOwningUser()
+    {
+        await using var pool = CreateOwnerPool();
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+
+        _ = pool.GetOrCreateAgent(
+            "thread-principal",
+            mode,
+            requestedProviderId: null,
+            requestResponseDumpFileName: null,
+            requestedWorkspaceId: null,
+            callerCredential: null,
+            ownerUserId: "dir-a:alice"
+        );
+
+        var act = () => pool.GetOrCreateAgent(
+            "thread-principal",
+            mode,
+            requestedProviderId: null,
+            requestResponseDumpFileName: null,
+            requestedWorkspaceId: null,
+            callerCredential: null,
+            ownerUserId: "dir-b:mallory"
+        );
+
+        var thrown = act.Should().Throw<PrincipalConflictException>().Which;
+        thrown.ThreadId.Should().Be("thread-principal");
+        thrown.ExistingUserId.Should().Be("dir-a:alice");
+        thrown.RequestedUserId.Should().Be("dir-b:mallory");
+    }
+
+    /// <summary>
+    /// A caller that asserts NO user is not a conflict, in either direction.
+    /// </summary>
+    /// <remarks>
+    /// A deliberate departure from a literal reading of spec 7.6, and the reason is that the two
+    /// transports disagree today: the WebSocket path asserts no principal in P1 while REST asserts
+    /// one, so a strict comparison would refuse every WebSocket turn on a thread the REST route
+    /// created - the shipping UI, in the DEFAULT configuration. This is not the vacuity 7.6 objects
+    /// to: when both sides do assert, the comparison is strict, which is what the test above pins.
+    /// The narrow consequence is recorded on the production method.
+    /// </remarks>
+    [Theory]
+    [InlineData("dir-a:alice", null)]
+    [InlineData(null, "dir-a:alice")]
+    public async Task GetOrCreateAgent_TreatsAnUnassertedUserAsNoConflict(string? first, string? second)
+    {
+        await using var pool = CreateOwnerPool();
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+
+        var created = pool.GetOrCreateAgent(
+            "thread-principal-null",
+            mode,
+            requestedProviderId: null,
+            requestResponseDumpFileName: null,
+            requestedWorkspaceId: null,
+            callerCredential: null,
+            ownerUserId: first
+        );
+
+        var reused = pool.GetOrCreateAgent(
+            "thread-principal-null",
+            mode,
+            requestedProviderId: null,
+            requestResponseDumpFileName: null,
+            requestedWorkspaceId: null,
+            callerCredential: null,
+            ownerUserId: second
+        );
+
+        reused.Should().BeSameAs(created);
+    }
+
+    private static MultiTurnAgentPool CreateOwnerPool() =>
+        new(
+            context => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId)),
+            providerRegistry: null,
+            conversationStore: null,
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
 }

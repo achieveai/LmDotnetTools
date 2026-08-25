@@ -148,6 +148,16 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         public SandboxCredential? CallerCredential { get; init; }
 
         /// <summary>
+        /// The <c>{tid}:{oid}</c> of the end user that created this thread's agent - <c>null</c>
+        /// for an app-only caller, and for every request made before P1. Set ONCE at creation and
+        /// never reassigned, exactly like <see cref="CallerCredential"/>: this is the second,
+        /// PARALLEL dimension of the freeze (P1 spec 7.6), and it is what makes the guard mean
+        /// something in the UI, where today both sides of the app-id comparison are null and
+        /// therefore always match.
+        /// </summary>
+        public string? OwnerUserId { get; init; }
+
+        /// <summary>
         /// The conversation's sandbox-established binding for this (workspace-mode) entry, or <c>null</c>
         /// for a non-workspace entry. Carried from the factory's <see cref="AgentCreationResult.StagedBinding"/>
         /// and published to the <see cref="ISandboxBindingSink"/> right after this entry commits under the
@@ -392,13 +402,23 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// Thrown when <paramref name="callerCredential"/>'s <c>AppId</c> differs from the app id the
     /// thread's existing agent was created under.
     /// </exception>
+    /// <param name="ownerUserId">
+    /// <c>Principal.EffectiveUserId</c> of the caller making THIS request - <c>null</c> for an
+    /// app-only caller. Frozen onto the entry on first creation and compared on every later call;
+    /// a mismatch throws <see cref="PrincipalConflictException"/> (P1 spec 7.6).
+    /// </param>
+    /// <exception cref="PrincipalConflictException">
+    /// Thrown when <paramref name="ownerUserId"/> differs from the user the thread's existing agent
+    /// was created under.
+    /// </exception>
     public IMultiTurnAgent GetOrCreateAgent(
         string threadId,
         AgentProfile mode,
         string? requestedProviderId,
         string? requestResponseDumpFileName,
         string? requestedWorkspaceId = null,
-        SandboxCredential? callerCredential = null
+        SandboxCredential? callerCredential = null,
+        string? ownerUserId = null
     )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -444,7 +464,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
                     resolvedProviderId,
                     requestResponseDumpFileName,
                     resolvedWorkspaceId,
-                    callerCredential
+                    callerCredential,
+                    ownerUserId
                 );
                 _agents[threadId] = entry;
                 PublishBindingIfStaged(threadId, entry);
@@ -465,6 +486,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
                 {
                     throw new SandboxCredentialConflictException(threadId, existingAppId, requestedAppId);
                 }
+
+                EnsurePrincipalMatches(threadId, existing, ownerUserId);
 
                 entry = existing;
             }
@@ -499,7 +522,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
 
     /// <summary>
     /// Returns the provider id that
-    /// <see cref="GetOrCreateAgent(string, AgentProfile, string?, string?, string?, SandboxCredential?)"/>
+    /// <see cref="GetOrCreateAgent(string, AgentProfile, string?, string?, string?, SandboxCredential?, string?)"/>
     /// would use for <paramref name="threadId"/>, without creating an agent. Useful when a
     /// caller needs to surface "this thread is locked to provider X" to the UI.
     /// </summary>
@@ -971,7 +994,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         string threadId,
         SandboxCredential? callerCredential = null,
         CancellationToken ct = default,
-        bool replace = true
+        bool replace = true,
+        string? ownerUserId = null
     )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -987,6 +1011,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             }
 
             EnsureCallerMatches(threadId, observed, callerCredential);
+            EnsurePrincipalMatches(threadId, observed, ownerUserId);
         }
 
         if (
@@ -1013,6 +1038,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             }
 
             EnsureCallerMatches(threadId, current, callerCredential);
+            EnsurePrincipalMatches(threadId, current, ownerUserId);
 
             if (!ReferenceEquals(current, observed))
             {
@@ -1082,6 +1108,45 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         if (!string.Equals(existingAppId, requestedAppId, StringComparison.Ordinal))
         {
             throw new SandboxCredentialConflictException(threadId, existingAppId, requestedAppId);
+        }
+    }
+
+    /// <summary>
+    /// The principal half of the freeze (P1 spec 7.6). Deliberately a SECOND check beside
+    /// <see cref="EnsureCallerMatches"/> rather than a widening of it: the app-id freeze is the
+    /// tenancy boundary between services, this is the boundary between people, and collapsing the
+    /// two would let a matching app id excuse a mismatched user.
+    /// </summary>
+    /// <remarks>
+    /// DEVIATION from 7.6's unqualified "on mismatch", argued in the PR body: a null on EITHER side
+    /// is the absence of an assertion, not a second person, and does not conflict. The WebSocket
+    /// transport asserts no principal in P1 (that is #345/#346, out of this slice), so a strict
+    /// comparison would make the very first UI reconnect after any REST call throw - in the DEFAULT
+    /// configuration - to enforce a rule whose own stated purpose is to stop two different humans
+    /// sharing one live agent.
+    /// </remarks>
+    /// <remarks>
+    /// This is not the vacuity 7.6 objects to. 7.6's complaint is that "today both sides are null
+    /// and therefore always match"; under enforcement every <c>/api</c> request carries a principal,
+    /// so both sides are populated and the case the spec names - user A's live agent, a request
+    /// asserting user B - throws. Nor is anything authorized here: IResourceAccessPolicy runs on
+    /// every route before the pool is reached, and a caller with no principal never gets past
+    /// IdentityMiddleware while enforcement is on.
+    /// </remarks>
+    private static void EnsurePrincipalMatches(
+        string threadId,
+        AgentEntry entry,
+        string? ownerUserId
+    )
+    {
+        if (ownerUserId is null || entry.OwnerUserId is null)
+        {
+            return;
+        }
+
+        if (!string.Equals(entry.OwnerUserId, ownerUserId, StringComparison.Ordinal))
+        {
+            throw new PrincipalConflictException(threadId, entry.OwnerUserId, ownerUserId);
         }
     }
 
@@ -1210,6 +1275,11 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// caller cannot mutate another app's conversation mode (issue #153 M2). The frozen credential
     /// itself is preserved across the swap — this parameter only authorizes the switch.
     /// </param>
+    /// <param name="ownerUserId">
+    /// <c>Principal.EffectiveUserId</c> of the caller requesting the switch, or <c>null</c> for an
+    /// app-only caller. Validated against the user the conversation was frozen to at creation; the
+    /// frozen owner itself is preserved across the swap - this parameter only authorizes the switch.
+    /// </param>
     /// <returns>The new agent for this thread</returns>
     /// <exception cref="SandboxCredentialConflictException">
     /// Thrown when <paramref name="callerCredential"/>'s <c>AppId</c> differs from the app id the
@@ -1218,7 +1288,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     public async Task<IMultiTurnAgent> RecreateAgentWithModeAsync(
         string threadId,
         AgentProfile mode,
-        SandboxCredential? callerCredential = null
+        SandboxCredential? callerCredential = null,
+        string? ownerUserId = null
     )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -1244,7 +1315,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             resolvedProviderId,
             resolvedWorkspaceId,
             switchKind: "mode",
-            callerCredential
+            callerCredential,
+            ownerUserId
         );
 
         // A mode switch is deliberate and mutable: overwrite the persisted mode so a later refresh
@@ -1273,6 +1345,11 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// caller cannot mutate another app's conversation provider (issue #153 M2). The frozen credential
     /// itself is preserved across the swap — this parameter only authorizes the switch.
     /// </param>
+    /// <param name="ownerUserId">
+    /// <c>Principal.EffectiveUserId</c> of the caller requesting the switch, or <c>null</c> for an
+    /// app-only caller. Validated against the user the conversation was frozen to at creation; the
+    /// frozen owner itself is preserved across the swap - this parameter only authorizes the switch.
+    /// </param>
     /// <returns>The new agent for this thread</returns>
     /// <exception cref="SandboxCredentialConflictException">
     /// Thrown when <paramref name="callerCredential"/>'s <c>AppId</c> differs from the app id the
@@ -1282,7 +1359,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         string threadId,
         string newProviderId,
         AgentProfile currentMode,
-        SandboxCredential? callerCredential = null
+        SandboxCredential? callerCredential = null,
+        string? ownerUserId = null
     )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -1311,7 +1389,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             newProviderId,
             resolvedWorkspaceId,
             switchKind: "provider",
-            callerCredential
+            callerCredential,
+            ownerUserId
         );
 
         // A provider switch is deliberate and mutable: overwrite the persisted provider so a later
@@ -1338,7 +1417,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         string providerId,
         string? workspaceId,
         string switchKind,
-        SandboxCredential? callerCredential = null
+        SandboxCredential? callerCredential = null,
+        string? ownerUserId = null
     )
     {
         // Acquire the per-key lock to prevent races with concurrent GetOrCreateAgent calls.
@@ -1353,6 +1433,12 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             // that guards the swap below, so no concurrent GetOrCreateAgent can interleave.
             _ = _agents.TryGetValue(threadId, out var existingEntry);
             var frozenCredential = existingEntry?.CallerCredential;
+
+            // Same reason the credential is peeked rather than taken from the request: a switch is
+            // neither a create nor a cross-actor request, so it must not change (or drop) the user
+            // the thread is bound to. When there is no existing entry the recreate binds to the
+            // caller as the new owner, exactly as a fresh create would.
+            var frozenOwnerUserId = existingEntry?.OwnerUserId ?? ownerUserId;
 
             // Cross-actor guard (issue #153): a switch must be rejected for a caller that is NOT the
             // app the conversation is bound to — otherwise a different S2S caller could mutate another
@@ -1370,6 +1456,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
                 {
                     throw new SandboxCredentialConflictException(threadId, existingAppId, requestedAppId);
                 }
+
+                EnsurePrincipalMatches(threadId, existingEntry, ownerUserId);
             }
 
             // Construct BEFORE evicting — a throw here leaves the current agent registered (the thread
@@ -1380,7 +1468,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
                 providerId,
                 requestResponseDumpFileName: null,
                 workspaceId,
-                frozenCredential
+                frozenCredential,
+                frozenOwnerUserId
             );
             _ = _agents.TryRemove(threadId, out oldEntry);
             _agents[threadId] = entry;
@@ -1418,7 +1507,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         string providerId,
         string? requestResponseDumpFileName,
         string? workspaceId,
-        SandboxCredential? callerCredential = null
+        SandboxCredential? callerCredential = null,
+        string? ownerUserId = null
     )
     {
         _logger.LogInformation(
@@ -1476,6 +1566,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             RequestResponseDumpFileName = requestResponseDumpFileName,
             OwnedResources = result.OwnedResources,
             CallerCredential = callerCredential,
+            OwnerUserId = ownerUserId,
             EstablishedBinding = result.StagedBinding,
         };
     }

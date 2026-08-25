@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.Agents;
+using LmStreaming.Sample.Tests.TestDoubles;
 
 namespace LmStreaming.Sample.Tests.Controllers;
 
@@ -75,6 +76,7 @@ public class ConversationsControllerWorkspaceTests
             new ConversationStatusResolver(new InMemoryConversationStore(), new InMemoryConversationStore()),
             TimeProvider.System,
             new WorkflowRunRegistry(),
+            TestAuthorizers.Disabled(),
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
             new SubAgentScanCoverageCache(),

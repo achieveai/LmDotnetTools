@@ -11,7 +11,11 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 /// Stores messages and metadata as JSON files in a directory structure.
 /// </summary>
 public sealed class FileConversationStore
-    : IConversationStore, IRunLedgerStore, IRunLifecycleStore, IInputAcceptanceStore
+    : IConversationStore,
+        IConversationOwnershipStore,
+        IRunLedgerStore,
+        IRunLifecycleStore,
+        IInputAcceptanceStore
 {
     private const string MessagesFileName = "messages.json";
     private const string MetadataFileName = "metadata.json";
@@ -282,6 +286,166 @@ public sealed class FileConversationStore
                     .Skip(offset)
                     .Take(limit)
             ];
+        }
+        finally
+        {
+            _ = _lock.Release();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+        ConversationListScope scope,
+        int limit = 50,
+        int offset = 0,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+
+        // Whole-file JSON has no index to push a predicate into, so the filter runs here - but it
+        // runs BEFORE Skip/Take, which is the property that matters: a page trimmed first and
+        // filtered second is short by however many rows the caller could not see.
+        var all = await ReadAllMetadataAsync(ct).ConfigureAwait(false);
+
+        return
+        [
+            .. all
+                .Where(scope.Admits)
+                .OrderByDescending(m => m.LastUpdated)
+                .Skip(offset)
+                .Take(limit)
+        ];
+    }
+
+    /// <inheritdoc />
+    public async Task<int> StampUnownedThreadsAsync(
+        string quarantineTenantId,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(quarantineTenantId);
+
+        var stamped = 0;
+
+        foreach (var metadata in await ReadAllMetadataAsync(ct).ConfigureAwait(false))
+        {
+            if (metadata.TenantId is not null)
+            {
+                continue;
+            }
+
+            await UpdateMetadataAsync(
+                    metadata.ThreadId,
+                    existing => (existing ?? metadata) with { TenantId = quarantineTenantId },
+                    ct)
+                .ConfigureAwait(false);
+
+            stamped++;
+        }
+
+        return stamped;
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<string>> ListThreadIdsByTenantAsync(
+        string tenantId,
+        IReadOnlyCollection<string>? threadIds,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
+
+        var all = await ReadAllMetadataAsync(ct).ConfigureAwait(false);
+
+        return
+        [
+            .. all
+                .Where(m => string.Equals(m.TenantId, tenantId, StringComparison.Ordinal))
+                .Where(m => threadIds is null || threadIds.Contains(m.ThreadId))
+                .Select(m => m.ThreadId)
+                .OrderBy(id => id, StringComparer.Ordinal)
+        ];
+    }
+
+    /// <inheritdoc />
+    public async Task<int> AdoptThreadsAsync(
+        string fromTenantId,
+        string toTenantId,
+        string? ownerUserId,
+        IReadOnlyCollection<string>? threadIds,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fromTenantId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(toTenantId);
+
+        var eligible = await ListThreadIdsByTenantAsync(fromTenantId, threadIds, ct)
+            .ConfigureAwait(false);
+
+        foreach (var threadId in eligible)
+        {
+            await UpdateMetadataAsync(
+                    threadId,
+                    existing => existing is null
+                        ? new ThreadMetadata
+                        {
+                            ThreadId = threadId,
+                            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                            TenantId = toTenantId,
+                            OwnerUserId = ownerUserId,
+                        }
+                        : existing with
+                        {
+                            TenantId = toTenantId,
+                            OwnerUserId = ownerUserId ?? existing.OwnerUserId,
+                        },
+                    ct)
+                .ConfigureAwait(false);
+        }
+
+        return eligible.Count;
+    }
+
+    /// <summary>
+    /// Every thread's metadata, with the same minimal-entry fallback
+    /// <see cref="ListThreadsAsync(int, int, CancellationToken)"/> uses for a directory that has
+    /// messages but no metadata file.
+    /// </summary>
+    private async Task<IReadOnlyList<ThreadMetadata>> ReadAllMetadataAsync(CancellationToken ct)
+    {
+        await _lock.WaitAsync(ct);
+        try
+        {
+            if (!Directory.Exists(_baseDirectory))
+            {
+                return [];
+            }
+
+            var metadataList = new List<ThreadMetadata>();
+
+            foreach (var dir in Directory.GetDirectories(_baseDirectory))
+            {
+                ct.ThrowIfCancellationRequested();
+
+                var threadId = Path.GetFileName(dir);
+                var metadataFile = Path.Combine(dir, MetadataFileName);
+                var metadata = await LoadJsonFileAsync<ThreadMetadata>(metadataFile, ct);
+
+                if (metadata != null)
+                {
+                    metadataList.Add(metadata);
+                    continue;
+                }
+
+                var messagesFile = Path.Combine(dir, MessagesFileName);
+                var messages = await LoadMessagesFromFileAsync(messagesFile, ct);
+                metadataList.Add(new ThreadMetadata
+                {
+                    ThreadId = threadId,
+                    LastUpdated = messages.Count > 0
+                        ? messages.Max(m => m.Timestamp)
+                        : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                });
+            }
+
+            return metadataList;
         }
         finally
         {

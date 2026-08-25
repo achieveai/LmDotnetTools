@@ -40,12 +40,31 @@ public static class IdentityServiceCollectionExtensions
             databasePath = Path.Combine(AppContext.BaseDirectory, "identity.db");
         }
 
-        _ = services.AddSingleton<ITenantStore>(
-            _ => new SqliteTenantStore(new SqliteConnectionFactory(databasePath)));
+        // ONE factory for BOTH registries, so `tenants`, `tenant_admins` and `resource_grants`
+        // share a database file and a migration runner. They are deliberately NOT in the
+        // conversation database: the sample's conversations are a FILE store, so there is no file
+        // in which a `tenants` row and a `thread_metadata` row could ever be siblings. See the PR
+        // body for why the spec's single-file assumption does not survive that, and what replaced
+        // it (a startup repair that reads the real registry rather than whichever `tenants` table
+        // happens to sit in the same file).
+        var identityConnectionFactory = new SqliteConnectionFactory(databasePath);
+
+        _ = services.AddSingleton<ITenantStore>(_ => new SqliteTenantStore(identityConnectionFactory));
+        _ = services.AddSingleton<IResourceGrantStore>(
+            _ => new SqliteResourceGrantStore(identityConnectionFactory));
+
+        _ = services.AddSingleton<IEnforcementGate, OptionsEnforcementGate>();
+        _ = services.AddSingleton<IResourceAccessPolicy>(sp => new ResourceAccessPolicy(
+            sp.GetRequiredService<IResourceGrantStore>(),
+            sp.GetRequiredService<IAuditSink>(),
+            sp.GetRequiredService<IEnforcementGate>(),
+            sp.GetRequiredService<TimeProvider>()));
 
         _ = services.AddSingleton<PrincipalFactory>();
         _ = services.AddSingleton<IPrincipalAccessor, HttpContextPrincipalAccessor>();
+        _ = services.AddSingleton<ConversationAuthorizer>();
         _ = services.AddHostedService<TenantSeedHostedService>();
+        _ = services.AddHostedService<ConversationOwnershipRepairHostedService>();
 
         AddBearerAuthentication(services, configuration);
 

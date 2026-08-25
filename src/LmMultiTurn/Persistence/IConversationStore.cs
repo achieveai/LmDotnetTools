@@ -116,4 +116,39 @@ public interface IConversationStore
         int limit = 50,
         int offset = 0,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Lists the threads one principal may read, ordered by last updated descending.
+    /// </summary>
+    /// <remarks>
+    /// The predicate is pushed into the store rather than applied to the result of
+    /// <see cref="ListThreadsAsync(int, int, CancellationToken)"/>: filtering after a
+    /// <paramref name="limit"/> silently returns short pages, because the page was trimmed before
+    /// the filter ran. See P1 spec 7.5.
+    /// <para>
+    /// The scope covers READ only. It is not a substitute for calling
+    /// <c>IResourceAccessPolicy</c> on write, delete or share - those vary by relationship and by
+    /// publication state in ways no list query models. An endpoint that infers "it was in your
+    /// list, so you may edit it" reintroduces exactly the collapse the rights table prevents.
+    /// </para>
+    /// <para>
+    /// The default implementation THROWS. A default that ignored the scope and delegated to the
+    /// unscoped overload would be a silent fail-open - every conversation in the deployment, handed
+    /// to whoever asked - and one that filtered the returned page would be the short-page bug above.
+    /// A store that cannot answer a scoped listing must say so where it is called, loudly, rather
+    /// than answer something plausible. Narrow test doubles for unrelated concerns are what this
+    /// spares; every store that reaches a listing route implements it.
+    /// </para>
+    /// </remarks>
+    /// <param name="scope">The principal's tenant, identity, role and resolved grants.</param>
+    /// <param name="limit">Maximum number of threads to return.</param>
+    /// <param name="offset">Number of threads to skip.</param>
+    /// <param name="ct">Cancellation token.</param>
+    Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+        ConversationListScope scope,
+        int limit = 50,
+        int offset = 0,
+        CancellationToken ct = default) =>
+        throw new NotSupportedException(
+            $"{GetType().Name} does not implement scoped conversation listing (P1 spec 7.5).");
 }

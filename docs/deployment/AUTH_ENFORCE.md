@@ -211,36 +211,108 @@ installs. Configuration files get copied between environments, and a stale entry
 real tenant in an enforcing deployment would defeat explicit provisioning through its own
 convenience feature.
 
-### `Identity:Enforce` gives you authentication, NOT yet authorization
+### What `Identity:Enforce` refuses, and what it filters
 
 Read this before turning it on anywhere real.
 
-With `Identity:Enforce` true, every `/api` request must carry a valid token from a **provisioned**
-tenant. That is the whole of what slice 1 delivers. It does **not** filter any data by tenant.
-`IResourceAccessPolicy` is a contract with no implementation yet, no controller consults it, and
-`ConversationsController` does not read the `Principal` at all.
+With `Identity:Enforce` true:
 
-So a signed-in user from tenant A can still reach conversations and workspaces belonging to
-tenant B, exactly as before this change. What `Enforce` buys today is that anonymous callers are
-turned away and every request is attributable in the audit trail — a front door, not a partition.
+- Every `/api` request must carry a valid token from a **provisioned** tenant (slice 1).
+- Every conversation **REST** route resolves the caller against the conversation's owner columns
+  before answering (slice 2, #302) — both `ConversationsController` and the workspace file browser at
+  `/api/conversations/{threadId}/files`, which addresses the same conversations by the same ids.
+  Reads, writes, deletes and shares of another tenant's conversation are refused, and the
+  conversation listing returns only what the caller may see. The WebSocket transports are the
+  exception and are listed under "Known gaps" below.
 
-Per-tenant and per-owner access checks land in slice 2 (#302). Do not read "identity is enforced"
-as "tenant data is isolated" until that ships.
+A refusal that would otherwise confirm a conversation id exists answers `404` with the same body an
+id that was never minted produces. That is deliberate: conversation ids are guessable enough that a
+`403` would be an existence oracle. A caller who already holds a grant gets `403` with a reason code
+instead, because for them there is nothing left to hide.
+
+Rights follow spec §7.4.1, and two of them surprise people:
+
+- A **tenant admin** may READ a member's private conversation but may not write or delete it.
+- A **grantee** may not re-share, whatever their role. Sharing stays with the owner, so revoking a
+  grant actually revokes access.
+
+With `Identity:Enforce` false nothing above applies and every route behaves exactly as it did before
+slice 2. The owner columns are still written, so a deployment accumulates correct ownership data
+while enforcement is off — which is what makes the flip reversible.
+
+### Every conversation must carry a tenant before you flip
+
+Under enforcement a conversation whose `tenant_id` is null is visible to **nobody** — not its
+author, not an admin. Conversations written by builds predating #302 have no tenant, so they must be
+claimed first. Two mechanisms do this, and both are needed:
+
+1. **The startup repair.** On every boot the host ensures the quarantine tenant named by
+   `Identity:LegacyTenantId` (default `legacy`) exists, then stamps every conversation that has no
+   tenant with it. It runs on every boot rather than once, because a host rolled back to a build
+   predating #302 writes untenanted conversations again and a version-gated migration would never
+   revisit them.
+
+   If `Identity:LegacyTenantId` names a tenant that already exists and is not the quarantine tenant,
+   the host **refuses to start** and writes nothing. Stamping real customer data with a real
+   customer's tenant id would hand that customer's admins read access to it. Pick an unused id.
+
+   Agent-owned threads — the `subagent-*` and `workflow-*` ids the agent pool creates rather than
+   the provisioning route — are **not** stamped at creation, so a run produces fresh untenanted rows
+   that this repair only claims at the NEXT boot. They fail closed in the meantime (`404`, like any
+   untenanted row), which is the right direction but is not the same as "every conversation carries a
+   tenant". Tracked on issue #385.
+
+2. **Adoption.** `POST /api/admin/tenants/{tenantId}/adopt-legacy` moves conversations out of the
+   quarantine tenant into a real one, optionally assigning an owner. It takes the operator secret,
+   like every other route on that controller.
+
+   ```jsonc
+   {
+     "resourceType": "thread",
+     "ownerUserId": "{entra-tid}:{oid}",  // optional; omit to adopt without an owner
+     "resourceIds": ["thread-1", "thread-2"],  // optional; omit for every quarantined conversation
+     "dryRun": true
+   }
+   ```
+
+   Notes that matter:
+   - `dryRun: true` reports the count and a sample of up to 20 ids and writes no customer data. It
+     still writes an audit record.
+   - An **omitted** `resourceIds` means "every quarantined conversation". An **empty array** means
+     "none". They are not the same, and the route does not conflate them.
+   - `ownerUserId` must belong to the target tenant's Entra directory or the call is refused with
+     `owner_tenant_mismatch` before anything is written.
+   - Re-running adopts nothing the first run already moved: the selection is on the SOURCE tenant,
+     so a retry after a timeout is safe.
+   - A conversation still in the quarantine tenant after the flip is invisible to end users. That is
+     the intended failure mode — inaccessible, not exposed — but it is an outage for whoever owned
+     it, so rehearse first.
 
 ### Recommended flip order
 
-1. Register the Entra app, set `AzureAd:ClientId`; leave `Identity:Enforce` false. Sign-in now
-   works and is exercised, but nothing is refused.
-2. Set `LMSTREAMING_IDENTITY_OPERATOR_SECRET` and provision every tenant that will need one.
-   Confirm each expected user signs in and resolves to the tenant you expect.
-3. Set `Identity:Enforce` true. Anonymous `/api` requests now get `401` — **and so does every
+1. Deploy the build. Leave `Identity:Enforce` false. The schema migrates (`user_version` 4), the
+   startup repair stamps untenanted conversations with the quarantine tenant, and new conversations
+   are stamped with their creator's tenant and user as they are created. Nothing is refused yet.
+2. Register the Entra app, set `AzureAd:ClientId`. Sign-in now works and is exercised.
+3. Set `LMSTREAMING_IDENTITY_OPERATOR_SECRET` and provision every tenant that will need one. Confirm
+   each expected user signs in and resolves to the tenant you expect.
+4. Adopt the legacy data. Run `adopt-legacy` with `dryRun: true` for each target tenant, check the
+   counts against what you expect, then run it for real.
+5. Confirm nothing is left behind: a `dryRun` adoption into any real tenant should now report `0`,
+   and no conversation anyone still needs should remain in the quarantine tenant.
+6. Set `Identity:Enforce` true. Anonymous `/api` requests now get `401` — **and so does every
    service-to-service caller**, including ones that authenticate correctly with `X-S2S-Auth`. Read
-   "Service callers are refused" below before taking this step. Do not take it at all on a host
-   that serves S2S traffic.
+   "Service callers are refused" below before taking this step. Do not take it at all on a host that
+   serves S2S traffic.
+
+Steps 1 through 5 are reversible and can sit in production for as long as you like. Only step 6
+changes what any caller sees.
 
 ### Known gaps
 
-Two things `Identity:Enforce` does not do that its name suggests it might. Both are open.
+Three things `Identity:Enforce` does not do that its name suggests it might. All are open. The list
+is exhaustive over the REST surface: every other `/api` route that names a conversation goes through
+the authorizer.
 
 #### Service callers are refused (#345)
 
@@ -272,6 +344,14 @@ This is fail-closed, not a bypass — no unauthenticated caller gets in. But it 
 non-browser callers, so **do not flip `Identity:Enforce` on a host serving S2S traffic** until #345
 lands. The fix is a principal path for service callers (spec §4.2, slice 5 / #305), not an exemption
 list in the middleware.
+
+#### An editor grantee can collide with a live agent (#302 follow-up)
+
+The agent pool binds a conversation's live agent to the user who started it, and refuses a second
+user's turn on the same thread with `409 principal_conflict`. That guard predates named sharing and
+does not know about grants, so an **editor** grantee writing to a conversation whose agent is
+currently bound to the owner gets a `409` rather than their turn. Read paths are unaffected, and the
+conflict clears once the agent is evicted.
 
 #### The WebSocket transports carry no token
 

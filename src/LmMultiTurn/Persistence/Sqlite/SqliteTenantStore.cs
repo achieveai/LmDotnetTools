@@ -18,6 +18,7 @@ public sealed class SqliteTenantStore : ITenantStore
 {
     private const string StatusActive = "active";
     private const string StatusSuspended = "suspended";
+    private const string StatusQuarantined = "quarantined";
 
     private readonly ISqliteConnectionFactory _factory;
     private readonly SemaphoreSlim _schemaLock = new(1, 1);
@@ -62,10 +63,13 @@ public sealed class SqliteTenantStore : ITenantStore
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(entraTenantId);
 
+        // Normalized on BOTH sides (#347). SQLite compares TEXT under BINARY collation, so an
+        // operator who provisioned an upper-cased GUID pasted out of a ticket would otherwise get
+        // a 201 and then every user from that directory would get tenant_not_provisioned forever.
         return await FindAsync(
                 "SELECT tenant_id, entra_tenant_id, display_name, status, created_at, created_by "
                     + "FROM tenants WHERE entra_tenant_id = $key;",
-                entraTenantId,
+                NormalizeEntraTenantId(entraTenantId)!,
                 ct)
             .ConfigureAwait(false);
     }
@@ -138,7 +142,9 @@ public sealed class SqliteTenantStore : ITenantStore
             return TenantProvisionOutcome.TenantIdExists;
         }
 
-        if (tenant.EntraTenantId is { } entra
+        var normalizedEntraTenantId = NormalizeEntraTenantId(tenant.EntraTenantId);
+
+        if (normalizedEntraTenantId is { } entra
             && await ExistsAsync(connection, transaction, "entra_tenant_id", entra, ct).ConfigureAwait(false))
         {
             transaction.Rollback();
@@ -154,7 +160,7 @@ public sealed class SqliteTenantStore : ITenantStore
                 """;
             _ = insertTenant.Parameters.AddWithValue("$tenantId", tenant.TenantId);
             _ = insertTenant.Parameters.AddWithValue(
-                "$entraTenantId", (object?)tenant.EntraTenantId ?? DBNull.Value);
+                "$entraTenantId", (object?)normalizedEntraTenantId ?? DBNull.Value);
             _ = insertTenant.Parameters.AddWithValue("$displayName", tenant.DisplayName);
             _ = insertTenant.Parameters.AddWithValue("$status", FormatStatus(tenant.Status));
             _ = insertTenant.Parameters.AddWithValue(
@@ -236,6 +242,114 @@ public sealed class SqliteTenantStore : ITenantStore
     }
 
     /// <inheritdoc />
+    public async Task<int> NormalizeEntraTenantIdsAsync(CancellationToken ct = default)
+    {
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _factory.GetConnectionAsync(ct).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+
+        // The NOT EXISTS clause is what keeps this from wedging startup. Without it, two rows that
+        // differ only in case would both fold onto one value, ux_tenants_entra would reject the
+        // UPDATE, and the host would fail to start with no in-product way out.
+        command.CommandText = """
+            UPDATE tenants
+               SET entra_tenant_id = lower(trim(entra_tenant_id))
+             WHERE entra_tenant_id IS NOT NULL
+               AND entra_tenant_id <> lower(trim(entra_tenant_id))
+               AND NOT EXISTS (
+                     SELECT 1 FROM tenants other
+                      WHERE other.entra_tenant_id = lower(trim(tenants.entra_tenant_id)));
+            """;
+
+        return await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> TryEnsureQuarantineTenantAsync(
+        string tenantId,
+        DateTimeOffset createdAt,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _factory.GetConnectionAsync(ct).ConfigureAwait(false);
+
+        // BEGIN IMMEDIATE: the "is this id free, or already mine?" read and the insert that depends
+        // on it must not be separated by another writer, or two hosts starting at once could both
+        // pass the check. That is the concurrent-startup case this whole path exists under.
+        using var transaction = connection.BeginTransaction(deferred: false);
+
+        var existing = await ReadQuarantineStateAsync(connection, transaction, tenantId, ct)
+            .ConfigureAwait(false);
+
+        if (existing == QuarantineState.OtherTenant)
+        {
+            // Nothing written. The caller fails with legacy_tenant_id_collision; an operator picks
+            // a different id, and no legacy row has been stamped with a real customer's tenant.
+            transaction.Rollback();
+            return false;
+        }
+
+        if (existing == QuarantineState.Absent)
+        {
+            using var insert = connection.CreateCommand();
+            insert.Transaction = transaction;
+            insert.CommandText = """
+                INSERT INTO tenants (tenant_id, entra_tenant_id, display_name, status, created_at, created_by)
+                VALUES ($tenantId, NULL, $displayName, $status, $createdAt, 'migration');
+                """;
+            _ = insert.Parameters.AddWithValue("$tenantId", tenantId);
+            _ = insert.Parameters.AddWithValue("$displayName", "Unadopted (pre-identity) data");
+            _ = insert.Parameters.AddWithValue("$status", StatusQuarantined);
+            _ = insert.Parameters.AddWithValue("$createdAt", createdAt.ToUnixTimeMilliseconds());
+            _ = await insert.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+
+        transaction.Commit();
+        return true;
+    }
+
+    /// <summary>What the configured legacy tenant id currently names.</summary>
+    private enum QuarantineState
+    {
+        /// <summary>No row holds that id, so it is free to create.</summary>
+        Absent = 0,
+
+        /// <summary>The row is the quarantine tenant: no Entra directory, status quarantined.</summary>
+        Quarantine = 1,
+
+        /// <summary>Some other tenant holds that id. Writing anything here would be the leak.</summary>
+        OtherTenant = 2,
+    }
+
+    private static async Task<QuarantineState> ReadQuarantineStateAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string tenantId,
+        CancellationToken ct)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            "SELECT entra_tenant_id, status FROM tenants WHERE tenant_id = $tenantId;";
+        _ = command.Parameters.AddWithValue("$tenantId", tenantId);
+
+        using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        if (!await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            return QuarantineState.Absent;
+        }
+
+        var isQuarantine = reader.IsDBNull(0)
+            && string.Equals(reader.GetString(1), StatusQuarantined, StringComparison.Ordinal);
+
+        return isQuarantine ? QuarantineState.Quarantine : QuarantineState.OtherTenant;
+    }
+
+    /// <inheritdoc />
     public async Task<bool> IsTenantAdminAsync(
         string tenantId,
         string userId,
@@ -264,15 +378,31 @@ public sealed class SqliteTenantStore : ITenantStore
     /// </summary>
     private static string Normalize(string upn) => upn.Trim().ToLowerInvariant();
 
-    private static string FormatStatus(TenantStatus status) =>
-        status == TenantStatus.Suspended ? StatusSuspended : StatusActive;
+    /// <summary>
+    /// Lower-cases and trims an Entra directory id for storage and matching (#347). The value is a
+    /// GUID, so an invariant lower-case is lossless; what it buys is that an operator who pastes an
+    /// upper-cased id out of a ticket provisions the same row a token carrying the lower-cased one
+    /// resolves to, instead of a row nobody can ever sign in against.
+    /// </summary>
+    /// <param name="entraTenantId">The raw value, from configuration or from a token claim.</param>
+    internal static string? NormalizeEntraTenantId(string? entraTenantId) =>
+        string.IsNullOrWhiteSpace(entraTenantId) ? null : entraTenantId.Trim().ToLowerInvariant();
+
+    private static string FormatStatus(TenantStatus status) => status switch
+    {
+        TenantStatus.Suspended => StatusSuspended,
+        TenantStatus.Quarantined => StatusQuarantined,
+        _ => StatusActive,
+    };
 
     /// <summary>
     /// Reads a status column. Anything that is not exactly <c>active</c> reads as suspended: an
     /// unrecognised status must fail closed, never grant sign-in.
     /// </summary>
-    private static TenantStatus ParseStatus(string status) =>
-        string.Equals(status, StatusActive, StringComparison.Ordinal)
-            ? TenantStatus.Active
-            : TenantStatus.Suspended;
+    private static TenantStatus ParseStatus(string status) => status switch
+    {
+        StatusActive => TenantStatus.Active,
+        StatusQuarantined => TenantStatus.Quarantined,
+        _ => TenantStatus.Suspended,
+    };
 }
