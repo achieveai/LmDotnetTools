@@ -12,11 +12,13 @@ internal class FailoverStateController
     private FailoverState _state = FailoverState.Primary;
     private DateTimeOffset? _nextProbeAt;
     private readonly TimeSpan? _recoveryInterval;
+    private readonly TimeProvider _timeProvider;
     private bool _probeInProgress;
 
-    public FailoverStateController(TimeSpan? recoveryInterval)
+    public FailoverStateController(TimeSpan? recoveryInterval, TimeProvider? timeProvider = null)
     {
         _recoveryInterval = recoveryInterval;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public bool ShouldUsePrimary()
@@ -29,7 +31,7 @@ internal class FailoverStateController
             }
 
             if (_nextProbeAt.HasValue
-                && DateTimeOffset.UtcNow >= _nextProbeAt.Value
+                && _timeProvider.GetUtcNow() >= _nextProbeAt.Value
                 && !_probeInProgress)
             {
                 _probeInProgress = true;
@@ -47,7 +49,7 @@ internal class FailoverStateController
             _state = FailoverState.Backup;
             _probeInProgress = false;
             _nextProbeAt = _recoveryInterval.HasValue
-                ? DateTimeOffset.UtcNow.Add(_recoveryInterval.Value)
+                ? _timeProvider.GetUtcNow().Add(_recoveryInterval.Value)
                 : null;
         }
     }

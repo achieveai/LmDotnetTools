@@ -3,6 +3,7 @@ using AchieveAi.LmDotnetTools.LmEmbeddings.Interfaces;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Time.Testing;
 using Moq;
 using Xunit;
 using Xunit.Abstractions;
@@ -133,11 +134,13 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
     public async Task GetEmbeddingAsync_AfterCooldown_ProbesPrimary()
     {
         LogTestStart();
+        var timeProvider = new FakeTimeProvider(DateTimeOffset.UtcNow);
         var options = new FailoverOptions
         {
             PrimaryRequestTimeout = TimeSpan.FromSeconds(2),
             RecoveryInterval = TimeSpan.FromMilliseconds(50),
-            FailoverOnHttpError = true
+            FailoverOnHttpError = true,
+            TimeProvider = timeProvider
         };
 
         _primaryMock.SetupSequence(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -151,8 +154,8 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
 
         Trace("First call triggers failover");
         await service.GetEmbeddingAsync("test1");
-        Trace("Waiting for cooldown to expire");
-        await Task.Delay(100);
+        Trace("Advancing the fake clock past the cooldown (deterministic - no real wait, no CI flake)");
+        timeProvider.Advance(TimeSpan.FromMilliseconds(100));
         Trace("Probing primary after cooldown");
         var result = await service.GetEmbeddingAsync("test2");
 
@@ -325,11 +328,13 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
     public async Task GetEmbeddingAsync_ProbeFailure_ReExtendsCooldown()
     {
         LogTestStart();
+        var timeProvider = new FakeTimeProvider(DateTimeOffset.UtcNow);
         var options = new FailoverOptions
         {
             PrimaryRequestTimeout = TimeSpan.FromSeconds(2),
             RecoveryInterval = TimeSpan.FromMilliseconds(50),
-            FailoverOnHttpError = true
+            FailoverOnHttpError = true,
+            TimeProvider = timeProvider
         };
 
         _primaryMock.Setup(p => p.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -343,8 +348,9 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
         Trace("First call triggers failover");
         await service.GetEmbeddingAsync("test1");
 
-        Trace("Wait for cooldown to expire, then probe (which will also fail)");
-        await Task.Delay(100);
+        Trace("Advance the fake clock past the cooldown, then probe (which will also fail). "
+            + "Deterministic - no real wait racing the 50ms cooldown against a starved CI runner.");
+        timeProvider.Advance(TimeSpan.FromMilliseconds(100));
         await service.GetEmbeddingAsync("test2");
 
         Trace("Primary was tried twice (initial + probe), both failed");

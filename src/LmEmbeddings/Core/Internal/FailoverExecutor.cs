@@ -24,7 +24,7 @@ internal class FailoverExecutor<TService> where TService : class
         _options = options;
         _logger = logger;
         _serviceName = serviceName;
-        _stateController = new FailoverStateController(options.RecoveryInterval);
+        _stateController = new FailoverStateController(options.RecoveryInterval, options.TimeProvider);
     }
 
     public async Task<T> ExecuteAsync<T>(

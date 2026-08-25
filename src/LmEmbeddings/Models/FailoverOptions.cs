@@ -17,4 +17,11 @@ public class FailoverOptions
     /// Null = stay on backup until manual reset via ResetToPrimary().
     /// </summary>
     public TimeSpan? RecoveryInterval { get; init; }
+
+    /// <summary>
+    /// Clock used to evaluate the recovery cooldown. Defaults to the system clock; tests inject
+    /// <c>Microsoft.Extensions.Time.Testing.FakeTimeProvider</c> and advance it deterministically
+    /// instead of racing a real delay against the CI runner's wall clock.
+    /// </summary>
+    public TimeProvider TimeProvider { get; init; } = TimeProvider.System;
 }
