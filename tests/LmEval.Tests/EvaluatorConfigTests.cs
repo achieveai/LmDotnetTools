@@ -3,6 +3,7 @@ using AchieveAi.LmDotnetTools.LmEval.Gates;
 using AchieveAi.LmDotnetTools.LmEval.Judges;
 using AchieveAi.LmDotnetTools.LmEval.Running;
 using AchieveAi.LmDotnetTools.LmEval.Tests.Infrastructure;
+using FluentAssertions.Execution;
 
 namespace AchieveAi.LmDotnetTools.LmEval.Tests;
 
@@ -231,5 +232,68 @@ public class EvaluatorConfigTests
 
         verdict.Ballots.Should().ContainSingle().Which.JudgeId.Should().Be("j-a");
         judge.SeenCandidateIds.Should().Equal("x");
+    }
+
+    [Fact]
+    public void Every_hashed_evaluator_field_moves_the_hash_on_its_own()
+    {
+        // A table with one row per field the hash builder appends, each row moving EXACTLY that
+        // field and holding every other one fixed. That is what this buys over the wholesale
+        // "swap a judge model" tests above: each of these four appends can be replaced with
+        // string.Empty and the rest of the suite stays green, because no other test varies the
+        // field alone. The comparability refusal is only as good as the weakest of them.
+        var arbiter = new ScoringJudge("arb", "anthropic", _ => 8.0, modelId: "vendor/arb-1");
+
+        (string Field, EvaluatorConfig Baseline, EvaluatorConfig Moved)[] rows =
+        [
+            (
+                "gate.AppliesTo",
+                Build([new MarkerGate("m")]),
+                Build([new MarkerGate("m", appliesTo: [HarnessFixtures.TaskType])])
+            ),
+            (
+                "judge.ModelFamily",
+                Build(judges: [new ScoringJudge("j-a", "anthropic", _ => 8.0, modelId: "vendor/m")]),
+                Build(judges: [new ScoringJudge("j-a", "google", _ => 8.0, modelId: "vendor/m")])
+            ),
+            (
+                "arbiter.ModelId",
+                Build(options: new HarnessOptions { ArbiterJudge = arbiter }),
+                Build(
+                    options: new HarnessOptions
+                    {
+                        ArbiterJudge = new ScoringJudge(
+                            "arb",
+                            "anthropic",
+                            _ => 8.0,
+                            modelId: "vendor/arb-2"
+                        ),
+                    }
+                )
+            ),
+            (
+                "arbiter.ModelFamily",
+                Build(options: new HarnessOptions { ArbiterJudge = arbiter }),
+                Build(
+                    options: new HarnessOptions
+                    {
+                        ArbiterJudge = new ScoringJudge(
+                            "arb",
+                            "google",
+                            _ => 8.0,
+                            modelId: "vendor/arb-1"
+                        ),
+                    }
+                )
+            ),
+        ];
+
+        using var scope = new AssertionScope();
+        foreach (var (field, baseline, moved) in rows)
+        {
+            moved
+                .Hash.Should()
+                .NotBe(baseline.Hash, "moving only {0} must move the evaluator hash", field);
+        }
     }
 }

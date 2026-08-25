@@ -62,6 +62,10 @@ public sealed class EvalRunner
     /// <param name="costSource">Optional lookup for host-recorded per-item cost.</param>
     /// <param name="cancellationToken">Cancellation. A caller's cancellation is never an item fault.</param>
     /// <exception cref="ArgumentException">The rubric's task type is not the snapshot's.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// A reliability weight is NaN or outside [0,1]. This is a caller error about the whole run, so
+    /// it leaves <c>RunAsync</c> rather than being recorded once per corpus item.
+    /// </exception>
     public async Task<EvalRun> RunAsync(
         string runId,
         CorpusSnapshot snapshot,
@@ -75,6 +79,13 @@ public sealed class EvalRunner
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(rubric);
         ArgumentNullException.ThrowIfNull(reliability);
+
+        // The snapshot is a property of the RUN, not of any one corpus item, so it is checked here
+        // rather than left to the gauntlet's own per-item guard. Left there, the first item threw,
+        // the per-item catch below recorded it as a faulted CORPUS item, and the loop repeated that
+        // for every remaining item -- so a misfitted refit came back as a run that scored nothing
+        // and read as an unscoreable corpus, when what had been rejected was the configuration.
+        AggregationContext.ValidateReliability(reliability, nameof(reliability));
 
         if (!string.Equals(snapshot.TaskType, rubric.TaskType, StringComparison.Ordinal))
         {

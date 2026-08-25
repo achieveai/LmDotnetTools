@@ -486,4 +486,182 @@ public class EvalRunnerTests
 
         await act.Should().ThrowAsync<OperationCanceledException>();
     }
+
+    [Fact]
+    public async Task A_valid_non_uniform_reliability_weighting_reaches_the_reduction()
+    {
+        // Every other runner test passes an EMPTY reliability map, so the whole parameter travels
+        // this class at its 1.0 default and nothing proves the runner hands it to the reduction at
+        // all. Here the two judges disagree and the weights decide the answer: an unweighted mean
+        // of 10 and 2 is 6.0, and the weighted one is (10*1.0 + 2*0.25) / 1.25 = 8.4.
+        var runner = new EvalRunner(Panel(first: _ => 10.0, second: _ => 2.0));
+
+        var run = await runner.RunAsync(
+            "run-1",
+            EvalFixtures.Snapshot(EvalFixtures.Item("a")),
+            HarnessFixtures.Rubric(),
+            new Dictionary<string, double> { ["j-a"] = 1.0, ["j-b"] = 0.25 },
+            null,
+            CancellationToken.None
+        );
+
+        run.Items.Single().Verdict!.Score.Should().BeApproximately(8.4, 1e-9);
+    }
+
+    [Fact]
+    public async Task An_out_of_range_reliability_weight_is_refused_rather_than_faulting_every_item()
+    {
+        // The reliability snapshot is a property of the RUN, not of any one corpus item, so a
+        // misfitted weight is a caller error and has to surface as one. Left to the gauntlet's own
+        // check it threw on item 1, the runner's per-item catch recorded that as a Faulted corpus
+        // item, and the loop repeated it for every remaining item -- the run then returned normally
+        // with nothing scored, and the operator was told their corpus was unscoreable when in fact
+        // their configuration had been rejected.
+        var judge = new ScoringJudge("j-a", "anthropic", _ => 8.0);
+        var runner = new EvalRunner(
+            EvalFixtures.Config(judges: [judge, Judge("j-b", "google", _ => 8.0)])
+        );
+
+        var act = async () =>
+            await runner.RunAsync(
+                "run-1",
+                EvalFixtures.Snapshot(
+                    EvalFixtures.Item("a"),
+                    EvalFixtures.Item("b"),
+                    EvalFixtures.Item("c")
+                ),
+                HarnessFixtures.Rubric(),
+                new Dictionary<string, double> { ["j-a"] = 1.4 },
+                null,
+                CancellationToken.None
+            );
+
+        await act.Should()
+            .ThrowAsync<ArgumentOutOfRangeException>()
+            .WithParameterName("reliability");
+
+        // And no judge was billed for the corpus on the way to finding out.
+        judge.SeenCandidateIds.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task A_NaN_reliability_weight_is_refused_rather_than_faulting_every_item()
+    {
+        // NaN is the second arm of the same predicate and fails differently in the reduction: it
+        // poisons the weighted mean instead of pushing it off the rubric's scale, so it gets its
+        // own case rather than riding on the out-of-range one.
+        var judge = new ScoringJudge("j-a", "anthropic", _ => 8.0);
+        var runner = new EvalRunner(
+            EvalFixtures.Config(judges: [judge, Judge("j-b", "google", _ => 8.0)])
+        );
+
+        var act = async () =>
+            await runner.RunAsync(
+                "run-1",
+                EvalFixtures.Snapshot(EvalFixtures.Item("a"), EvalFixtures.Item("b")),
+                HarnessFixtures.Rubric(),
+                new Dictionary<string, double> { ["j-a"] = double.NaN },
+                null,
+                CancellationToken.None
+            );
+
+        await act.Should()
+            .ThrowAsync<ArgumentOutOfRangeException>()
+            .WithParameterName("reliability");
+
+        judge.SeenCandidateIds.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Mean_cost_is_per_corpus_item_so_declining_to_score_cannot_look_cheap()
+    {
+        // Four items at 100 each, one of which abstains into a NoDecision. Over the corpus that is
+        // 400/4 = 100; over the scored subset it would be 400/3 = 133. Every other test in this
+        // class scores every item it prices, so the two denominators are numerically equal there
+        // and the division could be swapped with nothing going red.
+        static double? Score(Candidate c) => c.CandidateId == "abstained" ? null : 8.0;
+
+        var run = await EvalFixtures.RunAsync(
+            Panel(Score, Score),
+            EvalFixtures.Snapshot(
+                EvalFixtures.Item("a"),
+                EvalFixtures.Item("b"),
+                EvalFixtures.Item("c"),
+                EvalFixtures.Item("abstained")
+            ),
+            costSource: (_, _) => ValueTask.FromResult<long?>(100L)
+        );
+
+        run.ScoredItems.Should().Be(3);
+        run.TotalCostMicros.Should().Be(400L);
+        run.MeanCostMicros.Should().Be(100L);
+    }
+
+    [Fact]
+    public async Task The_straddle_rate_is_over_the_corpus_size_not_the_scored_subset()
+    {
+        // The headline judge-reliability diagnostic, and the one the arbiter-id refusal exists to
+        // keep honest. Four items: two agree and score, one straddles, one abstains. Over the
+        // corpus the rate is 1/4 = 0.25; over the scored subset it would be 1/2 = 0.5. A straddle
+        // is itself excluded from the scored set, so the two denominators can never agree on a
+        // corpus that has one -- yet every other test here reads StraddleCount, never the rate.
+        static double? First(Candidate c) =>
+            c.CandidateId switch
+            {
+                "straddled" => 9.0,
+                "abstained" => null,
+                _ => 8.0,
+            };
+
+        static double? Second(Candidate c) =>
+            c.CandidateId switch
+            {
+                "straddled" => 3.0,
+                "abstained" => null,
+                _ => 8.0,
+            };
+
+        var run = await EvalFixtures.RunAsync(
+            Panel(First, Second),
+            EvalFixtures.Snapshot(
+                EvalFixtures.Item("a"),
+                EvalFixtures.Item("b"),
+                EvalFixtures.Item("straddled"),
+                EvalFixtures.Item("abstained")
+            )
+        );
+
+        run.CorpusSize.Should().Be(4);
+        run.ScoredItems.Should().Be(2);
+        run.StraddleCount.Should().Be(1);
+        run.StraddleRate.Should().Be(0.25);
+    }
+
+    [Fact]
+    public async Task A_run_that_scored_nothing_is_refused_even_when_the_baseline_sets_no_floor()
+    {
+        // A baseline with MinCoverage 0 imposes no floor, so a run that scored nothing walks past
+        // the coverage check. The refusal that catches it next is the only thing standing between
+        // Compare and dereferencing a null MeanScore -- a crash path, not just an unpinned number,
+        // and no other test in the suite reaches it.
+        var corpus = EvalFixtures.Snapshot(EvalFixtures.Item("a"), EvalFixtures.Item("b"));
+
+        // Same evaluator configuration on both sides -- only the scripted scores differ, which the
+        // hash cannot and must not see -- so the comparison is genuinely comparable.
+        var baselineRun = await EvalFixtures.RunAsync(Panel(_ => 8.0, _ => 8.0), corpus);
+        var emptyRun = await EvalFixtures.RunAsync(Panel(_ => null, _ => null), corpus);
+
+        emptyRun.EvaluatorConfigHash.Should().Be(baselineRun.EvaluatorConfigHash);
+        emptyRun.ScoredItems.Should().Be(0);
+        emptyRun.MeanScore.Should().BeNull();
+
+        var comparison = BaselineComparer.Compare(
+            emptyRun,
+            EvalBaseline.From("base-1", baselineRun, minCoverage: 0.0)
+        );
+
+        comparison.Refusal.Should().Be(ComparisonRefusal.CoverageBelowMinimum);
+        comparison.RefusalDetail.Should().Contain("scored no items at all");
+        comparison.PassRateDelta.Should().BeNull();
+    }
 }

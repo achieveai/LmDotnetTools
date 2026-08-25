@@ -96,18 +96,25 @@ internal sealed class MarkerGate : IGate, IConfigurationFingerprint
         string marker,
         string gateId = "marker",
         string? fingerprint = null,
-        string? throwOnCandidateId = null
+        string? throwOnCandidateId = null,
+        IEnumerable<string>? appliesTo = null
     )
     {
         _marker = marker;
         _throwOnCandidateId = throwOnCandidateId;
         GateId = gateId;
         ConfigurationFingerprint = fingerprint ?? $"marker={marker}";
+        AppliesTo = new HashSet<string>(appliesTo ?? [], StringComparer.Ordinal);
     }
 
     public string GateId { get; }
 
-    public IReadOnlySet<string> AppliesTo { get; } = new HashSet<string>(StringComparer.Ordinal);
+    /// <summary>
+    /// The task types this gate is scoped to. Settable because scoping is a hashed field: a gate
+    /// narrowed to a task type the corpus does not carry stops running, which moves the pass rate
+    /// with nothing about the candidate having changed.
+    /// </summary>
+    public IReadOnlySet<string> AppliesTo { get; }
 
     public string? ConfigurationFingerprint { get; }
 

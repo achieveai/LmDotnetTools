@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmEval.Corpus;
 using AchieveAi.LmDotnetTools.LmEval.Tests.Infrastructure;
+using FluentAssertions.Execution;
 
 namespace AchieveAi.LmDotnetTools.LmEval.Tests;
 
@@ -118,5 +119,47 @@ public class CorpusSnapshotTests
             .Snapshot(EvalFixtures.Item("a"), EvalFixtures.Item("b"), EvalFixtures.Item("c"))
             .Size.Should()
             .Be(3);
+    }
+
+    [Fact]
+    public void Every_hashed_candidate_field_moves_the_hash_on_its_own()
+    {
+        // One row per field ComputeHash appends, each moving EXACTLY that field. Wholesale edits
+        // elsewhere in this suite do not pin the individual appends: VariantId, GeneratorFamily and
+        // Reference can each be replaced with string.Empty in the builder and every other test here
+        // stays green. Reference and VariantId are otherwise never even set by a test in this
+        // assembly, so without this table they are structurally unexercised.
+        var baseItem = new Candidate
+        {
+            CandidateId = "a",
+            TaskType = HarnessFixtures.TaskType,
+            TaskInput = "Grade this code review:",
+            Content = "a review",
+            VariantId = "arm-a",
+            ModelId = "vendor/m1",
+            GeneratorFamily = "meta",
+            Reference = "the recorded gold answer",
+        };
+
+        (string Field, Candidate Moved)[] rows =
+        [
+            ("VariantId", baseItem with { VariantId = "arm-b" }),
+            ("ModelId", baseItem with { ModelId = "vendor/m2" }),
+            ("GeneratorFamily", baseItem with { GeneratorFamily = "openai" }),
+            ("Reference", baseItem with { Reference = "a different gold answer" }),
+            ("TaskInput", baseItem with { TaskInput = "Grade this other code review:" }),
+            ("Content", baseItem with { Content = "a different review" }),
+        ];
+
+        var baseHash = CorpusSnapshot.Create("corpus-1", [baseItem]).SnapshotHash;
+
+        using var scope = new AssertionScope();
+        foreach (var (field, moved) in rows)
+        {
+            CorpusSnapshot
+                .Create("corpus-1", [moved])
+                .SnapshotHash.Should()
+                .NotBe(baseHash, "moving only {0} must move the corpus hash", field);
+        }
     }
 }
