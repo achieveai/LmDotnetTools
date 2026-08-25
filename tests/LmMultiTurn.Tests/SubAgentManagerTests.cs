@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -44,7 +45,8 @@ public class SubAgentManagerTests : IAsyncLifetime
     {
         if (_manager != null)
         {
-            await _manager.DisposeAsync();
+            // Bounded: an unbounded teardown turns one stalled test into an aborted run (#362).
+            await Wait.ForTeardownAsync(_manager, "the sub-agent manager under test");
         }
     }
 
@@ -439,7 +441,7 @@ public class SubAgentManagerTests : IAsyncLifetime
         release.SetResult(true);
 
         // Both agents must reach 'completed' — the queued one only starts after a permit frees.
-        await WaitForConditionAsync(
+        await Wait.UntilAsync(
             () =>
             {
                 try
@@ -452,6 +454,7 @@ public class SubAgentManagerTests : IAsyncLifetime
                     return false;
                 }
             },
+            "both queued sub-agents reported completed",
             TimeSpan.FromSeconds(15));
 
         using var firstPeek = JsonDocument.Parse(_manager.Peek(firstId));
@@ -493,7 +496,7 @@ public class SubAgentManagerTests : IAsyncLifetime
         var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
 
         // Poll until monitoring task has processed messages
-        await WaitForConditionAsync(
+        await Wait.UntilAsync(
             () =>
             {
                 try
@@ -506,6 +509,7 @@ public class SubAgentManagerTests : IAsyncLifetime
                     return false;
                 }
             },
+            "Peek reported a status for the spawned sub-agent",
             TimeSpan.FromSeconds(10));
 
         // Act
@@ -535,7 +539,7 @@ public class SubAgentManagerTests : IAsyncLifetime
 
         // Poll until the sub-agent completion is relayed to parent
         var parentCalled = false;
-        await WaitForConditionAsync(
+        await Wait.UntilAsync(
             () =>
             {
                 try
@@ -557,6 +561,7 @@ public class SubAgentManagerTests : IAsyncLifetime
                     return false;
                 }
             },
+            "the parent received the wrapped sub-agent result",
             TimeSpan.FromSeconds(10));
 
         parentCalled.Should().BeTrue("parent should have received the sub-agent result");
@@ -607,7 +612,7 @@ public class SubAgentManagerTests : IAsyncLifetime
         await _manager.SpawnAsync("test-agent", "Pick a color", runInBackground: true);
 
         // Poll until the sub-agent's (mis)completion is relayed to parent.
-        await WaitForConditionAsync(
+        await Wait.UntilAsync(
             () =>
             {
                 try
@@ -626,6 +631,7 @@ public class SubAgentManagerTests : IAsyncLifetime
                     return false;
                 }
             },
+            "the parent received a relay from the parked sub-agent",
             TimeSpan.FromSeconds(10));
 
         // Assert: a child parked on a question it asked (and cannot get answered through any path
@@ -678,7 +684,7 @@ public class SubAgentManagerTests : IAsyncLifetime
         var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
 
         // Poll until the descendant-question notification specifically has been relayed.
-        await WaitForConditionAsync(
+        await Wait.UntilAsync(
             () =>
             {
                 try
@@ -699,6 +705,7 @@ public class SubAgentManagerTests : IAsyncLifetime
                     return false;
                 }
             },
+            "the parent received the descendant-question notification",
             TimeSpan.FromSeconds(10));
 
         // Assert: EXACTLY one descendant-question notification was delivered — not zero (it must
@@ -829,7 +836,7 @@ public class SubAgentManagerTests : IAsyncLifetime
         // the monitor's own pending-question probe, which reads the registry live: an answer that
         // lands first empties the registry, and the parked run is then misread as genuinely terminal
         // and settled with the "(no text response)" placeholder this test exists to forbid.
-        await WaitForConditionAsync(
+        await Wait.UntilAsync(
             () =>
             {
                 try
@@ -850,6 +857,7 @@ public class SubAgentManagerTests : IAsyncLifetime
                     return false;
                 }
             },
+            "the parent received the descendant-question notification",
             TimeSpan.FromSeconds(10));
 
         // Assert (lifecycle): the foreground caller must still be blocked — NOT resolved with a
@@ -965,7 +973,7 @@ public class SubAgentManagerTests : IAsyncLifetime
         var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
 
         // Poll until the sub-agent completes
-        await WaitForConditionAsync(
+        await Wait.UntilAsync(
             () =>
             {
                 try
@@ -978,6 +986,7 @@ public class SubAgentManagerTests : IAsyncLifetime
                     return false;
                 }
             },
+            "the sub-agent reported completed, so the restart acts on a finished run",
             TimeSpan.FromSeconds(10));
 
         // Verify it completed
@@ -1140,7 +1149,7 @@ public class SubAgentManagerTests : IAsyncLifetime
 
         // The agent must settle in 'completed', NOT 'error'. Under the over-release bug the
         // monitor faults on the second completion (SemaphoreFullException) -> Error status.
-        await WaitForConditionAsync(
+        await Wait.UntilAsync(
             () =>
             {
                 try
@@ -1152,6 +1161,7 @@ public class SubAgentManagerTests : IAsyncLifetime
                     return false;
                 }
             },
+            "the sub-agent injected into reported completed",
             TimeSpan.FromSeconds(10));
 
         var peekJson = _manager.Peek(agentId);
@@ -1194,7 +1204,7 @@ public class SubAgentManagerTests : IAsyncLifetime
             "test-agent", "error-prone task", runInBackground: true);
 
         // Poll until parent receives error notification
-        await WaitForConditionAsync(
+        await Wait.UntilAsync(
             () =>
             {
                 try
@@ -1215,6 +1225,7 @@ public class SubAgentManagerTests : IAsyncLifetime
                     return false;
                 }
             },
+            "the parent received the wrapped sub-agent error",
             TimeSpan.FromSeconds(10));
 
         // Assert: parent received error notification specifically (not [Completed])
@@ -1375,7 +1386,7 @@ public class SubAgentManagerTests : IAsyncLifetime
         var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
 
         // Wait for the background completion to relay to the parent (so the run is genuinely finished).
-        await WaitForConditionAsync(
+        await Wait.UntilAsync(
             () =>
             {
                 try
@@ -1394,6 +1405,7 @@ public class SubAgentManagerTests : IAsyncLifetime
                     return false;
                 }
             },
+            "the parent received its relay before the recorded invocations are cleared",
             TimeSpan.FromSeconds(10));
 
         // Ignore the legitimate completion relay; assert the delivery adds none.
@@ -1457,7 +1469,7 @@ public class SubAgentManagerTests : IAsyncLifetime
         using var spawnDoc = JsonDocument.Parse(spawnJson);
         var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
 
-        await WaitForConditionAsync(
+        await Wait.UntilAsync(
             () =>
             {
                 try
@@ -1476,6 +1488,7 @@ public class SubAgentManagerTests : IAsyncLifetime
                     return false;
                 }
             },
+            "the parent received its post-completion relay",
             TimeSpan.FromSeconds(10));
 
         var result = await _manager.TryDeliverToRunningAsync(
@@ -1549,22 +1562,13 @@ public class SubAgentManagerTests : IAsyncLifetime
         using var resumeDoc = JsonDocument.Parse(resumeJson);
         resumeDoc.RootElement.GetProperty("status").GetString().Should().Be("resumed");
 
-        await WaitForConditionAsync(
+        await Wait.UntilAsync(
             () => _manager!.Peek(agentId).Contains("\"completed\""),
+            "the sub-agent reported completed",
             TimeSpan.FromSeconds(10));
     }
 
     #region Helpers
-    private static async Task WaitForConditionAsync(
-        Func<bool> condition,
-        TimeSpan timeout)
-    {
-        var deadline = DateTimeOffset.UtcNow + timeout;
-        while (!condition() && DateTimeOffset.UtcNow < deadline)
-        {
-            await Task.Delay(50);
-        }
-    }
 
     /// <summary>
     /// Checks if a message is a sub-agent-completion NotifyMessage containing the completion markers.

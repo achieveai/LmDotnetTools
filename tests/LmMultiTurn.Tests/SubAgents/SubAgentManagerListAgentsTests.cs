@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -50,7 +51,8 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
     {
         if (_manager != null)
         {
-            await _manager.DisposeAsync();
+            // Bounded: an unbounded teardown turns one stalled test into an aborted run (#362).
+            await Wait.ForTeardownAsync(_manager, "the sub-agent manager under test");
         }
     }
 
@@ -179,12 +181,13 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
         var spawnJson = await manager.SpawnAsync("owned", "task", runInBackground: true);
         var agentId = ParseAgentId(spawnJson);
 
-        await WaitForConditionAsync(
+        await Wait.UntilAsync(
             () =>
             {
                 try { return manager.Peek(agentId).Contains("\"completed\""); }
                 catch { return false; }
             },
+            "the sub-agent reported completed",
             TimeSpan.FromSeconds(10));
 
         manager.TryGetAgent(agentId, out var beforeRestart).Should().BeTrue();
@@ -400,16 +403,18 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
         var spawnJson = await manager.SpawnAsync("restartable", "task", runInBackground: true);
         var agentId = ParseAgentId(spawnJson);
 
-        await WaitForConditionAsync(
+        await Wait.UntilAsync(
             () => manager.ListAgents().Single(s => s.AgentId == agentId).TerminalAtUtc is not null,
+            "the completed sub-agent recorded a terminal instant to be cleared",
             TimeSpan.FromSeconds(10));
 
         // Act: restart the completed agent.
         _ = await manager.SendMessageAsync(agentId, "continue", runInBackground: true);
 
-        await WaitForConditionAsync(
+        await Wait.UntilAsync(
             () => manager.ListAgents().Single(s => s.AgentId == agentId).Status
                 == SubAgentStatus.Running,
+            "the restarted sub-agent reported running",
             TimeSpan.FromSeconds(10));
 
         var afterRestart = manager.ListAgents().Single(s => s.AgentId == agentId);
@@ -520,14 +525,6 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
         yield break;
     }
 
-    private static async Task WaitForConditionAsync(Func<bool> condition, TimeSpan timeout)
-    {
-        var deadline = DateTimeOffset.UtcNow + timeout;
-        while (!condition() && DateTimeOffset.UtcNow < deadline)
-        {
-            await Task.Delay(25);
-        }
-    }
 
     #endregion
 }

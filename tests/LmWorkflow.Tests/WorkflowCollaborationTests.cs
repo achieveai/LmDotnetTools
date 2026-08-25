@@ -419,7 +419,10 @@ public class WorkflowCollaborationTests
         await store.FirstSaveEntered.WaitAsync(TimeSpan.FromSeconds(30));
 
         var disposal = handle.DisposeAsync();
-        await WaitUntil(() => caller.Directory.Capacity.InUse == 0, TimeSpan.FromSeconds(10));
+        await Wait.UntilAsync(
+            () => caller.Directory.Capacity.InUse == 0,
+            "the controller's permit was released",
+            TimeSpan.FromSeconds(10));
 
         caller.Directory.Capacity.InUse.Should().Be(0, "the permit must not wait on an unbounded store flush");
         disposal.IsCompleted.Should().BeFalse("non-vacuity: teardown is still inside the blocked flush");
@@ -428,15 +431,6 @@ public class WorkflowCollaborationTests
         await disposal;
     }
 
-    /// <summary>Polls <paramref name="condition"/> until it holds or <paramref name="timeout"/> elapses.</summary>
-    private static async Task WaitUntil(Func<bool> condition, TimeSpan timeout)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline && !condition())
-        {
-            await Task.Delay(20);
-        }
-    }
 
     /// <summary>A store whose saves park until released, standing in for a slow or wedged backend.</summary>
     private sealed class BlockingWorkflowStore(Task release) : IWorkflowStore

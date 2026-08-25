@@ -7,6 +7,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -119,7 +120,8 @@ public class NotifyOrderingTests
         var history = await WaitForHistoryAsync(
             store,
             threadId,
-            h => h.OfType<TextMessage>().Any(m => m.Role == Role.User && m.Text.Contains("<trigger>")));
+            h => h.OfType<TextMessage>().Any(m => m.Role == Role.User && m.Text.Contains("<trigger>")),
+            "the queued fire's trigger message reached persisted history");
 
         var gatedReplyIdx = IndexOfTextMessage(history, Role.Assistant, "gated reply");
         var triggerIdx = IndexOfTextMessage(history, Role.User, "<trigger>");
@@ -226,7 +228,8 @@ public class NotifyOrderingTests
         var history = await WaitForHistoryAsync(
             store,
             threadId,
-            h => h.OfType<TextMessage>().Any(m => m.Role == Role.User && m.Text.Contains("<trigger>")));
+            h => h.OfType<TextMessage>().Any(m => m.Role == Role.User && m.Text.Contains("<trigger>")),
+            "the queued fire's trigger message reached persisted history");
 
         var toolResultIdx = IndexOfToolResult(history, "tc_slow");
         var triggerIdx = IndexOfTextMessage(history, Role.User, "<trigger>");
@@ -378,6 +381,7 @@ public class NotifyOrderingTests
             store,
             threadId,
             h => h.OfType<TextMessage>().Count(m => m.Role == Role.User && m.Text.Contains("<trigger>")) >= 3,
+            "all three fires reached persisted history",
             timeoutSeconds: 10);
 
         await cts.CancelAsync();
@@ -415,23 +419,31 @@ public class NotifyOrderingTests
         ],
     };
 
+    /// <summary>
+    /// Returns persisted history once it satisfies <paramref name="condition"/>, or fails the test
+    /// naming <paramref name="because"/>. The ordering assertions that follow every call are only
+    /// meaningful once the messages they order are all present: on a history that never filled up,
+    /// "index of X is greater than index of Y" degenerates into comparing two -1s.
+    /// </summary>
     private static async Task<IReadOnlyList<IMessage>> WaitForHistoryAsync(
         InMemoryConversationStore store,
         string threadId,
         Func<IReadOnlyList<IMessage>, bool> condition,
+        string because,
         int timeoutSeconds = 5)
     {
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(timeoutSeconds);
         IReadOnlyList<IMessage> history = [];
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            history = MessagePersistenceConverter.FromPersistedMessages(await store.LoadMessagesAsync(threadId));
-            if (condition(history))
+        await Wait.UntilAsync(
+            async () =>
             {
-                break;
-            }
-            await Task.Delay(50);
-        }
+                history = MessagePersistenceConverter.FromPersistedMessages(
+                    await store.LoadMessagesAsync(threadId));
+                return condition(history);
+            },
+            because,
+            TimeSpan.FromSeconds(timeoutSeconds),
+            TimeSpan.FromMilliseconds(50));
+
         return history;
     }
 

@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -60,7 +61,8 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
     {
         if (_manager != null)
         {
-            await _manager.DisposeAsync();
+            // Bounded: an unbounded teardown turns one stalled test into an aborted run (#362).
+            await Wait.ForTeardownAsync(_manager, "the sub-agent manager under test");
         }
     }
 
@@ -163,12 +165,13 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         // Wait for epoch 1 to settle "completed" - its gateGuard has already released its slot
         // by this point (F3 order: release happens before HandleRunCompletionAsync), while its
         // monitor is still blocked in CompleteOnceThenWaitForeverStream's tail wait.
-        await WaitForConditionAsync(
+        await Wait.UntilAsync(
             () =>
             {
                 try { return _manager!.Peek(agentId).Contains("\"completed\""); }
                 catch { return false; }
             },
+            "the sub-agent reported completed",
             TimeSpan.FromSeconds(10));
 
         // Act: SendMessageAsync on the completed agent goes through RestartRunAsync, whose own
@@ -325,7 +328,7 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
 
         // The terminal completion disposes the owned provider exactly once.
         releaseTerminal.SetResult(true);
-        await WaitForConditionAsync(() => Volatile.Read(ref disposeCount) == 1, TimeSpan.FromSeconds(10));
+        await Wait.UntilAsync(() => Volatile.Read(ref disposeCount) == 1, "the owned provider was disposed exactly once", TimeSpan.FromSeconds(10));
         Volatile.Read(ref disposeCount).Should().Be(1, "the terminal completion disposes the owned provider once");
     }
 
@@ -388,12 +391,13 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
 
         // Wait until the first run has completed (its terminal disposal ran and threw).
-        await WaitForConditionAsync(
+        await Wait.UntilAsync(
             () =>
             {
                 try { return _manager!.Peek(agentId).Contains("\"completed\""); }
                 catch { return false; }
             },
+            "the sub-agent reported completed",
             TimeSpan.FromSeconds(10));
         Volatile.Read(ref poisonedDisposeAttempts).Should().Be(1,
             "the terminal disposal must have attempted (and failed) to dispose provider #1 exactly once");
@@ -576,16 +580,18 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         using var spawnDoc = JsonDocument.Parse(spawnJson);
         var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
 
-        await WaitForConditionAsync(
+        await Wait.UntilAsync(
             () => { try { return _manager!.Peek(agentId).Contains("\"completed\""); } catch { return false; } },
+            "the sub-agent reported completed",
             TimeSpan.FromSeconds(10));
 
         // Begin the restart on a background task; its restart SendAsync blocks on the gate.
         var restartTask = Task.Run(() => _manager!.SendMessageAsync(agentId, "resumed-prompt", runInBackground: true));
 
         // The restarted monitor faults and records the generation-aware terminal Error.
-        await WaitForConditionAsync(
+        await Wait.UntilAsync(
             () => { try { return _manager!.Peek(agentId).Contains("\"error\""); } catch { return false; } },
+            "the restarted sub-agent reported error",
             TimeSpan.FromSeconds(10));
 
         // Now let the restart SendAsync return so TryArmRunning(runGeneration) executes AFTER the fault.
@@ -706,20 +712,22 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         // now-released permit. Wait for the pending agent to settle terminal, then assert the queued agent
         // is started by the pump (it becomes Running — the default fake holds its slot open).
         releaseTerminal.SetResult(true);
-        await WaitForConditionAsync(
+        await Wait.UntilAsync(
             () =>
             {
                 try { return _manager!.Peek(pendingAgentId).Contains("\"completed\""); }
                 catch { return false; }
             },
+            "the pending-message sub-agent reported completed",
             TimeSpan.FromSeconds(10));
 
-        await WaitForConditionAsync(
+        await Wait.UntilAsync(
             () =>
             {
                 try { return _manager!.Peek(queuedAgentId).Contains("\"running\""); }
                 catch { return false; }
             },
+            "the queued sub-agent reported running",
             TimeSpan.FromSeconds(10));
 
         using var queuedPeek = JsonDocument.Parse(_manager.Peek(queuedAgentId));
@@ -729,14 +737,6 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
 
     #region Helpers
 
-    private static async Task WaitForConditionAsync(Func<bool> condition, TimeSpan timeout)
-    {
-        var deadline = DateTimeOffset.UtcNow + timeout;
-        while (!condition() && DateTimeOffset.UtcNow < deadline)
-        {
-            await Task.Delay(50);
-        }
-    }
 
     /// <summary>
     /// A minimal template whose <see cref="SubAgentTemplate.AgentFactory"/> is never actually

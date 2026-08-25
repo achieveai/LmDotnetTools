@@ -134,8 +134,14 @@ restart-based: provision the new secret value, update every S2S caller to send i
 config value, then restart LmStreaming.Sample. There is a short window where callers using the old
 secret get 401s across the restart. A primary+secondary secret (accept either during a rotation
 window, matching the zero-downtime approach `AuthSharedSecret` supports elsewhere) was considered
-in the design (`decisions.md` BS3) but is not implemented in this slice — treat it as a follow-up if
-the restart-based window is unacceptable for a given deployment.
+during design but is not implemented in this slice — treat it as a follow-up if the restart-based
+window is unacceptable for a given deployment.
+
+> This paragraph used to cite a `decisions.md` item "BS3" for that design consideration. No such
+> file exists, and none ever did: it was never added, renamed or deleted in this repository's
+> history on any branch. It was a local planning scratchpad kept during the #153 M2 session
+> (2026-07-04 – 07-08) and never committed, so it is not recoverable. The citation is dropped
+> rather than left dangling — see #315. Don't go looking for it.
 
 ## Never-log invariants
 

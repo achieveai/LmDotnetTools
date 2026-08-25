@@ -9,9 +9,15 @@ $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $repoRoot
 
 $solution = "LmDotnetTools.sln"
+# Test projects that are NOT in $solution and therefore have to be restored, built and run
+# separately. Keep this list as short as the repo allows: a project reachable only from here is
+# covered by a list entry rather than by a declaration, and #234 is what that costs -- a sample
+# stopped compiling, CI printed `error CS...` on every run including on main, and the job stayed
+# green because nothing in the gate built it. tests/McpServer.AspNetCore.Tests used to live here
+# and no longer does: it, its sample and the library they exercise are all in the solution now
+# (#336), so the solution build covers them and repeating them here would only run them twice.
 $extraTestProjects = @(
     "tests/LmConfig.Tests/LmConfig.Tests.csproj",
-    "tests/McpServer.AspNetCore.Tests/McpServer.AspNetCore.Tests.csproj",
     "tests/Misc.Tests/Misc.Tests.csproj"
 )
 
