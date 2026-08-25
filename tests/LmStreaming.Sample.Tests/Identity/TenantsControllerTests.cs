@@ -51,8 +51,8 @@ internal sealed class RecordingTenantStore : ITenantStore
     public Task<bool> IsTenantAdminAsync(string tenantId, string userId, CancellationToken ct = default) =>
         Task.FromResult(false);
 
-    public Task<int> NormalizeEntraTenantIdsAsync(CancellationToken ct = default) =>
-        Task.FromResult(0);
+    public Task<EntraTenantNormalizationResult> NormalizeEntraTenantIdsAsync(CancellationToken ct = default) =>
+        Task.FromResult(default(EntraTenantNormalizationResult));
 
     /// <summary>
     /// Whether the configured quarantine tenant id is free. False models the collision the startup

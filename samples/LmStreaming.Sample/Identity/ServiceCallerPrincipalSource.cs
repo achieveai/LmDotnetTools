@@ -120,6 +120,25 @@ public sealed class ServiceCallerPrincipalSource : IRequestPrincipalSource
         if (!_options.Value.Apps.TryGetValue(registrationKey, out var registration)
             || string.IsNullOrWhiteSpace(registration?.TenantId))
         {
+            // Logged before the refusal, symmetric with the quarantine-tenant path below. The audit
+            // record captures THAT a refusal happened; only this line captures what an operator
+            // needs to fix it - the key that was tried against the set actually registered. A typo
+            // in the caller's app id, a missing Identity:Apps section, and a registration whose
+            // TenantId is blank all surface here as the same opaque 403, and without this the
+            // operator cannot tell a caller mistake from a server misconfiguration. App keys are
+            // identifiers, never secrets (the S2S secret is never logged), so naming the registered
+            // set is safe.
+            _logger.LogError(
+                "A service caller authenticated but its app registration key {AppKey} is not usable "
+                    + "({Reason}). The {RegisteredCount} registered key(s): [{RegisteredKeys}]. "
+                    + "Onboard it under Identity:Apps with a non-empty TenantId.",
+                registrationKey,
+                _options.Value.Apps.ContainsKey(registrationKey)
+                    ? "registered but its TenantId is empty"
+                    : "not registered",
+                _options.Value.Apps.Count,
+                string.Join(", ", _options.Value.Apps.Keys.OrderBy(key => key, StringComparer.Ordinal)));
+
             // 403, not 401: the caller DID authenticate. Retrying with the same credential cannot
             // help, and answering 401 would invite a client to go and get another one.
             return Reject(AppNotRegisteredCode, StatusCodes.Status403Forbidden, registrationKey, null);

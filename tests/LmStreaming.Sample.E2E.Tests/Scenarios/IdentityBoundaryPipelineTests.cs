@@ -72,15 +72,57 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
                 "api/admin/tenants",
                 "api/admin/tenants/{tenantId}/adopt-legacy",
                 "api/auth/webhook/{provider}",
-                "api/auth/egress-keys",
-
-                // The sibling this test was written to catch. It is a second route on the
-                // egress-key controller, published from a referenced assembly, and the prefix in
-                // InfrastructureApiPaths covers it - which is correct, and was also invisible.
-                "api/auth/egress-keys/{id}",
             ],
             "every /api route outside the identity boundary is a deliberate, reviewed decision - "
                 + "see IdentityMiddleware.InfrastructureApiPaths for why each one is there");
+
+        // Both egress-key routes are INSIDE the boundary, not exempt (BE1). The controller presents
+        // no credential of its own - it is loopback-gated only - so leaving it outside enforcement
+        // let a credential-less loopback caller manage egress keys under Identity:Enforce. Pinned
+        // by name here as the counterpart to the exempt list: an edit that carves either back out
+        // has to defeat this assertion too, not just quietly extend a prefix.
+        _ = guarded.Should().Contain("api/auth/egress-keys");
+        _ = guarded.Should().Contain("api/auth/egress-keys/{id}");
+    }
+
+    [Fact]
+    public void WithTheLifecycleControlPlaneOn_ItsRoutesAreExemptByDecision_NotByOmission()
+    {
+        LogTestStart();
+
+        // The partition test above boots a DEFAULT host, on which the lifecycle routes do not exist
+        // (they are config-gated and absent unless both flags are set). So the carve-out for
+        // /api/lifecycle in IdentityMiddleware.InfrastructureApiPaths is invisible to it - the one
+        // route family the enumeration cannot see is the one the enumeration is meant to catch. This
+        // boots the plane ON and pins what the carve-out does: the routes are published AND land
+        // OUTSIDE the identity boundary.
+        //
+        // That exemption is a deliberate, reviewed decision (a config-gated, signature-checked
+        // service-to-service surface), and whether it should honour tenant refusal under
+        // Identity:Enforce is the subject of follow-up #402. Pinning it here means a change to it has
+        // to defeat this assertion rather than pass unnoticed because no default-boot test enumerates
+        // the plane.
+        var settings = EnforcingSettings();
+        settings["Lifecycle:Delivery:Enabled"] = "true";
+        settings["Lifecycle:Delivery:AllowedCallbackHosts:0"] = "callbacks.example.com";
+        settings["Lifecycle:Approval:Enabled"] = "true";
+
+        using var factory = NewFactory(settings);
+
+        var apiRoutes = ApiRoutes(factory);
+        LogData("apiRoutes", apiRoutes);
+
+        // Non-vacuity: the flags actually published the plane. Without this, a plane that failed to
+        // register would make the exemption assertions below trivially true.
+        _ = apiRoutes.Should().Contain("api/lifecycle/subscriptions");
+        _ = apiRoutes.Should().Contain("api/lifecycle/approvals/decisions");
+
+        // The reviewed decision, asked of the real predicate: lifecycle is infrastructure and sits
+        // outside the identity boundary.
+        _ = IsGuarded("api/lifecycle/subscriptions").Should().BeFalse(
+            "the lifecycle control plane is carved out of the identity boundary by decision (#402)");
+        _ = IsGuarded("api/lifecycle/approvals/decisions").Should().BeFalse(
+            "the lifecycle control plane is carved out of the identity boundary by decision (#402)");
     }
 
     [Fact]
@@ -167,6 +209,29 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
             .Which.Should().Be("authentication_required");
     }
 
+    [Fact]
+    public async Task WithEnforcementOn_EgressKeyManagement_IsRefusedWithoutACredential()
+    {
+        LogTestStart();
+        using var factory = NewFactory(EnforcingSettings());
+        using var client = factory.CreateClient();
+
+        // BE1. The egress-key controller carries no credential of its own - it is loopback-gated
+        // only, and TestServer's null remote address reads as loopback - so identity enforcement is
+        // the ONLY thing standing between an anonymous caller and the key inventory. Before the fix
+        // this route was in InfrastructureApiPaths, so this GET returned 200 and leaked the masked
+        // inventory (and POST/DELETE could plant and destroy keys); with the carve-out removed the
+        // identity middleware refuses it exactly like any other management route.
+        var response = await client.GetAsync(
+            new Uri("/api/auth/egress-keys", UriKind.Relative));
+
+        _ = response.StatusCode.Should().Be(
+            HttpStatusCode.Unauthorized,
+            "an unauthenticated caller must not reach egress-key management under Identity:Enforce");
+        _ = response.Headers.GetValues(IdentityMiddleware.RefusalCodeHeader).Should().ContainSingle()
+            .Which.Should().Be("authentication_required");
+    }
+
     /// <summary>
     /// Asks the real predicate rather than restating the rule, so an edit to the exemption list
     /// cannot agree with a copy of itself.
@@ -179,7 +244,12 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
             factory
                 .Services.GetRequiredService<EndpointDataSource>()
                 .Endpoints.OfType<RouteEndpoint>()
-                .Select(endpoint => endpoint.RoutePattern.RawText ?? string.Empty)
+                // TrimStart the leading slash before filtering. A controller route's RawText is
+                // "api/..." with no slash, but a minimal-API route mapped as "/api/..." keeps its
+                // slash - so a bare StartsWith("api/") silently drops every minimal-API /api route,
+                // and this coverage test would never see one land outside the boundary. There are
+                // none today; normalising here means adding one cannot hide it.
+                .Select(endpoint => (endpoint.RoutePattern.RawText ?? string.Empty).TrimStart('/'))
                 .Where(route => route.StartsWith("api/", StringComparison.OrdinalIgnoreCase))
                 .Distinct(StringComparer.Ordinal)
                 .OrderBy(route => route, StringComparer.Ordinal),

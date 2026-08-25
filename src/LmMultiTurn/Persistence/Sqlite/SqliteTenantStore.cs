@@ -242,7 +242,7 @@ public sealed class SqliteTenantStore : ITenantStore
     }
 
     /// <inheritdoc />
-    public async Task<int> NormalizeEntraTenantIdsAsync(CancellationToken ct = default)
+    public async Task<EntraTenantNormalizationResult> NormalizeEntraTenantIdsAsync(CancellationToken ct = default)
     {
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
@@ -296,11 +296,16 @@ public sealed class SqliteTenantStore : ITenantStore
         // operator, which is the state they can act on.
         var claimed = new HashSet<string>(occupied, StringComparer.Ordinal);
         var updated = 0;
+        var skipped = 0;
 
         foreach (var (tenantId, canonical) in rewrites)
         {
             if (!claimed.Add(canonical))
             {
+                // Folds onto a value another row already owns. Counted, not thrown: the row stays
+                // exactly as it was so the host still boots, but the count carries upward so the
+                // operator who reads the startup log learns the row exists and is unreachable.
+                skipped++;
                 continue;
             }
 
@@ -314,7 +319,7 @@ public sealed class SqliteTenantStore : ITenantStore
         }
 
         transaction.Commit();
-        return updated;
+        return new EntraTenantNormalizationResult(updated, skipped);
     }
 
     /// <inheritdoc />

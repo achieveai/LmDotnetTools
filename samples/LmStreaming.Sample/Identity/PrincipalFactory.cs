@@ -268,6 +268,27 @@ public sealed class PrincipalFactory
                     tenant.TenantId, bindingUpn, userId, _timeProvider.GetUtcNow(), ct)
                 .ConfigureAwait(false);
         }
+        else if (!string.IsNullOrWhiteSpace(displayUpn))
+        {
+            // The token names a human (displayUpn resolved from upn/unique_name/email) but carries
+            // no preferred_username, which is the ONE claim first-admin binding is allowed to read
+            // (#349). An Entra app registration issuing v1.0 access tokens emits upn/unique_name and
+            // no preferred_username, so on such a tenant this branch is taken for EVERY sign-in and
+            // TryBindFirstAdminAsync is never called - the tenant silently never gets its first
+            // admin, and nothing else records why. This is the operator-visible signal that closes
+            // that hole; the recovery is documented in docs/deployment/AUTH_ENFORCE.md. Deliberately
+            // not a binding: upn is a weaker, operator-mutable attribute, and widening the binding
+            // set is exactly what the BindingUpnClaimTypes doc refuses. displayUpn is logged rather
+            // than bound.
+            _logger.LogWarning(
+                "First-admin binding skipped for tenant {TenantId}: the interactive token for "
+                    + "{DisplayUpn} carries no preferred_username claim. If this tenant has no admin, "
+                    + "it cannot acquire one by sign-in until the app registration issues v2.0 tokens "
+                    + "(which emit preferred_username); see the first-admin recovery note in "
+                    + "AUTH_ENFORCE.md.",
+                tenant.TenantId,
+                displayUpn);
+        }
 
         var isAdmin = await _tenantStore
             .IsTenantAdminAsync(tenant.TenantId, userId, ct)

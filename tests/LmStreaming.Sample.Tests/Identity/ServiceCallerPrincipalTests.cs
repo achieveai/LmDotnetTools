@@ -1,5 +1,7 @@
+using System.Collections;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Reflection;
 using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.Configuration;
 using AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.Extensions;
@@ -284,12 +286,14 @@ public sealed class ServiceCallerPrincipalTests
 
     [Theory]
     [InlineData("/api/auth/webhook/github")]
-    [InlineData("/api/auth/egress-keys")]
     [InlineData("/api/lifecycle/subscriptions")]
     public async Task WithEnforcementOn_AnInfrastructureCallback_IsNotRefusedByIdentity(string path)
     {
         // These sit outside the identity boundary by decision, not by omission: they authenticate
         // with their own per-session secrets and have no user and no tenant to resolve.
+        // egress-keys deliberately does NOT belong here (BE1): it presents no credential of its own,
+        // only a loopback gate, so leaving it exempt let a credential-less caller manage keys under
+        // enforcement. Its guarded behaviour is pinned in IdentityBoundaryPipelineTests.
         using var server = await StartAsync(enforce: true, s2sSecret: Secret);
 
         var request = new HttpRequestMessage(HttpMethod.Get, new Uri(path, UriKind.Relative));
@@ -395,8 +399,14 @@ public sealed class ServiceCallerPrincipalTests
     public void TheCorsRegistration_IsIdempotent_SoAHostMayRegisterItEarlyAndStillCallUseLmStreaming()
     {
         // Program.cs registers CORS before identity and then calls UseLmStreaming, which used to own
-        // the registration. Two copies would apply the policy twice; this asserts the second call is
-        // the no-op that makes the early registration safe.
+        // the registration. Two copies would add the CORS middleware to the pipeline TWICE and apply
+        // the policy twice; this asserts the second call adds nothing.
+        //
+        // Counted on the middleware pipeline, NOT on app.Properties. The guard writes exactly one
+        // sentinel key and never a second, so Properties.Count is identical whether or not the
+        // repeated UseCors runs - the old assertion passed even with the guard deleted. The pipeline
+        // component list is the thing that actually gains an entry when the middleware is registered
+        // again, so it is the only count that fails on the regression.
         var services = new ServiceCollection();
         _ = services.AddLogging();
         _ = services.AddLmStreaming(o => o.AllowedOrigins = [ClientOrigin]);
@@ -405,11 +415,40 @@ public sealed class ServiceCallerPrincipalTests
         var builder = new ApplicationBuilder(provider);
 
         _ = builder.UseLmStreamingCors();
-        var afterFirst = builder.Properties.Count;
+        var afterFirst = MiddlewareComponentCount(builder);
         _ = builder.UseLmStreamingCors();
 
-        _ = builder.Properties.Count.Should().Be(afterFirst);
+        _ = MiddlewareComponentCount(builder).Should().Be(
+            afterFirst,
+            "the second registration must add no middleware to the pipeline; a repeated UseCors "
+                + "would apply the policy twice, and app.Properties.Count cannot see that because "
+                + "UseCors writes to the component list, not to Properties");
         _ = provider.GetRequiredService<IOptions<LmStreamingOptions>>().Value.AllowedOrigins
             .Should().ContainSingle().Which.Should().Be(ClientOrigin);
+    }
+
+    /// <summary>
+    /// The number of middleware components registered on an <see cref="ApplicationBuilder"/>.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ApplicationBuilder"/> keeps its registered middleware in a private list, and
+    /// <c>UseCors</c> appends to THAT while leaving <see cref="IApplicationBuilder.Properties"/>
+    /// untouched. It is therefore the count that moves when the idempotency guard is gone, which is
+    /// exactly what the idempotency test needs to be able to observe.
+    /// </remarks>
+    private static int MiddlewareComponentCount(IApplicationBuilder builder)
+    {
+        var field = typeof(ApplicationBuilder).GetField(
+            "_components",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        var components = (IEnumerable)field!.GetValue(builder)!;
+
+        var count = 0;
+        foreach (var _ in components)
+        {
+            count++;
+        }
+
+        return count;
     }
 }

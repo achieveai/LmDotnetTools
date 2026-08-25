@@ -50,6 +50,19 @@ jobs:
           cache: 'npm'
           cache-dependency-path: samples/LmStreaming.Sample/ClientApp/package-lock.json
 
+      # SPA unit tests (vitest, jsdom). These are the fast unit layer for the client - the
+      # identity state machine, the gate components, the http renewal path - and until now nothing
+      # in CI ran them, so a red vitest suite (e.g. the #347/#348 identity regressions) shipped
+      # green. Placed before the browser build and the Chromium download because it needs neither:
+      # a broken SPA unit test should fail here, in seconds, not after a full Playwright bring-up.
+      - name: Install SPA dependencies
+        working-directory: samples/LmStreaming.Sample/ClientApp
+        run: npm ci
+
+      - name: Run SPA unit tests (vitest)
+        working-directory: samples/LmStreaming.Sample/ClientApp
+        run: npm run test:run
+
       - name: Cache Playwright browsers
         id: playwright-cache
         uses: actions/cache@v4

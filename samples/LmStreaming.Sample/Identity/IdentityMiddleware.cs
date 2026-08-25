@@ -59,16 +59,25 @@ public sealed class IdentityMiddleware
     /// A deliberate decision, not an oversight, and a different one from
     /// <see cref="AnonymousApiPaths"/>. Those are user-facing routes that must stay reachable while
     /// signed out. These are infrastructure callbacks that have no user and no tenant to resolve:
-    /// the sandbox gateway's deferred-auth webhook presents a per-session secret, egress-key
-    /// issuance presents its own credential, and the lifecycle control plane is a
-    /// service-to-service surface with its own signature check. None of them can produce a
-    /// <see cref="Principal"/>, so guarding them would refuse every legitimate caller and grant
-    /// nothing.
+    /// the sandbox gateway's deferred-auth webhook presents a per-session secret, and the lifecycle
+    /// control plane is a service-to-service surface gated behind its own signature check (and off
+    /// by default). Neither can produce a <see cref="Principal"/>, so guarding them would refuse
+    /// every legitimate caller and grant nothing.
     /// </para>
     /// <para>
     /// The webhook is the sharpest case: its <c>Authorization</c> header carries a session secret,
     /// not a JWT. The bearer handler tries to parse it, fails, stashes nothing, and the guard would
     /// then refuse the caller for presenting the credential its own endpoint requires.
+    /// </para>
+    /// <para>
+    /// <c>/api/auth/egress-keys</c> is deliberately NOT here. It looks like an infrastructure route
+    /// but is a SPA management surface: the browser calls it through <c>apiFetch</c>, which attaches
+    /// the bearer token under enforcement exactly as it does for <c>/api/workspaces</c> and
+    /// <c>/api/providers</c>. Its controller carries no credential of its own - it is loopback-gated
+    /// only (<c>EgressKeysController.RejectNonLoopback</c>) - so carving it out would let a
+    /// credential-less loopback caller plant, read and destroy egress keys under
+    /// <c>Identity:Enforce</c>. It stays inside the boundary, guarded like every other management
+    /// route, with the loopback check remaining as defence in depth.
     /// </para>
     /// <para>
     /// This list is a security boundary, so it is asserted rather than trusted: a test enumerates
@@ -79,7 +88,6 @@ public sealed class IdentityMiddleware
     private static readonly string[] InfrastructureApiPaths =
     [
         "/api/auth/webhook",
-        "/api/auth/egress-keys",
         "/api/lifecycle",
     ];
 

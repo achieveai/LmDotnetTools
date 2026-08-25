@@ -266,6 +266,27 @@ describe('a session whose token expires while the tab is open', () => {
     expect(refusalCode.value).toBeNull();
   });
 
+  it('unregisters the token provider so an expired session stops re-attempting renewal', async () => {
+    await signedIn();
+    acquireAccessToken.mockResolvedValue(null);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(unauthorized());
+
+    // First request drives the expiry: it 401s, the provider is asked, the broker returns null,
+    // and the session moves to 'expired'.
+    await apiFetch('/api/conversations');
+    expect(useIdentity().status.value).toBe('expired');
+
+    acquireAccessToken.mockClear();
+
+    // The point of BE3: expire() unregisters the provider, exactly as refuse() does. Left
+    // registered, this later request would 401, ask the broker AGAIN, get null AGAIN, and expire
+    // AGAIN - a paired-request trickle against a session that is equally past saving until the
+    // user signs in. With the provider gone the request takes the signed-out fast path and returns
+    // its 401 untouched.
+    await apiFetch('/api/conversations');
+    expect(acquireAccessToken).not.toHaveBeenCalled();
+  });
+
   it('is not registered once the state has been reset', async () => {
     await signedIn();
     resetIdentityState();

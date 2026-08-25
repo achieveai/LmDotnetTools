@@ -48,6 +48,14 @@ function refuse(code: IdentityRefusalCode): void {
  */
 function expire(): void {
   status.value = 'expired';
+
+  // The provider goes too, for the same reason it does in refuse(). The fetch layer has already
+  // dropped the dead token, but a provider left registered turns the very next request into
+  // another renewal attempt: it 401s, the broker is asked, it returns null because it still cannot
+  // renew silently, and the session expires again - the paired-request trickle refuse() calls out,
+  // against a session that is equally past saving until the user signs in. Unregistering it makes
+  // subsequent calls take the signed-out fast path and return their 401 untouched.
+  setTokenProvider(null);
 }
 
 /**

@@ -204,6 +204,18 @@ claim the pending admin row by typing the operator's address into their own prof
 you have came from an email header or a business card rather than from the directory's
 `preferred_username`, confirm it before onboarding.
 
+> **The first admin cannot bind if the app registration issues v1.0 access tokens.** A v1.0 access
+> token emits `upn`/`unique_name` and **no** `preferred_username`, and binding reads only
+> `preferred_username`. The admin's sign-in then succeeds as an ordinary member, the admin row is
+> never claimed, and the tenant has no administrator. This is not silent: `PrincipalFactory` logs a
+> **warning** naming the tenant and the missing claim on each such sign-in — grep the host log for
+> `First-admin binding skipped` if a freshly onboarded tenant has no working admin. **Recovery:**
+> configure the SPA's Entra app registration to request **v2.0** tokens (`accessTokenAcceptedVersion:
+> 2` on the API app's manifest, which is what makes Entra emit `preferred_username`), then have the
+> intended admin sign in again. There is no operator override that binds an admin by object id after
+> the fact; re-provisioning the same directory is refused with `entra_tenant_id_claimed`, so fixing
+> the token version is the path.
+
 `entraTenantId` is normalised before it is stored and before it is matched, so the directory GUID
 may be pasted in any form the portal or a script produces — upper or lower case, braced, wrapped in
 parentheses, or unhyphenated (#347). One directory therefore cannot end up as two rows because two
@@ -338,14 +350,21 @@ The registration does not replace `Auth:S2SInboundSecret`; it reads the same val
 same constant-time comparison the endpoint filter uses, so the two can never disagree about what a
 service request is.
 
-**Infrastructure callbacks sit outside this boundary entirely.** `/api/auth/webhook/*`,
-`/api/auth/egress-keys*` and `/api/lifecycle/*` have no user and no tenant to resolve, and each
-carries its own credential — the gateway's deferred-auth webhook puts a *session secret* in
-`Authorization`, which the JWT handler cannot parse by design. Guarding them would refuse every
-legitimate caller and grant nothing. That exemption is asserted, not trusted: a test enumerates this
-host's real endpoint table and requires every `/api` route to be either guarded or named on
-`IdentityMiddleware.UnguardedApiPaths`, so a newly added route cannot land outside the boundary
-silently.
+**Infrastructure callbacks sit outside this boundary entirely.** `/api/auth/webhook/*` and
+`/api/lifecycle/*` have no user and no tenant to resolve, and each carries its own credential — the
+gateway's deferred-auth webhook puts a *session secret* in `Authorization`, which the JWT handler
+cannot parse by design, and the lifecycle control plane runs its own signature check and is off by
+default. Guarding them would refuse every legitimate caller and grant nothing. That exemption is
+asserted, not trusted: a test enumerates this host's real endpoint table and requires every `/api`
+route to be either guarded or named on `IdentityMiddleware.UnguardedApiPaths`, so a newly added
+route cannot land outside the boundary silently.
+
+`/api/auth/egress-keys*` is **not** one of these, despite looking like one. Its controller presents
+no credential — it is loopback-gated only — and the SPA reaches it through `apiFetch`, which attaches
+the bearer token under enforcement exactly as it does for `/api/workspaces`. It therefore stays
+*inside* the boundary, guarded like any other management route; carving it out would have let a
+credential-less loopback caller plant, read and destroy egress keys under enforcement (that was the
+state briefly introduced by an earlier draft of #345 and corrected before the flip).
 
 ### Cross-origin clients and refusals (#346)
 
@@ -361,7 +380,10 @@ CORS is registered **before** the identity middleware. Both halves of that matte
   stable code in `X-Identity-Refusal` that the refusal exists to communicate.
 
 Set `LmStreaming:AllowedOrigins` to the origins that may call this host. It is empty by default,
-which is correct for the bundled same-origin SPA and means CORS is not registered at all.
+which is correct for the bundled same-origin SPA: the CORS middleware is still registered
+(`LmStreaming:EnableCors` defaults to `true`), but with no origins allowed it answers every
+cross-origin request without an `Access-Control-Allow-Origin` header, so no other site can read a
+response. CORS is skipped entirely only when `LmStreaming:EnableCors` is set to `false`.
 
 ### Recommended flip order
 

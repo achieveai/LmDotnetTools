@@ -309,9 +309,10 @@ public sealed class SqliteTenantStoreTests : IAsyncLifetime
         await SeedRawAsync("tnt_nohyphen", "c1b2c3d4111122223333444455556666");
         await SeedRawAsync("tnt_already", "d1b2c3d4-1111-2222-3333-444455556666");
 
-        var rewritten = await _store.NormalizeEntraTenantIdsAsync();
+        var result = await _store.NormalizeEntraTenantIdsAsync();
 
-        _ = rewritten.Should().Be(3, "the already-canonical row must not be counted or touched");
+        _ = result.Rewritten.Should().Be(3, "the already-canonical row must not be counted or touched");
+        _ = result.SkippedCollisions.Should().Be(0, "none of these fold onto each other");
         _ = (await ReadRawAsync("tnt_upper")).Should().Be(CanonicalGuid);
         _ = (await ReadRawAsync("tnt_braced")).Should().Be("b1b2c3d4-1111-2222-3333-444455556666");
         _ = (await ReadRawAsync("tnt_nohyphen")).Should().Be("c1b2c3d4-1111-2222-3333-444455556666");
@@ -326,9 +327,14 @@ public sealed class SqliteTenantStoreTests : IAsyncLifetime
         await SeedRawAsync("tnt_canonical", CanonicalGuid);
         await SeedRawAsync("tnt_shouty", "A1B2C3D4-1111-2222-3333-444455556666");
 
-        var rewritten = await _store.NormalizeEntraTenantIdsAsync();
+        var result = await _store.NormalizeEntraTenantIdsAsync();
 
-        _ = rewritten.Should().Be(0);
+        _ = result.Rewritten.Should().Be(0);
+        _ = result.SkippedCollisions.Should().Be(
+            1,
+            "the colliding row is not rewritten, but it must be COUNTED so the startup log can warn "
+                + "that a tenant was left unreachable rather than silently returning a smaller "
+                + "rewritten total");
         _ = (await ReadRawAsync("tnt_canonical")).Should().Be(CanonicalGuid);
         _ = (await ReadRawAsync("tnt_shouty")).Should().Be(
             "A1B2C3D4-1111-2222-3333-444455556666",
@@ -340,8 +346,8 @@ public sealed class SqliteTenantStoreTests : IAsyncLifetime
     {
         await SeedRawAsync("tnt_upper", "A1B2C3D4-1111-2222-3333-444455556666");
 
-        _ = (await _store.NormalizeEntraTenantIdsAsync()).Should().Be(1);
-        _ = (await _store.NormalizeEntraTenantIdsAsync()).Should().Be(0);
+        _ = (await _store.NormalizeEntraTenantIdsAsync()).Rewritten.Should().Be(1);
+        _ = (await _store.NormalizeEntraTenantIdsAsync()).Rewritten.Should().Be(0);
         _ = (await ReadRawAsync("tnt_upper")).Should().Be(CanonicalGuid);
     }
 
