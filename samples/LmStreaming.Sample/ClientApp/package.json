@@ -7,6 +7,7 @@
     "build": "vue-tsc && vite build",
     "preview": "vite preview",
     "type-check": "vue-tsc --noEmit",
+    "type-check:test": "vue-tsc --noEmit -p tsconfig.vitest.json",
     "test": "vitest",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage"
