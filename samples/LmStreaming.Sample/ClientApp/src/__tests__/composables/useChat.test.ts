@@ -301,7 +301,7 @@ describe('useChat deferred-auth prompts', () => {
     expect(providerIds(chat)).toEqual(['github']);
 
     chat.dismissAuthRequest('does-not-exist');
-    expect(providerIds(chat)).toEqual(['github'], 'unknown provider must not change the set');
+    expect(providerIds(chat), 'unknown provider must not change the set').toEqual(['github']);
 
     chat.dismissAuthRequest('github');
     expect(chat.pendingAuthRequests.value).toHaveLength(0);

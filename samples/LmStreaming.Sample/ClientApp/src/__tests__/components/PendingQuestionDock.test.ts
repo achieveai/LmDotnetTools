@@ -3,6 +3,7 @@ import { mount } from '@vue/test-utils';
 import PendingQuestionDock from '@/components/PendingQuestionDock.vue';
 import { GET_RESULT_FOR_TOOL_CALL } from '@/composables/useToolResult';
 import { SUBMIT_CLIENT_TOOL_RESULT } from '@/composables/useClientToolSubmit';
+import type { ClientToolSubmitFn } from '@/composables/useClientToolSubmit';
 import { MessageType } from '@/types';
 import type { DisplayItem, ToolCall, ToolCallResultMessage } from '@/types';
 
@@ -48,7 +49,7 @@ describe('PendingQuestionDock', () => {
   function mountDock(
     displayItems: DisplayItem[],
     results: Record<string, ToolCallResultMessage>,
-    submit = async () => ({ status: 'acked' as const })
+    submit: ClientToolSubmitFn = async () => ({ status: 'acked' as const, duplicate: false })
   ) {
     return mount(PendingQuestionDock, {
       props: { displayItems },
@@ -97,9 +98,9 @@ describe('PendingQuestionDock', () => {
     // answer. In a sub-agent tab that provider is the focused child's socket, not the root's —
     // the root does not know a descendant's toolCallId and would reply `not_found`.
     const seen: Array<{ id: string; payload: string; isError?: boolean }> = [];
-    const submit = async (id: string, payload: string, isError?: boolean) => {
+    const submit: ClientToolSubmitFn = async (id, payload, isError) => {
       seen.push({ id, payload, isError });
-      return { status: 'acked' as const };
+      return { status: 'acked' as const, duplicate: false };
     };
     const w = mountDock([pill('p1', call('q1'))], { q1: deferred('q1') }, submit);
 

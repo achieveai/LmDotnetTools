@@ -24,7 +24,7 @@ function mountQuestion(
     isDeferred = false,
     isErrorFlag = false,
     toolCallId = 'q1',
-    submit = vi.fn(async () => ({ status: 'acked', duplicate: false }) as ClientToolSubmitOutcome),
+    submit = vi.fn<ClientToolSubmitFn>(async () => ({ status: 'acked', duplicate: false })),
   } = opts;
   const view = deriveToolPillState({ functionArgs, result, hasResult, isErrorFlag, isDeferred });
   const toolCall: ToolCall = { tool_call_id: toolCallId, function_name: 'AskUserQuestion', function_args: functionArgs };
@@ -73,7 +73,7 @@ describe('QuestionRich — awaiting-input, single question, single-select', () =
   });
 
   it('submits { answers: [{ questionId: "q0", selectedValues: ["blue-val"], otherText: "", skipped: false }] }', async () => {
-    const submit = vi.fn(async () => ({ status: 'acked', duplicate: false }) as ClientToolSubmitOutcome);
+    const submit = vi.fn<ClientToolSubmitFn>(async () => ({ status: 'acked', duplicate: false }));
     const { w } = mountQuestion(singleArgs, { isDeferred: true, toolCallId: 'call-9', submit });
     await w.get('[data-testid="question-option-blue-val"] input').setValue(true);
     await w.get('[data-testid="question-submit"]').trigger('click');
@@ -115,7 +115,7 @@ describe('QuestionRich — Other and Skip', () => {
   });
 
   it('submits otherText distinct from selectedValues (never injected into selectedValues)', async () => {
-    const submit = vi.fn(async () => ({ status: 'acked', duplicate: false }) as ClientToolSubmitOutcome);
+    const submit = vi.fn<ClientToolSubmitFn>(async () => ({ status: 'acked', duplicate: false }));
     const { w } = mountQuestion(otherArgs, { isDeferred: true, submit });
     await w.get('[data-testid="question-other-toggle"] input').setValue(true);
     await w.get('[data-testid="question-other-text"]').setValue('Something specific');
@@ -128,7 +128,7 @@ describe('QuestionRich — Other and Skip', () => {
   });
 
   it('explicit Skip submits { selectedValues: [], otherText: "", skipped: true } for a single question', async () => {
-    const submit = vi.fn(async () => ({ status: 'acked', duplicate: false }) as ClientToolSubmitOutcome);
+    const submit = vi.fn<ClientToolSubmitFn>(async () => ({ status: 'acked', duplicate: false }));
     const { w } = mountQuestion(singleArgs, { isDeferred: true, submit });
     await w.get('[data-testid="question-skip"]').trigger('click');
     await Promise.resolve();
@@ -160,7 +160,7 @@ describe('QuestionRich — Cancel (explicit pending-question cancellation)', () 
   });
 
   it('clicking Cancel sends isError:true with a structured { error, cancelled: true } payload for this tool_call_id', async () => {
-    const submit = vi.fn(async () => ({ status: 'acked', duplicate: false }) as ClientToolSubmitOutcome);
+    const submit = vi.fn<ClientToolSubmitFn>(async () => ({ status: 'acked', duplicate: false }));
     const { w } = mountQuestion(singleArgs, { isDeferred: true, toolCallId: 'call-cancel-1', submit });
     await w.get('[data-testid="question-cancel"]').trigger('click');
     await Promise.resolve();
@@ -189,7 +189,7 @@ describe('QuestionRich — Cancel (explicit pending-question cancellation)', () 
   });
 
   it('a locally-acked Cancel blocks a subsequent Submit — late answers cannot override the cancellation', async () => {
-    const submit = vi.fn(async () => ({ status: 'acked', duplicate: false }) as ClientToolSubmitOutcome);
+    const submit = vi.fn<ClientToolSubmitFn>(async () => ({ status: 'acked', duplicate: false }));
     const { w } = mountQuestion(singleArgs, { isDeferred: true, submit });
     await w.get('[data-testid="question-option-Red"] input').setValue(true);
     await w.get('[data-testid="question-cancel"]').trigger('click');
@@ -256,7 +256,7 @@ describe('QuestionRich — multiple choice', () => {
   });
 
   it('checking multiple options accumulates them all in selectedValues', async () => {
-    const submit = vi.fn(async () => ({ status: 'acked', duplicate: false }) as ClientToolSubmitOutcome);
+    const submit = vi.fn<ClientToolSubmitFn>(async () => ({ status: 'acked', duplicate: false }));
     const { w } = mountQuestion(multiArgs, { isDeferred: true, submit });
     await w.get('[data-testid="question-option-One"] input').setValue(true);
     await w.get('[data-testid="question-option-Three"] input').setValue(true);
@@ -309,7 +309,7 @@ describe('QuestionRich — 1-4 question stepper', () => {
   });
 
   it('submitting on the last question sends BOTH answers in order', async () => {
-    const submit = vi.fn(async () => ({ status: 'acked', duplicate: false }) as ClientToolSubmitOutcome);
+    const submit = vi.fn<ClientToolSubmitFn>(async () => ({ status: 'acked', duplicate: false }));
     const { w } = mountQuestion(twoQArgs, { isDeferred: true, submit });
     await w.get('[data-testid="question-option-A"] input').setValue(true);
     await w.get('[data-testid="question-next"]').trigger('click');

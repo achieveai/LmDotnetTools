@@ -59,6 +59,13 @@ jobs:
         working-directory: samples/LmStreaming.Sample/ClientApp
         run: npm ci
 
+      # Parity with the clientapp-tests job in ci.yml (#406): type-check the suite too, so a
+      # PR path that only triggers this workflow still catches a mock/fixture drifting out of
+      # sync with production types.
+      - name: Type-check SPA unit tests (vitest)
+        working-directory: samples/LmStreaming.Sample/ClientApp
+        run: npm run type-check:test
+
       - name: Run SPA unit tests (vitest)
         working-directory: samples/LmStreaming.Sample/ClientApp
         run: npm run test:run

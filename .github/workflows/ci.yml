@@ -68,9 +68,14 @@ jobs:
       # (#347/#348 - including the expire()/token-provider regression BE3 fixed) ran in NO always-on
       # CI job: only inside the path-filtered browser E2E workflow, behind a full SPA + Playwright
       # bring-up, so a red client suite could ship on a PR that did not touch the E2E trigger paths.
-      # This runs them here, in seconds. Type-checking the suite (npm run type-check:test, via
-      # tsconfig.vitest.json) is the intended next gate; it currently surfaces PRE-EXISTING type
-      # errors in ~11 unrelated component/composable test files that must be cleared first, tracked
-      # in #406 so this identity change does not carry that cleanup.
+      # This runs them here, in seconds.
+      #
+      # Type-checks the vitest suite (tsconfig.vitest.json), which the app tsconfig deliberately
+      # excludes. #406 cleared the ~11 test files with pre-existing errors this surfaced; this step
+      # now gates so a renamed export, changed signature, or wrong mock shape fails CI instead of
+      # rotting silently until someone runs the tests.
+      - name: Type-check tests (vitest)
+        run: npm run type-check:test
+
       - name: Run unit tests (vitest)
         run: npm run test:run

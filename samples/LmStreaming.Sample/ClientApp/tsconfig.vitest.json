@@ -7,7 +7,12 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "types": ["vitest/globals", "node"],
-    "noEmit": true
+    "noEmit": true,
+    // Test code (not shipped) uses Array.prototype.at(), which Node 20 (the vitest runtime)
+    // supports natively but the app's ES2020 `lib` has no declarations for. Widening only this
+    // config's lib to include the ES2022 array additions type-checks the tests without touching
+    // the production `target`/`lib` in tsconfig.json.
+    "lib": ["ES2020", "ES2022.Array", "DOM", "DOM.Iterable"]
   },
   "include": [
     "src/**/*.ts",
