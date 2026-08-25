@@ -197,6 +197,18 @@ curl -X POST http://<host>/api/admin/tenants \
 successful sign-in — the operator cannot know their object id yet. It binds **once**; a later
 sign-in by anyone whose UPN was reassigned to that mailbox does not take the admin row over.
 
+Match it against the token's **`preferred_username`** claim and nothing else (spec §8.2, #349). A
+token can carry `email` and `upn` as well, and those are not the same guarantee: `email` in
+particular is a directory attribute a user may be able to set, so accepting it would let someone
+claim the pending admin row by typing the operator's address into their own profile. If the value
+you have came from an email header or a business card rather than from the directory's
+`preferred_username`, confirm it before onboarding.
+
+`entraTenantId` is normalised before it is stored and before it is matched, so the directory GUID
+may be pasted in any form the portal or a script produces — upper or lower case, braced, wrapped in
+parentheses, or unhyphenated (#347). One directory therefore cannot end up as two rows because two
+operators pasted it differently.
+
 Two properties of this route differ from `X-S2S-Auth` on purpose, and both matter:
 
 - **It is unconditional.** `InboundS2SAuthAttribute` only enforces on requests carrying an S2S
@@ -288,6 +300,69 @@ claimed first. Two mechanisms do this, and both are needed:
      the intended failure mode — inaccessible, not exposed — but it is an outage for whoever owned
      it, so rehearse first.
 
+### Service callers under enforcement (`Identity:Apps`)
+
+A service caller has no user to sign in, so it gets its own front door (spec §4.2 step 1): the
+inbound S2S secret proves it is a known service, and an `Identity:Apps` entry says which tenant that
+service acts within. The result is a principal with `Source = AppOnly` and no `OnBehalfOf` — the app
+acting as itself, never as a user.
+
+```jsonc
+{
+  "Identity": {
+    "Enforce": true,
+    "Apps": {
+      // Keyed by the caller's X-Sbx-App-Id. The daemon's own id is "codereview-daemon".
+      "codereview-daemon": { "TenantId": "tnt_acme", "Scopes": [] },
+
+      // Used when a caller presents X-S2S-Auth with no X-Sbx-App-Id at all.
+      "default": { "TenantId": "tnt_acme" }
+    }
+  }
+}
+```
+
+Onboarding is explicit, exactly like tenants, and for the same reason: the alternative is that
+anyone holding the shared secret picks their own tenant id.
+
+| Request | `Identity:Enforce` | Result |
+|---|---|---|
+| Correct `X-S2S-Auth`, app id present in `Identity:Apps` | `true` | Principal minted; the endpoint's own `InboundS2SAuthAttribute` still runs and still checks the secret |
+| Correct `X-S2S-Auth`, app id **not** in `Identity:Apps` | `true` | `403` `service_app_not_registered` — the caller authenticated, so retrying cannot help |
+| Correct `X-S2S-Auth`, registration names `Identity:LegacyTenantId` | `true` | `403` `service_app_tenant_invalid` — no principal may carry the quarantine tenant (spec §8.5.2) |
+| Wrong or missing `X-S2S-Auth` | `true` | `401` |
+| `X-S2S-Auth` presented while `Auth:S2SInboundSecret` is unset | `true` | `401`, and an error is logged. The keyless dev path disables the endpoint guard; minting a principal there would let anyone who typed two header names in |
+| Anything | `false` | Unchanged — the development principal, exactly as before |
+
+The registration does not replace `Auth:S2SInboundSecret`; it reads the same value and calls the
+same constant-time comparison the endpoint filter uses, so the two can never disagree about what a
+service request is.
+
+**Infrastructure callbacks sit outside this boundary entirely.** `/api/auth/webhook/*`,
+`/api/auth/egress-keys*` and `/api/lifecycle/*` have no user and no tenant to resolve, and each
+carries its own credential — the gateway's deferred-auth webhook puts a *session secret* in
+`Authorization`, which the JWT handler cannot parse by design. Guarding them would refuse every
+legitimate caller and grant nothing. That exemption is asserted, not trusted: a test enumerates this
+host's real endpoint table and requires every `/api` route to be either guarded or named on
+`IdentityMiddleware.UnguardedApiPaths`, so a newly added route cannot land outside the boundary
+silently.
+
+### Cross-origin clients and refusals (#346)
+
+CORS is registered **before** the identity middleware. Both halves of that matter:
+
+- A CORS preflight is an `OPTIONS` request with no `Authorization` header — browsers never attach
+  one, by specification. An identity middleware in front of CORS answers `401`, and the browser then
+  abandons the real request without ever sending it. (The middleware also lets a genuine preflight
+  through on its own, as a second, independent guard; a bare `OPTIONS` carrying no
+  `Access-Control-Request-Method` is still guarded.)
+- A refusal written downstream of the CORS middleware leaves **without**
+  `Access-Control-Allow-Origin`, so a cross-origin SPA sees an opaque network error instead of the
+  stable code in `X-Identity-Refusal` that the refusal exists to communicate.
+
+Set `LmStreaming:AllowedOrigins` to the origins that may call this host. It is empty by default,
+which is correct for the bundled same-origin SPA and means CORS is not registered at all.
+
 ### Recommended flip order
 
 1. Deploy the build. Leave `Identity:Enforce` false. The schema migrates (`user_version` 4), the
@@ -300,50 +375,31 @@ claimed first. Two mechanisms do this, and both are needed:
    counts against what you expect, then run it for real.
 5. Confirm nothing is left behind: a `dryRun` adoption into any real tenant should now report `0`,
    and no conversation anyone still needs should remain in the quarantine tenant.
-6. Set `Identity:Enforce` true. Anonymous `/api` requests now get `401` — **and so does every
-   service-to-service caller**, including ones that authenticate correctly with `X-S2S-Auth`. Read
-   "Service callers are refused" below before taking this step. Do not take it at all on a host that
-   serves S2S traffic.
+6. **Onboard every service caller** that talks to this host, by adding an `Identity:Apps` entry
+   naming the tenant it acts within (see "Service callers" below). A caller with no entry gets `403`
+   under enforcement. Do this before step 7, not after — an S2S caller cannot sign in to fix itself.
+7. **If a browser on another origin calls this host**, set `LmStreaming:AllowedOrigins` to that
+   origin. Refusals are answered before the endpoint runs, so a cross-origin client can only read
+   the refusal code if this host is configured to allow its origin.
+8. Set `Identity:Enforce` true. Anonymous `/api` requests now get `401`.
 
-Steps 1 through 5 are reversible and can sit in production for as long as you like. Only step 6
+Steps 1 through 7 are reversible and can sit in production for as long as you like. Only step 8
 changes what any caller sees.
 
 ### Known gaps
 
-Three things `Identity:Enforce` does not do that its name suggests it might. All are open. The list
-is exhaustive over the REST surface: every other `/api` route that names a conversation goes through
-the authorizer.
+Two things `Identity:Enforce` still does not do that its name suggests it might, plus one that used
+to be listed here and is now fixed. The list is exhaustive over the REST surface: every other `/api`
+route that names a conversation goes through the authorizer.
 
-#### Service callers are refused (#345)
+#### Service callers used to be refused (#345, fixed)
 
-`Identity:Enforce=true` answers `401` to every caller under `/api` that does not present an Entra
-bearer token — including callers that authenticate correctly by another mechanism.
-
-`IdentityMiddleware` guards the whole `/api` prefix and builds a principal from exactly one source:
-the resolution the JWT bearer handler stashes while validating an Entra token. `InboundS2SAuthAttribute`
-is an `IAsyncActionFilter`, so it runs at endpoint execution — long after the middleware has already
-written the `401`. A correct S2S request never reaches its own guard.
-
-Concretely, with `Enforce` true these all get `401`:
-
-| Caller | Route | How it authenticates |
-|---|---|---|
-| Any S2S caller | `/api/conversations*` and every other guarded route | `X-S2S-Auth` (+ `X-Sbx-App-Id`) |
-| Sandbox gateway deferred-auth callback | `/api/auth/webhook/{provider}` | A session secret in `Authorization` — which the JWT handler will also fail to parse |
-| Egress key issuance | `/api/auth/egress-keys` | Its own guard |
-| Lifecycle approvals / subscriptions | `/api/lifecycle/*` | Its own guard |
-
-The `/api/identity/config`, `/api/admin/tenants` and `/api/health` prefixes are exempt and stay
-reachable; nothing else is.
-
-**The Code-Review Daemon's review host is a live instance of this.** The daemon stamps `X-S2S-Auth`
-and `X-Sbx-App-Id` on every call to that host's `/api/conversations` routes and holds no Entra token.
-Flipping `Identity:Enforce` true there stops the daemon reviewing.
-
-This is fail-closed, not a bypass — no unauthenticated caller gets in. But it is a total outage for
-non-browser callers, so **do not flip `Identity:Enforce` on a host serving S2S traffic** until #345
-lands. The fix is a principal path for service callers (spec §4.2, slice 5 / #305), not an exemption
-list in the middleware.
+This was the largest gap and is now closed; the section is kept because operators reading an older
+runbook will look for it. Before the fix, `Identity:Enforce=true` answered `401` to every caller
+under `/api` that did not present an Entra bearer token, including callers that authenticated
+correctly by another mechanism. `InboundS2SAuthAttribute` is an `IAsyncActionFilter`, so it ran at
+endpoint execution — long after the middleware had already written the `401`. A correct S2S request
+never reached its own guard. See "Service callers" below for how they authenticate now.
 
 #### An editor grantee can collide with a live agent (#302 follow-up)
 

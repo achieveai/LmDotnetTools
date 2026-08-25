@@ -33,7 +33,36 @@ public sealed class PrincipalFactory
         "http://schemas.microsoft.com/identity/claims/objectidentifier",
     ];
 
-    private static readonly string[] UpnClaimTypes =
+    /// <summary>
+    /// The one claim the first-admin binding is allowed to read (spec 8.2, #349).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Exactly one entry, and it must stay that way. Binding the first admin is a one-shot,
+    /// irreversible grant, and <c>preferred_username</c> is what the spec picked for it -
+    /// deliberately and narrowly. <c>email</c> is settable by a directory administrator, is not
+    /// guaranteed to be a sign-in identifier, and is not guaranteed unique; <c>upn</c> is closer
+    /// but still not the claim the spec named. Admitting either would mean a token that carries no
+    /// <c>preferred_username</c> could bind the admin row on the strength of a weaker attribute.
+    /// </para>
+    /// <para>
+    /// Mapping-safe as written. <c>JwtBearerOptions.MapInboundClaims</c> defaults to true, which
+    /// renames the short JWT claim names to the long <c>ClaimTypes.*</c> URIs before anything here
+    /// reads them - that is exactly how <c>email</c> reached this array as
+    /// <see cref="ClaimTypes.Email"/>. <c>preferred_username</c> is NOT in the default inbound
+    /// map, so it survives the rename under its own name and needs no long-form alternative. Add
+    /// one here only after checking the map, never on symmetry with the arrays above.
+    /// </para>
+    /// </remarks>
+    private static readonly string[] BindingUpnClaimTypes = ["preferred_username"];
+
+    /// <summary>
+    /// Claims read for the AUDIT record's <c>ClaimedUpn</c> only. Wider than
+    /// <see cref="BindingUpnClaimTypes"/> on purpose: a rejected sign-in is the case an operator
+    /// most needs a human-readable identifier for, and this value authorizes nothing. It must
+    /// never be passed to <see cref="ITenantStore.TryBindFirstAdminAsync"/>.
+    /// </summary>
+    private static readonly string[] DisplayUpnClaimTypes =
     [
         "preferred_username",
         ClaimTypes.Upn,
@@ -117,7 +146,12 @@ public sealed class PrincipalFactory
 
         var entraTenantId = FindClaim(user, TenantIdClaimTypes);
         var objectId = FindClaim(user, ObjectIdClaimTypes);
-        var upn = FindClaim(user, UpnClaimTypes);
+        // Two values, never one. The narrow one is the only thing allowed to reach the
+        // first-admin binding; the wide one exists so an operator reading an audit record still
+        // sees a human-readable identifier. Collapsing them back into a single `upn` local is how
+        // #349 happened in the first place.
+        var bindingUpn = FindClaim(user, BindingUpnClaimTypes);
+        var displayUpn = FindClaim(user, DisplayUpnClaimTypes);
         var jti = FindClaim(user, ["jti"]);
 
         if (string.IsNullOrWhiteSpace(entraTenantId) || string.IsNullOrWhiteSpace(objectId))
@@ -129,7 +163,7 @@ public sealed class PrincipalFactory
                 StatusCodes.Status401Unauthorized,
                 entraTenantId,
                 objectId,
-                upn,
+                displayUpn,
                 jti,
                 resolvedTenantId: null,
                 correlationId);
@@ -140,7 +174,8 @@ public sealed class PrincipalFactory
             return await ResolveAgainstDirectoryAsync(
                     entraTenantId,
                     objectId,
-                    upn,
+                    bindingUpn,
+                    displayUpn,
                     jti,
                     correlationId,
                     ct)
@@ -165,7 +200,7 @@ public sealed class PrincipalFactory
                 StatusCodes.Status503ServiceUnavailable,
                 entraTenantId,
                 objectId,
-                upn,
+                displayUpn,
                 jti,
                 resolvedTenantId: null,
                 correlationId);
@@ -180,7 +215,8 @@ public sealed class PrincipalFactory
     private async Task<PrincipalResolution> ResolveAgainstDirectoryAsync(
         string entraTenantId,
         string objectId,
-        string? upn,
+        string? bindingUpn,
+        string? displayUpn,
         string? jti,
         string? correlationId,
         CancellationToken ct)
@@ -197,7 +233,7 @@ public sealed class PrincipalFactory
                 StatusCodes.Status403Forbidden,
                 entraTenantId,
                 objectId,
-                upn,
+                displayUpn,
                 jti,
                 resolvedTenantId: null,
                 correlationId);
@@ -211,7 +247,7 @@ public sealed class PrincipalFactory
                 StatusCodes.Status403Forbidden,
                 entraTenantId,
                 objectId,
-                upn,
+                displayUpn,
                 jti,
                 resolvedTenantId: tenant.TenantId,
                 correlationId);
@@ -222,12 +258,14 @@ public sealed class PrincipalFactory
         // unique and makes a cross-tenant collision structurally impossible.
         var userId = $"{entraTenantId}:{objectId}";
 
-        if (!string.IsNullOrWhiteSpace(upn))
+        if (!string.IsNullOrWhiteSpace(bindingUpn))
         {
             // The only place preferred_username is trusted, and it is trusted only to BIND. The
-            // store's own predicate is what makes this happen at most once.
+            // store's own predicate is what makes this happen at most once. `bindingUpn`, never
+            // `displayUpn`: the wide claim set is for the audit trail and authorizes nothing.
             _ = await _tenantStore
-                .TryBindFirstAdminAsync(tenant.TenantId, upn, userId, _timeProvider.GetUtcNow(), ct)
+                .TryBindFirstAdminAsync(
+                    tenant.TenantId, bindingUpn, userId, _timeProvider.GetUtcNow(), ct)
                 .ConfigureAwait(false);
         }
 
@@ -246,7 +284,7 @@ public sealed class PrincipalFactory
             FrontDoor = AuditFrontDoor.Interactive,
             ClaimedEntraTenantId = entraTenantId,
             ClaimedObjectId = objectId,
-            ClaimedUpn = _options.Value.Audit.IncludeUpn ? upn : null,
+            ClaimedUpn = _options.Value.Audit.IncludeUpn ? displayUpn : null,
             AppId = null,
             ResolvedTenantId = tenant.TenantId,
             Jti = jti,
@@ -272,7 +310,7 @@ public sealed class PrincipalFactory
         int statusCode,
         string? entraTenantId,
         string? objectId,
-        string? upn,
+        string? displayUpn,
         string? jti,
         string? resolvedTenantId,
         string? correlationId)
@@ -292,7 +330,7 @@ public sealed class PrincipalFactory
                 FrontDoor = AuditFrontDoor.Interactive,
                 ClaimedEntraTenantId = entraTenantId,
                 ClaimedObjectId = objectId,
-                ClaimedUpn = _options.Value.Audit.IncludeUpn ? upn : null,
+                ClaimedUpn = _options.Value.Audit.IncludeUpn ? displayUpn : null,
                 AppId = null,
                 ResolvedTenantId = resolvedTenantId,
                 Jti = jti,

@@ -1,6 +1,6 @@
 import { ref, readonly, computed, type Ref } from 'vue';
 import { getIdentityConfig } from '@/api/identityApi';
-import { onApiRefusal, setAccessToken } from '@/api/http';
+import { onApiRefusal, onSessionExpired, setAccessToken, setTokenProvider } from '@/api/http';
 import * as entraAuth from '@/auth/entraAuth';
 import type { IdentityConfig, IdentityRefusalCode, IdentityStatus } from '@/types/identity';
 
@@ -32,6 +32,22 @@ function refuse(code: IdentityRefusalCode): void {
   refusalCode.value = code;
   status.value = 'rejected';
   setAccessToken(null);
+
+  // The provider goes too. Left registered, the next call would meet a 401 (there is no token any
+  // more), renew successfully, and be refused again on the retry — turning a terminal state into a
+  // steady trickle of paired requests against an endpoint that will keep saying no.
+  setTokenProvider(null);
+}
+
+/**
+ * Records a session that ran out and could not be renewed without the user present.
+ *
+ * Deliberately NOT a refusal and deliberately not an automatic redirect. A redirect fired from
+ * whichever background request happened to notice would throw away a half-typed message; the user
+ * gets a screen, and decides when to leave the page.
+ */
+function expire(): void {
+  status.value = 'expired';
 }
 
 /**
@@ -43,6 +59,7 @@ function refuse(code: IdentityRefusalCode): void {
  */
 export async function initializeIdentity(): Promise<void> {
   onApiRefusal(refuse);
+  onSessionExpired(expire);
 
   try {
     const loaded = await getIdentityConfig();
@@ -69,6 +86,10 @@ export async function initializeIdentity(): Promise<void> {
       return;
     }
 
+    // Only now does a broker with an active account exist, so only now can the fetch layer ask it
+    // for a token. Registering earlier would point the renewal path at an uninitialised MSAL
+    // instance during the anonymous config request above.
+    setTokenProvider(() => entraAuth.acquireAccessToken());
     setAccessToken(token);
     status.value = 'signed-in';
   } catch (error) {
@@ -115,6 +136,12 @@ export function resetIdentityState(): void {
   config.value = null;
   setAccessToken(null);
   onApiRefusal(null);
+  onSessionExpired(null);
+
+  // The provider closes over this module's MSAL mock. Leaving it registered lets one test file's
+  // broker be called from the next one's `apiFetch`, which is the kind of leak that shows up as an
+  // unrelated file failing only when the whole suite runs.
+  setTokenProvider(null);
 }
 
 /** The app shell's view of identity. Read-only: only this module may advance the state machine. */

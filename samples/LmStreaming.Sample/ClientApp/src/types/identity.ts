@@ -39,6 +39,10 @@ export function asRefusalCode(value: string | null | undefined): IdentityRefusal
  * reached by completely different routes — one skipped authentication, the other completed it —
  * and collapsing them would make a failure to sign in indistinguishable from a deployment that
  * never asked for one.
+ *
+ * `expired` is likewise kept apart from `rejected`. Both arrive on a session that WAS working, but
+ * the remedies are opposites: signing in again fixes an expiry and is precisely the thing that
+ * must not be offered on a refusal.
  */
 export type IdentityStatus =
   | 'loading'
@@ -46,4 +50,5 @@ export type IdentityStatus =
   | 'signing-in'
   | 'signed-in'
   | 'rejected'
+  | 'expired'
   | 'error';
