@@ -2326,8 +2326,9 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     [Fact]
     public async Task Judged_runs_on_the_configured_judge_model_rather_than_the_reviewers()
     {
+        using var logs = new CapturingLoggerFactory();
         using var fixture = Fixture.GitHub(
-            LoggerFactory,
+            logs,
             new CodeReviewDaemonOptions
             {
                 EnableJudgeAgent = true,
@@ -2342,6 +2343,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
 
         JudgeModelIds(fixture).Should().ContainSingle().Which.Should().Be("anthropic/claude-opus-4");
+        logs.Capturing.CountAtLevel(LogLevel.Warning, "self-preference bias").Should().Be(0);
 
         var judge = fixture.Store
             .GetArtifacts(run.Id)
@@ -2357,8 +2359,9 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     [Fact]
     public async Task Judged_without_a_configured_judge_model_grades_on_the_reviewers_and_records_it()
     {
+        using var logs = new CapturingLoggerFactory();
         using var fixture = Fixture.GitHub(
-            LoggerFactory,
+            logs,
             new CodeReviewDaemonOptions { EnableJudgeAgent = true });
         fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] =
             "{\"score\": 8, \"rationale\": \"Solid.\"}";
@@ -2374,6 +2377,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         using var payload = JsonDocument.Parse(judge.Payload);
         JudgeModelIds(fixture).Should().ContainSingle().Which.Should().Be("openai/gpt-5");
         payload.RootElement.GetProperty("SelfGraded").GetBoolean().Should().BeTrue();
+        logs.Capturing.CountAtLevel(LogLevel.Warning, "self-preference bias").Should().Be(1);
     }
 
     /// <summary>
