@@ -2381,6 +2381,44 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     }
 
     /// <summary>
+    /// The judge model the daemon ASKS for and the model the transport actually runs is not the same
+    /// thing: S2S provision carries no model field, so the only production factory discards the per-call
+    /// id entirely. Recording what was asked for would put a model id in the artifact that never graded
+    /// anything and, worse, a <c>SelfGraded: false</c> — an affirmative claim of independence the
+    /// transport did not deliver, on a run where judge and generator were in fact the same model. Both
+    /// the recorded provenance and the warning are therefore derived from what the factory resolves.
+    /// </summary>
+    [Fact]
+    public async Task Judged_records_the_model_the_transport_resolved_not_the_one_that_was_requested()
+    {
+        using var logs = new CapturingLoggerFactory();
+        using var fixture = Fixture.GitHub(
+            logs,
+            new CodeReviewDaemonOptions
+            {
+                EnableJudgeAgent = true,
+                JudgeModelId = "anthropic/claude-opus-4",
+            });
+        fixture.Factory.EffectiveModelIdOverride = "lmstreaming:openai";
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] =
+            "{\"score\": 8, \"rationale\": \"Solid.\"}";
+        var run = fixture.SeedRun(modelId: "openai/gpt-5");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+
+        var judge = fixture.Store
+            .GetArtifacts(run.Id)
+            .Should().ContainSingle(a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind).Subject;
+        using var payload = JsonDocument.Parse(judge.Payload);
+        payload.RootElement.GetProperty("JudgeModelId").GetString().Should().Be("lmstreaming:openai");
+        payload.RootElement.GetProperty("GeneratorModelId").GetString().Should().Be("lmstreaming:openai");
+        payload.RootElement.GetProperty("SelfGraded").GetBoolean().Should().BeTrue();
+        logs.Capturing.CountAtLevel(LogLevel.Warning, "self-preference bias").Should().Be(1);
+    }
+
+    /// <summary>
     /// And when the run never recorded which model wrote the review — the loop falls back to the
     /// factory's own default — the relation is <b>unknown</b>, not "no". Two unrecorded sides are
     /// not evidence of a shared model, and a false here would read in an aggregate as a run the
@@ -2389,8 +2427,9 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     [Fact]
     public async Task Judged_by_an_unrecorded_model_leaves_the_self_preference_relation_unknown()
     {
+        using var logs = new CapturingLoggerFactory();
         using var fixture = Fixture.GitHub(
-            LoggerFactory,
+            logs,
             new CodeReviewDaemonOptions { EnableJudgeAgent = true });
         fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] =
             "{\"score\": 8, \"rationale\": \"Solid.\"}";
@@ -2405,6 +2444,11 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             .Should().ContainSingle(a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind).Subject;
         using var payload = JsonDocument.Parse(judge.Payload);
         payload.RootElement.GetProperty("SelfGraded").ValueKind.Should().Be(JsonValueKind.Null);
+
+        // And the warning stays silent, because two unnamed models are not a self-preference finding.
+        // Comparing null to null would fire it on every such run, naming no model — an alarm that says
+        // nothing is worse than no alarm: it trains the reader to skip the one that means something.
+        logs.Capturing.CountAtLevel(LogLevel.Warning, "self-preference bias").Should().Be(0);
     }
 
     private static List<string?> JudgeModelIds(Fixture fixture) =>

@@ -3054,22 +3054,38 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // score this daemon has recorded means, and #322 owns that behaviour change along with the
         // model-tier rules of §7.1. What is no longer left implicit is WHICH model graded — the
         // artifact records both sides, because §3.2's axis cannot be recovered retrospectively.
-        var judgeModelId = string.IsNullOrWhiteSpace(_options.JudgeModelId)
+        //
+        // Below: what we ASK for, then what the transport will actually run. The two differ on the S2S path,
+        // which discards the per-call id entirely, so every claim below is derived from the effective id:
+        // recording the requested one would put a model that graded nothing into the artifact, and — worse
+        // — a SelfGraded:false asserting an independence the transport never delivered.
+        var requestedJudgeModelId = string.IsNullOrWhiteSpace(_options.JudgeModelId)
             ? run.ModelId
             : _options.JudgeModelId;
+        var judgeModelId = _loopFactory.ResolveEffectiveModelId(requestedJudgeModelId);
+        var generatorModelId = _loopFactory.ResolveEffectiveModelId(run.ModelId);
 
-        if (string.Equals(judgeModelId, run.ModelId, StringComparison.Ordinal))
+        // Gated on a NON-EMPTY effective id: an unnamed judge and an unnamed generator are two unknowns,
+        // not a finding. Firing here on null == null would warn on every run of a transport that names no
+        // model, naming none itself — an alarm that says nothing trains the reader past the one that does.
+        if (!string.IsNullOrWhiteSpace(judgeModelId)
+            && string.Equals(judgeModelId, generatorModelId, StringComparison.Ordinal))
         {
             _logger.LogWarning(
                 "Review run {ReviewRunId} is being graded by its own generator {ModelId}; the score "
                     + "carries self-preference bias and is not an independent signal. Set "
                     + "CodeReviewDaemon:JudgeModelId to a model from another family.",
                 run.Id,
-                run.ModelId);
+                judgeModelId);
         }
 
+        // The REQUESTED id goes to the factory — a transport that can select per call must still get what
+        // was asked for; one that cannot has already said so above.
         await using var loop = _loopFactory.Create(
-            profile, judgeModelId, ThreadId(run, DaemonAgentFactory.JudgeProfileId), reviewWorkspace: judgeWorkspace);
+            profile,
+            requestedJudgeModelId,
+            ThreadId(run, DaemonAgentFactory.JudgeProfileId),
+            reviewWorkspace: judgeWorkspace);
         var judge = new JudgeAgent(loop, _store, _loggerFactory.CreateLogger<JudgeAgent>());
 
         var judgingInput = $"Grade this code review:\n\n{reviewText}";
@@ -3077,7 +3093,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             new JudgeRequest(run.Id, provider, run.VariantId, judgingInput)
             {
                 JudgeModelId = judgeModelId,
-                GeneratorModelId = run.ModelId,
+                GeneratorModelId = generatorModelId,
             },
             cancellationToken).ConfigureAwait(false);
     }

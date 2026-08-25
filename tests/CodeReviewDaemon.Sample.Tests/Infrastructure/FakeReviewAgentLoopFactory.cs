@@ -61,6 +61,17 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
     /// <summary>Model ids passed to <see cref="Create"/>, in call order (null = the run's configured model).</summary>
     public List<string?> ModelIds { get; } = [];
 
+    /// <summary>
+    /// When set, the effective model is this value NO MATTER what model id the caller passes — which is
+    /// what the only production factory does: S2S provision carries no model field, so
+    /// <c>S2SReviewAgentLoopFactory.Create</c> discards <c>modelId</c> and the host resolves the model from
+    /// the configured provider. Left null the fake honours the requested id, modelling a transport that
+    /// can select per call. A caller that reads the requested id instead of the effective one looks
+    /// correct against the honouring fake and writes a false claim in production, so the discarding case
+    /// has to be expressible here.
+    /// </summary>
+    public string? EffectiveModelIdOverride { get; set; }
+
     /// <summary>Workspace ids passed to <see cref="Create"/>, in call order (null = in-process path, no S2S workspace).</summary>
     public List<string?> WorkspaceIds { get; } = [];
 
@@ -113,6 +124,11 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
         CreatedAgents.Add(agent);
         return Decorate(agent, threadId, resumeHostedThreadId);
     }
+
+    /// <summary>Mirrors production's discard when <see cref="EffectiveModelIdOverride"/> is set, and
+    /// honours the request otherwise.</summary>
+    public string? ResolveEffectiveModelId(string? requestedModelId) =>
+        EffectiveModelIdOverride ?? requestedModelId;
 
     /// <summary>The minted conversation id is derived from the daemon-local thread id, so it is deterministic
     /// (a test can predict it) yet distinct per A/B arm and escalation rung, exactly as a real host's would be.</summary>

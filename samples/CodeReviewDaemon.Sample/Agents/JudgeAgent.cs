@@ -101,8 +101,9 @@ internal sealed class JudgeAgent
 
     /// <summary>
     /// Sends <paramref name="request"/>'s judging material as one user turn, scores the model's
-    /// verdict through the harness, and persists a <c>judge</c> artifact holding only the score,
-    /// rationale, and variant id.
+    /// verdict through the harness, and persists a <c>judge</c> artifact holding exactly the fields of
+    /// <see cref="JudgeArtifactPayload"/>: the score (or none), the rationale, the variant, and the
+    /// judge/generator provenance §3.2 needs.
     /// </summary>
     public async Task<JudgeVerdict> JudgeAsync(JudgeRequest request, CancellationToken cancellationToken)
     {
@@ -208,9 +209,12 @@ internal sealed class JudgeAgent
     /// review stage produced) and one judge, whose prompt renderer is the identity so the bytes the
     /// model actually saw are the bytes recorded, not a re-render of them.
     /// <para>
-    /// <see cref="Candidate.GeneratorFamily"/> is left null on purpose. Revobot's judge currently
-    /// runs on the reviewing run's own model, so there is no second family to exclude and claiming
-    /// one would assert an independence that does not hold — see the TODO at the judge stage.
+    /// <see cref="Candidate.GeneratorFamily"/> is left null on purpose, and NOT derived from
+    /// <see cref="JudgeRequest.GeneratorModelId"/>: a family is not a model id, no production resolver
+    /// maps one to the other, and a guessed family would arm §7.1(2)'s exclusion rule against a value
+    /// nothing verified. Whether the judge is independent of the generator is recorded as
+    /// <see cref="JudgeArtifactPayload.SelfGraded"/> — a statement of fact about this run — rather than
+    /// asserted here as a property the harness would then act on (#322).
     /// </para>
     /// </summary>
     private static Task<Verdict> ScoreAsync(

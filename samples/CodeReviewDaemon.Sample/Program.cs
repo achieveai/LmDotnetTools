@@ -289,6 +289,22 @@ if (string.IsNullOrWhiteSpace(daemonOptions.LmStreamingBaseUrl))
         "UseS2SReviewAgent is on but LmStreamingBaseUrl is not configured; set it to the LmStreaming review "
         + "host base URL (e.g. http://localhost:5051).");
 }
+
+// JudgeModelId is a PER-CALL model id and S2S provision carries no model field
+// (ProvisionConversationRequest is {WorkspaceId, ProviderId, ModeId}), so S2SReviewAgentLoopFactory
+// discards it — the same hazard appsettings.s2s.json documents for KnowledgeModelId. Accepting it here
+// would read as "the judge runs on opus" while the judge kept running on whatever LmStreamingProviderId
+// resolves: the review's own model. That is not a silent no-op, it is a silent REVERSAL of the setting's
+// entire purpose, so refuse it at boot rather than let the operator believe the bias is gone.
+if (!string.IsNullOrWhiteSpace(daemonOptions.JudgeModelId))
+{
+    throw new InvalidOperationException(
+        "CodeReviewDaemon:JudgeModelId cannot be honoured while UseS2SReviewAgent is on: provision carries "
+        + "no model field, so the review host resolves the judge's model from LmStreamingProviderId exactly "
+        + "as it does the review's. Unset JudgeModelId (the judge then grades on the review's own model, "
+        + "which the judge stage warns about and the judge artifact records), or run the judge against a "
+        + "review host whose provider resolves a different model.");
+}
 if (string.IsNullOrWhiteSpace(effectiveWorkspaceBase))
 {
     throw new InvalidOperationException(
