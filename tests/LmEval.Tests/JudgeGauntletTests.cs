@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmEval.Aggregation;
+using AchieveAi.LmDotnetTools.LmEval.Judges;
 using AchieveAi.LmDotnetTools.LmEval.Tests.Infrastructure;
 
 namespace AchieveAi.LmDotnetTools.LmEval.Tests;
@@ -16,8 +17,15 @@ public sealed class JudgeGauntletTests
     private static JudgeGauntlet Gauntlet(
         IReadOnlyList<IGate> gates,
         IReadOnlyList<IJudge> judges,
-        HarnessOptions? options = null
-    ) => new(gates, judges, new WeightedMeanAggregator(), options ?? new HarnessOptions());
+        HarnessOptions? options = null,
+        IBallotAggregator? aggregator = null
+    ) =>
+        new(
+            gates,
+            judges,
+            aggregator ?? new WeightedMeanAggregator(),
+            options ?? new HarnessOptions()
+        );
 
     private static Task<Verdict> Run(JudgeGauntlet gauntlet, Candidate candidate) =>
         gauntlet.RunAsync(candidate, Rubric, NoReliability, CancellationToken.None);
@@ -339,6 +347,35 @@ public sealed class JudgeGauntletTests
             );
     }
 
+    /// <summary>
+    /// §2.12.3 rule 1 and §2.12.6 — escalation resolves a disagreement between two judges that both
+    /// ran. A Split over a DEGRADED panel is not that: one voice is missing, so the arbiter would be
+    /// breaking a tie that was never fully cast. The reducer is an injected seam, so a host reducer
+    /// can hand the gauntlet this state even though WeightedMeanAggregator never produces it — which
+    /// is what makes the guard reachable, and testable.
+    /// </summary>
+    [Fact]
+    public async Task A_split_over_a_degraded_panel_does_not_escalate()
+    {
+        var arbiter = new FakeJudge("arb", "google", score: 3.0);
+        var only = new FakeJudge("a", "anthropic", score: 9.0);
+
+        var verdict = await Run(
+            Gauntlet(
+                [],
+                [only],
+                new HarnessOptions { ArbiterJudge = arbiter },
+                new StubAggregator(VerdictOutcome.Split, PanelDegradation.SingleJudge)
+            ),
+            HarnessFixtures.Candidate()
+        );
+
+        arbiter
+            .Calls.Should()
+            .Be(0, "a degraded panel's disagreement is not the arbiter's to resolve");
+        verdict.Outcome.Should().Be(VerdictOutcome.Split);
+    }
+
     // ---- reference-guided grading (§3.4) ------------------------------------------------------
 
     /// <summary>§3.4 — the candidate's reference reaches the judge through the context.</summary>
@@ -368,6 +405,40 @@ public sealed class JudgeGauntletTests
         await cts.CancelAsync();
 
         var run = () => gauntlet.RunAsync(HarnessFixtures.Candidate(), Rubric, NoReliability, cts.Token);
+
+        await run.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    /// <summary>
+    /// The same rule, but reaching the guard that actually implements it. The test above cancels
+    /// BEFORE the run starts, so it is settled by RunAsync's entry check and never enters a judge.
+    /// This one cancels INSIDE the judge, which is the only path through
+    /// <c>InvokeAsync</c>'s cancellation catch — without it, that catch could be deleted and every
+    /// test would stay green while a caller's cancellation silently became a PanelUnavailable
+    /// verdict.
+    /// </summary>
+    [Fact]
+    public async Task A_cancellation_raised_inside_a_judge_propagates_rather_than_becoming_a_fault()
+    {
+        using var cts = new CancellationTokenSource();
+        var judge = new RubricJudge(
+            new RubricJudgeOptions
+            {
+                JudgeId = "a",
+                ModelId = "anthropic/model",
+                ModelFamily = "anthropic",
+            },
+            (_, ct) =>
+            {
+                cts.Cancel();
+                ct.ThrowIfCancellationRequested();
+                return Task.FromResult("unreachable");
+            }
+        );
+        var gauntlet = Gauntlet([], [judge]);
+
+        var run = () =>
+            gauntlet.RunAsync(HarnessFixtures.Candidate(), Rubric, NoReliability, cts.Token);
 
         await run.Should().ThrowAsync<OperationCanceledException>();
     }
