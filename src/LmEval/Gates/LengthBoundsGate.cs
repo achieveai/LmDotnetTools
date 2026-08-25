@@ -1,3 +1,5 @@
+using AchieveAi.LmDotnetTools.LmEval.Running;
+
 namespace AchieveAi.LmDotnetTools.LmEval.Gates;
 
 /// <summary>
@@ -9,7 +11,7 @@ namespace AchieveAi.LmDotnetTools.LmEval.Gates;
 /// bias has nothing to act on.
 /// </para>
 /// </summary>
-public sealed class LengthBoundsGate : GateBase
+public sealed class LengthBoundsGate : GateBase, IConfigurationFingerprint
 {
     /// <summary>The stable id this gate records on every decision.</summary>
     public const string Id = "length-bounds";
@@ -33,6 +35,13 @@ public sealed class LengthBoundsGate : GateBase
         _minimumLength = minimumLength;
         _maximumLength = maximumLength;
     }
+
+    /// <summary>
+    /// The band, which is the whole of this gate's score-affecting configuration. Two gates
+    /// sharing <see cref="Id"/> over different bands reject different candidates and so produce
+    /// different pass rates; the band is what tells them apart.
+    /// </summary>
+    public string? ConfigurationFingerprint => $"min={_minimumLength};max={_maximumLength}";
 
     /// <inheritdoc />
     protected override GateDecision Evaluate(Candidate candidate)

@@ -239,6 +239,56 @@ internal sealed class ReviewStore : IDisposable
         return reader.Read() ? MapReviewRun(reader) : null;
     }
 
+    /// <summary>
+    /// Lists review runs that reached at least <paramref name="minimumStage"/>, oldest first, for
+    /// corpus assembly by the eval runner.
+    /// <para>
+    /// Oldest first and id-ordered rather than newest first: a corpus snapshot is identified by a
+    /// content hash over its items, and a listing whose order flipped as new reviews landed would
+    /// make the same set of rows read as a different corpus on every call. <c>id</c> is the only
+    /// monotone key on the table — <c>created_at</c> is text and two runs can share a timestamp.
+    /// </para>
+    /// </summary>
+    /// <param name="minimumStage">
+    /// Least stage a run must have reached. A run that has not reached
+    /// <see cref="ReviewStage.Reviewed"/> has no review text to pair with its input, so including
+    /// it would put an item in the corpus that no candidate can be built from.
+    /// </param>
+    /// <param name="limit">Most rows to return.</param>
+    public IReadOnlyList<ReviewRun> ListReviewRuns(ReviewStage minimumStage, int limit)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+
+        // Stage is persisted as its enum NAME, so SQL cannot order it. The ordinal comparison is
+        // done here, where the enum's own ordering is available, rather than by hardcoding a name
+        // list into the query that a new stage would silently fall out of.
+        var eligible = Enum.GetValues<ReviewStage>()
+            .Where(s => s >= minimumStage)
+            .Select(s => s.ToString())
+            .ToList();
+
+        var placeholders = string.Join(',', eligible.Select((_, i) => $"$stage{i}"));
+
+        var results = new List<ReviewRun>();
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText =
+            $"SELECT * FROM review_run WHERE stage IN ({placeholders}) ORDER BY id LIMIT $limit;";
+        for (var i = 0; i < eligible.Count; i++)
+        {
+            _ = command.Parameters.AddWithValue($"$stage{i}", eligible[i]);
+        }
+
+        _ = command.Parameters.AddWithValue("$limit", limit);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            results.Add(MapReviewRun(reader));
+        }
+
+        return results;
+    }
+
     /// <summary>Advances the three resume axes for a run (orchestrator step completion).</summary>
     public void UpdateReviewRunState(long id, ReviewStage stage, WorkflowStatus workflowStatus, PrLifecycleState prLifecycleState)
     {

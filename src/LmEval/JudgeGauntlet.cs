@@ -290,7 +290,7 @@ public sealed class JudgeGauntlet
             Dispersion = null,
             RubricId = rubric.RubricId,
             RubricVersion = rubric.RubricVersion,
-            TieBreakRule = "gate-reject",
+            TieBreakRule = TieBreakRules.GateReject,
             Degradation = PanelDegradation.None,
         };
 
@@ -311,7 +311,7 @@ public sealed class JudgeGauntlet
             Dispersion = null,
             RubricId = rubric.RubricId,
             RubricVersion = rubric.RubricVersion,
-            TieBreakRule = "no-decision",
+            TieBreakRule = TieBreakRules.NoDecision,
             Degradation = PanelDegradation.PanelUnavailable,
             DegradationReason = reason,
         };

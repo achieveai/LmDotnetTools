@@ -29,6 +29,27 @@ public sealed record RubricJudgeOptions
     /// </summary>
     public Func<Candidate, Rubric, JudgeContext, string> PromptRenderer { get; init; } =
         RubricPromptRenderer.Render;
+
+    /// <summary>
+    /// Stable identity of the prompt template <see cref="PromptRenderer"/> renders, for the
+    /// evaluator config hash. Leave it null when the renderer is the default one — its identity is
+    /// then known from the type itself.
+    /// <para>
+    /// A host supplying its own renderer <b>must</b> supply this. The renderer is an opaque
+    /// delegate, so nothing can recover from it which bytes it will send; a run configured with a
+    /// custom renderer and no hash therefore cannot describe its own evaluator side, and
+    /// <c>EvaluatorConfig</c> refuses it rather than hashing two different prompts identically.
+    /// </para>
+    /// </summary>
+    public string? PromptTemplateHash { get; init; }
+
+    /// <summary>True when <see cref="PromptRenderer"/> is still the built-in one.</summary>
+    internal bool UsesDefaultRenderer =>
+        PromptRenderer.Method == DefaultRenderer.Method
+        && PromptRenderer.Target == DefaultRenderer.Target;
+
+    private static readonly Func<Candidate, Rubric, JudgeContext, string> DefaultRenderer =
+        RubricPromptRenderer.Render;
 }
 
 /// <summary>
@@ -38,7 +59,7 @@ public sealed record RubricJudgeOptions
 /// which is the same reason the harness carries no cost type and takes no usage sink.
 /// </para>
 /// </summary>
-public sealed class RubricJudge : IJudge
+public sealed class RubricJudge : IJudge, Running.IConfigurationFingerprint
 {
     private readonly RubricJudgeOptions _options;
     private readonly JudgeReplyTransport _transport;
@@ -80,6 +101,16 @@ public sealed class RubricJudge : IJudge
             logger
         );
     }
+
+    /// <summary>
+    /// This judge's score-affecting configuration: which prompt template it renders. Null when a
+    /// host supplied its own renderer without naming it — see
+    /// <see cref="RubricJudgeOptions.PromptTemplateHash"/>.
+    /// </summary>
+    public string? ConfigurationFingerprint =>
+        _options.PromptTemplateHash is { } declared ? $"prompt={declared}"
+        : _options.UsesDefaultRenderer ? $"prompt=builtin:{nameof(RubricPromptRenderer)}"
+        : null;
 
     /// <inheritdoc />
     public string JudgeId => _options.JudgeId;

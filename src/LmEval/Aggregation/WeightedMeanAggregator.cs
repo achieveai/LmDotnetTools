@@ -18,18 +18,6 @@ namespace AchieveAi.LmDotnetTools.LmEval.Aggregation;
 /// </summary>
 public sealed class WeightedMeanAggregator : IBallotAggregator
 {
-    /// <summary>Recorded on a straddle nobody resolved.</summary>
-    internal const string SplitUnresolved = "split:unresolved";
-
-    /// <summary>Recorded when both counted ballots landed on the same side of the threshold.</summary>
-    internal const string Consensus = "consensus";
-
-    /// <summary>Recorded when exactly one ballot was counted.</summary>
-    internal const string SingleJudgeRule = "single-judge";
-
-    /// <summary>Recorded when no ballot survived the abstain filter.</summary>
-    internal const string NoDecisionRule = "no-decision";
-
     /// <inheritdoc />
     public string RuleId => "weighted-mean";
 
@@ -90,7 +78,7 @@ public sealed class WeightedMeanAggregator : IBallotAggregator
                 VerdictOutcome.NoDecision,
                 score: null,
                 dispersion: null,
-                tieBreakRule: NoDecisionRule,
+                tieBreakRule: TieBreakRules.NoDecision,
                 degradation: panelFaults.Count > 0
                     ? PanelDegradation.PanelUnavailable
                     : PanelDegradation.None,
@@ -119,7 +107,7 @@ public sealed class WeightedMeanAggregator : IBallotAggregator
                 OutcomeFor(counted[0].WeightedScore, rubric),
                 score: counted[0].WeightedScore,
                 dispersion: null,
-                tieBreakRule: SingleJudgeRule,
+                tieBreakRule: TieBreakRules.SingleJudge,
                 degradation: PanelDegradation.SingleJudge,
                 degradationReason: FaultReason("judge-faulted", panelFaults)
             );
@@ -140,7 +128,7 @@ public sealed class WeightedMeanAggregator : IBallotAggregator
                 OutcomeFor(panelBallots[0].WeightedScore, rubric),
                 score: WeightedMean(counted),
                 dispersion: dispersion,
-                tieBreakRule: Consensus,
+                tieBreakRule: TieBreakRules.Consensus,
                 degradation: PanelDegradation.None,
                 degradationReason: null
             );
@@ -159,7 +147,7 @@ public sealed class WeightedMeanAggregator : IBallotAggregator
                 OutcomeFor(arbiterBallot.WeightedScore, rubric),
                 score: arbiterBallot.WeightedScore,
                 dispersion: dispersion,
-                tieBreakRule: $"arbiter:{arbiterBallot.JudgeId}:{arbiterBallot.ModelFamily}",
+                tieBreakRule: TieBreakRules.Arbiter(arbiterBallot.JudgeId, arbiterBallot.ModelFamily),
                 degradation: PanelDegradation.None,
                 degradationReason: null
             );
@@ -178,7 +166,7 @@ public sealed class WeightedMeanAggregator : IBallotAggregator
             VerdictOutcome.Split,
             score: WeightedMean(counted),
             dispersion: dispersion,
-            tieBreakRule: SplitUnresolved,
+            tieBreakRule: TieBreakRules.SplitUnresolved,
             degradation: arbiterFault is null
                 ? PanelDegradation.None
                 : PanelDegradation.ArbiterUnavailable,
