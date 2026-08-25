@@ -84,6 +84,41 @@ public sealed class ConversationDescendantScannerTests
         nodes.Should().NotContain(n => n.ThreadId == root);
     }
 
+    /// <summary>
+    /// A tenanted root can have an UNTENANTED descendant, and the scan must still find it. #385 has an
+    /// agent thread inherit its parent's tenant AT CREATION, from the parent's stored row as it stands at
+    /// that instant - so a child minted before its parent's own stamp has landed keeps a null tenant while
+    /// the root ends up stamped. The persisted scan narrows to the ROOT's tenant for efficiency (#388a);
+    /// if that narrowing dropped the null-tenant child it would silently vanish from the roster (and from
+    /// the cache that then holds the incomplete answer for the process lifetime), which is the same
+    /// disclosure-shaped failure as an offset page skipping a row. The scope must therefore admit the
+    /// root's own tenant OR an untenanted row.
+    /// </summary>
+    [Fact]
+    public async Task ScanAsync_IncludesAnUntenantedDescendant_OfATenantedRoot()
+    {
+        const string root = "thread-root";
+        const string tenant = "tnt_a";
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            root,
+            new ThreadMetadata { ThreadId = root, LastUpdated = 0, TenantId = tenant });
+
+        // The ordinary child: it inherited the root's tenant at creation.
+        await SeedChildAsync(store, root, "tenanted", "subagent-tenanted", tenantId: tenant);
+
+        // The racing child: minted before the parent's stamp landed, so it is still untenanted while the
+        // root is stamped. A root-tenant-only scope would drop exactly this row.
+        await SeedChildAsync(store, root, "untenanted", "subagent-untenanted", tenantId: null);
+
+        var nodes = await CreateScanner(store).ScanAsync(root);
+
+        _ = nodes
+            .Select(n => n.ThreadId)
+            .Should()
+            .BeEquivalentTo("subagent-tenanted", "subagent-untenanted");
+    }
+
     /// <summary>A cycle in the persisted parent stamps must be cut, not looped on.</summary>
     [Fact]
     public async Task ScanAsync_CutsARepeatVisit_WhenPersistedParentStampsFormACycle()

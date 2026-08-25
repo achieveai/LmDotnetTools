@@ -501,15 +501,22 @@ public sealed class FileBrowserController(
     private async Task<SessionContext> ResolveSessionAsync(string threadId, AccessAction action, bool isListing, CancellationToken ct)
     {
         var metadata = await store.LoadMetadataAsync(threadId, ct);
-        if (metadata is null)
-        {
-            return UnknownThreadContext(threadId);
-        }
 
+        // Authorize BEFORE deciding the null-metadata case: the authorizer runs its equalising grant
+        // lookup for a null (never-minted) thread exactly as it does for a forbidden cross-tenant one, so
+        // routing the missing case around it would make a missing thread cost zero look-ups and a forbidden
+        // one cost one - a work-shape existence oracle (#389) even though both answer the same 404 bytes.
         var access = await authorizer.AuthorizeAsync(threadId, metadata, action, ct);
         if (!access.Allowed)
         {
             return RefusalContext(threadId, access);
+        }
+
+        // Reachable only with enforcement OFF (an allowed decision over null metadata): the row genuinely
+        // does not exist, so it is still an unknown thread.
+        if (metadata is null)
+        {
+            return UnknownThreadContext(threadId);
         }
 
         var workspaceId = ReadWorkspaceId(metadata);

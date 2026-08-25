@@ -272,6 +272,12 @@ Scope this claim precisely, in both directions:
 - What was leaking before the fix was **existence only, and only inside the caller's own tenant** —
   never contents, never whether a grant exists, never anything about a tenant the caller is not a
   member of. Cross-tenant probing was already clean.
+- Closing the oracle **amplifies grant-store load** under a probe: a stream of guessed ids that used
+  to cost zero grant-registry lookups (the id named no row) now costs one lookup each, since the
+  missing-row and wrong-tenant paths take the same lookup the found-but-forbidden path always did.
+  That is the intended trade — a fixed one call per authenticated request, not per row — but size the
+  grant store for it, and keep the standard per-caller request rate limit in front of these routes so
+  the equalised lookup cannot be turned into an unbounded amplifier.
 
 Rights follow spec §7.4.1, and two of them surprise people:
 
@@ -308,6 +314,15 @@ claimed first. Two mechanisms do this, and both are needed:
    that started it, and the request principal is gone by the time the child thread is created. The
    parent's stored row is the only identity still available, and it is the correct one — the child
    is work done on the parent's behalf.
+
+   Inheritance is only as good as the parent's tenant at the instant the child is created, so the
+   startup repair is still load-bearing, not vestigial: a child minted while its parent is itself
+   still untenanted — the ordinary state with `Identity:Enforce` off, or a brief stamping-order
+   window where the child's row lands before the parent's stamp — inherits nothing and stays
+   untenanted until the next boot's repair claims it. Because such a child can therefore outlive its
+   parent's stamping while still un-stamped itself, the persisted sub-agent roster scan admits its
+   root's tenant **or** an untenanted row, so a still-untenanted descendant is never dropped from the
+   roster it belongs to.
 
    **Visibility is not inherited.** Tenant and owner are identity; publication is a decision someone
    made about the parent conversation, and it was not a decision about this one. A child of a
