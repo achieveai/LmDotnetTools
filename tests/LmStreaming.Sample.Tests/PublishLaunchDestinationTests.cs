@@ -224,6 +224,37 @@ public sealed class PublishLaunchDestinationTests : IDisposable
             "[System.IO.Directory]::Move($From, $To) }";
     }
 
+    /// <summary>
+    /// A move delegate that fails its first <paramref name="transientFailureCount"/> invocations
+    /// with a REAL, wrapped <see cref="System.IO.IOException"/> -- deterministically, via a static
+    /// <c>[System.IO.Directory]::Move</c> call whose target already exists, never via a real
+    /// filesystem race -- before performing the actual requested move. This is what #371's retry in
+    /// <c>Invoke-AtomicMove</c> is keyed on: PowerShell wraps a failing static-method call in a
+    /// <c>MethodInvocationException</c> whose <c>InnerException</c> is the real CLR exception type
+    /// (here, exactly <c>IOException</c>). That is unlike every <c>MoveDelegateThatFails*</c> helper
+    /// above, whose bare PowerShell <c>throw</c> produces a <c>RuntimeException</c> with no inner
+    /// exception at all and so is never retried -- see
+    /// <see cref="Deploy_Recognized_RollbackOnSecondMoveFailure_DestinationByteIdenticalAndCandidateRetained"/>
+    /// immediately below, which still fails on the first (and only) attempt with this same
+    /// production code, proving the two failure shapes are told apart.
+    /// <paramref name="markerFrom"/>/<paramref name="markerExisting"/> are throwaway fixture
+    /// directories dedicated to producing the failure; <paramref name="markerExisting"/> is never
+    /// actually replaced because the move against it always throws before touching the filesystem.
+    /// </summary>
+    private static string MoveDelegateThatFailsTransientlyThenSucceeds(
+        int transientFailureCount,
+        string markerFrom,
+        string markerExisting)
+    {
+        var quotedMarkerFrom = PublishLaunchScriptHost.QuoteSingle(markerFrom);
+        var quotedMarkerExisting = PublishLaunchScriptHost.QuoteSingle(markerExisting);
+        return "{ param($From, $To) " +
+            "if (-not (Get-Variable -Name __pldTransientCallCount -Scope Script -ErrorAction SilentlyContinue)) { $script:__pldTransientCallCount = 0 }; " +
+            "$script:__pldTransientCallCount++; " +
+            $"if ($script:__pldTransientCallCount -le {transientFailureCount}) {{ [System.IO.Directory]::Move('{quotedMarkerFrom}', '{quotedMarkerExisting}') }}; " +
+            "[System.IO.Directory]::Move($From, $To) }";
+    }
+
     /// <summary>A probe delegate that always reports the executable as free (nothing holds it).</summary>
     private const string ProbeDelegateReportingNotHeld = "{ param($Path) return $false }";
 
@@ -751,6 +782,40 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         File.ReadAllText(Path.Combine(candidate!, "appsettings.json")).Should().Be("{\"source\":\"staged\"}", "the retained candidate is the fully-assembled one from before the failed swap");
     }
 
+    [Fact]
+    public void Deploy_Recognized_RecoversFromTransientFirstMoveFailure_ViaRetry()
+    {
+        // #371: the first rename Invoke-CandidateSwap performs (existing destination -> backup) hit
+        // a real, transient ACCESS_DENIED in CI -- a directory renamed moments earlier can briefly
+        // be held open by Defender/the search indexer, and that clears on its own within
+        // milliseconds. Invoke-AtomicMove now retries a bounded number of times on exactly that
+        // failure shape (see the comment above it). This pins the recovery deterministically: the
+        // delegate below fails the first two invocations with a real wrapped IOException (not a
+        // simulated race -- see MoveDelegateThatFailsTransientlyThenSucceeds), so a correct retry
+        // must survive to the third attempt and complete the deploy exactly as if nothing had
+        // failed. No wall-clock assertion is made anywhere here (#343): only the outcome -- that the
+        // whole deploy still succeeds and lands the expected content -- is checked.
+        var staged = CreateStagedDirectory(_root, "transientretry1");
+        var destination = CreateRecognizedDestination(_root, "transient-retry-dest", "oldTR");
+        var markerFrom = Directory.CreateDirectory(Path.Combine(_root, "transient-marker-from")).FullName;
+        var markerExisting = Directory.CreateDirectory(Path.Combine(_root, "transient-marker-existing")).FullName;
+
+        var result = PublishLaunchScriptHost.InvokeForEffect(
+            $"Invoke-DestinationDeploy -StagedDirectory '{PublishLaunchScriptHost.QuoteSingle(staged)}' " +
+            $"-DestinationDirectory '{PublishLaunchScriptHost.QuoteSingle(destination)}' " +
+            $"-MoveDelegate {MoveDelegateThatFailsTransientlyThenSucceeds(2, markerFrom, markerExisting)}");
+
+        result.Succeeded.Should().BeTrue(
+            "two transient IOExceptions on the first move must be absorbed by the retry -- " + result.StandardError);
+        File.ReadAllText(Path.Combine(destination, "appsettings.json")).Should().Be(
+            "{\"source\":\"staged\"}",
+            "the deploy must have completed for real, landing the staged content, not merely reported success");
+        FindSiblingWithSuffix(_root, "transient-retry-dest", "backup-").Should().BeNull(
+            "a successful swap -- retried or not -- must still remove the backup sibling");
+        FindSiblingWithSuffix(_root, "transient-retry-dest", "candidate-").Should().BeNull(
+            "a successful swap -- retried or not -- must still leave no candidate sibling behind");
+    }
+
     // ----------------------------------------------------------------------------------------
     // No launch, in every writable state
     // ----------------------------------------------------------------------------------------
@@ -1164,32 +1229,24 @@ public sealed class PublishLaunchDestinationTests : IDisposable
     {
         // Every "the error must name the exact path" assertion in this file rests on one property:
         // what PublishLaunchScriptHost puts in StandardError is the string the script threw, not
-        // pwsh's rendering of it. That property used to hold only by luck. pwsh's ConciseView
-        // formatter word-wraps a thrown message at a fixed 120 columns once stdout is redirected
-        // and splices ANSI SGR escapes in at each wrap point, so any message long enough to wrap
-        // came back with a space turned into "<ESC>[0m\r\n<ESC>[31;1m ... | <ESC>[31;1m". On a
-        // machine whose profile directory contains a space that wrap landed inside an absolute
-        // path and three tests here failed deterministically while the script was behaving
-        // perfectly (#340); on a machine whose paths have no spaces the same three passed, so the
-        // defect was invisible to CI and the tests acquired a standing "ignore these" note.
+        // pwsh's rendering of it. That property used to hold only by luck: pwsh's ConciseView
+        // formatter decorates an unhandled terminating error on its way to stderr, and on a
+        // machine whose profile directory contains a space, that decoration once corrupted an
+        // otherwise-correct message and three tests here failed while the script behaved
+        // perfectly (#340).
         //
-        // This test removes the environment from the question. The message below is longer than
-        // the wrap width and has word boundaries past it on EVERY machine, so it wraps regardless
-        // of the profile path, the console size, or the terminal -- and the assertion is exact
-        // equality, which no amount of re-wrapping or re-colouring can satisfy. Reintroduce the
-        // formatter into the path and this fails everywhere, not just here.
+        // This test does not exercise ConciseView's word-wrap directly: the throw below runs at
+        // `-Command` top level, inside CaptureStructurally's own try/catch (see
+        // PublishLaunchScriptHost.cs), and that wrap-and-gutter rendering only appears for a throw
+        // inside a dot-sourced script FILE -- probed directly, this shape instead renders unwrapped
+        // as "Exception: <message>" when nothing catches it. What this test actually pins is
+        // narrower and still real: CaptureStructurally emits `$_.Exception.Message` with no
+        // formatter-added text at all, not even that unwrapped "Exception: " prefix. The
+        // exact-equality assertion below rejects that prefix exactly as it would reject a wrap, so
+        // CaptureStructurally regressing to the raw, unhandled-error path still turns this test
+        // red -- just via a prefix mismatch rather than a wrap.
         const string message =
             @"Recovery required: rename 'C:\Program Files\Some Deployment Directory\app.backup-20260101T000000000Z-1234' back onto 'C:\Program Files\Some Deployment Directory\app' to recover.";
-
-        // Non-vacuity: a message that fits on one line would pass this test even with the formatter
-        // fully in the way, proving nothing. Pin both halves of what makes it wrap.
-        const int redirectedConsoleWidth = 120;
-        message.Length.Should().BeGreaterThan(
-            redirectedConsoleWidth,
-            "a message that fits within the wrap width would never exercise the formatter's wrapping");
-        message.IndexOf(' ', redirectedConsoleWidth).Should().BeGreaterThan(
-            -1,
-            "the word-wrap needs a space beyond the wrap width to break on, or the formatter would emit this unwrapped anyway");
 
         var result = PublishLaunchScriptHost.InvokeForEffect(
             $"& {{ throw '{PublishLaunchScriptHost.QuoteSingle(message)}' }}");
@@ -1197,7 +1254,7 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         result.Succeeded.Should().BeFalse("a thrown message must still make the invocation fail");
         result.StandardError.Trim('\r', '\n').Should().Be(
             message,
-            "stderr must carry the message the script composed, byte for byte -- not a wrapped, gutter-prefixed, ANSI-decorated rendering of it");
+            "stderr must carry the message the script composed, byte for byte -- not a formatter-rendered version of it, wrapped or otherwise");
     }
 
     // ----------------------------------------------------------------------------------------

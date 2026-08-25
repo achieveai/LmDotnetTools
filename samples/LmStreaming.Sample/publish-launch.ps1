@@ -779,13 +779,56 @@ function Copy-PreserveSet {
 # Thin, injectable wrapper around the one primitive every atomic swap/backup/rollback move in
 # this feature goes through -- so a test can deterministically fail exactly the Nth rename
 # (e.g. the second rename, candidate -> destination) without touching the filesystem itself.
+#
+# Retries a bounded number of times, with backoff, on a TRANSIENT sharing/access failure from the
+# real filesystem move (#371): a directory renamed moments ago can briefly be held open by
+# Defender, the search indexer, or anything else that scans new directories, and
+# [System.IO.Directory]::Move surfaces that as an ACCESS_DENIED that clears on its own within
+# milliseconds. Retrying costs nothing when the move already succeeded and saves the operator
+# from landing in Invoke-CandidateSwap's double-failure recovery message for a fault that was
+# never really theirs.
+#
+# Deliberately narrow about what counts as transient, identified by the INNER exception
+# [System.IO.Directory]::Move's static-method call wraps into a MethodInvocationException:
+#   - [System.IO.IOException], exact type only (not a subclass): what a real sharing violation
+#     surfaces as. Excluding subclasses matters -- DirectoryNotFoundException and
+#     PathTooLongException both derive from IOException and are permanent, not transient; retrying
+#     those would only delay a failure that was never going to resolve itself.
+#   - [System.UnauthorizedAccessException]: what a real permission/handle conflict surfaces as.
+# Anything else -- including a genuine permission failure that never clears, and every injected
+# $MoveDelegate test failure, which throws a bare RuntimeException via PowerShell's `throw` and so
+# never has a matching inner exception at all -- fails immediately on the first attempt, exactly as
+# before this fix. That is also why this retry applies uniformly to every Invoke-AtomicMove call,
+# including rename 1 (destination -> backup) in Invoke-CandidateSwap, which is deliberately
+# UNGUARDED for error *handling* (see the comment above that function) -- retry is orthogonal to
+# that: if the transient condition never clears, rename 1 still fails and still throws unguarded,
+# exactly as the comment there describes.
 function Invoke-AtomicMove {
     param(
         [Parameter(Mandatory)] [string]      $From,
         [Parameter(Mandatory)] [string]      $To,
         [Parameter(Mandatory)] [scriptblock] $MoveDelegate
     )
-    & $MoveDelegate $From $To
+
+    $maxAttempts = 5
+    $delayMs = 50
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        try {
+            & $MoveDelegate $From $To
+            return
+        } catch {
+            $inner = $_.Exception.InnerException
+            $isTransient = ($null -ne $inner) -and (
+                ($inner.GetType() -eq [System.IO.IOException]) -or
+                ($inner -is [System.UnauthorizedAccessException])
+            )
+            if (-not $isTransient -or $attempt -eq $maxAttempts) {
+                throw
+            }
+            Start-Sleep -Milliseconds $delayMs
+            $delayMs = [Math]::Min($delayMs * 2, 800)
+        }
+    }
 }
 
 # Normalizes -DestinationDirectory ONCE, at the entry point, before any build work runs.
