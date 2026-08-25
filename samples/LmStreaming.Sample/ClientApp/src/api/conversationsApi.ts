@@ -1,4 +1,5 @@
 import type { ConversationSummary, ConversationMetadataUpdate } from '@/types/conversations';
+import { apiFetch } from '@/api/http';
 
 /**
  * Persisted message from backend storage.
@@ -24,7 +25,7 @@ export async function listConversations(
   limit = 50,
   offset = 0
 ): Promise<ConversationSummary[]> {
-  const response = await fetch(`/api/conversations?limit=${limit}&offset=${offset}`);
+  const response = await apiFetch(`/api/conversations?limit=${limit}&offset=${offset}`);
   if (!response.ok) {
     throw new Error(`Failed to fetch conversations: ${response.statusText}`);
   }
@@ -37,7 +38,7 @@ export async function listConversations(
 export async function loadConversationMessages(
   threadId: string
 ): Promise<PersistedMessage[]> {
-  const response = await fetch(`/api/conversations/${encodeURIComponent(threadId)}/messages`);
+  const response = await apiFetch(`/api/conversations/${encodeURIComponent(threadId)}/messages`);
   if (!response.ok) {
     throw new Error(`Failed to load messages: ${response.statusText}`);
   }
@@ -60,7 +61,7 @@ export interface ConversationRunState {
  * (switch-back or refresh) can resume the live stream instead of showing a frozen partial.
  */
 export async function getRunState(threadId: string): Promise<ConversationRunState> {
-  const response = await fetch(`/api/conversations/${encodeURIComponent(threadId)}/run-state`);
+  const response = await apiFetch(`/api/conversations/${encodeURIComponent(threadId)}/run-state`);
   if (!response.ok) {
     throw new Error(`Failed to fetch run state: ${response.statusText}`);
   }
@@ -102,7 +103,7 @@ export interface ConversationUsageAggregate {
 export async function getConversationUsage(
   threadId: string
 ): Promise<ConversationUsageAggregate | null> {
-  const response = await fetch(`/api/conversations/${encodeURIComponent(threadId)}/usage`);
+  const response = await apiFetch(`/api/conversations/${encodeURIComponent(threadId)}/usage`);
   if (response.status === 404) {
     return null;
   }
@@ -119,7 +120,7 @@ export async function updateConversationMetadata(
   threadId: string,
   update: ConversationMetadataUpdate
 ): Promise<void> {
-  const response = await fetch(`/api/conversations/${encodeURIComponent(threadId)}/metadata`, {
+  const response = await apiFetch(`/api/conversations/${encodeURIComponent(threadId)}/metadata`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(update),
@@ -133,7 +134,7 @@ export async function updateConversationMetadata(
  * Deletes a conversation.
  */
 export async function deleteConversation(threadId: string): Promise<void> {
-  const response = await fetch(`/api/conversations/${encodeURIComponent(threadId)}`, {
+  const response = await apiFetch(`/api/conversations/${encodeURIComponent(threadId)}`, {
     method: 'DELETE',
   });
   if (!response.ok) {
@@ -230,7 +231,7 @@ async function toConversationApiError(response: Response, fallbackMessage: strin
 export async function provisionConversation(
   request: ProvisionConversationRequest
 ): Promise<ProvisionConversationResponse> {
-  const response = await fetch('/api/conversations', {
+  const response = await apiFetch('/api/conversations', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
@@ -250,7 +251,7 @@ export async function sendConversationMessage(
   threadId: string,
   request: SendMessageRequest
 ): Promise<SendMessageResponse> {
-  const response = await fetch(`/api/conversations/${encodeURIComponent(threadId)}/messages`, {
+  const response = await apiFetch(`/api/conversations/${encodeURIComponent(threadId)}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
@@ -274,7 +275,7 @@ export async function getConversationStatus(
 ): Promise<ConversationStatusResponse> {
   const query =
     'runId' in by ? `runId=${encodeURIComponent(by.runId)}` : `inputId=${encodeURIComponent(by.inputId)}`;
-  const response = await fetch(`/api/conversations/${encodeURIComponent(threadId)}/status?${query}`);
+  const response = await apiFetch(`/api/conversations/${encodeURIComponent(threadId)}/status?${query}`);
   if (!response.ok) {
     throw await toConversationApiError(response, `Failed to fetch conversation status: ${response.statusText}`);
   }

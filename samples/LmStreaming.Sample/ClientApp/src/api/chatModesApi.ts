@@ -4,12 +4,13 @@ import type {
   ToolDefinition,
   SwitchModeResponse,
 } from '@/types/chatMode';
+import { apiFetch } from '@/api/http';
 
 /**
  * Fetches all chat modes from the backend.
  */
 export async function listChatModes(): Promise<ChatMode[]> {
-  const response = await fetch('/api/chat-modes');
+  const response = await apiFetch('/api/chat-modes');
   if (!response.ok) {
     throw new Error(`Failed to fetch chat modes: ${response.statusText}`);
   }
@@ -20,7 +21,7 @@ export async function listChatModes(): Promise<ChatMode[]> {
  * Fetches a specific chat mode by ID.
  */
 export async function getChatMode(modeId: string): Promise<ChatMode | null> {
-  const response = await fetch(`/api/chat-modes/${encodeURIComponent(modeId)}`);
+  const response = await apiFetch(`/api/chat-modes/${encodeURIComponent(modeId)}`);
   if (response.status === 404) {
     return null;
   }
@@ -34,7 +35,7 @@ export async function getChatMode(modeId: string): Promise<ChatMode | null> {
  * Creates a new user-defined chat mode.
  */
 export async function createChatMode(mode: ChatModeCreateUpdate): Promise<ChatMode> {
-  const response = await fetch('/api/chat-modes', {
+  const response = await apiFetch('/api/chat-modes', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(mode),
@@ -52,7 +53,7 @@ export async function updateChatMode(
   modeId: string,
   mode: ChatModeCreateUpdate
 ): Promise<ChatMode> {
-  const response = await fetch(`/api/chat-modes/${encodeURIComponent(modeId)}`, {
+  const response = await apiFetch(`/api/chat-modes/${encodeURIComponent(modeId)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(mode),
@@ -68,7 +69,7 @@ export async function updateChatMode(
  * Deletes a user-defined chat mode.
  */
 export async function deleteChatMode(modeId: string): Promise<void> {
-  const response = await fetch(`/api/chat-modes/${encodeURIComponent(modeId)}`, {
+  const response = await apiFetch(`/api/chat-modes/${encodeURIComponent(modeId)}`, {
     method: 'DELETE',
   });
   if (!response.ok) {
@@ -81,7 +82,7 @@ export async function deleteChatMode(modeId: string): Promise<void> {
  * Copies a chat mode to create a new user-defined mode.
  */
 export async function copyChatMode(modeId: string, newName: string): Promise<ChatMode> {
-  const response = await fetch(`/api/chat-modes/${encodeURIComponent(modeId)}/copies`, {
+  const response = await apiFetch(`/api/chat-modes/${encodeURIComponent(modeId)}/copies`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ newName }),
@@ -96,7 +97,7 @@ export async function copyChatMode(modeId: string, newName: string): Promise<Cha
  * Fetches all available tools.
  */
 export async function listTools(): Promise<ToolDefinition[]> {
-  const response = await fetch('/api/tools');
+  const response = await apiFetch('/api/tools');
   if (!response.ok) {
     throw new Error(`Failed to fetch tools: ${response.statusText}`);
   }
@@ -110,7 +111,7 @@ export async function switchConversationMode(
   threadId: string,
   modeId: string
 ): Promise<SwitchModeResponse> {
-  const response = await fetch(
+  const response = await apiFetch(
     `/api/conversations/${encodeURIComponent(threadId)}/mode`,
     {
       method: 'POST',

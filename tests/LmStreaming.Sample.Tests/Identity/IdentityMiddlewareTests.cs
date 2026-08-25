@@ -202,6 +202,22 @@ public sealed class IdentityMiddlewareTests
         _ = response.Headers.WwwAuthenticate.Should().BeEmpty();
     }
 
+    [Theory]
+    [InlineData(PrincipalResolution.TenantNotProvisioned)]
+    [InlineData(PrincipalResolution.TenantSuspended)]
+    public async Task ATenantRefusal_RepeatsItsCodeInAHeader(string code)
+    {
+        var rejection = PrincipalResolution.Reject(code, StatusCodes.Status403Forbidden);
+        using var server = await StartAsync(enforce: true, rejection);
+
+        var response = await server.CreateClient().GetAsync(new Uri("/api/conversations", UriKind.Relative));
+
+        // The SPA routes every /api call through one helper, and that helper has to classify a
+        // refusal without reading the body - the body belongs to whichever caller made the request.
+        _ = response.Headers.GetValues(IdentityMiddleware.RefusalCodeHeader)
+            .Should().ContainSingle().Which.Should().Be(code);
+    }
+
     [Fact]
     public async Task ATenantRefusal_IsAnsweredEvenWhileEnforcementIsOff()
     {

@@ -1,3 +1,5 @@
+import { apiFetch } from '@/api/http';
+
 /**
  * Status of a sub-agent, mirroring the backend `SubAgentSummary.status` values. `'interrupted'` is
  * what a row that was still in flight when its host stopped is reported as once it comes back from
@@ -97,7 +99,7 @@ export interface SubAgentSummary {
  * style: GETs the REST endpoint and throws on a non-ok response.
  */
 export async function listSubAgents(parentThreadId: string): Promise<SubAgentSummary[]> {
-  const response = await fetch(`/api/conversations/${encodeURIComponent(parentThreadId)}/subagents`);
+  const response = await apiFetch(`/api/conversations/${encodeURIComponent(parentThreadId)}/subagents`);
   if (!response.ok) {
     throw new Error(`Failed to list sub-agents: ${response.statusText}`);
   }

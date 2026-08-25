@@ -1,4 +1,5 @@
 import type { Message } from '@/types';
+import { apiFetch } from '@/api/http';
 import {
   parseSSEChunk,
   parseMessageFromSSE,
@@ -46,7 +47,7 @@ export async function sendChatMessage(
   log.info('Sending chat message', { messageLength: message.length });
 
   try {
-    const response = await fetch(`${baseUrl}/api/chat`, {
+    const response = await apiFetch(`${baseUrl}/api/chat`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

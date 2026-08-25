@@ -4,6 +4,7 @@ import type {
   PreviewResult,
   UploadOutcome,
 } from '@/types/fileBrowser';
+import { apiFetch } from '@/api/http';
 
 /**
  * Raised when the conversation has no sandbox session yet and an ACTION (preview/download/upload/
@@ -101,7 +102,7 @@ export async function listFiles(
   path: string,
   signal?: AbortSignal
 ): Promise<DirectoryListing | NoSessionState> {
-  const response = await fetch(filesUrl(threadId, path), { signal });
+  const response = await apiFetch(filesUrl(threadId, path), { signal });
   if (response.ok) {
     return (await response.json()) as DirectoryListing | NoSessionState;
   }
@@ -119,7 +120,7 @@ export async function previewFile(
   path: string,
   signal?: AbortSignal
 ): Promise<PreviewResult> {
-  const response = await fetch(filesUrl(threadId, path, '/preview'), { signal });
+  const response = await apiFetch(filesUrl(threadId, path, '/preview'), { signal });
   if (response.ok) {
     return (await response.json()) as PreviewResult;
   }
@@ -133,7 +134,7 @@ export async function previewFile(
  * @throws {FileBrowserError} on other non-ok statuses.
  */
 export async function downloadFile(threadId: string, path: string, signal?: AbortSignal): Promise<void> {
-  const response = await fetch(filesUrl(threadId, path, '/download'), { signal });
+  const response = await apiFetch(filesUrl(threadId, path, '/download'), { signal });
   if (!response.ok) {
     throw await classifyFailure(response, 'download file');
   }
@@ -188,7 +189,7 @@ export async function uploadFile(
   // The outcome label: for a folder upload use the relativePath so duplicate basenames in different
   // directories (e.g. `a/readme.md` vs `b/readme.md`) stay distinguishable in per-file reporting.
   const label = relativePath ?? file.name;
-  const response = await fetch(filesUrl(threadId, path), {
+  const response = await apiFetch(filesUrl(threadId, path), {
     method: 'POST',
     body: form,
     signal,
@@ -229,7 +230,7 @@ export async function createDirectory(
   name: string,
   signal?: AbortSignal
 ): Promise<{ path: string }> {
-  const response = await fetch(filesUrl(threadId, parentPath, '/directory'), {
+  const response = await apiFetch(filesUrl(threadId, parentPath, '/directory'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name }),
@@ -252,7 +253,7 @@ export async function deleteEntry(
   path: string,
   signal?: AbortSignal
 ): Promise<void> {
-  const response = await fetch(filesUrl(threadId, path), { method: 'DELETE', signal });
+  const response = await apiFetch(filesUrl(threadId, path), { method: 'DELETE', signal });
   if (response.status === 204) {
     return;
   }

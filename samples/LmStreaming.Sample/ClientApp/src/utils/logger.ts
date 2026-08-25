@@ -1,3 +1,5 @@
+import { apiFetch } from '@/api/http';
+
 /**
  * Client-side logger that batches and sends logs to the server.
  * Provides structured logging with file/line/function context.
@@ -153,7 +155,7 @@ class Logger {
     this.isFlushing = true;
 
     try {
-      const response = await fetch(`${this.options.baseUrl}/api/diagnostics/logs`, {
+      const response = await apiFetch(`${this.options.baseUrl}/api/diagnostics/logs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ entries }),

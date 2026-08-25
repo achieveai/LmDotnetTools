@@ -1,4 +1,5 @@
 import type { MarketplaceCatalog } from '@/types/marketplace';
+import { apiFetch } from '@/api/http';
 
 /** Raised when the backend reports the sandbox gateway is offline (HTTP 503). */
 export class MarketplaceGatewayUnavailableError extends Error {
@@ -25,7 +26,7 @@ export async function listMarketplaces(
     marketplaces && marketplaces.length > 0
       ? `?marketplaces=${encodeURIComponent(marketplaces.join(','))}`
       : '';
-  const response = await fetch(`/api/marketplaces${query}`, { signal });
+  const response = await apiFetch(`/api/marketplaces${query}`, { signal });
 
   if (response.status === 503) {
     throw new MarketplaceGatewayUnavailableError();

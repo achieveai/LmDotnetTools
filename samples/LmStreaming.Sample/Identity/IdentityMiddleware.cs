@@ -30,6 +30,12 @@ public sealed class IdentityMiddleware
     public const string ApiPathPrefix = "/api";
 
     /// <summary>
+    /// Response header carrying the same stable refusal code as the body, so a client can classify
+    /// a refusal without consuming the response body.
+    /// </summary>
+    public const string RefusalCodeHeader = "X-Identity-Refusal";
+
+    /// <summary>
     /// Endpoints under <see cref="ApiPathPrefix"/> that stay reachable while signed out. The
     /// identity config is here because the SPA must read it BEFORE it can sign in - gating it on
     /// being signed in is a deadlock. The tenant admin surface is here because it authenticates
@@ -143,6 +149,12 @@ public sealed class IdentityMiddleware
     {
         context.Response.StatusCode = statusCode;
         context.Response.ContentType = "application/json; charset=utf-8";
+
+        // The same code the body carries, repeated in a header. The SPA routes every /api call
+        // through one helper, and that helper must recognise a refusal without reading the body -
+        // the body belongs to whichever caller made the request, and consuming it there would hand
+        // that caller an already-read stream. A header is readable without taking anything away.
+        context.Response.Headers[RefusalCodeHeader] = code;
 
         // Same body shape the S2S guard already answers with: a lowercase `error` label plus a
         // stable machine-readable `code`. The SPA chooses between "not signed in", "organisation
