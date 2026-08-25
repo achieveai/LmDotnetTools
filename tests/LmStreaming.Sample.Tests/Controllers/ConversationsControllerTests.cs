@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.Agents;
@@ -484,25 +485,18 @@ public class ConversationsControllerTests
     /// directly, mirroring the production-side <c>HasPendingAskUserQuestionAsync</c> check, rather than
     /// waiting on a completion that will never come.
     /// </summary>
-    private static async Task WaitUntilChildAwaitingQuestionAsync(
+    private static Task WaitUntilChildAwaitingQuestionAsync(
         SubAgentManager subAgentManager, string agentId, CancellationToken ct)
     {
-        while (true)
-        {
-            ct.ThrowIfCancellationRequested();
-
-            if (subAgentManager.TryGetAgent(agentId, out var childAgent)
-                && childAgent is MultiTurnAgentLoop childLoop)
-            {
-                var deferred = await childLoop.GetDeferredToolCallsAsync(ct);
-                if (deferred.Count > 0)
-                {
-                    return;
-                }
-            }
-
-            await Task.Delay(TimeSpan.FromMilliseconds(20), ct);
-        }
+        return Wait.UntilAsync(
+            async () =>
+                subAgentManager.TryGetAgent(agentId, out var childAgent)
+                && childAgent is MultiTurnAgentLoop childLoop
+                && (await childLoop.GetDeferredToolCallsAsync(ct)).Count > 0,
+            $"the spawned child '{agentId}' parked on its own AskUserQuestion, i.e. registered a deferred tool call",
+            TimeSpan.FromSeconds(30),
+            TimeSpan.FromMilliseconds(20),
+            ct);
     }
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(params IMessage[] messages)

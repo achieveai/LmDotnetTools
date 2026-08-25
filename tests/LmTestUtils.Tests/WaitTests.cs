@@ -10,7 +10,21 @@ namespace LmTestUtils.Tests;
 /// </summary>
 public class WaitTests
 {
+    /// <summary>
+    /// Budget for the cases that MUST time out. Short, because the test pays it in full every run,
+    /// and safe to keep short: a condition hard-coded to false cannot be rescued by a longer wait.
+    /// </summary>
     private static readonly TimeSpan Brief = TimeSpan.FromMilliseconds(100);
+
+    /// <summary>
+    /// Budget for the cases that must SUCCEED. Deliberately far larger than the work needs. Those
+    /// conditions become true on their own after a fixed number of evaluations, so the happy path
+    /// never spends this — but under solution-wide parallel load a <c>Task.Delay(5)</c> can land
+    /// hundreds of milliseconds late (#343), and a budget sized to the ideal schedule turns that
+    /// into the helper-under-test reporting itself broken.
+    /// </summary>
+    private static readonly TimeSpan Generous = TimeSpan.FromSeconds(30);
+
     private static readonly TimeSpan Tick = TimeSpan.FromMilliseconds(5);
 
     [Fact]
@@ -62,7 +76,7 @@ public class WaitTests
     {
         var remaining = 3;
 
-        await Wait.UntilAsync(() => --remaining <= 0, "the countdown reached zero", Brief, Tick);
+        await Wait.UntilAsync(() => --remaining <= 0, "the countdown reached zero", Generous, Tick);
 
         Assert.True(remaining <= 0);
     }
@@ -72,7 +86,7 @@ public class WaitTests
     {
         // The escape hatch returns bool precisely so a caller cannot ignore the outcome by accident.
         Assert.False(await Wait.TryUntilAsync(() => false, Brief, Tick));
-        Assert.True(await Wait.TryUntilAsync(() => true, Brief, Tick));
+        Assert.True(await Wait.TryUntilAsync(() => true, Generous, Tick));
     }
 
     [Fact]
@@ -83,7 +97,7 @@ public class WaitTests
         await Wait.UntilAsync(
             () => Task.FromResult(--remaining <= 0),
             "the async countdown reached zero",
-            Brief,
+            Generous,
             Tick
         );
 

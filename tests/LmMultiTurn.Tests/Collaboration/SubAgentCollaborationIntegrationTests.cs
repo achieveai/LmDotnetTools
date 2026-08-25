@@ -427,10 +427,10 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         // load (never alone), because the assertion could win the race against the pump.
         //
         // Wait for the reclaim rather than assuming an ordering that does not exist. This does not
-        // weaken the test: WaitForConditionAsync returns on timeout without throwing, so a reclaim
-        // that never happens still fails the assertion below — it just no longer fails a reclaim
-        // that happened a few microseconds late. CancelQueuedSpawn retires before it cancels the
-        // caller, so capacity reaching 1 also implies the directory row has been retired.
+        // weaken the test: a reclaim that never happens now fails HERE, with a named timeout, instead
+        // of at the assertion below — it just no longer fails a reclaim that happened a few
+        // microseconds late. CancelQueuedSpawn retires before it cancels the caller, so capacity
+        // reaching 1 also implies the directory row has been retired.
         await Wait.UntilAsync(
             () => root.Directory.Capacity.InUse == 1,
             "the cancelled spawn's root-wide lease came back",
