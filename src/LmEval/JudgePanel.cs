@@ -77,10 +77,11 @@ public static class JudgePanel
         // A null generator family skips the EXCLUSION step only. Classification still runs on the
         // real eligible count below, so a one-judge configuration stays Degraded rather than being
         // promoted to Full by an unknown family.
-        IReadOnlyList<IJudge> eligible =
-            generatorFamily is null
-                ? configured
-                : [.. configured.Where(j => !FamilyComparer.Equals(j.ModelFamily, generatorFamily))];
+        var eligible = configured
+            .Where(j =>
+                generatorFamily is null || !FamilyComparer.Equals(j.ModelFamily, generatorFamily)
+            )
+            .ToList();
 
         var excludedCount = configured.Count - eligible.Count;
         var reason =
