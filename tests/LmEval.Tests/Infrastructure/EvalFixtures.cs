@@ -209,7 +209,8 @@ internal static class EvalFixtures
         IReadOnlyList<IGate>? gates = null,
         IReadOnlyList<IJudge>? judges = null,
         HarnessOptions? options = null,
-        string reliabilitySnapshotId = "snap-1"
+        string reliabilitySnapshotId = "snap-1",
+        IBallotAggregator? aggregator = null
     ) =>
         EvaluatorConfig.Create(
             gates ?? [],
@@ -218,7 +219,7 @@ internal static class EvalFixtures
                     new ScoringJudge("j-a", "anthropic", _ => 8.0),
                     new ScoringJudge("j-b", "google", _ => 8.0),
                 ],
-            new WeightedMeanAggregator(),
+            aggregator ?? new WeightedMeanAggregator(),
             options ?? new HarnessOptions(),
             reliabilitySnapshotId
         );

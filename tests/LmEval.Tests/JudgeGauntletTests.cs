@@ -121,6 +121,73 @@ public sealed class JudgeGauntletTests
         judge.Calls.Should().Be(1);
     }
 
+    /// <summary>
+    /// §2.4 — <see cref="GateOutcome.Inconclusive"/> exists to say "the gate could not decide", and
+    /// the most common way a real gate fails to decide is by throwing: a missing tool or an absent
+    /// checkout surfaces as an <c>IOException</c>, not as a returned Inconclusive. The judge path
+    /// already contains a fault into a <see cref="JudgeFault"/> so one outage degrades the verdict
+    /// instead of losing it; the gate path must be symmetric or the candidate is lost entirely.
+    /// </summary>
+    [Fact]
+    public async Task A_gate_that_throws_is_recorded_as_inconclusive_and_the_run_continues()
+    {
+        var boom = new MarkerGate("never", gateId: "boom", throwOnCandidateId: "cand-1");
+        var later = new CountingGate("after", GateOutcome.Pass);
+        var judge = new FakeJudge("a", "anthropic", score: 8.0);
+
+        var verdict = await Run(
+            Gauntlet([boom, later], [judge]),
+            HarnessFixtures.Candidate()
+        );
+
+        verdict.GateDecisions.Should().HaveCount(2);
+        var thrown = verdict.GateDecisions[0];
+        thrown.GateId.Should().Be("boom");
+        thrown.Outcome.Should().Be(GateOutcome.Inconclusive);
+        thrown.Reason.Should().Contain(nameof(InvalidOperationException));
+        later.Calls.Should().Be(1, "a gate that could not decide does not stop the ones after it");
+        judge.Calls.Should().Be(1);
+        verdict.Outcome.Should().Be(VerdictOutcome.Pass);
+    }
+
+    /// <summary>
+    /// The gate reason is persisted, so it is held to the same stable, non-sensitive rail as every
+    /// other persisted diagnostic: the exception's TYPE, never its message.
+    /// </summary>
+    [Fact]
+    public async Task A_thrown_gate_reason_carries_the_exception_type_and_not_its_message()
+    {
+        var boom = new MarkerGate("never", gateId: "boom", throwOnCandidateId: "cand-1");
+
+        var verdict = await Run(
+            Gauntlet([boom], [new FakeJudge("a", "anthropic")]),
+            HarnessFixtures.Candidate()
+        );
+
+        verdict.GateDecisions[0].Reason.Should().NotContain("gate blew up");
+    }
+
+    /// <summary>
+    /// A caller's cancellation is never a gate failure: recording it as an inconclusive decision
+    /// would put a gate record on a run nobody tried to complete.
+    /// </summary>
+    [Fact]
+    public async Task A_cancelled_gate_propagates_rather_than_becoming_inconclusive()
+    {
+        using var source = new CancellationTokenSource();
+        var gauntlet = Gauntlet([new CancellingGate(source)], [new FakeJudge("a", "anthropic")]);
+
+        var run = async () =>
+            await gauntlet.RunAsync(
+                HarnessFixtures.Candidate(),
+                Rubric,
+                NoReliability,
+                source.Token
+            );
+
+        await run.Should().ThrowAsync<OperationCanceledException>();
+    }
+
     // ---- panel fan-out and degradation (§2.12.6) ----------------------------------------------
 
     /// <summary>

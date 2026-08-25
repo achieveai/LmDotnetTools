@@ -222,7 +222,7 @@ public sealed class JudgeGauntlet
                 continue;
             }
 
-            var decision = await gate.EvaluateAsync(candidate, cancellationToken)
+            var decision = await EvaluateGateAsync(gate, candidate, cancellationToken)
                 .ConfigureAwait(false);
             decisions.Add(decision);
 
@@ -233,6 +233,50 @@ public sealed class JudgeGauntlet
         }
 
         return (decisions, null);
+    }
+
+    /// <summary>
+    /// One gate evaluation, containing any fault into an
+    /// <see cref="GateOutcome.Inconclusive"/> decision — the same containment
+    /// <see cref="InvokeAsync"/> gives the judge path, and for the same reason: a gate that throws
+    /// would otherwise take the whole candidate with it, leaving no verdict and no gate record.
+    /// <para>
+    /// This is also the only way <see cref="GateOutcome.Inconclusive"/> becomes reachable in
+    /// practice. Its own doc names the intended trigger as "a tool missing, a checkout absent", and
+    /// those surface from a host gate as <c>IOException</c> / <c>FileNotFoundException</c> /
+    /// <c>Win32Exception</c>, never as a returned decision.
+    /// </para>
+    /// <para>
+    /// The reason is the exception's TYPE, never its message: it reaches persistence and is held to
+    /// the same stable, non-sensitive rail as every other <see cref="GateDecision.Reason"/>.
+    /// </para>
+    /// </summary>
+    private async ValueTask<GateDecision> EvaluateGateAsync(
+        IGate gate,
+        Candidate candidate,
+        CancellationToken cancellationToken
+    )
+    {
+        try
+        {
+            return await gate.EvaluateAsync(candidate, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // The caller stopped the run. That is not a gate failure, and recording it as one would
+            // put a gate record on a run nobody tried to complete.
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(
+                ex,
+                "Gate {GateId} faulted on candidate {CandidateId}; it is recorded as inconclusive and the remaining gates still run.",
+                gate.GateId,
+                candidate.CandidateId
+            );
+            return GateDecision.Inconclusive(gate.GateId, ex.GetType().Name);
+        }
     }
 
     /// <summary>

@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmEval.Aggregation;
 using AchieveAi.LmDotnetTools.LmEval.Running;
 using AchieveAi.LmDotnetTools.LmEval.Tests.Infrastructure;
 
@@ -196,14 +197,18 @@ public class EvalRunnerTests
     }
 
     [Fact]
-    public async Task One_throwing_gate_does_not_take_out_the_batch()
+    public async Task One_throwing_reducer_does_not_take_out_the_batch()
     {
         // A corpus is host data of unknown quality. Losing every item's work to one item's fault is
         // an operational failure, not a measurement — and the faulted item keeps its place in the
         // denominator, so the loss cannot flatter the result.
+        //
+        // The reducer, not a gate: the gauntlet now contains a gate fault into an inconclusive
+        // decision the same way it already contained a judge fault, so neither of those reaches
+        // this isolation any more. The injected reducer is the remaining seam that genuinely can.
         var run = await EvalFixtures.RunAsync(
             EvalFixtures.Config(
-                [new MarkerGate(EvalFixtures.RejectMarker, throwOnCandidateId: "poison")]
+                aggregator: new ThrowingAggregator("poison", new WeightedMeanAggregator())
             ),
             EvalFixtures.Snapshot(
                 EvalFixtures.Item("before"),
@@ -226,6 +231,38 @@ public class EvalRunnerTests
 
         // The items after the poison one were still evaluated: isolation, not a short-circuit.
         run.Items.Single(i => i.CandidateId == "after").IsScored.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A gate that throws costs the run one gate DECISION, not one corpus item. Before the gauntlet
+    /// contained the fault, the candidate was lost entirely — it left the pass rate's numerator,
+    /// stayed in its denominator, and read as an item nothing could be measured about.
+    /// </summary>
+    [Fact]
+    public async Task One_throwing_gate_costs_a_gate_decision_and_not_the_item()
+    {
+        var run = await EvalFixtures.RunAsync(
+            EvalFixtures.Config(
+                [new MarkerGate(EvalFixtures.RejectMarker, throwOnCandidateId: "poison")]
+            ),
+            EvalFixtures.Snapshot(
+                EvalFixtures.Item("before"),
+                EvalFixtures.Item("poison"),
+                EvalFixtures.Item("after")
+            )
+        );
+
+        var poison = run.Items.Single(i => i.CandidateId == "poison");
+        poison.Exclusion.Should().Be(ScoreExclusion.None);
+        poison.IsScored.Should().BeTrue();
+        poison
+            .Verdict!.GateDecisions.Should()
+            .ContainSingle()
+            .Which.Outcome.Should()
+            .Be(GateOutcome.Inconclusive);
+
+        run.FaultedCount.Should().Be(0);
+        run.ScoredItems.Should().Be(3);
     }
 
     [Fact]
