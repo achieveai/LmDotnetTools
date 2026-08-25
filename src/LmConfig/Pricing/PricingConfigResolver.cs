@@ -45,9 +45,10 @@ public sealed class PricingConfigResolver : IPricingResolver
     ///         A record reaching <see cref="Resolve" /> carries only a model name
     ///         (<c>UsageRecord.EffectiveModelId</c>) — never the provider that served it. So every name a
     ///         model answers to is indexed: the catalog id, each provider's <c>model_name</c>, and each
-    ///         sub-provider's. Where one name is priced two different ways, the name is <b>dropped</b> and
-    ///         <see cref="Resolve" /> returns null. An absent estimate is visible and recoverable; a
-    ///         confident wrong one is neither, because downstream it is summed, reported and believed.
+    ///         sub-provider's. Where one name is priced two different ways — or where one of the routes it
+    ///         names published no rate at all — the name is <b>dropped</b> and <see cref="Resolve" /> returns
+    ///         null. An absent estimate is visible and recoverable; a confident wrong one is neither, because
+    ///         downstream it is summed, reported and believed.
     ///     </para>
     ///     <para>
     ///         The catalog format carries no effective date, so <paramref name="version" /> has to come from
@@ -66,11 +67,22 @@ public sealed class PricingConfigResolver : IPricingResolver
         ArgumentNullException.ThrowIfNull(appConfig);
 
         var candidates = new Dictionary<string, List<PricingConfig>>(StringComparer.OrdinalIgnoreCase);
+        var unpriced = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        void Offer(string alias, PricingConfig pricing)
+        void Offer(string alias, PricingConfig? pricing)
         {
             if (string.IsNullOrWhiteSpace(alias))
             {
+                return;
+            }
+
+            if (pricing is null)
+            {
+                // A route that published no rate is an offer that can never agree with any other, so the
+                // alias is dropped exactly as a conflicting one is. Skipping the offer instead would let
+                // the alias resolve to whatever the *other* providers agree on — a confident number for a
+                // request that may have been billed at the rate nobody declared.
+                _ = unpriced.Add(alias);
                 return;
             }
 
@@ -83,9 +95,11 @@ public sealed class PricingConfigResolver : IPricingResolver
             offered.Add(pricing);
         }
 
-        // Models / Providers are declared required, but a catalog bound from an empty configuration
-        // section leaves them null (AppConfig.GetModel guards the same way), so defend rather than throw
-        // on a host that registered LmConfig without a catalog.
+        // Models / Providers / Pricing are declared required, but Microsoft.Extensions.Configuration.Binder
+        // does not enforce `required` the way System.Text.Json does, so a catalog bound from an
+        // IConfiguration section leaves any of them null (AppConfig.GetModel guards the same way). Defend
+        // rather than throw on a host that registered LmConfig without a catalog, or with a provider entry
+        // that omits `pricing`.
         foreach (var model in appConfig.Models ?? [])
         {
             foreach (var provider in model.Providers ?? [])
@@ -106,6 +120,11 @@ public sealed class PricingConfigResolver : IPricingResolver
         var unambiguous = new Dictionary<string, PricingConfig>(StringComparer.OrdinalIgnoreCase);
         foreach (var (alias, offered) in candidates)
         {
+            if (unpriced.Contains(alias))
+            {
+                continue;
+            }
+
             var first = offered[0];
             var agrees = offered.All(p =>
                 p.PromptPerMillion == first.PromptPerMillion && p.CompletionPerMillion == first.CompletionPerMillion);

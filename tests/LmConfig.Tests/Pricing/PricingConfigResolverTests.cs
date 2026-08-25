@@ -1,7 +1,9 @@
 using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmConfig.Pricing;
 using AchieveAi.LmDotnetTools.LmConfig.Services;
+using System.Text;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace AchieveAi.LmDotnetTools.LmConfig.Tests.Pricing;
@@ -230,6 +232,99 @@ public class PricingConfigResolverTests
 
         using var provider = services.BuildServiceProvider();
         Assert.IsType<StubPricingResolver>(provider.GetRequiredService<IPricingResolver>());
+    }
+
+    // --- The IConfiguration binder path. Microsoft.Extensions.Configuration.Binder does not enforce
+    // `required` (System.Text.Json does, which is why the JSON entry points never see this), so the
+    // documented entry point — AddLmConfig(Configuration.GetSection("LmConfig")), see
+    // src/LmConfig/docs/Configuration-Loading-Guide.md — binds a provider that declares no `pricing` with
+    // Pricing null. No test exercised this path at all, which is how a bare NullReferenceException thrown
+    // out of the registration lambda survived review. ---
+
+    private static IConfigurationSection LmConfigSection(string json) =>
+        new ConfigurationBuilder()
+            .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(json)))
+            .Build()
+            .GetSection("LmConfig");
+
+    [Fact]
+    public void AddLmConfig_BoundFromConfiguration_ProviderWithoutPricing_ResolvesNullRatherThanThrowing()
+    {
+        var services = new ServiceCollection();
+        _ = services.AddLmConfig(
+            LmConfigSection(
+                """
+                {
+                  "LmConfig": {
+                    "Models": [
+                      {
+                        "Id": "m1",
+                        "IsReasoning": false,
+                        "Providers": [ { "Name": "P", "ModelName": "p/m1" } ]
+                      }
+                    ]
+                  }
+                }
+                """
+            )
+        );
+
+        using var provider = services.BuildServiceProvider();
+
+        // Before the fix this threw NullReferenceException from inside the registration lambda, so a host
+        // that merely resolved the resolver fell over on a catalog that bound fine on the merge base.
+        var resolver = provider.GetRequiredService<IPricingResolver>();
+
+        // A route that declared no rate resolves to nothing. Not to zero, and not to a borrowed number.
+        Assert.Null(resolver.Resolve("m1"));
+        Assert.Null(resolver.Resolve("p/m1"));
+    }
+
+    [Fact]
+    public void AddLmConfig_BoundFromConfiguration_OneProviderPricedOneNot_DropsTheSharedAlias()
+    {
+        var services = new ServiceCollection();
+        _ = services.AddLmConfig(
+            LmConfigSection(
+                """
+                {
+                  "LmConfig": {
+                    "Models": [
+                      {
+                        "Id": "mixed",
+                        "IsReasoning": false,
+                        "Providers": [
+                          {
+                            "Name": "A",
+                            "ModelName": "a/mixed",
+                            "Pricing": { "PromptPerMillion": 3.0, "CompletionPerMillion": 15.0 }
+                          },
+                          { "Name": "B", "ModelName": "b/mixed" }
+                        ]
+                      }
+                    ]
+                  }
+                }
+                """
+            )
+        );
+
+        using var provider = services.BuildServiceProvider();
+        var resolver = provider.GetRequiredService<IPricingResolver>();
+
+        // The catalog id answers for both routes, and one of them published no rate. Reporting A's rate
+        // for it would be a confident number for a request that may have been billed at B's — the exact
+        // wrong-number failure the conflict rule exists to avoid — so the shared alias goes dark.
+        Assert.Null(resolver.Resolve("mixed"));
+
+        // B's own name is dropped for the same reason.
+        Assert.Null(resolver.Resolve("b/mixed"));
+
+        // A's own name names exactly one route, and that route published a rate, so it still resolves.
+        var priced = resolver.Resolve("a/mixed");
+        Assert.NotNull(priced);
+        Assert.Equal(3.0m, priced!.PromptPerMillion);
+        Assert.Equal(15.0m, priced.CompletionPerMillion);
     }
 
     private sealed class StubPricingResolver : IPricingResolver
