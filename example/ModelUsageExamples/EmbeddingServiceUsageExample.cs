@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Core;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
@@ -12,8 +11,8 @@ namespace AchieveAi.LmDotnetTools.Example.ModelUsageExamples;
 public class EmbeddingServiceUsageExample
 {
     private readonly ServerEmbeddings _embeddingService;
-    private static readonly string[] sourceArray = new[] { "float" };
-    private static readonly string[] values = new[] { "N/A" };
+    private static readonly string[] sourceArray = ["float"];
+    private static readonly string[] values = ["N/A"];
 
     public EmbeddingServiceUsageExample(ServerEmbeddings embeddingService)
     {
@@ -152,13 +151,13 @@ public class EmbeddingServiceUsageExample
                     {
                         Level = "Information",
                         Message = "Embedding generation completed",
-                        RequestId = result.Metrics.RequestId,
-                        Service = result.Metrics.Service,
-                        DurationMs = result.Metrics.DurationMs,
-                        InputCount = result.Metrics.InputCount,
-                        TotalTokens = result.Metrics.TotalTokens,
-                        Success = result.Metrics.Success,
-                        TimingBreakdown = result.Metrics.TimingBreakdown,
+                        result.Metrics.RequestId,
+                        result.Metrics.Service,
+                        result.Metrics.DurationMs,
+                        result.Metrics.InputCount,
+                        result.Metrics.TotalTokens,
+                        result.Metrics.Success,
+                        result.Metrics.TimingBreakdown,
                     },
                     new JsonSerializerOptions { WriteIndented = true }
                 )
@@ -174,8 +173,8 @@ public class EmbeddingServiceUsageExample
                     {
                         Level = "Error",
                         Message = "Embedding generation failed",
-                        Error = result.Error,
-                        Metrics = result.Metrics,
+                        result.Error,
+                        result.Metrics,
                     },
                     new JsonSerializerOptions { WriteIndented = true }
                 )
@@ -264,7 +263,7 @@ public class EmbeddingServiceUsageExample
                 SupportsBatch = true,
                 SupportsReranking = false,
                 MaxBatchSize = 100,
-                EncodingFormats = sourceArray.ToImmutableList(),
+                EncodingFormats = [.. sourceArray],
             },
         };
 
