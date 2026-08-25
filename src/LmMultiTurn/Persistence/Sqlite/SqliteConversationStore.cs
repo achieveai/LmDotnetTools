@@ -403,17 +403,19 @@ public sealed class SqliteConversationStore
             SELECT thread_id, current_run_id, last_updated, metadata_json,
                    tenant_id, owner_user_id, owner_app_id, visibility
             FROM thread_metadata t
-            WHERE t.tenant_id = $tenantId
-              AND ( $isTenantAdmin = 1
-                    OR ($userId IS NOT NULL AND t.owner_user_id = $userId)
-                    OR ($userId IS NULL AND $appId IS NOT NULL AND t.owner_app_id = $appId)
-                    OR ($userId IS NOT NULL AND t.visibility = $tenantPublished)
-                    OR {grantClause} )
+            WHERE ( t.tenant_id = $tenantId
+                    AND ( $isTenantAdmin = 1
+                          OR ($userId IS NOT NULL AND t.owner_user_id = $userId)
+                          OR ($userId IS NULL AND $appId IS NOT NULL AND t.owner_app_id = $appId)
+                          OR ($userId IS NOT NULL AND t.visibility = $tenantPublished)
+                          OR {grantClause} ) )
+               OR ( $includeUntenanted = 1 AND t.tenant_id IS NULL )
             ORDER BY t.last_updated DESC
             LIMIT $limit OFFSET $offset;
             """);
 
         _ = command.Parameters.AddWithValue("$tenantId", scope.TenantId);
+        _ = command.Parameters.AddWithValue("$includeUntenanted", scope.IncludeUntenanted ? 1 : 0);
         _ = command.Parameters.AddWithValue("$userId", (object?)scope.UserId ?? DBNull.Value);
         _ = command.Parameters.AddWithValue("$appId", (object?)scope.AppId ?? DBNull.Value);
         _ = command.Parameters.AddWithValue("$isTenantAdmin", scope.IsTenantAdmin ? 1 : 0);

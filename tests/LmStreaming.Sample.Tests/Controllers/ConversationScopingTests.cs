@@ -55,7 +55,8 @@ public sealed class ConversationScopingTests
     private ConversationsController CreateController(
         Principal? principal,
         MultiTurnAgentPool pool,
-        bool enforce = true) =>
+        bool enforce = true,
+        IResourceGrantStore? grantsOverride = null) =>
         new(
             _store,
             pool,
@@ -66,7 +67,7 @@ public sealed class ConversationScopingTests
             TimeProvider.System,
             new WorkflowRunRegistry(),
             enforce
-                ? TestAuthorizers.Enforcing(principal, _grants, _audit)
+                ? TestAuthorizers.Enforcing(principal, grantsOverride ?? _grants, _audit)
                 : TestAuthorizers.Disabled(),
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
@@ -176,6 +177,72 @@ public sealed class ConversationScopingTests
         var result = await controller.GetMessages("alice-thread", viewer: null, CancellationToken.None);
 
         _ = Assert.IsType<NotFoundObjectResult>(result).StatusCode.Should().Be(404);
+    }
+
+    // -------- The refusal must cost the same lookup WORK, not just the same bytes --------
+
+    /// <summary>
+    /// <c>SendMessage</c> answered a null-metadata thread with <c>unknown_thread</c> BEFORE reaching the
+    /// authorizer, so a thread that was never minted cost zero grant look-ups while a forbidden
+    /// cross-tenant thread cost one (the authorizer's equalising lookup). That difference in store
+    /// round-trips is a #389 work-shape existence oracle even though the two 404 bodies are byte-identical.
+    /// This pins the write path: both cases must cost the same number of look-ups.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_CrossTenant_AndAMissingThread_CostTheSameGrantLookups()
+    {
+        await using var pool = CreatePool();
+        await SeedAsync("alice-thread", TenantA, Alice);
+
+        var forbidden = await CountSendLookupsAsync(Signed(TenantB, Mallory), "alice-thread", pool);
+        var missing = await CountSendLookupsAsync(Signed(TenantB, Mallory), "no-such-thread", pool);
+
+        _ = forbidden.Should().BeGreaterThan(
+            0, "a cross-tenant write runs the authorizer's equalising grant lookup");
+        _ = missing.Should().Be(
+            forbidden,
+            "a thread that was never minted must cost the same grant-lookup work, or the round-trip count is an existence oracle");
+    }
+
+    /// <summary>
+    /// The same work-shape oracle on the read path: <c>GetStatus</c> short-circuited a null-metadata thread
+    /// to <c>unknown_thread</c> before the authorizer, so a missing thread cost zero grant look-ups and a
+    /// forbidden one cost one.
+    /// </summary>
+    [Fact]
+    public async Task GetStatus_CrossTenant_AndAMissingThread_CostTheSameGrantLookups()
+    {
+        await using var pool = CreatePool();
+        await SeedAsync("alice-thread", TenantA, Alice);
+
+        var forbidden = await CountStatusLookupsAsync(Signed(TenantB, Mallory), "alice-thread", pool);
+        var missing = await CountStatusLookupsAsync(Signed(TenantB, Mallory), "no-such-thread", pool);
+
+        _ = forbidden.Should().BeGreaterThan(
+            0, "a cross-tenant status read runs the authorizer's equalising grant lookup");
+        _ = missing.Should().Be(
+            forbidden,
+            "a thread that was never minted must cost the same grant-lookup work, or the round-trip count is an existence oracle");
+    }
+
+    /// <summary>Sends to <paramref name="threadId"/> as <paramref name="principal"/> over a fresh counting
+    /// grant store, and returns how many grant look-ups the request made.</summary>
+    private async Task<int> CountSendLookupsAsync(Principal principal, string threadId, MultiTurnAgentPool pool)
+    {
+        var grants = new CountingResourceGrantStore(_grants);
+        var controller = CreateController(principal, pool, grantsOverride: grants);
+        _ = await controller.SendMessage(threadId, new SendMessageRequest { Text = "hi" }, CancellationToken.None);
+        return grants.FindGrantCallCount;
+    }
+
+    /// <summary>Reads status for <paramref name="threadId"/> as <paramref name="principal"/> over a fresh
+    /// counting grant store, and returns how many grant look-ups the request made.</summary>
+    private async Task<int> CountStatusLookupsAsync(Principal principal, string threadId, MultiTurnAgentPool pool)
+    {
+        var grants = new CountingResourceGrantStore(_grants);
+        var controller = CreateController(principal, pool, grantsOverride: grants);
+        _ = await controller.GetStatus(threadId, runId: "run-1", inputId: null, CancellationToken.None);
+        return grants.FindGrantCallCount;
     }
 
     /// <summary>

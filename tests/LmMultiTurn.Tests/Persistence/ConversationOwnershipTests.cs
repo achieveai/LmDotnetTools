@@ -170,6 +170,30 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// The background sub-agent scan opts into "this tenant OR untenanted"
+    /// (<see cref="ConversationListScope.ForTenantIncludingUntenanted"/>), so a tenanted root's
+    /// still-untenanted descendant is not dropped by the #388a narrowing. A CALLER-facing scope must not
+    /// admit that same untenanted row - both halves are pinned here, in every store, because the SQLite
+    /// predicate and the in-memory <c>Admits</c> spelling are written separately and can drift.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(StoreKinds))]
+    public async Task Listing_ScanScopeAdmitsUntenanted_WhileACallerScopeDoesNot(string kind)
+    {
+        var store = CreateStore(kind);
+        await WriteAsync(store, "tenanted", TenantA, UserA);
+        await WriteAsync(store, "untenanted", tenantId: null, ownerUserId: UserA);
+
+        var scanned = await store.ListThreadsAsync(
+            ConversationListScope.ForTenantIncludingUntenanted(TenantA), 50, 0, CancellationToken.None);
+        var asCaller = await store.ListThreadsAsync(
+            Scope(TenantA, UserA), 50, 0, CancellationToken.None);
+
+        _ = scanned.Select(t => t.ThreadId).Should().BeEquivalentTo(["tenanted", "untenanted"]);
+        _ = asCaller.Select(t => t.ThreadId).Should().BeEquivalentTo(["tenanted"]);
+    }
+
+    /// <summary>
     /// Spec 7.1 principle 4: a null owner matches nobody. The C# stores are where this can go wrong
     /// - <c>null == null</c> is true - and getting it wrong hands every unclaimed conversation to
     /// every app-only caller.

@@ -1022,6 +1022,12 @@ public sealed class AgentHierarchyServiceTests
                         TerminalAtUtc: DateTimeOffset.UtcNow)),
             });
 
+    /// <summary>
+    /// An agent whose reply stream never completes (it awaits an infinite delay), so a
+    /// <see cref="MultiTurnAgentLoop"/> built on it stays registered as a LIVE loop for the whole test.
+    /// That is what puts these tests on the hot path the live-vs-cold gate guards - the scan must be
+    /// skipped while such a loop is present and must run once it is not.
+    /// </summary>
     private static IStreamingAgent BlockingProvider()
     {
         var provider = new Mock<IStreamingAgent>();

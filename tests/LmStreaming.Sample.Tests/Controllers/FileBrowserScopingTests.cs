@@ -289,4 +289,56 @@ public sealed class FileBrowserScopingTests
         _ = Assert.IsType<NotFoundObjectResult>(result).StatusCode.Should().Be(404);
         AssertSandboxUntouched(browser);
     }
+
+    // -------- The refusal must cost the same lookup WORK, not just the same bytes --------
+
+    /// <summary>
+    /// Byte-identical is not the whole oracle. A forbidden cross-tenant thread runs the authorizer's
+    /// equalising grant lookup; a thread that was never minted must run the SAME lookup, or the count of
+    /// store round-trips distinguishes the two even when their bodies do not. The defect this pins:
+    /// <c>ResolveSessionAsync</c> answered the null-metadata case with <c>unknown_thread</c> BEFORE
+    /// reaching <c>AuthorizeAsync</c>, so a missing thread cost zero lookups while a forbidden one cost one
+    /// — a #389 work-shape existence oracle at the controller seam that the body-only tests above cannot
+    /// see.
+    /// </summary>
+    [Fact]
+    public async Task CrossTenantList_AndAThreadThatDoesNotExist_CostTheSameGrantLookups()
+    {
+        await SeedAliceThreadAsync();
+
+        var forbidden = await CountListLookupsAsync(Signed(TenantB, Mallory), AliceThread);
+        var missing = await CountListLookupsAsync(Signed(TenantB, Mallory), MissingThread);
+
+        _ = forbidden.Should().BeGreaterThan(
+            0, "a cross-tenant listing runs the authorizer's equalising grant lookup");
+        _ = missing.Should().Be(
+            forbidden,
+            "a thread that was never minted must cost the same grant-lookup work, or the round-trip count is an existence oracle");
+    }
+
+    /// <summary>
+    /// Lists <paramref name="threadId"/> as <paramref name="principal"/> over a fresh counting grant store,
+    /// and returns how many grant look-ups the request made.
+    /// </summary>
+    private async Task<int> CountListLookupsAsync(Principal principal, string threadId)
+    {
+        var grants = new CountingResourceGrantStore(_grants);
+        var browser = new FakeFileBrowser
+        {
+            FileBytes = Encoding.UTF8.GetBytes("alice's private notes"),
+        };
+        browser.Listings[string.Empty] = [new(SecretFile, SandboxEntryType.File, 21, false)];
+
+        var controller = new FileBrowserController(
+            _store,
+            browser,
+            TestAuthorizers.Enforcing(principal, grants),
+            NullLogger<FileBrowserController>.Instance)
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() },
+        };
+
+        _ = await controller.List(threadId, path: null, CancellationToken.None);
+        return grants.FindGrantCallCount;
+    }
 }

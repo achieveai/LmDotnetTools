@@ -25,10 +25,15 @@ namespace LmStreaming.Sample.Services;
 ///         everyone's.
 ///     </para>
 ///     <para>
-///         Scoping by the root's own tenant has neither problem. A descendant of a root in tenant T is
-///         itself in tenant T - <c>AgentThreadOwnership.InheritAsync</c> stamps it from its parent at
-///         creation (#385) - so the rows the scan can reach are unchanged and the rows it can no longer
-///         reach are ones it would have discarded anyway.
+///         Scoping by the root's own tenant has neither problem, and it is very nearly complete:
+///         <c>AgentThreadOwnership.InheritAsync</c> stamps a descendant from its parent at creation
+///         (#385), so a descendant of a root in tenant T is normally itself in tenant T. The one gap is a
+///         stamping-order race - inheritance reads the parent's stored row AS IT STANDS at the child's
+///         creation, so a child minted before its parent's own stamp has landed keeps a null tenant while
+///         the root ends up stamped. That child is a genuine descendant the scan must still find, so the
+///         scope admits the root's tenant OR an untenanted row
+///         (<see cref="ConversationListScope.ForTenantIncludingUntenanted"/>). It is not widened to other
+///         real tenants: a row in a different tenant is one the parentage projection would discard anyway.
 ///     </para>
 /// </remarks>
 internal static class SubAgentScanScope
@@ -59,6 +64,6 @@ internal static class SubAgentScanScope
 
         return string.IsNullOrWhiteSpace(root?.TenantId)
             ? null
-            : ConversationListScope.ForTenant(root.TenantId);
+            : ConversationListScope.ForTenantIncludingUntenanted(root.TenantId);
     }
 }
