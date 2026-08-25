@@ -189,19 +189,6 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         Hash(actualPath).Should().Be(Hash(expectedPath), because);
     }
 
-    /// <summary>
-    /// Collapses PowerShell's error-formatter line structure so a substring assertion can survive it.
-    /// <para>
-    /// pwsh word-wraps a thrown exception's message at roughly console width and prefixes every
-    /// continuation line with <c>"       | "</c>. A long absolute path is therefore routinely split
-    /// across two lines in stderr, so <c>StandardError.Should().Contain(somePath)</c> fails against
-    /// perfectly correct output. Short single-word assertions (e.g. "Unrecognized") happen never to
-    /// hit a wrap point, which is why this only bites once an assertion names a real path.
-    /// </para>
-    /// </summary>
-    private static string Unwrap(string text) =>
-        System.Text.RegularExpressions.Regex.Replace(text.Replace("|", " "), @"\s+", " ");
-
     private static string? FindSiblingWithSuffix(string parent, string destinationName, string suffix) =>
         Directory.GetDirectories(parent)
             .FirstOrDefault(d => Path.GetFileName(d).StartsWith($"{destinationName}.{suffix}", StringComparison.Ordinal));
@@ -568,9 +555,9 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         candidate.Should().NotBeNull("the assembled candidate must be retained for inspection");
         Directory.Exists(destination).Should().BeFalse("sanity: the destination genuinely does not exist in this window -- that is what makes naming the backup path load-bearing");
 
-        var stderr = Unwrap(result.StandardError);
-        stderr.Should().Contain(Unwrap(backup!), "the error must name the exact backup directory the operator has to rename back");
-        stderr.Should().Contain(Unwrap(candidate!), "the error must name the retained candidate");
+        var stderr = result.StandardError;
+        stderr.Should().Contain(backup!, "the error must name the exact backup directory the operator has to rename back");
+        stderr.Should().Contain(candidate!, "the error must name the retained candidate");
         stderr.Should().Contain("Swap error", "the ORIGINAL swap failure must survive -- not be replaced by the rollback's own exception");
         stderr.Should().Contain("Rollback error", "the rollback failure must be reported too");
 
@@ -1037,7 +1024,7 @@ public sealed class PublishLaunchDestinationTests : IDisposable
             $"-ProcessEnumerationDelegate {ProcessDelegateThatThrowsIfInvoked}");
 
         result.Succeeded.Should().BeFalse("a Missing destination with leftover deploy siblings is an interrupted deploy, not a fresh install");
-        Unwrap(result.StandardError).Should().Contain(Unwrap(orphan), "the error must name the exact sibling so the operator knows what to rename back");
+        result.StandardError.Should().Contain(orphan, "the error must name the exact sibling so the operator knows what to rename back");
         Directory.Exists(destination).Should().BeFalse("nothing may be deployed while the interrupted state is unresolved");
         File.ReadAllText(Path.Combine(orphan, ".env")).Should().Be("PRECIOUS=1", "the orphaned sibling must be left exactly as found");
     }
@@ -1093,7 +1080,7 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         // verified directly rather than assumed; asserting on stderr silently passed nothing.
         result.StandardOutput.Should().Contain("WARNING", "the fresh-install notice must be a real warning, not a quiet Write-Host line");
         result.StandardOutput.Should().Contain(".env", "the warning must name what is missing");
-        Unwrap(result.StandardOutput).Should().Contain(Unwrap(destination), "the warning must name the exact deployment it applies to");
+        result.StandardOutput.Should().Contain(destination, "the warning must name the exact deployment it applies to");
         File.Exists(Path.Combine(destination, ".env")).Should().BeFalse("no placeholder .env may be seeded -- it would be indistinguishable from a real one and preserved forever");
     }
 
@@ -1166,6 +1153,51 @@ public sealed class PublishLaunchDestinationTests : IDisposable
 
         result.Succeeded.Should().BeFalse("deploying to a volume root must be refused explicitly, not fail obscurely inside the swap");
         result.StandardError.Should().Contain("root");
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // Script-host contract (the gate for #340)
+    // ----------------------------------------------------------------------------------------
+
+    [Fact]
+    public void ScriptHost_ThrownMessage_ReachesStderrVerbatim_NotAsRenderedConsoleOutput()
+    {
+        // Every "the error must name the exact path" assertion in this file rests on one property:
+        // what PublishLaunchScriptHost puts in StandardError is the string the script threw, not
+        // pwsh's rendering of it. That property used to hold only by luck. pwsh's ConciseView
+        // formatter word-wraps a thrown message at a fixed 120 columns once stdout is redirected
+        // and splices ANSI SGR escapes in at each wrap point, so any message long enough to wrap
+        // came back with a space turned into "<ESC>[0m\r\n<ESC>[31;1m ... | <ESC>[31;1m". On a
+        // machine whose profile directory contains a space that wrap landed inside an absolute
+        // path and three tests here failed deterministically while the script was behaving
+        // perfectly (#340); on a machine whose paths have no spaces the same three passed, so the
+        // defect was invisible to CI and the tests acquired a standing "ignore these" note.
+        //
+        // This test removes the environment from the question. The message below is longer than
+        // the wrap width and has word boundaries past it on EVERY machine, so it wraps regardless
+        // of the profile path, the console size, or the terminal -- and the assertion is exact
+        // equality, which no amount of re-wrapping or re-colouring can satisfy. Reintroduce the
+        // formatter into the path and this fails everywhere, not just here.
+        const string message =
+            @"Recovery required: rename 'C:\Program Files\Some Deployment Directory\app.backup-20260101T000000000Z-1234' back onto 'C:\Program Files\Some Deployment Directory\app' to recover.";
+
+        // Non-vacuity: a message that fits on one line would pass this test even with the formatter
+        // fully in the way, proving nothing. Pin both halves of what makes it wrap.
+        const int redirectedConsoleWidth = 120;
+        message.Length.Should().BeGreaterThan(
+            redirectedConsoleWidth,
+            "a message that fits within the wrap width would never exercise the formatter's wrapping");
+        message.IndexOf(' ', redirectedConsoleWidth).Should().BeGreaterThan(
+            -1,
+            "the word-wrap needs a space beyond the wrap width to break on, or the formatter would emit this unwrapped anyway");
+
+        var result = PublishLaunchScriptHost.InvokeForEffect(
+            $"& {{ throw '{PublishLaunchScriptHost.QuoteSingle(message)}' }}");
+
+        result.Succeeded.Should().BeFalse("a thrown message must still make the invocation fail");
+        result.StandardError.Trim('\r', '\n').Should().Be(
+            message,
+            "stderr must carry the message the script composed, byte for byte -- not a wrapped, gutter-prefixed, ANSI-decorated rendering of it");
     }
 
     // ----------------------------------------------------------------------------------------
