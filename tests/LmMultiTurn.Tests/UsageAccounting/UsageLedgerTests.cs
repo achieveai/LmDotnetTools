@@ -173,6 +173,32 @@ public class UsageLedgerTests
     }
 
     [Fact]
+    public void UpsertAttempt_MergesCostProvenance_ByHigherInformationValue_ReverseOrder()
+    {
+        // The companion of the test above, with arrival order reversed: the FIRST observation carries the
+        // provider-reported figure and the SECOND carries no cost info at all. A last-wins merge (taking
+        // the incoming observation's provenance unconditionally, the way every OTHER field here does NOT)
+        // would silently downgrade this to Unavailable and still pass the forward-order test above, which
+        // puts ProviderReported second and so cannot distinguish "higher wins" from "last wins". This is
+        // the case that can (#367).
+        var ledger = new UsageLedger("conv-1");
+
+        ledger.UpsertAttempt(
+            Obs("a1", "model-A", input: 100, output: 55) with
+            {
+                ProviderReportedCostMicros = 7000,
+                CostProvenance = CostProvenance.ProviderReported,
+            });
+        var merged = ledger.UpsertAttempt(
+            Obs("a1", "model-A", input: 100, output: 55, finalized: true));
+
+        merged.CostProvenance.Should().Be(
+            CostProvenance.ProviderReported,
+            "a later observation carrying no cost info must not erase an already-known provider-reported provenance");
+        merged.ProviderReportedCostMicros.Should().Be(7000);
+    }
+
+    [Fact]
     public void SeedFromRecords_RestoresTotals_DedupsSeededAttempts_AndContinuesWatermark()
     {
         var original = new UsageLedger("conv-1");
