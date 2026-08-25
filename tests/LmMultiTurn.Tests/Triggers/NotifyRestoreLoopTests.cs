@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -140,20 +141,22 @@ public class NotifyRestoreLoopTests
         await subscription.DisposeAsync();
         await cts.CancelAsync();
 
-        // AddToHistory persists fire-and-forget, so give the write a brief window to land.
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        // AddToHistory persists fire-and-forget, so the write lands after the run completes. Loud: a
+        // deadline that fell through silently reported the absent write as a missing <trigger>
+        // envelope, which is the same red as a restored loop that never delivered the fire at all.
         IReadOnlyList<IMessage> history = [];
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            history = MessagePersistenceConverter.FromPersistedMessages(
-                await convStore.LoadMessagesAsync(threadId));
-            if (history.OfType<TextMessage>().Any(
-                m => m.Role == Role.User && m.Text.Contains("<trigger>")))
+        await Wait.UntilAsync(
+            async () =>
             {
-                break;
-            }
-            await Task.Delay(50);
-        }
+                history = MessagePersistenceConverter.FromPersistedMessages(
+                    await convStore.LoadMessagesAsync(threadId));
+                return history.OfType<TextMessage>().Any(
+                    m => m.Role == Role.User && m.Text.Contains("<trigger>"));
+            },
+            "the fire-and-forget AddToHistory write put the restored loop's <trigger> envelope into "
+                + "persisted history",
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromMilliseconds(50));
 
         history.OfType<TextMessage>().Should().Contain(
             m => m.Role == Role.User && m.Text.Contains("<trigger>") && m.Text.Contains("fire-after-restore"));

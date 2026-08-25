@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -34,9 +35,30 @@ public class SubAgentModelOverrideValidationTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
+        // Bounded AND best-effort. Bounding each teardown (#362) turned a stall into a throw, and a
+        // throw mid-loop would exit DisposeAsync with every LATER manager still undisposed — trading
+        // one leak shape for another. Collect, dispose them all, then report together.
+        List<Exception>? failures = null;
         foreach (var manager in _managers)
         {
-            await manager.DisposeAsync();
+            try
+            {
+                await Wait.ForTeardownAsync(manager, "a sub-agent manager created by this test");
+            }
+            catch (Exception ex)
+            {
+                // Collected, never swallowed: rethrown as an aggregate below.
+                (failures ??= []).Add(ex);
+            }
+        }
+
+        if (failures is not null)
+        {
+            throw new AggregateException(
+                "One or more sub-agent managers failed to tear down within their ceiling; every "
+                    + "manager was still disposed before this was reported.",
+                failures
+            );
         }
     }
 

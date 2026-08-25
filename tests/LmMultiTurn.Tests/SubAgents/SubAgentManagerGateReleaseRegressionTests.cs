@@ -61,7 +61,8 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
     {
         if (_manager != null)
         {
-            await _manager.DisposeAsync();
+            // Bounded: an unbounded teardown turns one stalled test into an aborted run (#362).
+            await Wait.ForTeardownAsync(_manager, "the sub-agent manager under test");
         }
     }
 
