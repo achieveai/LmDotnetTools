@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace LmStreaming.Sample.Tests.Identity;
@@ -84,7 +85,8 @@ public sealed class IdentityMiddlewareTests
                         sp.GetRequiredService<ITenantStore>(),
                         sp.GetRequiredService<IAuditSink>(),
                         sp.GetRequiredService<IOptions<IdentityOptions>>(),
-                        TimeProvider.System));
+                        TimeProvider.System,
+                        sp.GetRequiredService<ILogger<PrincipalFactory>>()));
                 })
                 .Configure(app =>
                 {

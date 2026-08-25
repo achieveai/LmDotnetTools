@@ -72,15 +72,39 @@ export async function initializeIdentity(): Promise<void> {
     setAccessToken(token);
     status.value = 'signed-in';
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : String(error);
-    status.value = 'error';
+    fail(error);
   }
 }
 
-/** Starts an interactive sign-in, for the button on the signed-out screen. */
+/**
+ * Moves the state machine to its terminal error state.
+ *
+ * Every path that can reject has to end up here rather than letting the rejection escape. The
+ * status has usually already been advanced to drive a spinner by the time something throws, and
+ * an escaping rejection leaves that spinner as the last thing the user ever sees - no reason
+ * shown, no way to retry, and no navigation coming to replace it.
+ */
+function fail(error: unknown): void {
+  errorMessage.value = error instanceof Error ? error.message : String(error);
+  status.value = 'error';
+}
+
+/**
+ * Starts an interactive sign-in, for the button on the signed-out screen.
+ *
+ * Never throws, for the same reason {@link initializeIdentity} does not: this is wired straight
+ * to a click handler, so a rejection would be unhandled.
+ */
 export async function startSignIn(): Promise<void> {
   status.value = 'signing-in';
-  await entraAuth.signIn();
+
+  try {
+    await entraAuth.signIn();
+  } catch (error) {
+    // signIn resolving means the browser is navigating away and the spinner is correct. It
+    // REJECTING means the redirect is not happening, so the spinner would never be replaced.
+    fail(error);
+  }
 }
 
 /** Resets every module-level ref. For tests only — the app initialises once and never tears down. */

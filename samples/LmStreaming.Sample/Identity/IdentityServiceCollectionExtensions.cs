@@ -123,24 +123,52 @@ public static class IdentityServiceCollectionExtensions
                 // drop those checks.
                 var inner = options.Events?.OnTokenValidated;
                 options.Events ??= new JwtBearerEvents();
-                options.Events.OnTokenValidated = async context =>
-                {
-                    if (inner is not null)
-                    {
-                        await inner(context).ConfigureAwait(false);
-                    }
-
-                    var factory = context.HttpContext.RequestServices
-                        .GetRequiredService<PrincipalFactory>();
-
-                    var resolution = await factory
-                        .ResolveInteractiveAsync(
-                            context.Principal!,
-                            context.HttpContext.TraceIdentifier,
-                            context.HttpContext.RequestAborted)
-                        .ConfigureAwait(false);
-
-                    context.HttpContext.Items[IdentityHttpItems.ResolutionKey] = resolution;
-                };
+                options.Events.OnTokenValidated = context => OnTokenValidatedAsync(context, inner);
             });
+    /// <summary>
+    /// Runs the inner <c>OnTokenValidated</c> first, then resolves our own principal and stashes it
+    /// for <see cref="IdentityMiddleware"/> to read.
+    /// </summary>
+    /// <remarks>
+    /// Extracted from the lambda so the short-circuit below can be tested directly: the branch that
+    /// matters is one that only fires when a dependency rejects a token, which is awkward to
+    /// provoke through a real handler.
+    /// </remarks>
+    internal static async Task OnTokenValidatedAsync(
+        TokenValidatedContext context,
+        Func<TokenValidatedContext, Task>? inner)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        if (inner is not null)
+        {
+            await inner(context).ConfigureAwait(false);
+        }
+
+        // Microsoft.Identity.Web installs its own OnTokenValidated, and its checks (issuer, app
+        // roles, scopes) report failure by calling context.Fail(), which sets context.Result and
+        // returns - it does NOT throw and does NOT clear context.Principal.
+        //
+        // Continuing past that point would take the claims from a token our own dependency just
+        // rejected, build a Principal from them, and stash it. IdentityMiddleware admits a request
+        // on the presence of that stashed resolution alone - no controller here carries
+        // [Authorize] - so the rejection would be computed and then ignored. That is an auth
+        // bypass, so the failure has to end this handler.
+        if (context.Result is not null)
+        {
+            return;
+        }
+
+        var factory = context.HttpContext.RequestServices.GetRequiredService<PrincipalFactory>();
+
+        var resolution = await factory
+            .ResolveInteractiveAsync(
+                context.Principal!,
+                context.HttpContext.TraceIdentifier,
+                context.HttpContext.RequestAborted)
+            .ConfigureAwait(false);
+
+        context.HttpContext.Items[IdentityHttpItems.ResolutionKey] = resolution;
+    }
+
 }

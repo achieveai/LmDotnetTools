@@ -205,6 +205,22 @@ installs. Configuration files get copied between environments, and a stale entry
 real tenant in an enforcing deployment would defeat explicit provisioning through its own
 convenience feature.
 
+### `Identity:Enforce` gives you authentication, NOT yet authorization
+
+Read this before turning it on anywhere real.
+
+With `Identity:Enforce` true, every `/api` request must carry a valid token from a **provisioned**
+tenant. That is the whole of what slice 1 delivers. It does **not** filter any data by tenant.
+`IResourceAccessPolicy` is a contract with no implementation yet, no controller consults it, and
+`ConversationsController` does not read the `Principal` at all.
+
+So a signed-in user from tenant A can still reach conversations and workspaces belonging to
+tenant B, exactly as before this change. What `Enforce` buys today is that anonymous callers are
+turned away and every request is attributable in the audit trail — a front door, not a partition.
+
+Per-tenant and per-owner access checks land in slice 2 (#302). Do not read "identity is enforced"
+as "tenant data is isolated" until that ships.
+
 ### Recommended flip order
 
 1. Register the Entra app, set `AzureAd:ClientId`; leave `Identity:Enforce` false. Sign-in now

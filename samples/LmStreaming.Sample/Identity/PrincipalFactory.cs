@@ -40,6 +40,7 @@ public sealed class PrincipalFactory
         ClaimTypes.Email,
     ];
 
+    private readonly ILogger<PrincipalFactory> _logger;
     private readonly ITenantStore _tenantStore;
     private readonly IAuditSink _auditSink;
     private readonly IOptions<IdentityOptions> _options;
@@ -51,17 +52,21 @@ public sealed class PrincipalFactory
     /// <param name="auditSink">Receives one record per sign-in outcome.</param>
     /// <param name="options">Identity configuration.</param>
     /// <param name="timeProvider">Clock used for admin binding and rejection deduplication.</param>
+    /// <param name="logger">Records the detail of a tenant-directory outage.</param>
     public PrincipalFactory(
         ITenantStore tenantStore,
         IAuditSink auditSink,
         IOptions<IdentityOptions> options,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        ILogger<PrincipalFactory> logger)
     {
         ArgumentNullException.ThrowIfNull(tenantStore);
         ArgumentNullException.ThrowIfNull(auditSink);
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(timeProvider);
+        ArgumentNullException.ThrowIfNull(logger);
 
+        _logger = logger;
         _tenantStore = tenantStore;
         _auditSink = auditSink;
         _options = options;
@@ -130,6 +135,56 @@ public sealed class PrincipalFactory
                 correlationId);
         }
 
+        try
+        {
+            return await ResolveAgainstDirectoryAsync(
+                    entraTenantId,
+                    objectId,
+                    upn,
+                    jti,
+                    correlationId,
+                    ct)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // The token is fine; the tenant DIRECTORY is unreadable. Letting this escape would
+            // fail token validation, which the JwtBearer handler answers with 401 - and a 401 is
+            // the one answer a browser responds to by signing in AGAIN. The token it comes back
+            // with is just as valid as this one, so the outage would become an infinite redirect
+            // loop against Entra. 503 says the server is unwell, which signing in cannot fix.
+            _logger.LogError(
+                ex,
+                "Tenant directory unreadable while resolving a sign-in for {ClaimedEntraTenantId}; "
+                    + "answering {StatusCode}.",
+                entraTenantId,
+                StatusCodes.Status503ServiceUnavailable);
+
+            return Reject(
+                PrincipalResolution.IdentityUnavailable,
+                StatusCodes.Status503ServiceUnavailable,
+                entraTenantId,
+                objectId,
+                upn,
+                jti,
+                resolvedTenantId: null,
+                correlationId);
+        }
+    }
+
+    /// <summary>
+    /// The half of interactive resolution that reads the tenant directory. Split out so its caller
+    /// can turn a store outage into a refusal without also wrapping the claim parsing above, where
+    /// an exception would mean a genuine bug rather than an outage.
+    /// </summary>
+    private async Task<PrincipalResolution> ResolveAgainstDirectoryAsync(
+        string entraTenantId,
+        string objectId,
+        string? upn,
+        string? jti,
+        string? correlationId,
+        CancellationToken ct)
+    {
         var tenant = await _tenantStore.FindByEntraTenantIdAsync(entraTenantId, ct).ConfigureAwait(false);
 
         if (tenant is null)

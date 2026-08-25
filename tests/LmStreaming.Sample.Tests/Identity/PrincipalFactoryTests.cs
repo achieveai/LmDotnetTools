@@ -3,6 +3,7 @@ using System.Security.Claims;
 using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using LmStreaming.Sample.Identity;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
@@ -26,6 +27,38 @@ internal sealed class RecordingAuditSink : IAuditSink
     public void Write(AuthorizationAuditRecord record) => Authorizations.Add(record);
 
     public void Write(AdministrationAuditRecord record) => Administrations.Add(record);
+}
+
+/// <summary>
+/// A tenant store whose backing database is unavailable. Every member throws, because an outage
+/// does not politely restrict itself to the one call a test happens to exercise.
+/// </summary>
+internal sealed class UnavailableTenantStore : ITenantStore
+{
+    public const string Message = "database is locked";
+
+    private static InvalidOperationException Fail() => new(Message);
+
+    public Task<TenantRecord?> FindByEntraTenantIdAsync(string entraTenantId, CancellationToken ct = default) =>
+        throw Fail();
+
+    public Task<TenantRecord?> FindByTenantIdAsync(string tenantId, CancellationToken ct = default) =>
+        throw Fail();
+
+    public Task<TenantProvisionOutcome> ProvisionAsync(
+        TenantRecord tenant,
+        string firstAdminUpn,
+        CancellationToken ct = default) => throw Fail();
+
+    public Task<bool> TryBindFirstAdminAsync(
+        string tenantId,
+        string upn,
+        string userId,
+        DateTimeOffset boundAt,
+        CancellationToken ct = default) => throw Fail();
+
+    public Task<bool> IsTenantAdminAsync(string tenantId, string userId, CancellationToken ct = default) =>
+        throw Fail();
 }
 
 /// <summary>
@@ -90,7 +123,15 @@ public sealed class PrincipalFactoryTests : IAsyncLifetime
     }
 
     private PrincipalFactory CreateFactory(IdentityOptions? options = null) =>
-        new(_store, _audit, Options.Create(options ?? new IdentityOptions()), _time);
+        CreateFactory(_store, options);
+
+    private PrincipalFactory CreateFactory(ITenantStore store, IdentityOptions? options = null) =>
+        new(
+            store,
+            _audit,
+            Options.Create(options ?? new IdentityOptions()),
+            _time,
+            NullLogger<PrincipalFactory>.Instance);
 
     private static ClaimsPrincipal Token(
         string? tid = EntraTenant,
@@ -369,4 +410,34 @@ public sealed class PrincipalFactoryTests : IAsyncLifetime
         var value = await command.ExecuteScalarAsync();
         return value is null or DBNull ? null : Convert.ToInt64(value, CultureInfo.InvariantCulture);
     }
+    [Fact]
+    public async Task AnUnreachableTenantStore_IsRefusedAsUnavailableRatherThanAsABadToken()
+    {
+        // The token here is perfectly good; it is the tenant DIRECTORY that cannot be read. If that
+        // surfaces as an authentication failure, the JwtBearer handler answers 401, the SPA reads
+        // 401 as "not signed in" and starts sign-in again, Entra returns the same good token, and
+        // the outage becomes an infinite redirect loop against the identity provider - the exact
+        // failure this design refuses everywhere else. It has to be a 503: a statement that the
+        // SERVER is unwell, which no amount of signing in again can fix.
+        var factory = CreateFactory(new UnavailableTenantStore(), new IdentityOptions { Enforce = true });
+
+        var resolution = await factory.ResolveInteractiveAsync(Token(), "trace-unavailable");
+
+        Assert.True(resolution.IsRejected);
+        Assert.Equal("identity_unavailable", resolution.Code);
+        Assert.Equal(StatusCodes.Status503ServiceUnavailable, resolution.StatusCode);
+    }
+
+    [Fact]
+    public async Task AnUnreachableTenantStore_IsAuditedSoTheOutageIsVisible()
+    {
+        var factory = CreateFactory(new UnavailableTenantStore(), new IdentityOptions { Enforce = true });
+
+        _ = await factory.ResolveInteractiveAsync(Token(), "trace-unavailable");
+
+        var record = _audit.Authentications.Should().ContainSingle().Subject;
+        _ = record.Outcome.Should().Be(AuthenticationOutcome.Rejected);
+        _ = record.Reason.Should().Be("identity_unavailable");
+    }
+
 }

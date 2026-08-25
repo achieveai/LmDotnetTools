@@ -60,4 +60,10 @@ public sealed record PrincipalResolution
 
     /// <summary>The token validated but carried no usable <c>tid</c>/<c>oid</c> pair.</summary>
     public const string InvalidToken = "invalid_token";
+
+    /// <summary>
+    /// The tenant directory could not be read. Distinct from every other code here: it says
+    /// nothing about the caller, who should retry the SAME token later rather than sign in again.
+    /// </summary>
+    public const string IdentityUnavailable = "identity_unavailable";
 }

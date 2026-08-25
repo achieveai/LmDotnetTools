@@ -14,7 +14,7 @@ vi.mock('@/auth/entraAuth', () => ({
   reset: () => {},
 }));
 
-const { useIdentity, initializeIdentity, resetIdentityState } = await import(
+const { useIdentity, initializeIdentity, startSignIn, resetIdentityState } = await import(
   '@/composables/useIdentity'
 );
 const { getAccessToken, apiFetch, onApiRefusal } = await import('@/api/http');
@@ -187,5 +187,33 @@ describe('a whole-organisation refusal arriving on any api call', () => {
     await apiFetch('/api/conversations');
 
     expect(useIdentity().status.value).toBe('loading');
+  });
+});
+
+describe('startSignIn from the signed-out screen', () => {
+  it('reports a redirect that never happens instead of leaving the user on the spinner', async () => {
+    // loginRedirect can reject before the browser ever navigates - a network failure, a
+    // misconfigured app registration, a blocked redirect. The status was already moved to
+    // 'signing-in' to drive the spinner, so if the rejection escapes, that spinner is the last
+    // thing the user ever sees: no error, no retry, and the page is not going anywhere.
+    signIn.mockRejectedValue(new Error('redirect_uri mismatch'));
+
+    await startSignIn();
+
+    const { status, errorMessage } = useIdentity();
+    expect(status.value).toBe('error');
+    expect(errorMessage.value).toBe('redirect_uri mismatch');
+  });
+
+  it('leaves the spinner up when the redirect is actually under way', async () => {
+    // The success path must NOT be turned into an error state: signIn resolving means the
+    // browser is navigating away, and 'signing-in' is the correct thing to render until it does.
+    signIn.mockResolvedValue(undefined);
+
+    await startSignIn();
+
+    const { status, errorMessage } = useIdentity();
+    expect(status.value).toBe('signing-in');
+    expect(errorMessage.value).toBeNull();
   });
 });
