@@ -24,16 +24,16 @@ using Microsoft.AspNetCore.Mvc.Filters;
 namespace LmStreaming.Sample.Controllers;
 
 /// <summary>
-/// Inbound S2S auth guard for <see cref="ConversationsController"/> (issue #153 M2; see
-/// <c>decisions.md</c> #1/#2 and the plan's Step 10). Implemented directly as an attribute filter:
+/// Inbound S2S auth guard for <see cref="ConversationsController"/> (issue #153 M2). Implemented
+/// directly as an attribute filter:
 /// ASP.NET Core's default filter provider recognizes any controller/action attribute that implements
 /// <see cref="IAsyncActionFilter"/> and runs it as-is — no <c>IFilterFactory</c>, no constructor DI,
 /// no Program.cs registration required — so applying <c>[InboundS2SAuth]</c> on the controller is
 /// entirely self-contained in this file.
 /// <para>
 /// The shared secret is read fresh on every request from <c>Auth:S2SInboundSecret</c> via
-/// <see cref="HttpContext.RequestServices"/> — no caching, matching the decision log's "per-request
-/// constant-time validation" (BS3). Operators set it via the flat env var
+/// <see cref="HttpContext.RequestServices"/> — no caching, matching the "per-request constant-time
+/// validation" design. Operators set it via the flat env var
 /// <c>LMSTREAMING_S2S_INBOUND_SECRET</c>, which <c>Program.cs</c> bridges into
 /// <c>Auth:S2SInboundSecret</c> at startup (the flat name does NOT bind to that section key through
 /// the standard env-var provider on its own — only <c>Auth__S2SInboundSecret</c> would). When the
@@ -54,8 +54,14 @@ namespace LmStreaming.Sample.Controllers;
 /// <c>docs/deployment/AUTH_ENFORCE.md</c>. The comparison is constant-time
 /// (<see cref="CryptographicOperations.FixedTimeEquals"/> over a SHA-256 digest of each side) — the
 /// same shape as <c>AuthSharedSecret</c>, but deliberately NOT that instance: the S2S inbound secret
-/// is a separate trust boundary from the gateway/webhook shared secret it guards (decisions.md #1).
+/// is a separate trust boundary from the gateway/webhook shared secret it guards.
 /// Neither the configured secret nor the presented header value is ever logged or echoed in the response.
+/// </para>
+/// <para>
+/// This doc used to cite a <c>decisions.md</c> file (items #1/#2, tag "BS3", and "the plan's Step
+/// 10") for the design rationale above. No such file exists, and none ever did — it was a local
+/// planning scratchpad kept during the #153 M2 session and never committed, so it is not
+/// recoverable. The citations are dropped rather than left dangling; see #315.
 /// </para>
 /// </summary>
 [AttributeUsage(AttributeTargets.Class)]

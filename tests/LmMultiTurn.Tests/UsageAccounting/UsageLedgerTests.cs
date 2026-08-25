@@ -121,6 +121,84 @@ public class UsageLedgerTests
     }
 
     [Fact]
+    public void UpsertAttempt_StampsPublicEstimateProvenance_WhenResolverFillsCost()
+    {
+        var ledger = new UsageLedger(
+            "conv-1",
+            new StubResolver("model-A", promptPerMillion: 2m, completionPerMillion: 8m));
+
+        var merged = ledger.UpsertAttempt(Obs("a1", "model-A", input: 1000, output: 500));
+
+        merged.CostProvenance.Should().Be(CostProvenance.PublicEstimate);
+    }
+
+    [Fact]
+    public void UpsertAttempt_DoesNotDowngradeProviderReportedProvenance_WhenResolverAlsoFillsAnEstimate()
+    {
+        var ledger = new UsageLedger(
+            "conv-1",
+            new StubResolver("model-A", promptPerMillion: 2m, completionPerMillion: 8m));
+        var withProviderCost = Obs("a1", "model-A", input: 1000, output: 500) with
+        {
+            ProviderReportedCostMicros = 5000,
+            CostProvenance = CostProvenance.ProviderReported,
+        };
+
+        var merged = ledger.UpsertAttempt(withProviderCost);
+
+        // The resolver still fills EstimatedPublicCostMicros (kept for comparison), but provenance must
+        // stay ProviderReported — the ground truth, not the estimate that happened to run afterwards (#367).
+        merged.EstimatedPublicCostMicros.Should().Be(6000);
+        merged.ProviderReportedCostMicros.Should().Be(5000);
+        merged.CostProvenance.Should().Be(CostProvenance.ProviderReported);
+    }
+
+    [Fact]
+    public void UpsertAttempt_MergesCostProvenance_ByHigherInformationValue()
+    {
+        var ledger = new UsageLedger("conv-1");
+
+        // First observation carries no cost info; second carries a provider-reported figure. The merged
+        // record must adopt the higher-information provenance regardless of arrival order (#367).
+        ledger.UpsertAttempt(Obs("a1", "model-A", input: 40, output: 0));
+        var merged = ledger.UpsertAttempt(
+            Obs("a1", "model-A", input: 100, output: 55, finalized: true) with
+            {
+                ProviderReportedCostMicros = 7000,
+                CostProvenance = CostProvenance.ProviderReported,
+            });
+
+        merged.CostProvenance.Should().Be(CostProvenance.ProviderReported);
+        merged.ProviderReportedCostMicros.Should().Be(7000);
+    }
+
+    [Fact]
+    public void UpsertAttempt_MergesCostProvenance_ByHigherInformationValue_ReverseOrder()
+    {
+        // The companion of the test above, with arrival order reversed: the FIRST observation carries the
+        // provider-reported figure and the SECOND carries no cost info at all. A last-wins merge (taking
+        // the incoming observation's provenance unconditionally, the way every OTHER field here does NOT)
+        // would silently downgrade this to Unavailable and still pass the forward-order test above, which
+        // puts ProviderReported second and so cannot distinguish "higher wins" from "last wins". This is
+        // the case that can (#367).
+        var ledger = new UsageLedger("conv-1");
+
+        ledger.UpsertAttempt(
+            Obs("a1", "model-A", input: 100, output: 55) with
+            {
+                ProviderReportedCostMicros = 7000,
+                CostProvenance = CostProvenance.ProviderReported,
+            });
+        var merged = ledger.UpsertAttempt(
+            Obs("a1", "model-A", input: 100, output: 55, finalized: true));
+
+        merged.CostProvenance.Should().Be(
+            CostProvenance.ProviderReported,
+            "a later observation carrying no cost info must not erase an already-known provider-reported provenance");
+        merged.ProviderReportedCostMicros.Should().Be(7000);
+    }
+
+    [Fact]
     public void SeedFromRecords_RestoresTotals_DedupsSeededAttempts_AndContinuesWatermark()
     {
         var original = new UsageLedger("conv-1");

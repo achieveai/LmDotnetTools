@@ -154,6 +154,11 @@ public static class ConversationUsageProjection
                 continue;
             }
 
+            // Whole-record, not per-field: the higher-Revision record wins entirely (only OccurredAtUtc is
+            // patched below), so every field it carries — including CostProvenance — travels together with
+            // the cost it describes. A future field that needs a different merge rule belongs in
+            // UsageLedger.Merge, which already merges CostProvenance per-field (higher-information wins,
+            // not last-wins) rather than here, where records collapse whole.
             var winner = record.Revision >= existing.Revision ? record : existing;
             byAttempt[record.ProviderAttemptId] = winner with
             {

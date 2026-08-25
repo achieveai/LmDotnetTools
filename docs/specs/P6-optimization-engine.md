@@ -1283,16 +1283,20 @@ Three facts the implementer must know, because they change what §7 can be built
    `IConversationStore.UpdateMetadataAsync`. Reading it for analysis means reading the conversation
    store, not joining a table — which is one more reason §6.1 denormalizes cost into
    `experiment_record`.
-2. **Dollar estimation is dead code in practice.** `IPricingResolver`
+2. **Dollar estimation is no longer dead code, but only where a host asks for it.** `IPricingResolver`
    (`src/LmCore/Models/ModelPricing.cs:46`) has exactly one implementation,
-   `PricingConfigResolver` (`src/LmConfig/Pricing/PricingConfigResolver.cs:12`), and **nothing in the
-   repo ever constructs it** — `MultiTurnAgentLoop`'s `IPricingResolver? pricingResolver = null`
-   parameter is never supplied. So `EstimatedPublicCostMicros` is always null today and only
-   `ProviderReportedCostMicros` is populated, from `UsageMessage.Usage.TotalCost` via
+   `PricingConfigResolver` (`src/LmConfig/Pricing/PricingConfigResolver.cs:12`); PR #365 registered it
+   via `TryAddSingleton` in `RegisterLmConfigServices`
+   (`src/LmConfig/Services/ServiceCollectionExtensions.cs:220`), and `LmStreaming.Sample/Program.cs:731,1969`
+   resolves it and passes it into `MultiTurnAgentLoop`'s `pricingResolver` parameter. Any host that does
+   not resolve `IPricingResolver` from DI and pass it through still leaves that parameter `null`, so
+   `EstimatedPublicCostMicros` is still always null there and only `ProviderReportedCostMicros` is
+   populated, from `UsageMessage.Usage.TotalCost` via
    `UsageRecordMapper.ToMicros` (`src/LmMultiTurn/UsageAccounting/UsageRecordMapper.cs:72`).
-   **Slice #321 must wire `PricingConfigResolver` from `src/LmConfig/docs/models.json`** or every
-   experiment row for a provider that does not self-report cost carries
-   `cost_provenance = Unavailable`, and #322 has nothing to optimize against.
+   **Slice #321 must confirm every host that produces `experiment_record` rows resolves and passes
+   `IPricingResolver`** or every experiment row from a host that skips this, for a provider that does
+   not self-report cost, carries `cost_provenance = Unavailable`, and #322 has nothing to optimize
+   against.
 3. **There is no per-effort attribution.** `UsageRecord` has no reasoning-effort field, and neither
    does `ModelUsageRow`. Effort exists at `SubAgentCharacteristics.Effort`
    (`src/LmMultiTurn/SubAgents/SubAgentCharacteristics.cs:10`) and in the daemon's options, but it is

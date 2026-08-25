@@ -115,12 +115,6 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// the tool-assisted store path; the single-repo path clones straight into <see cref="TargetRoot"/>.</summary>
     private const string StoreRoot = "/workspace/store";
 
-    /// <summary>Where the hosted (S2S) review sees its checkout: LmStreaming's gateway mounts a workspace's
-    /// directory at the container workspace root, so the leaf the preparer cloned into is <c>/workspace</c>
-    /// from inside the review conversation — NOT <see cref="TargetRoot"/>, which is the daemon's own per-run
-    /// clone path.</summary>
-    private const string S2SCheckoutRoot = "/workspace";
-
     /// <summary>The container mount point the leased pool slot is exposed at (design §4.1): the slot's
     /// <c>store/</c> child is <see cref="StoreRoot"/> and its <c>scratch/</c> child is a sibling outside the
     /// git tree. The daemon's host-side git operates on the slot's HOST paths; the review agent's MCP tools
@@ -619,57 +613,6 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             "Run {RunId}: persisted {Kind} ({Length} char diff, {Files} manifest files) from {TargetDir} (store={Store}).",
             run.Id, ContextArtifactKind, boundedDiff.Length, ManifestFileCount(fileManifest),
             layout.TargetDir, layout.StoreRoot ?? "(single-repo)");
-    }
-
-    /// <summary>
-    /// The S2S ContextReady phase: ensure this run's LmStreaming workspace (which host-clones the PR checkout
-    /// under the shared gateway base), then take the bounded diff + file manifest from that same clone with the
-    /// preparer's host git. The persisted <c>TargetDir</c> is the <b>container</b> root the hosted agent sees —
-    /// a gateway-mounted workspace lands at <see cref="S2SCheckoutRoot"/> — not this host path, so the prompt's
-    /// <c>checkout_root</c> names a directory that exists for the agent reading it.
-    /// </summary>
-    private async Task FetchContextFromPreparedCheckoutAsync(
-        ReviewRun run, RepoIdentity repo, string provider, CancellationToken cancellationToken)
-    {
-        var prepared = await EnsurePreparedAsync(run, repo, provider, cancellationToken).ConfigureAwait(false)
-            ?? throw new InvalidOperationException(
-                $"Run {run.Id}: the S2S review workspace was not prepared (no preparer wired).");
-
-        var git = _preparer!.HostGit;
-        var diff = await git
-            .RunAsync(
-                ["-C", prepared.HostDir, "diff", $"{run.BaseSha}...{run.HeadSha}"],
-                prepared.HostDir,
-                cancellationToken)
-            .ConfigureAwait(false);
-        if (!diff.Succeeded)
-        {
-            throw new InvalidOperationException(
-                $"Fetching the diff for run {run.Id} from the prepared S2S checkout failed "
-                + $"(exit {diff.ExitCode}): {diff.Stderr}");
-        }
-
-        var boundedDiff = _options.Limits.CapArtifactPayload(diff.Stdout);
-        var fileManifest = await BuildFileManifestAsync(git, prepared.HostDir, cancellationToken).ConfigureAwait(false);
-        var changedPaths = await BuildChangedPathsAsync(git, prepared.HostDir, run, cancellationToken)
-            .ConfigureAwait(false);
-
-        _ = _store.AddArtifact(new ReviewArtifact
-        {
-            ReviewRunId = run.Id,
-            ArtifactSchemaVersion = ContextArtifactSchemaVersion,
-            ArtifactKind = ContextArtifactKind,
-            Provider = provider,
-            Payload = JsonSerializer.Serialize(new ContextArtifactPayload(
-                run.PrId, run.BaseSha, run.HeadSha, boundedDiff, fileManifest, S2SCheckoutRoot, null,
-                changedPaths)),
-        });
-
-        _logger.LogInformation(
-            "Run {RunId}: persisted {Kind} ({Length} char diff, {Files} manifest files) from the prepared S2S "
-                + "checkout {HostDir} (the hosted agent reads it at {ContainerRoot}).",
-            run.Id, ContextArtifactKind, boundedDiff.Length, ManifestFileCount(fileManifest),
-            prepared.HostDir, S2SCheckoutRoot);
     }
 
     /// <summary>Whether the pooled scoped-writable review path is wired and enabled: tool-assisted +

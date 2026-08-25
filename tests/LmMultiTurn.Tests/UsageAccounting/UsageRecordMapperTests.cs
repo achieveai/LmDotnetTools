@@ -42,6 +42,30 @@ public class UsageRecordMapperTests
     }
 
     [Fact]
+    public void FromUsageMessage_StampsProviderReportedProvenance_WhenProviderCostPresent()
+    {
+        var usage = new Usage { PromptTokens = 100, CompletionTokens = 40, TotalCost = 0.01 };
+        var message = new UsageMessage { Usage = usage, GenerationId = "gen-1" };
+
+        var record = UsageRecordMapper.FromUsageMessage(message, "root", UsageExecutionKind.Primary, "model-A");
+
+        record.ProviderReportedCostMicros.Should().Be(10_000);
+        record.CostProvenance.Should().Be(CostProvenance.ProviderReported);
+    }
+
+    [Fact]
+    public void FromUsageMessage_StampsUnavailableProvenance_WhenNoProviderCost()
+    {
+        var usage = new Usage { PromptTokens = 100, CompletionTokens = 40 };
+        var message = new UsageMessage { Usage = usage, GenerationId = "gen-1" };
+
+        var record = UsageRecordMapper.FromUsageMessage(message, "root", UsageExecutionKind.Primary, "model-A");
+
+        record.ProviderReportedCostMicros.Should().BeNull();
+        record.CostProvenance.Should().Be(CostProvenance.Unavailable);
+    }
+
+    [Fact]
     public void CacheCreationTokens_FoldAdditively_IntoAggregateTotal()
     {
         var ledger = new UsageLedger("root");

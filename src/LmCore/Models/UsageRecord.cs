@@ -145,6 +145,20 @@ public sealed record UsageRecord
     /// <summary>ISO currency code for the cost figures.</summary>
     public string Currency { get; init; } = "USD";
 
+    /// <summary>
+    ///     Which source produced a RESOLVED (non-null) cost, when one exists (issue #367):
+    ///     <see cref="CostProvenance.ProviderReported" /> when the provider supplied the figure,
+    ///     <see cref="CostProvenance.PublicEstimate" /> when a pricing resolver filled it in — never
+    ///     downgrading an existing provider-reported provenance. Stamped where cost is resolved.
+    /// </summary>
+    /// <remarks>
+    ///     <see cref="CostProvenance.Unavailable" /> does NOT further distinguish "no pricing known for
+    ///     this model" from "the provider reports none" from "nothing ever tried to estimate it" — all
+    ///     three collapse to the same value today. This field answers "which source, given a cost", not
+    ///     "why is there no cost"; the latter would need its own field if a consumer ever needs it.
+    /// </remarks>
+    public CostProvenance CostProvenance { get; init; } = CostProvenance.Unavailable;
+
     // --- Finalization ---
 
     /// <summary>True once the terminal (final accumulated) usage for this attempt has been observed.</summary>

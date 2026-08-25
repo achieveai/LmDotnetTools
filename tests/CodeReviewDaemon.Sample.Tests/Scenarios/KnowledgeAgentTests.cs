@@ -181,6 +181,38 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task TryExtractAsync_RegeneratesToc_WithPathFallback_ForAPreExistingBlankTitleEntry()
+    {
+        // A hand-authored (or legacy, pre-dating a title-required rule) entry can carry a blank frontmatter
+        // title. Any regen walks every entry file under the KB — including ones this run never touched — so
+        // _toc.md must not render an empty link label for it (issue #259, the write-side twin of #256).
+        var fs = new FakeSandboxFileSystem();
+        fs.Files[KbDir + "/system/blank-title.md"] =
+            "---\n"
+            + "title: \n"
+            + "tags: []\n"
+            + "scope: system\n"
+            + "sourcePrs: []\n"
+            + "updated: 2026-01-01\n"
+            + "---\n\n"
+            + "Some pre-existing lesson.\n";
+        var agent = AgentReturning(
+            "## SCOPE: system\n"
+            + "## TITLE: Null Checks\n\n"
+            + "Always null-check external inputs before dereferencing them.");
+
+        var result = await Knowledge(agent, fs).TryExtractAsync(
+            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
+        fs.Files[KbDir + "/_toc.md"].Should().Contain(
+            "- [system/blank-title.md](system/blank-title.md)",
+            "a blank frontmatter title must fall back to the path rather than render an empty link label");
+        fs.Files[KbDir + "/_toc.md"].Should().NotContain(
+            "- [](system/blank-title.md)", "an empty link label gives the reader nothing to read");
+    }
+
+    [Fact]
     public async Task TryExtractAsync_updates_the_named_entry_and_merges_sourcePrs()
     {
         var fs = new FakeSandboxFileSystem();

@@ -157,9 +157,20 @@ public sealed class UsageLedger : IUsageSink
         }
 
         var pricing = _pricingResolver.Resolve(record.EffectiveModelId);
-        return pricing is null
-            ? record
-            : record with { EstimatedPublicCostMicros = pricing.EstimateMicros(record.InputTokens, record.OutputTokens) };
+        if (pricing is null)
+        {
+            return record;
+        }
+
+        return record with
+        {
+            EstimatedPublicCostMicros = pricing.EstimateMicros(record.InputTokens, record.OutputTokens),
+            // A provider-reported figure is the ground truth for provenance; filling in a public estimate
+            // alongside it (kept for comparison) must not downgrade that.
+            CostProvenance = record.CostProvenance == CostProvenance.ProviderReported
+                ? record.CostProvenance
+                : CostProvenance.PublicEstimate,
+        };
     }
 
     private static UsageRecord Merge(UsageRecord? existing, UsageRecord observation)
@@ -180,6 +191,10 @@ public sealed class UsageLedger : IUsageSink
                 MaxNullable(existing.EstimatedPublicCostMicros, observation.EstimatedPublicCostMicros),
             ProviderReportedCostMicros =
                 MaxNullable(existing.ProviderReportedCostMicros, observation.ProviderReportedCostMicros),
+            // Higher-information provenance wins: the enum is ordered Unavailable < PublicEstimate <
+            // ProviderReported, so the max ordinal is the more-informative value — mirroring the MaxNullable
+            // cost merges above rather than defaulting to the incoming (last) observation (#367).
+            CostProvenance = (CostProvenance)Math.Max((int)existing.CostProvenance, (int)observation.CostProvenance),
             // First-wins, NOT the record-with default of taking the incoming (last) value: a cumulative
             // stream re-observes one attempt many times, so last-wins would stamp when the final chunk
             // arrived rather than when the attempt happened — misfiling an attempt that straddles a UTC-day
