@@ -58,10 +58,25 @@ public sealed class JudgeAgentTests : LoggingTestBase
         judge.Provider.Should().Be(Provider);
         judge.ArtifactSchemaVersion.Should().Be(JudgeAgent.JudgeArtifactSchemaVersion);
 
-        // AC#7: the payload carries EXACTLY score, rationale, variant_id — nothing more.
+        // AC#7 remains a CLOSED payload: an exact set, not a minimum. The set grew once, to
+        // schema v2's provenance (P6 §6.3), and the enumeration is spelled out so any further
+        // field — a routing hint, a skill id, anything that could turn a recorded verdict into an
+        // input — fails here rather than arriving quietly.
         using var payload = JsonDocument.Parse(judge.Payload);
         var properties = payload.RootElement.EnumerateObject().Select(p => p.Name).ToList();
-        properties.Should().HaveCount(3);
+        properties
+            .Should()
+            .BeEquivalentTo(
+                [
+                    "Score",
+                    "Rationale",
+                    "VariantId",
+                    "JudgeModelId",
+                    "GeneratorModelId",
+                    "SelfGraded",
+                    "BallotCount",
+                ]
+            );
         ReadInt(payload, "Score").Should().Be(8);
         ReadString(payload, "Rationale").Should().Be("Thorough; caught the null deref.");
         ReadString(payload, "VariantId").Should().Be("b");
@@ -115,8 +130,10 @@ public sealed class JudgeAgentTests : LoggingTestBase
             CancellationToken.None
         );
 
-        // A malformed verdict defaults to score 0 with the raw text as the rationale — still persisted.
-        verdict.Score.Should().Be(0);
+        // A malformed verdict carries NO score, with the raw text as the rationale — still persisted.
+        // v1 invented a 0 here, which is a legitimate worst grade under this rubric and therefore
+        // indistinguishable after the fact from a judge that read the review and hated it.
+        verdict.Score.Should().BeNull();
         verdict.Rationale.Should().Be("I could not produce a structured verdict.");
         store.GetArtifacts(reviewRunId).Should().ContainSingle();
     }

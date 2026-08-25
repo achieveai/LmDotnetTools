@@ -3048,18 +3048,38 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // the S2S factory still requires a workspaceId to provision the hosted conversation.
         var judgeWorkspace = await EnsurePreparedAsync(run, repo, provider, cancellationToken)
             .ConfigureAwait(false);
-        // TODO(#322): judge shares the generator's model — self-preference, see P6 §3.2.
-        // Left as-is on purpose: swapping the judge model changes what the scores mean, which is a
-        // behaviour change. It is why the Candidate built in JudgeAgent sets no GeneratorFamily —
-        // there is no second family here to exclude, and claiming one would assert an independence
-        // that does not hold.
+        // The judge runs on JudgeModelId when one is configured, and on the reviewer's own model
+        // when none is. Unconfigured is still self-preference (P6 §3.2) and the warning below says
+        // so, but it stays the default deliberately: swapping the judge model changes what every
+        // score this daemon has recorded means, and #322 owns that behaviour change along with the
+        // model-tier rules of §7.1. What is no longer left implicit is WHICH model graded — the
+        // artifact records both sides, because §3.2's axis cannot be recovered retrospectively.
+        var judgeModelId = string.IsNullOrWhiteSpace(_options.JudgeModelId)
+            ? run.ModelId
+            : _options.JudgeModelId;
+
+        if (string.Equals(judgeModelId, run.ModelId, StringComparison.Ordinal))
+        {
+            _logger.LogWarning(
+                "Review run {ReviewRunId} is being graded by its own generator {ModelId}; the score "
+                    + "carries self-preference bias and is not an independent signal. Set "
+                    + "CodeReviewDaemon:JudgeModelId to a model from another family.",
+                run.Id,
+                run.ModelId);
+        }
+
         await using var loop = _loopFactory.Create(
-            profile, run.ModelId, ThreadId(run, DaemonAgentFactory.JudgeProfileId), reviewWorkspace: judgeWorkspace);
+            profile, judgeModelId, ThreadId(run, DaemonAgentFactory.JudgeProfileId), reviewWorkspace: judgeWorkspace);
         var judge = new JudgeAgent(loop, _store, _loggerFactory.CreateLogger<JudgeAgent>());
 
         var judgingInput = $"Grade this code review:\n\n{reviewText}";
         _ = await judge.JudgeAsync(
-            new JudgeRequest(run.Id, provider, run.VariantId, judgingInput), cancellationToken).ConfigureAwait(false);
+            new JudgeRequest(run.Id, provider, run.VariantId, judgingInput)
+            {
+                JudgeModelId = judgeModelId,
+                GeneratorModelId = run.ModelId,
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>True when the review's final text is the "nothing new to post" sentinel the prompt mandates

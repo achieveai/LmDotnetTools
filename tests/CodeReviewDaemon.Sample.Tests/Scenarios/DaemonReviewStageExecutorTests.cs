@@ -2279,7 +2279,11 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             IReviewCommentPublisher[]? publishersOverride = null) =>
             new(loggerFactory, "azure-devops", options, diffResult: null, publishersOverride, completionSource: null);
 
-        public ReviewRun SeedRun(string watermark = "wm-1", string mode = "collect-only", string? prAuthor = null)
+        public ReviewRun SeedRun(
+            string watermark = "wm-1",
+            string mode = "collect-only",
+            string? prAuthor = null,
+            string? modelId = null)
         {
             var repoId = Store.EnsureRepo(new RepoIdentity
             {
@@ -2303,6 +2307,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
                 WorkflowStatus = WorkflowStatus.Running,
                 PrLifecycleState = PrLifecycleState.Open,
                 PrAuthor = prAuthor,
+                ModelId = modelId,
             });
         }
 
@@ -2312,4 +2317,95 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             _db.Dispose();
         }
     }
+
+    /// <summary>
+    /// The judge loop was built on <c>run.ModelId</c> — the model that wrote the review being
+    /// graded — so the generator graded its own output and the score carried self-preference bias
+    /// rather than an independent signal. An operator can point the judge elsewhere now.
+    /// </summary>
+    [Fact]
+    public async Task Judged_runs_on_the_configured_judge_model_rather_than_the_reviewers()
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions
+            {
+                EnableJudgeAgent = true,
+                JudgeModelId = "anthropic/claude-opus-4",
+            });
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] =
+            "{\"score\": 8, \"rationale\": \"Solid.\"}";
+        var run = fixture.SeedRun(modelId: "openai/gpt-5");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+
+        JudgeModelIds(fixture).Should().ContainSingle().Which.Should().Be("anthropic/claude-opus-4");
+
+        var judge = fixture.Store
+            .GetArtifacts(run.Id)
+            .Should().ContainSingle(a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind).Subject;
+        using var payload = JsonDocument.Parse(judge.Payload);
+        payload.RootElement.GetProperty("SelfGraded").GetBoolean().Should().BeFalse();
+    }
+
+    /// <summary>
+    /// Unset, the judge still runs on the reviewer's model — swapping it by default would change
+    /// what every score this daemon has ever recorded means. What changes is that the row says so.
+    /// </summary>
+    [Fact]
+    public async Task Judged_without_a_configured_judge_model_grades_on_the_reviewers_and_records_it()
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions { EnableJudgeAgent = true });
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] =
+            "{\"score\": 8, \"rationale\": \"Solid.\"}";
+        var run = fixture.SeedRun(modelId: "openai/gpt-5");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+
+        var judge = fixture.Store
+            .GetArtifacts(run.Id)
+            .Should().ContainSingle(a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind).Subject;
+        using var payload = JsonDocument.Parse(judge.Payload);
+        JudgeModelIds(fixture).Should().ContainSingle().Which.Should().Be("openai/gpt-5");
+        payload.RootElement.GetProperty("SelfGraded").GetBoolean().Should().BeTrue();
+    }
+
+    /// <summary>
+    /// And when the run never recorded which model wrote the review — the loop falls back to the
+    /// factory's own default — the relation is <b>unknown</b>, not "no". Two unrecorded sides are
+    /// not evidence of a shared model, and a false here would read in an aggregate as a run the
+    /// judge was independent on.
+    /// </summary>
+    [Fact]
+    public async Task Judged_by_an_unrecorded_model_leaves_the_self_preference_relation_unknown()
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions { EnableJudgeAgent = true });
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.JudgeProfileId] =
+            "{\"score\": 8, \"rationale\": \"Solid.\"}";
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+
+        var judge = fixture.Store
+            .GetArtifacts(run.Id)
+            .Should().ContainSingle(a => a.ArtifactKind == JudgeAgent.JudgeArtifactKind).Subject;
+        using var payload = JsonDocument.Parse(judge.Payload);
+        payload.RootElement.GetProperty("SelfGraded").ValueKind.Should().Be(JsonValueKind.Null);
+    }
+
+    private static List<string?> JudgeModelIds(Fixture fixture) =>
+        [.. fixture.Factory.CreatedProfileIds
+            .Select((id, i) => (id, i))
+            .Where(p => p.id == DaemonAgentFactory.JudgeProfileId)
+            .Select(p => fixture.Factory.ModelIds[p.i])];
 }

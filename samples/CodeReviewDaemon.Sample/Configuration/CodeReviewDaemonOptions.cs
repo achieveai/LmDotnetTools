@@ -162,6 +162,21 @@ internal sealed class CodeReviewDaemonOptions
     public string KnowledgeModelId { get; init; } = "";
 
     /// <summary>
+    /// Model id the judge agent grades on. Empty (default) grades on the <b>reviewing run's own
+    /// model</b>, which is self-preference bias (P6 §3.2): the generator scores its own output and
+    /// the number carries no independent signal. It stays the default because swapping the judge
+    /// model changes what every score this daemon has already recorded means — a behaviour change
+    /// #322 owns — but the judge stage warns whenever it applies, and the persisted artifact records
+    /// which model graded and which model wrote, so the axis is measurable rather than lost.
+    /// <para>
+    /// Set it to a model from a <i>different family</i> than <see cref="ReviewModelId"/>, and at
+    /// least as capable: a cheaper verifier rubber-stamps, and resampling against an imperfect
+    /// verifier cannot reduce the false-positive rate at any compute budget (§7.2).
+    /// </para>
+    /// </summary>
+    public string JudgeModelId { get; init; } = "";
+
+    /// <summary>
     /// Model id for the collect-only A/B comparison (B) variant (<see cref="EnableABVariants"/>). Must be a
     /// model the configured backend accepts — the Copilot backend rejects OpenRouter-style slugs
     /// (e.g. <c>anthropic/claude-haiku-4-5</c>) with <c>model_not_supported</c>; its haiku id is
