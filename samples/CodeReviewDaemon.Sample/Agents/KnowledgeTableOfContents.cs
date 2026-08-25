@@ -60,7 +60,13 @@ internal static class KnowledgeTableOfContents
         var builder = new StringBuilder();
         foreach (var entry in entries)
         {
-            _ = builder.Append("- [").Append(entry.Title).Append("](").Append(entry.RelPath).Append(")\n");
+            // A blank title — legacy/hand-authored frontmatter, or one cleared for carrying an escaping
+            // link — falls back to the entry's own path, matching KnowledgeEntryMeta.EffectiveTitle on the
+            // read side (issue #259). Applied HERE, at the one place every entry is rendered, rather than
+            // at each caller that builds a KnowledgeEntry — so a future second caller cannot reintroduce
+            // the empty-link-label bug by forgetting the fallback.
+            var title = string.IsNullOrWhiteSpace(entry.Title) ? entry.RelPath : entry.Title;
+            _ = builder.Append("- [").Append(title).Append("](").Append(entry.RelPath).Append(")\n");
         }
 
         return builder.ToString();
