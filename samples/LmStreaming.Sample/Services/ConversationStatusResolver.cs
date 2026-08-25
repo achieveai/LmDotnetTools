@@ -115,7 +115,8 @@ public sealed class ConversationStatusResolver(IConversationStore conversationSt
 
     /// <summary>
     /// Derives the run's final response from persisted messages tagged with its run id — the single
-    /// source of truth (see plan decisions.md, "FinalResponse derivation"). Prefers the last
+    /// source of truth. (This doc used to cite a plan's <c>decisions.md</c>, "FinalResponse
+    /// derivation"; no such file exists or ever did — see #315.) Prefers the last
     /// assistant, non-thinking <see cref="TextMessage"/> the run produced: a run's own user-input
     /// echo and any provider thinking/reasoning trace are ALSO persisted as <see cref="TextMessage"/>
     /// under the same run id, so a bare <c>MessageType</c> match would wrongly surface the prompt or
