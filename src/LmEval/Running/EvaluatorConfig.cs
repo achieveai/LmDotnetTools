@@ -108,6 +108,7 @@ public sealed class EvaluatorConfig
         // and holding a second copy here is how the two would drift into disagreeing about which
         // configurations are legal. The gauntlet this config builds runs the same check.
         JudgePanel.ValidateConfiguration(judges, options.ArbiterJudge);
+        HarnessOptions.Validate(options, nameof(options));
 
         var arbiter = options.ArbiterJudge;
 

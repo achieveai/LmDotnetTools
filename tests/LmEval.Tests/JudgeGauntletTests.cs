@@ -57,6 +57,75 @@ public sealed class JudgeGauntletTests
         construct.Should().Throw<ArgumentException>();
     }
 
+    /// <summary>
+    /// Confidence is in [0,1], and AbstainFloor is compared straight against it. Writing the
+    /// default as a percentage — 34 rather than 0.34 — puts EVERY ballot below the floor, so every
+    /// candidate becomes NoDecision with a null score and an entire corpus run produces nothing and
+    /// reports success. The class doc already claims options are "validated once at construction".
+    /// </summary>
+    [Fact]
+    public void An_abstain_floor_written_as_a_percentage_throws_at_construction()
+    {
+        var construct = () =>
+            Gauntlet([], [new FakeJudge("a", "anthropic")], new HarnessOptions { AbstainFloor = 34 });
+
+        construct
+            .Should()
+            .Throw<ArgumentOutOfRangeException>()
+            .WithMessage("*confidence*");
+    }
+
+    /// <summary>The mirror image: a negative floor silently disables the filter entirely.</summary>
+    [Fact]
+    public void A_negative_abstain_floor_throws_at_construction()
+    {
+        var construct = () =>
+            Gauntlet(
+                [],
+                [new FakeJudge("a", "anthropic")],
+                new HarnessOptions { AbstainFloor = -1.0 }
+            );
+
+        construct.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void The_abstain_floor_may_sit_on_either_end_of_its_range()
+    {
+        var atZero = () =>
+            Gauntlet(
+                [],
+                [new FakeJudge("a", "anthropic")],
+                new HarnessOptions { AbstainFloor = 0.0 }
+            );
+        var atOne = () =>
+            Gauntlet(
+                [],
+                [new FakeJudge("a", "anthropic")],
+                new HarnessOptions { AbstainFloor = 1.0 }
+            );
+
+        atZero.Should().NotThrow();
+        atOne.Should().NotThrow();
+    }
+
+    /// <summary>
+    /// The alarm is compared against a population standard deviation, which is never negative, so
+    /// a negative bound is an alarm that fires on every verdict that has one at all.
+    /// </summary>
+    [Fact]
+    public void A_negative_dispersion_alarm_throws_at_construction()
+    {
+        var construct = () =>
+            Gauntlet(
+                [],
+                [new FakeJudge("a", "anthropic")],
+                new HarnessOptions { DispersionAlarm = -0.5 }
+            );
+
+        construct.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
     // ---- gates (§2.4) ------------------------------------------------------------------------
 
     /// <summary>

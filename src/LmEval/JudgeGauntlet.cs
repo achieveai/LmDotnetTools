@@ -36,6 +36,7 @@ public sealed class JudgeGauntlet
     /// <param name="options">The abstain floor, the dispersion alarm and the optional arbiter.</param>
     /// <param name="logger">Optional diagnostics.</param>
     /// <exception cref="ArgumentException">The judge configuration is invalid.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">An option bound is off its own scale.</exception>
     public JudgeGauntlet(
         IReadOnlyList<IGate> gates,
         IReadOnlyList<IJudge> judges,
@@ -48,6 +49,7 @@ public sealed class JudgeGauntlet
         ArgumentNullException.ThrowIfNull(judges);
         ArgumentNullException.ThrowIfNull(options);
         JudgePanel.ValidateConfiguration(judges, options.ArbiterJudge);
+        HarnessOptions.Validate(options, nameof(options));
 
         _gates = gates;
         _judges = judges;

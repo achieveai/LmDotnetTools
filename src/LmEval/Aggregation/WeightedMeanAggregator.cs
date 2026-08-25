@@ -98,7 +98,8 @@ public sealed class WeightedMeanAggregator : IBallotAggregator
                 degradation: panelFaults.Count > 0
                     ? PanelDegradation.PanelUnavailable
                     : PanelDegradation.None,
-                degradationReason: FaultReason("judge-faulted", panelFaults)
+                degradationReason: FaultReason("judge-faulted", panelFaults),
+                options: context.Options
             );
         }
 
@@ -131,7 +132,8 @@ public sealed class WeightedMeanAggregator : IBallotAggregator
                 // declined — reached persistence as a blank. The excluded ballots carry the answer.
                 // The fault stays ahead of them: it is the strictly more specific fact.
                 degradationReason: FaultReason("judge-faulted", panelFaults)
-                    ?? ExclusionReason(excluded)
+                    ?? ExclusionReason(excluded),
+                options: context.Options
             );
         }
 
@@ -152,7 +154,8 @@ public sealed class WeightedMeanAggregator : IBallotAggregator
                 dispersion: dispersion,
                 tieBreakRule: TieBreakRules.Consensus,
                 degradation: PanelDegradation.None,
-                degradationReason: null
+                degradationReason: null,
+                options: context.Options
             );
         }
 
@@ -171,7 +174,8 @@ public sealed class WeightedMeanAggregator : IBallotAggregator
                 dispersion: dispersion,
                 tieBreakRule: TieBreakRules.Arbiter(arbiterBallot.JudgeId, arbiterBallot.ModelFamily),
                 degradation: PanelDegradation.None,
-                degradationReason: null
+                degradationReason: null,
+                options: context.Options
             );
         }
 
@@ -208,7 +212,8 @@ public sealed class WeightedMeanAggregator : IBallotAggregator
                 ? FaultReason("arbiter-faulted", [arbiterFault])
                 : arbiterExcluded is not null
                     ? $"arbiter-excluded:{arbiterExcluded.ExclusionReason}"
-                    : null
+                    : null,
+            options: context.Options
         );
     }
 
@@ -294,7 +299,8 @@ public sealed class WeightedMeanAggregator : IBallotAggregator
         double? dispersion,
         string tieBreakRule,
         PanelDegradation degradation,
-        string? degradationReason
+        string? degradationReason,
+        HarnessOptions options
     ) =>
         new()
         {
@@ -305,6 +311,14 @@ public sealed class WeightedMeanAggregator : IBallotAggregator
             Ballots = counted,
             ExcludedBallots = excluded,
             Dispersion = dispersion,
+            // §2.8 — the comparison sits next to the dispersion it reads because there is nowhere
+            // else it could be made from the same numbers. Strictly greater: the alarm is a bound
+            // the disagreement must EXCEED, and a null dispersion is undefined rather than low, so
+            // neither a lone judge nor an unconfigured harness is ever flagged.
+            DispersionAlarmed =
+                dispersion is { } spread
+                && options.DispersionAlarm is { } alarm
+                && spread > alarm,
             RubricId = rubric.RubricId,
             RubricVersion = rubric.RubricVersion,
             TieBreakRule = tieBreakRule,

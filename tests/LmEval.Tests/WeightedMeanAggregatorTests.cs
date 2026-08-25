@@ -482,4 +482,68 @@ public sealed class WeightedMeanAggregatorTests
         verdict.Ballots.Single(b => b.JudgeId == "a").AppliedWeight.Should().Be(0.0);
         verdict.Ballots.Single(b => b.JudgeId == "b").AppliedWeight.Should().Be(1.0);
     }
+
+    // ---- the dispersion alarm (#354) ----------------------------------------------------------
+
+    /// <summary>
+    /// §2.8 — a host that sets DispersionAlarm expects the verdict to be flagged for human review.
+    /// The option shipped read by nothing at all, so it produced a verdict indistinguishable from
+    /// one where the alarm was never configured: a promise the type made and the harness did not
+    /// keep.
+    /// </summary>
+    [Fact]
+    public void Dispersion_above_the_alarm_flags_the_verdict_for_review()
+    {
+        var verdict = Aggregate(
+            [Ballot("a", "anthropic", 10.0), Ballot("b", "openai", 2.0)],
+            Context(new HarnessOptions { DispersionAlarm = 2.0 })
+        );
+
+        verdict.Dispersion.Should().Be(4.0);
+        verdict.DispersionAlarmed.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Dispersion_at_or_below_the_alarm_does_not_flag_the_verdict()
+    {
+        var verdict = Aggregate(
+            [Ballot("a", "anthropic", 8.0), Ballot("b", "openai", 4.0)],
+            Context(new HarnessOptions { DispersionAlarm = 2.0 })
+        );
+
+        verdict.Dispersion.Should().Be(2.0);
+        verdict.DispersionAlarmed.Should().BeFalse("the alarm is a bound the dispersion must EXCEED");
+    }
+
+    /// <summary>
+    /// Null disables the alarm, so an unconfigured harness never flags however far the panel
+    /// disagreed. Without this the flag would read as "high dispersion" rather than as "the host
+    /// asked to be told about this much dispersion".
+    /// </summary>
+    [Fact]
+    public void No_configured_alarm_never_flags_however_wide_the_disagreement()
+    {
+        var verdict = Aggregate(
+            [Ballot("a", "anthropic", 10.0), Ballot("b", "openai", 0.0)]
+        );
+
+        verdict.Dispersion.Should().Be(5.0);
+        verdict.DispersionAlarmed.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// Dispersion is undefined below two counted ballots — null, never 0.0 — so there is nothing
+    /// for the alarm to compare against and a lone judge can never be flagged.
+    /// </summary>
+    [Fact]
+    public void A_single_counted_ballot_is_never_flagged_because_dispersion_is_undefined()
+    {
+        var verdict = Aggregate(
+            [Ballot("a", "anthropic", 10.0), Ballot("b", "openai", 0.0, abstained: true)],
+            Context(new HarnessOptions { DispersionAlarm = 0.0 })
+        );
+
+        verdict.Dispersion.Should().BeNull();
+        verdict.DispersionAlarmed.Should().BeFalse();
+    }
 }
