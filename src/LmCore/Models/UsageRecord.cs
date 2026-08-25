@@ -145,6 +145,15 @@ public sealed record UsageRecord
     /// <summary>ISO currency code for the cost figures.</summary>
     public string Currency { get; init; } = "USD";
 
+    /// <summary>
+    ///     Provenance of the cost figures above — distinguishes "no pricing known for this model" from "the
+    ///     provider reports none" from "nothing ever tried to estimate it" (issue #367). Stamped where cost
+    ///     is resolved: <see cref="CostProvenance.ProviderReported" /> when the provider supplies a figure,
+    ///     <see cref="CostProvenance.PublicEstimate" /> when a pricing resolver fills one in — never
+    ///     downgrading an existing provider-reported provenance.
+    /// </summary>
+    public CostProvenance CostProvenance { get; init; } = CostProvenance.Unavailable;
+
     // --- Finalization ---
 
     /// <summary>True once the terminal (final accumulated) usage for this attempt has been observed.</summary>

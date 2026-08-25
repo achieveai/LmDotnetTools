@@ -38,6 +38,7 @@ public static class UsageRecordMapper
         ArgumentNullException.ThrowIfNull(message);
 
         var usage = message.Usage;
+        var providerReportedCostMicros = ToMicros(usage.TotalCost);
 
         // A generation is one provider call; combined with the emitter id it is a stable, globally unique
         // dedup key across the conversation tree. Fall back to the run id, then — when the producer supplies
@@ -63,7 +64,10 @@ public static class UsageRecordMapper
             // providers surface them via Usage.ExtraProperties; 0 when absent.
             CacheWriteTokens = usage.GetExtraProperty<int>("cache_creation_input_tokens"),
             ReasoningTokens = usage.TotalReasoningTokens,
-            ProviderReportedCostMicros = ToMicros(usage.TotalCost),
+            ProviderReportedCostMicros = providerReportedCostMicros,
+            CostProvenance = providerReportedCostMicros is not null
+                ? CostProvenance.ProviderReported
+                : CostProvenance.Unavailable,
             OccurredAtUtc = (timeProvider ?? TimeProvider.System).GetUtcNow(),
             Finalized = true,
         };
