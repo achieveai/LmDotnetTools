@@ -260,7 +260,7 @@ claimed first. Two mechanisms do this, and both are needed:
    the provisioning route — are **not** stamped at creation, so a run produces fresh untenanted rows
    that this repair only claims at the NEXT boot. They fail closed in the meantime (`404`, like any
    untenanted row), which is the right direction but is not the same as "every conversation carries a
-   tenant". Tracked as a #302 follow-up.
+   tenant". Tracked on issue #385.
 
 2. **Adoption.** `POST /api/admin/tenants/{tenantId}/adopt-legacy` moves conversations out of the
    quarantine tenant into a real one, optionally assigning an owner. It takes the operator secret,
