@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Data.Sqlite;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
@@ -145,31 +146,108 @@ public static class SqliteSchemaInitializer
     private const string CreateNotifyWaitsIndexSql =
         "CREATE INDEX IF NOT EXISTS ix_notify_waits_thread ON notify_waits (thread_id);";
 
+    // migration step 2 - the tenant registry (P1 spec 8.2). entra_tenant_id is nullable for
+    // exactly one reason: the legacy tenant of slice 2 predates Entra and has no directory behind
+    // it. Every PROVISIONED tenant has one, and the partial unique index below is what makes it
+    // structurally impossible for two tenants to claim the same Entra directory - a cross-tenant
+    // identity collision is refused by the schema, not by the store that writes it.
+    private const string CreateTenantsTableSql = """
+        CREATE TABLE IF NOT EXISTS tenants (
+            tenant_id       TEXT PRIMARY KEY,
+            entra_tenant_id TEXT,
+            display_name    TEXT NOT NULL,
+            status          TEXT NOT NULL,
+            created_at      INTEGER NOT NULL,
+            created_by      TEXT NOT NULL
+        );
+        """;
+
+    private const string CreateTenantsEntraIndexSql = """
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_tenants_entra
+        ON tenants (entra_tenant_id) WHERE entra_tenant_id IS NOT NULL;
+        """;
+
+    // Keyed by UPN rather than by user id because the first admin must be NAMED before they have
+    // ever signed in, so their oid is not yet knowable. user_id is bound from '{tid}:{oid}' on
+    // that user's first successful sign-in; after that the UPN is never consulted again, because
+    // a UPN is mutable and cannot be a durable key.
+    private const string CreateTenantAdminsTableSql = """
+        CREATE TABLE IF NOT EXISTS tenant_admins (
+            tenant_id  TEXT NOT NULL,
+            upn        TEXT NOT NULL,
+            user_id    TEXT,
+            granted_at INTEGER NOT NULL,
+            granted_by TEXT NOT NULL,
+            bound_at   INTEGER,
+            PRIMARY KEY (tenant_id, upn)
+        );
+        """;
+
+    private const string CreateTenantAdminsUserIndexSql = """
+        CREATE INDEX IF NOT EXISTS ix_tenant_admins_user ON tenant_admins (user_id);
+        """;
+
+    /// <summary>One ordered migration step, applied atomically with its version bump.</summary>
+    /// <param name="Version">
+    /// The <c>PRAGMA user_version</c> the database holds after this step commits. This array is
+    /// the single source of truth for those numbers.
+    /// </param>
+    /// <param name="Statements">The step's statements, in dependency order.</param>
+    private sealed record MigrationStep(int Version, string[] Statements);
+
     /// <summary>
-    /// Every schema statement, in dependency order, applied in one transaction. All are
-    /// <c>IF NOT EXISTS</c>, so this is also the upgrade path for a database created by an earlier
-    /// build: tables added here appear on next open without a migration step.
+    /// The ordered migration steps. Step 1 is the original <c>CREATE TABLE IF NOT EXISTS</c> block,
+    /// so a database created by an earlier build - which never wrote <c>user_version</c> and so
+    /// reads 0 - is brought to 1 by re-running statements that are all no-ops for it, then carries
+    /// on into the later steps. The runner never branches on "new versus existing".
     /// </summary>
-    private static readonly string[] SchemaStatements =
+    private static readonly MigrationStep[] Migrations =
     [
-        CreateMessagesTableSql,
-        CreateMessagesIndexSql,
-        CreateMetadataTableSql,
-        CreateRunLedgerTableSql,
-        CreateRunLedgerIndexSql,
-        CreateAcceptedInputsTableSql,
-        CreateInputAcceptancesTableSql,
-        CreateRunLifecycleTableSql,
-        CreateRunLifecycleIndexSql,
-        CreateRunDeferredCallsTableSql,
-        CreateRunDeferredCallsIndexSql,
-        CreateNotifyWaitsTableSql,
-        CreateNotifyWaitsIndexSql,
+        new(
+            1,
+            [
+                CreateMessagesTableSql,
+                CreateMessagesIndexSql,
+                CreateMetadataTableSql,
+                CreateRunLedgerTableSql,
+                CreateRunLedgerIndexSql,
+                CreateAcceptedInputsTableSql,
+                CreateInputAcceptancesTableSql,
+                CreateRunLifecycleTableSql,
+                CreateRunLifecycleIndexSql,
+                CreateRunDeferredCallsTableSql,
+                CreateRunDeferredCallsIndexSql,
+                CreateNotifyWaitsTableSql,
+                CreateNotifyWaitsIndexSql,
+            ]),
+        new(
+            2,
+            [
+                CreateTenantsTableSql,
+                CreateTenantsEntraIndexSql,
+                CreateTenantAdminsTableSql,
+                CreateTenantAdminsUserIndexSql,
+            ]),
     ];
 
     /// <summary>
-    /// Initializes the database schema if it doesn't exist.
+    /// The <c>PRAGMA user_version</c> a fully migrated database holds. Exposed so callers - and
+    /// tests - can assert the version without duplicating the step table.
     /// </summary>
+    public static int LatestSchemaVersion => Migrations[^1].Version;
+
+    /// <summary>
+    /// Brings the database up to <see cref="LatestSchemaVersion"/>, applying only the steps it has
+    /// not already taken.
+    /// </summary>
+    /// <remarks>
+    /// Every step runs in one transaction together with its own <c>user_version</c> bump, so a
+    /// step either commits whole or is retried whole. The version is re-read INSIDE that
+    /// transaction, which is taken with <c>BEGIN IMMEDIATE</c>: two processes opening the same file
+    /// concurrently would otherwise both read the old version and both apply the step, which is
+    /// harmless for a <c>CREATE ... IF NOT EXISTS</c> and is not harmless for the <c>ALTER TABLE</c>
+    /// and data-backfill steps that follow in later slices.
+    /// </remarks>
     /// <param name="connection">An open SQLite connection.</param>
     /// <param name="ct">Cancellation token.</param>
     public static async Task InitializeSchemaAsync(
@@ -178,16 +256,42 @@ public static class SqliteSchemaInitializer
     {
         ArgumentNullException.ThrowIfNull(connection);
 
-        using var transaction = connection.BeginTransaction();
+        // Fast path: an already-migrated database is the common case (every store instance calls
+        // this on first use), and it should not take the write lock. The read is advisory only -
+        // the authoritative one happens under the lock below.
+        if (await ReadUserVersionAsync(connection, transaction: null, ct).ConfigureAwait(false)
+            >= LatestSchemaVersion)
+        {
+            return;
+        }
+
+        using var transaction = connection.BeginTransaction(deferred: false);
 
         try
         {
-            foreach (var sql in SchemaStatements)
+            var current = await ReadUserVersionAsync(connection, transaction, ct).ConfigureAwait(false);
+
+            foreach (var step in Migrations)
             {
-                using var command = connection.CreateCommand();
-                command.CommandText = sql;
-                command.Transaction = transaction;
-                _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                if (step.Version <= current)
+                {
+                    continue;
+                }
+
+                foreach (var sql in step.Statements)
+                {
+                    await ExecuteAsync(connection, transaction, sql, ct).ConfigureAwait(false);
+                }
+
+                // Bumped inside the same transaction as the step's statements. PRAGMA user_version
+                // takes no parameter, so the value is interpolated; it comes from the private step
+                // table above and is an int, so there is no injection surface.
+                await ExecuteAsync(
+                        connection,
+                        transaction,
+                        FormattableString.Invariant($"PRAGMA user_version = {step.Version};"),
+                        ct)
+                    .ConfigureAwait(false);
             }
 
             transaction.Commit();
@@ -207,6 +311,30 @@ public static class SqliteSchemaInitializer
 
             throw;
         }
+    }
+
+    private static async Task<int> ReadUserVersionAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        CancellationToken ct)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA user_version;";
+        command.Transaction = transaction;
+        var value = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        return Convert.ToInt32(value, CultureInfo.InvariantCulture);
+    }
+
+    private static async Task ExecuteAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string sql,
+        CancellationToken ct)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Transaction = transaction;
+        _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
     /// <summary>
