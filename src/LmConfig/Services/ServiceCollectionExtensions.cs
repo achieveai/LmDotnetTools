@@ -3,10 +3,13 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmConfig.Agents;
 using AchieveAi.LmDotnetTools.LmConfig.Http;
 using AchieveAi.LmDotnetTools.LmConfig.Models;
+using AchieveAi.LmDotnetTools.LmConfig.Pricing;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 
 namespace AchieveAi.LmDotnetTools.LmConfig.Services;
@@ -16,6 +19,13 @@ namespace AchieveAi.LmDotnetTools.LmConfig.Services;
 /// </summary>
 public static class ServiceCollectionExtensions
 {
+    /// <summary>
+    ///     Provenance stamped on pricing resolved from the registered catalog, so a cost figure records
+    ///     which catalog produced it. The catalog format carries no effective date, so no version
+    ///     accompanies it — see <see cref="PricingConfigResolver.FromAppConfig" />.
+    /// </summary>
+    private const string CatalogPricingSource = "lmconfig:AppConfig";
+
     /// <summary>
     ///     Adds LmConfig services to the service collection, including the unified agent system.
     /// </summary>
@@ -206,6 +216,17 @@ public static class ServiceCollectionExtensions
         _ = services.AddSingleton<IModelResolver, ModelResolver>();
         _ = services.AddSingleton<IProviderAgentFactory, ProviderAgentFactory>();
         _ = services.AddSingleton<OpenRouterModelService>();
+
+        // #328: the catalog registered above already carries per-provider rates, but nothing turned them
+        // into an IPricingResolver, so MultiTurnAgentLoop's optional pricingResolver stayed null and
+        // UsageRecord.EstimatedPublicCostMicros with it. TryAdd rather than Add: a host that registers its
+        // own — authoritative — resolver keeps it, so this only fills the gap where nobody registered one.
+        services.TryAddSingleton<IPricingResolver>(sp =>
+            PricingConfigResolver.FromAppConfig(
+                sp.GetRequiredService<IOptions<AppConfig>>().Value,
+                CatalogPricingSource
+            )
+        );
         // Ensure a single IHttpHandlerBuilder and attach the retry wrapper.
         var hbDescriptor = services.FirstOrDefault(d => d.ServiceType == typeof(IHttpHandlerBuilder));
 
