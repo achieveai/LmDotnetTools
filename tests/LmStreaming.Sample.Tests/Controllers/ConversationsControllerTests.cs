@@ -497,7 +497,7 @@ public class ConversationsControllerTests
             $"the spawned child '{agentId}' parked on its own AskUserQuestion, i.e. registered a deferred tool call",
             TimeSpan.FromSeconds(30),
             TimeSpan.FromMilliseconds(20),
-            ct);
+            cancellationToken: ct);
     }
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(params IMessage[] messages)

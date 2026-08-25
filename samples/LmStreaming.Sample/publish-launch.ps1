@@ -779,13 +779,64 @@ function Copy-PreserveSet {
 # Thin, injectable wrapper around the one primitive every atomic swap/backup/rollback move in
 # this feature goes through -- so a test can deterministically fail exactly the Nth rename
 # (e.g. the second rename, candidate -> destination) without touching the filesystem itself.
+#
+# Retries a bounded number of times, with backoff, on a TRANSIENT sharing/access failure from the
+# real filesystem move (#371): a directory renamed moments ago can briefly be held open by
+# Defender, the search indexer, or anything else that scans new directories, and
+# [System.IO.Directory]::Move surfaces that as an ACCESS_DENIED that clears on its own within
+# milliseconds. Retrying costs nothing when the move already succeeded and saves the operator
+# from landing in Invoke-CandidateSwap's double-failure recovery message for a fault that was
+# never really theirs.
+#
+# Deliberately narrow about what counts as transient, identified by the INNER exception
+# [System.IO.Directory]::Move's static-method call wraps into a MethodInvocationException:
+#   - [System.IO.IOException], exact type (the code checks GetType() -eq, not -is): what a real
+#     sharing violation surfaces as. This is meant to exclude subclasses -- DirectoryNotFoundException
+#     and PathTooLongException both derive from IOException and are permanent, not transient, so
+#     retrying those would only delay a failure that was never going to resolve itself. BUT this
+#     distinction is currently UNPINNED: no test in this suite injects a subclass of IOException, so
+#     nothing here would catch a regression that widened or narrowed the check (confirmed by mutation
+#     testing -- switching the exact-type check to `-is` still passes the full suite).
+#   - [System.UnauthorizedAccessException]: what a real permission/handle conflict surfaces as.
+# A genuine, non-transient PERMISSION failure does NOT reliably fail immediately. Windows can surface
+# a deny-ACE denial through [System.IO.Directory]::Move as an exact-type IOException -- the same
+# shape a transient sharing violation produces -- so the two are indistinguishable from inside this
+# retry and the permission failure IS retried: it costs the full backoff (up to ~750ms, see
+# $maxAttempts/$delayMs below) before surfacing as the same terminal error a transient failure would
+# have cleared from. What DOES still fail on the first attempt is every injected $MoveDelegate test
+# failure, which throws a bare RuntimeException via PowerShell's `throw` and so never has a matching
+# inner exception at all -- and any exception whose inner type is something other than the two above
+# (e.g. an IOException subclass). That is also why this retry applies uniformly to every
+# Invoke-AtomicMove call, including rename 1 (destination -> backup) in Invoke-CandidateSwap, which is
+# deliberately UNGUARDED for error *handling* (see the comment above that function) -- retry is
+# orthogonal to that: if the underlying condition never clears (transient or not), rename 1 still
+# fails and still throws unguarded, exactly as the comment there describes.
 function Invoke-AtomicMove {
     param(
         [Parameter(Mandatory)] [string]      $From,
         [Parameter(Mandatory)] [string]      $To,
         [Parameter(Mandatory)] [scriptblock] $MoveDelegate
     )
-    & $MoveDelegate $From $To
+
+    $maxAttempts = 5
+    $delayMs = 50
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        try {
+            & $MoveDelegate $From $To
+            return
+        } catch {
+            $inner = $_.Exception.InnerException
+            $isTransient = ($null -ne $inner) -and (
+                ($inner.GetType() -eq [System.IO.IOException]) -or
+                ($inner -is [System.UnauthorizedAccessException])
+            )
+            if (-not $isTransient -or $attempt -eq $maxAttempts) {
+                throw
+            }
+            Start-Sleep -Milliseconds $delayMs
+            $delayMs = [Math]::Min($delayMs * 2, 800)
+        }
+    }
 }
 
 # Normalizes -DestinationDirectory ONCE, at the entry point, before any build work runs.

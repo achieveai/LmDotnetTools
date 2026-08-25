@@ -45,6 +45,10 @@ public sealed class UsageBannerTests
         var page = session.Page;
 
         // Turn 1: one generation = 100 in / 50 out -> Total 150.
+        // #265: SendMessageAsync is a bare fill+click with no wait, so WaitForStreamIdleAsync could
+        // in principle be entered before the stop button has even rendered. WaitForStreamIdleAsync
+        // itself is self-guarding against that not-yet-started/idle ambiguity (see its remarks in
+        // DomAssertions.cs); no extra wait is needed here.
         await page.SendMessageAsync("hello");
         await page.WaitForStreamIdleAsync();
         await page.UsageBanner().WaitForTextContainsAsync("Total: 150");

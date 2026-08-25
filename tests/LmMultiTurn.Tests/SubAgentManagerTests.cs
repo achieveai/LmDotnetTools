@@ -495,21 +495,24 @@ public class SubAgentManagerTests : IAsyncLifetime
         using var spawnDoc = JsonDocument.Parse(resultJson);
         var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
 
-        // Poll until monitoring task has processed messages
+        // Poll until the monitoring task has processed the run to completion. `json.Contains("\"status\"")`
+        // (#357) is trivially true from the instant the agent is spawned -- EVERY Peek payload has a
+        // "status" key, whatever its value -- so it proved nothing about the sub-agent's own progress.
+        // Waiting for the specific terminal value instead ties the wait to the behaviour under test.
         await Wait.UntilAsync(
             () =>
             {
                 try
                 {
-                    var json = _manager!.Peek(agentId);
-                    return json.Contains("\"status\"");
+                    using var doc = JsonDocument.Parse(_manager!.Peek(agentId));
+                    return doc.RootElement.GetProperty("status").GetString() == "completed";
                 }
                 catch
                 {
                     return false;
                 }
             },
-            "Peek reported a status for the spawned sub-agent",
+            "the spawned sub-agent reported completed",
             TimeSpan.FromSeconds(10));
 
         // Act
@@ -522,7 +525,19 @@ public class SubAgentManagerTests : IAsyncLifetime
         peekRoot.GetProperty("agent_id").GetString().Should().Be(agentId);
         peekRoot.GetProperty("template").GetString().Should().Be("test-agent");
         peekRoot.GetProperty("task").GetString().Should().Be("Do analysis");
-        peekRoot.TryGetProperty("status", out _).Should().BeTrue();
+        peekRoot.GetProperty("status").GetString().Should().Be("completed");
+
+        // The other half of the name this test claims to cover: not just a status, but the turns
+        // themselves. #357's original version never inspected recent_turns at all, so a regression
+        // that stopped recording turns entirely would have passed silently.
+        var recentTurns = peekRoot.GetProperty("recent_turns").EnumerateArray().ToArray();
+        recentTurns.Should().NotBeEmpty("the run that produced the assistant text must have recorded a turn");
+        recentTurns
+            .Select(turn => turn.TryGetProperty("text", out var text) ? text.GetString() : null)
+            .Should()
+            .Contain(
+                text => text != null && text.Contains("Working on it...", StringComparison.Ordinal),
+                "the recorded turn must reflect the assistant text the sub-agent actually produced");
     }
 
     [Fact]
@@ -801,21 +816,24 @@ public class SubAgentManagerTests : IAsyncLifetime
         // loop type, exactly as a real caller would have to.
         MultiTurnAgentLoop? loop = null;
         IReadOnlyList<DeferredToolCallInfo> deferred = [];
-        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            if (_manager!.TryGetAgent("color-agent", out var agent) && agent is MultiTurnAgentLoop l)
+        await Wait.UntilAsync(
+            async () =>
             {
-                loop = l;
-                deferred = await l.GetDeferredToolCallsAsync();
-                if (deferred.Any(d => d.ToolCallId == "tc_color"))
+                if (_manager!.TryGetAgent("color-agent", out var agent) && agent is MultiTurnAgentLoop l)
                 {
-                    break;
+                    loop = l;
+                    deferred = await l.GetDeferredToolCallsAsync();
+                    return deferred.Any(d => d.ToolCallId == "tc_color");
                 }
-            }
 
-            await Task.Delay(50);
-        }
+                return false;
+            },
+            "the child registered as a MultiTurnAgentLoop and parked tc_color",
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromMilliseconds(50),
+            observed: () => loop is null
+                ? "no MultiTurnAgentLoop registered yet for 'color-agent'"
+                : $"deferred tool calls: [{string.Join(", ", deferred.Select(d => d.ToolCallId))}]");
 
         loop.Should().NotBeNull("the child must have registered as a MultiTurnAgentLoop by now");
         deferred.Should().Contain(
@@ -1563,7 +1581,11 @@ public class SubAgentManagerTests : IAsyncLifetime
         resumeDoc.RootElement.GetProperty("status").GetString().Should().Be("resumed");
 
         await Wait.UntilAsync(
-            () => _manager!.Peek(agentId).Contains("\"completed\""),
+            () =>
+            {
+                using var doc = JsonDocument.Parse(_manager!.Peek(agentId));
+                return doc.RootElement.GetProperty("status").GetString() == "completed";
+            },
             "the sub-agent reported completed",
             TimeSpan.FromSeconds(10));
     }

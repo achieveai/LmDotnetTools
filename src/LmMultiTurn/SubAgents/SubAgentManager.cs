@@ -94,6 +94,20 @@ public sealed class SubAgentManager : IAsyncDisposable
     // itself (this manager's owner IS the root) or was threaded through from further up.
     private readonly Func<NotifyMessage, CancellationToken, ValueTask> _descendantQuestionSink;
 
+    /// <summary>
+    /// Ceiling for awaiting a background task this manager no longer wants to wait on unboundedly
+    /// (#373, widened in the #396 review pass): <see cref="DisposeAsync"/>'s per-agent teardown loop
+    /// (RunTask/MonitorTask, and the spawn pump itself), and <see cref="CleanupFailedSpawnAsync"/>'s
+    /// own RunTask/MonitorTask awaits when a spawn fails after both were already started. Every one of
+    /// those awaits is preceded by a cancellation request against the same task (<c>Cts.CancelAsync()</c>
+    /// plus, on the dispose path, a bounded <c>StopAsync(5s)</c>), so in the healthy case the task is
+    /// already complete by the time this ceiling applies -- it exists for the case where a task ignores
+    /// its token, so a stuck background task degrades the caller into a logged warning instead of
+    /// hanging forever, and every real host process behind it along with it. See
+    /// <see cref="AwaitBoundedTaskAsync"/>.
+    /// </summary>
+    private static readonly TimeSpan PerAgentBackgroundTaskDisposeCeiling = TimeSpan.FromSeconds(10);
+
     private readonly ConcurrentDictionary<string, SubAgentState> _agents = new();
     private readonly ConcurrentDictionary<string, string> _namesToIds = new();
     private readonly SemaphoreSlim _concurrencyGate;
@@ -150,6 +164,13 @@ public sealed class SubAgentManager : IAsyncDisposable
 
     /// <summary>Test-only barrier immediately before the shutdown-serialized registration commit.</summary>
     internal Func<Task>? TestBeforeAgentRegistrationAsync { get; set; }
+
+    /// <summary>
+    /// Test-only override for <see cref="PerAgentBackgroundTaskDisposeCeiling"/> (#373), so a test can
+    /// prove the ceiling actually bounds <see cref="DisposeAsync"/> without paying its full production
+    /// value. Null (the default) keeps the production ceiling.
+    /// </summary>
+    internal TimeSpan? TestPerAgentBackgroundTaskDisposeCeiling { get; set; }
 
     /// <summary>
     /// The parent agent's handle on the collaboration, or null when collaboration is off. Null is the
@@ -1121,24 +1142,24 @@ public sealed class SubAgentManager : IAsyncDisposable
             // Already torn down by a racing path; nothing to cancel.
         }
 
+        // Bounded (#396 review pass): this cleanup runs whenever a spawn fails after RunTask and/or
+        // MonitorTask already started -- including a background QUEUED spawn's SendAsync failing
+        // because DisposeAsync just cancelled the pump's own token (the pump's cancellation races
+        // ahead of this per-agent Cts.CancelAsync() above). If the failed spawn's RunTask ignores its
+        // own token, an unbounded await here never returns -- which hangs whichever caller is awaiting
+        // this cleanup. On the dispose race that caller is, transitively, the pump loop, and behind
+        // that DisposeAsync's own (now-bounded) await of the pump -- so leaving THESE awaits unbounded
+        // would still let a single wedged spawn hang shutdown, just one hop further away. The same
+        // bound applies unconditionally, including outside any dispose race: a spawn cleanup that
+        // never returns during ordinary operation would starve the FIFO pump just as badly.
         if (state.RunTask != null)
         {
-            try { await state.RunTask; }
-            catch (OperationCanceledException) { }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "RunTask faulted during spawn cleanup for sub-agent {AgentId}", agentId);
-            }
+            await AwaitBoundedTaskAsync(state.RunTask, $"RunTask for sub-agent {agentId}", "spawn cleanup");
         }
 
         if (state.MonitorTask != null)
         {
-            try { await state.MonitorTask; }
-            catch (OperationCanceledException) { }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "MonitorTask faulted during spawn cleanup for sub-agent {AgentId}", agentId);
-            }
+            await AwaitBoundedTaskAsync(state.MonitorTask, $"MonitorTask for sub-agent {agentId}", "spawn cleanup");
         }
 
         try { await state.Agent.DisposeAsync(); }
@@ -1766,7 +1787,7 @@ public sealed class SubAgentManager : IAsyncDisposable
 
     /// <summary>
     /// Derives the timestamp of the newest buffered turn for <paramref name="state"/>, or null when
-    /// the buffer is empty. The buffer is a lock-free <see cref="System.Collections.Concurrent.ConcurrentQueue{T}"/>;
+    /// the buffer is empty. The buffer is a lock-free <see cref="ConcurrentQueue{T}"/>;
     /// snapshotting it with <c>ToArray</c> gives a consistent view even while the monitor enqueues.
     /// </summary>
     private static DateTimeOffset? GetLastActivityUtc(SubAgentState state)
@@ -2239,12 +2260,10 @@ public sealed class SubAgentManager : IAsyncDisposable
             _logger.LogWarning(ex, "Failed to cancel sub-agent spawn pump during disposal");
         }
 
-        try { await _pumpTask; }
-        catch (OperationCanceledException) { }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Sub-agent spawn pump faulted during disposal");
-        }
+        // Bounded (#373, widened): an unbounded await here would let a pump wedged behind a stuck
+        // spawn-cleanup (see CleanupFailedSpawnAsync's own bounded awaits below) hang DisposeAsync
+        // forever, even though the pump's own cancellation was already requested above.
+        await AwaitBoundedTaskAsync(_pumpTask, "the sub-agent spawn pump", "disposal");
 
         foreach (var (_, state) in _agents)
         {
@@ -2262,25 +2281,18 @@ public sealed class SubAgentManager : IAsyncDisposable
                 _logger.LogWarning(ex, "StopAsync failed for sub-agent {AgentId}", state.AgentId);
             }
 
-            // Await background tasks to ensure clean shutdown
+            // Await background tasks to ensure clean shutdown. Bounded (#373): CancelAsync and
+            // StopAsync above already requested this, but neither GUARANTEES it -- a task that ignores
+            // its token would otherwise hang DisposeAsync, and every real host shutting down behind it,
+            // forever.
             if (state.RunTask != null)
             {
-                try { await state.RunTask; }
-                catch (OperationCanceledException) { }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "RunTask faulted for sub-agent {AgentId}", state.AgentId);
-                }
+                await AwaitBoundedTaskAsync(state.RunTask, $"RunTask for sub-agent {state.AgentId}", "disposal");
             }
 
             if (state.MonitorTask != null)
             {
-                try { await state.MonitorTask; }
-                catch (OperationCanceledException) { }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "MonitorTask faulted for sub-agent {AgentId}", state.AgentId);
-                }
+                await AwaitBoundedTaskAsync(state.MonitorTask, $"MonitorTask for sub-agent {state.AgentId}", "disposal");
             }
 
             try { await state.Agent.DisposeAsync(); }
@@ -2366,6 +2378,99 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         _queueSignal.Dispose();
         _pumpCts.Dispose();
+    }
+
+    /// <summary>
+    /// Awaits <paramref name="task"/>, but never past <see cref="PerAgentBackgroundTaskDisposeCeiling"/>
+    /// (or its test override). A task still running once the ceiling passes is abandoned rather than
+    /// awaited further, so one wedged background task cannot hang whatever is currently awaiting it --
+    /// and, transitively, whatever process sits behind that (see the field doc for every current
+    /// caller: <see cref="DisposeAsync"/>'s per-agent loop and its own pump await, plus
+    /// <see cref="CleanupFailedSpawnAsync"/>).
+    /// </summary>
+    /// <param name="task">The background task to bound.</param>
+    /// <param name="subject">
+    /// Human-readable identification of <paramref name="task"/> for the warning log, e.g.
+    /// <c>"RunTask for sub-agent abc123"</c> or <c>"the sub-agent spawn pump"</c>.
+    /// </param>
+    /// <param name="context">
+    /// What operation this await is part of, for the warning log, e.g. <c>"disposal"</c> or
+    /// <c>"spawn cleanup"</c>.
+    /// </param>
+    private async Task AwaitBoundedTaskAsync(Task task, string subject, string context)
+    {
+        var ceiling = TestPerAgentBackgroundTaskDisposeCeiling ?? PerAgentBackgroundTaskDisposeCeiling;
+        try
+        {
+            await task.WaitAsync(ceiling);
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected: the caller already requested cancellation against this task before awaiting it
+            // here (state.Cts.CancelAsync(), and on the dispose path a preceding bounded StopAsync too).
+        }
+        catch (TimeoutException)
+        {
+            // Deliberately unconditional, NOT `when (!task.IsCompleted)`: a filter there would race the
+            // task's own completion against WaitAsync's timeout firing. If the task faults in the
+            // window between the timeout elapsing and the filter evaluating, IsCompleted flips true (a
+            // fault counts as completed) before the filter runs, so the filter reads false and the
+            // exception falls through to the generic catch (Exception ex) below -- but ex there is
+            // bound to this SAME stale TimeoutException, not the task's real fault, so the actual
+            // failure reason is silently discarded from the log rather than reported. Catching
+            // unconditionally and branching on the task's terminal state INSIDE the catch body observes
+            // whichever outcome actually won the race, instead of gambling on which one the filter saw.
+            if (task.IsCompleted)
+            {
+                if (task.Exception is { } raceFault)
+                {
+                    _logger.LogWarning(
+                        raceFault,
+                        "{Subject} faulted right as its {CeilingSeconds}s ceiling was about to abandon "
+                            + "it during {Context}",
+                        subject,
+                        ceiling.TotalSeconds,
+                        context
+                    );
+                }
+
+                // Else: the task cancelled rather than faulted in that same window -- expected, same as
+                // the OperationCanceledException branch above, nothing to log.
+                return;
+            }
+
+            _logger.LogWarning(
+                "{Subject} did not complete within {CeilingSeconds}s of {Context}; abandoning it so "
+                    + "the caller can proceed.",
+                subject,
+                ceiling.TotalSeconds,
+                context
+            );
+
+            // The abandoned task outlives this await. Observe whatever it eventually does so a later
+            // fault cannot surface as an unobserved-task exception on the finalizer thread, attributed
+            // to unrelated code -- Task.WaitAsync does NOT mark the source task's fault observed.
+            _ = task.ContinueWith(
+                static (t, state) =>
+                {
+                    if (t.Exception is not { } fault)
+                    {
+                        return;
+                    }
+
+                    var (logger, subjectText) = ((ILogger, string))state!;
+                    logger.LogWarning(fault, "{Subject} faulted after it was already abandoned", subjectText);
+                },
+                (_logger, subject),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default
+            );
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "{Subject} faulted during {Context}", subject, context);
+        }
     }
 
     /// <summary>

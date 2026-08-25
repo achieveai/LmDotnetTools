@@ -145,6 +145,144 @@ public class WaitTests
         );
     }
 
+    [Fact]
+    public async Task A_timeout_with_an_observed_supplier_appends_the_last_observed_state()
+    {
+        // #358: without a way to report what the wait actually saw, a timeout only proves the
+        // condition never held -- it says nothing about how close it got, so the next reader has
+        // to reproduce the failure just to find out what the state looked like when it gave up.
+        var thrown = await Assert.ThrowsAsync<TimeoutException>(
+            () =>
+                Wait.UntilAsync(
+                    () => false,
+                    "the widget was flushed",
+                    Brief,
+                    Tick,
+                    observed: () => "status=pending"
+                )
+        );
+
+        Assert.Contains("Last observed: status=pending.", thrown.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_timeout_with_no_observed_supplier_omits_the_last_observed_clause()
+    {
+        // The existing callers that do not pass observed must see byte-for-byte the same message as
+        // before -- a dangling "Last observed:" clause with nothing after it would be worse than
+        // saying nothing.
+        var thrown = await Assert.ThrowsAsync<TimeoutException>(
+            () => Wait.UntilAsync(() => false, "the widget was flushed", Brief, Tick)
+        );
+
+        Assert.DoesNotContain("Last observed", thrown.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task The_observed_supplier_is_never_invoked_when_the_condition_succeeds()
+    {
+        var invoked = false;
+
+        await Wait.UntilAsync(
+            () => true,
+            "the condition already holds",
+            Generous,
+            Tick,
+            observed: () =>
+            {
+                invoked = true;
+                return "should never run";
+            }
+        );
+
+        Assert.False(invoked, "observed must only be paid for on the failure path, not the happy one");
+    }
+
+    [Fact]
+    public async Task A_throwing_observed_supplier_yields_a_TimeoutException_not_the_suppliers_own_exception()
+    {
+        // The sync (Func<bool>) overload. Before this guard, observed() ran unguarded inside the
+        // TimeoutException's message interpolation, so a throwing supplier replaced the timeout
+        // entirely: the caller saw the supplier's own exception, with no TimeoutException, no
+        // mention of the wait's name, and no file/line pointing at the stalled condition.
+        var thrown = await Assert.ThrowsAsync<TimeoutException>(
+            () =>
+                Wait.UntilAsync(
+                    () => false,
+                    "the widget was flushed",
+                    Brief,
+                    Tick,
+                    observed: () => throw new InvalidOperationException("boom")
+                )
+        );
+
+        Assert.Contains(
+            "Last observed: <observed supplier threw: boom>.",
+            thrown.Message,
+            StringComparison.Ordinal
+        );
+    }
+
+    [Fact]
+    public async Task A_throwing_observed_supplier_on_the_async_overload_also_yields_a_TimeoutException()
+    {
+        // The async (Func<Task<bool>>) overload has its own, separately-written throw site, so the
+        // same guard has to be applied there independently -- fixing only the sync overload would
+        // leave this one still letting a throwing supplier's exception escape raw.
+        var thrown = await Assert.ThrowsAsync<TimeoutException>(
+            () =>
+                Wait.UntilAsync(
+                    () => Task.FromResult(false),
+                    "the async widget flushed",
+                    Brief,
+                    Tick,
+                    observed: () => throw new InvalidOperationException("boom")
+                )
+        );
+
+        Assert.Contains(
+            "Last observed: <observed supplier threw: boom>.",
+            thrown.Message,
+            StringComparison.Ordinal
+        );
+    }
+
+    [Fact]
+    public async Task A_timeout_on_the_async_overload_with_an_observed_supplier_appends_the_last_observed_state()
+    {
+        // Pins the "Last observed:" append specifically for the async (Func<Task<bool>>) overload.
+        // It has its own, separately-written throw site from the sync overload, so a mutation that
+        // drops the append from only this overload is otherwise invisible: the sync-overload test
+        // above (A_timeout_with_an_observed_supplier_appends_the_last_observed_state) exercises a
+        // different code path and cannot catch a regression here.
+        var thrown = await Assert.ThrowsAsync<TimeoutException>(
+            () =>
+                Wait.UntilAsync(
+                    () => Task.FromResult(false),
+                    "the async widget flushed",
+                    Brief,
+                    Tick,
+                    observed: () => "status=pending"
+                )
+        );
+
+        Assert.Contains("Last observed: status=pending.", thrown.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_cancelled_token_exits_the_wait_with_OperationCanceledException_not_a_timeout()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        // ThrowsAnyAsync, not ThrowsAsync: Task.Delay raises the TaskCanceledException subtype, not the
+        // base OperationCanceledException exactly -- the contract is "cancellation surfaces as some
+        // OperationCanceledException, not a TimeoutException", not the precise concrete type.
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => Wait.UntilAsync(() => false, "a wait that gets cancelled", Generous, Tick, cancellationToken: cts.Token)
+        );
+    }
+
     #region ForTeardownAsync
 
     /// <summary>

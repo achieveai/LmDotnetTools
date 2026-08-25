@@ -518,7 +518,7 @@ public class SubAgentSpawnSuppressionTests
             because,
             TimeSpan.FromSeconds(10),
             TimeSpan.FromMilliseconds(20),
-            ct);
+            cancellationToken: ct);
     }
 
     /// <summary>
@@ -538,7 +538,7 @@ public class SubAgentSpawnSuppressionTests
             because,
             TimeSpan.FromSeconds(10),
             TimeSpan.FromMilliseconds(20),
-            ct);
+            cancellationToken: ct);
     }
 
     private static MultiTurnAgentLoop CreateLoop(

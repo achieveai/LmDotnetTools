@@ -455,7 +455,8 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         await Wait.UntilAsync(
             () => root.Directory.Capacity.InUse == 1,
             "the cancelled spawn's root-wide lease came back",
-            TimeSpan.FromSeconds(5));
+            TimeSpan.FromSeconds(5),
+            observed: () => $"root.Directory.Capacity.InUse={root.Directory.Capacity.InUse}");
 
         root.Directory.Capacity.InUse.Should().Be(
             1, "the cancelled spawn's root-wide lease must come back, not stay charged forever");
