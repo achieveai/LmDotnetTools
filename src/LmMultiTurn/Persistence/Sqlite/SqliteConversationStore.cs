@@ -380,16 +380,18 @@ public sealed class SqliteConversationStore
 
         // The grant branch is a bound id list rather than an EXISTS over resource_grants: that
         // table is not guaranteed to live in this database file. See ConversationListScope.
-        var grantParameters = scope.UserId is null
-            ? []
-            : scope.GrantedThreadIds
-                .Select((_, index) => FormattableString.Invariant($"$grant{index}"))
-                .ToArray();
-
-        var grantClause = grantParameters.Length == 0
-            ? "0"
-            : FormattableString.Invariant(
-                $"($userId IS NOT NULL AND t.thread_id IN ({string.Join(", ", grantParameters)}))");
+        //
+        // The list arrives as ONE json parameter rather than one parameter per id. Binding per id
+        // walked straight into SQLITE_MAX_VARIABLE_NUMBER, so a principal with enough individual
+        // grants got a query failure instead of a listing, and got it at exactly the moment heavy
+        // sharing made the listing matter most. The limit is 32,766 on the bundled engine (999 on
+        // builds before SQLite 3.32); neither number is worth relying on, which is why the shape
+        // changed rather than the batch size. Chunking the IN
+        // list was the other option and is worse here: LIMIT/OFFSET is applied by this one
+        // statement to the fully filtered, fully ordered set, so splitting it would mean paging in
+        // memory over a merged result - the short-page bug this whole design exists to avoid.
+        const string grantClause =
+            "($userId IS NOT NULL AND t.thread_id IN (SELECT value FROM json_each($grants)))";
 
         using var command = connection.CreateCommand();
 
@@ -405,6 +407,7 @@ public sealed class SqliteConversationStore
               AND ( $isTenantAdmin = 1
                     OR ($userId IS NOT NULL AND t.owner_user_id = $userId)
                     OR ($userId IS NULL AND $appId IS NOT NULL AND t.owner_app_id = $appId)
+                    OR ($userId IS NOT NULL AND t.visibility = $tenantPublished)
                     OR {grantClause} )
             ORDER BY t.last_updated DESC
             LIMIT $limit OFFSET $offset;
@@ -414,18 +417,19 @@ public sealed class SqliteConversationStore
         _ = command.Parameters.AddWithValue("$userId", (object?)scope.UserId ?? DBNull.Value);
         _ = command.Parameters.AddWithValue("$appId", (object?)scope.AppId ?? DBNull.Value);
         _ = command.Parameters.AddWithValue("$isTenantAdmin", scope.IsTenantAdmin ? 1 : 0);
+        _ = command.Parameters.AddWithValue(
+            "$tenantPublished", Visibility.TenantPublished.ToString());
         _ = command.Parameters.AddWithValue("$limit", limit);
         _ = command.Parameters.AddWithValue("$offset", offset);
 
-        if (scope.UserId is not null)
-        {
-            var index = 0;
-            foreach (var threadId in scope.GrantedThreadIds)
-            {
-                _ = command.Parameters.AddWithValue(
-                    FormattableString.Invariant($"$grant{index++}"), threadId);
-            }
-        }
+        // An app-only principal never consults grants (7.4 step 3), so it binds the empty array
+        // rather than its own set - json_each over "[]" yields no rows, which is the same answer
+        // the old "0" literal gave and one fewer branch to keep in step with the SQL.
+        _ = command.Parameters.AddWithValue(
+            "$grants",
+            JsonSerializer.Serialize(
+                scope.UserId is null ? [] : (IEnumerable<string>)scope.GrantedThreadIds,
+                JsonOptions));
 
         var metadataList = new List<ThreadMetadata>();
 
@@ -542,16 +546,14 @@ public sealed class SqliteConversationStore
             return " AND 0";
         }
 
-        var names = new List<string>(threadIds.Count);
-        var index = 0;
-        foreach (var threadId in threadIds)
-        {
-            var name = FormattableString.Invariant($"$tid{index++}");
-            names.Add(name);
-            _ = command.Parameters.AddWithValue(name, threadId);
-        }
+        // ONE json parameter, not one per id. An adoption naming a large thread set - which a
+        // legacy-tenant migration, the exact operation this helper exists for, routinely does -
+        // would otherwise exceed SQLITE_MAX_VARIABLE_NUMBER and fail the whole batch rather than
+        // adopt fewer rows.
+        _ = command.Parameters.AddWithValue(
+            "$threadIds", JsonSerializer.Serialize(threadIds, JsonOptions));
 
-        return FormattableString.Invariant($" AND thread_id IN ({string.Join(", ", names)})");
+        return " AND thread_id IN (SELECT value FROM json_each($threadIds))";
     }
 
     /// <inheritdoc />

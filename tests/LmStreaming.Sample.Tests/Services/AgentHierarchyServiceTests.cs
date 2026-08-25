@@ -941,6 +941,87 @@ public sealed class AgentHierarchyServiceTests
     /// implicit "run" state inert; this test never starts a run, but MultiTurnAgentLoop's constructor
     /// still requires a provider.
     /// </summary>
+    /// <summary>
+    /// The cold-path scan is narrowed by the ROOT conversation's tenant at the store (#388a).
+    /// </summary>
+    /// <remarks>
+    /// Same claim, second call site. The two scans are documented as deliberately identical, which
+    /// is exactly why each needs its own test: "kept identical on purpose" is a comment, and the
+    /// only thing that keeps it true is a failure when one of them drifts.
+    /// </remarks>
+    [Fact]
+    public async Task ScanPersistedSubAgentChildren_ExcludesAnotherTenantsRowStampedWithTheSameParent()
+    {
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            RootThread,
+            new ThreadMetadata { ThreadId = RootThread, LastUpdated = 0, TenantId = "tnt_a" });
+        await SeedProvenanceChildAsync(store, "mine", "tnt_a");
+        await SeedProvenanceChildAsync(store, "theirs", "tnt_b");
+
+        // A rehydrated collaboration-off loop: live, but with an empty SubAgentManager, which is the
+        // only state that reaches the persisted scan at all.
+        var subAgentOptions = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["worker"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "You are a worker.",
+                    Description = "Does work.",
+                    AgentFactory = BlockingProvider,
+                },
+            },
+            MaxConcurrentSubAgents = 5,
+        };
+        await using var loop = new MultiTurnAgentLoop(
+            BlockingProvider(),
+            new FunctionRegistry(),
+            threadId: RootThread,
+            subAgentOptions: subAgentOptions);
+        await using var pool = CreatePoolReturning(loop);
+        _ = pool.GetOrCreateAgent(RootThread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+
+        var service = new AgentHierarchyService(
+            pool,
+            new WorkflowRunRegistry(),
+            store,
+            NullLogger<AgentHierarchyService>.Instance,
+            new SubAgentScanCoverageCache());
+
+        var (rows, _, _) = await service.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+
+        // Both halves. The first says the narrowing happened; the second says it narrowed by tenant
+        // and not by having stopped scanning altogether.
+        rows.Select(r => r.AgentId).Should().NotContain("theirs");
+        rows.Select(r => r.AgentId).Should().Contain("mine");
+    }
+
+    /// <summary>Seeds one persisted sub-agent row stamped as <see cref="RootThread"/>'s child.</summary>
+    private static Task SeedProvenanceChildAsync(
+        IConversationStore store,
+        string childId,
+        string? tenantId) =>
+        store.SaveMetadataAsync(
+            $"subagent-{childId}",
+            new ThreadMetadata
+            {
+                ThreadId = $"subagent-{childId}",
+                LastUpdated = 0,
+                TenantId = tenantId,
+                Properties = SubAgentProvenance.Build(
+                    RootThread,
+                    new SubAgentSnapshot(
+                        childId,
+                        Name: childId,
+                        TemplateName: "worker",
+                        Task: $"{childId}'s task",
+                        Status: SubAgentStatus.Completed,
+                        ThreadId: $"subagent-{childId}",
+                        LastActivityUtc: DateTimeOffset.UtcNow,
+                        TerminalAtUtc: DateTimeOffset.UtcNow)),
+            });
+
     private static IStreamingAgent BlockingProvider()
     {
         var provider = new Mock<IStreamingAgent>();

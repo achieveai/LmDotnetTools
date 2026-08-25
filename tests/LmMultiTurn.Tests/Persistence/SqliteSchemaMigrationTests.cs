@@ -245,6 +245,141 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ADatabaseWrittenByANewerBuild_IsRefused_NotOpenedOptimistically()
+    {
+        // The rollback case (#386). A deployment rolled back to an older binary opens a file a
+        // newer one already migrated. `>= LatestSchemaVersion` reads that as "already current" and
+        // hands the caller a connection to a schema this build has no model for - the older code
+        // then queries tables and columns whose meaning it does not know.
+        //
+        // Refusing is the only safe answer: this build cannot migrate DOWN, and it cannot know what
+        // the newer schema changed. The repo already takes this position for workflow snapshots
+        // (WorkflowInstanceSnapshot refuses a newer SchemaVersion); this is the same rule for the
+        // one store that persists customer conversations.
+        await using (var seed = await OpenAsync())
+        {
+            await SqliteSchemaInitializer.InitializeSchemaAsync(seed);
+
+            using var stamp = seed.CreateCommand();
+            stamp.CommandText = FormattableString.Invariant(
+                $"PRAGMA user_version = {SqliteSchemaInitializer.LatestSchemaVersion + 1};");
+            _ = await stamp.ExecuteNonQueryAsync();
+        }
+
+        await using var connection = await OpenAsync();
+
+        var act = async () => await SqliteSchemaInitializer.InitializeSchemaAsync(connection);
+
+        _ = (await act.Should().ThrowAsync<NotSupportedException>())
+            .Which.Message.Should()
+            .Contain((SqliteSchemaInitializer.LatestSchemaVersion + 1).ToString(
+                System.Globalization.CultureInfo.InvariantCulture),
+                "an operator reading the crash needs to see which version the file is at");
+    }
+
+    [Fact]
+    public async Task ADatabaseAtTheLatestVersion_IsStillOpenedWithoutComplaint()
+    {
+        // Non-vacuity for the test above. A refusal that also rejected an ordinary already-current
+        // database would pass that assertion and break every process on the deployment, and the
+        // boundary between the two is exactly one integer.
+        await using (var seed = await OpenAsync())
+        {
+            await SqliteSchemaInitializer.InitializeSchemaAsync(seed);
+        }
+
+        await using var connection = await OpenAsync();
+
+        var act = async () => await SqliteSchemaInitializer.InitializeSchemaAsync(connection);
+
+        _ = await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task UpgradingAPopulatedDatabase_AddsTheOwnerColumns_AndKeepsEveryExistingRow()
+    {
+        // The real upgrade path, which no existing test covers. Step 3 is `ALTER TABLE ... ADD
+        // COLUMN`, the one step in the ladder that is structurally unsafe to run twice, and every
+        // test that reaches it does so against an EMPTY table or exits at the fast path first.
+        //
+        // A customer's database is not empty. This one is stamped at version 2 - the last version
+        // before the owner columns existed - with rows already in thread_metadata, which is the
+        // exact state a deployment upgrading into slice 2 is in.
+        await using (var stamp = await OpenAsync())
+        {
+            using var command = stamp.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE thread_metadata (
+                    thread_id      TEXT PRIMARY KEY,
+                    current_run_id TEXT,
+                    last_updated   INTEGER NOT NULL,
+                    metadata_json  TEXT
+                );
+                INSERT INTO thread_metadata (thread_id, current_run_id, last_updated, metadata_json)
+                VALUES ('thread-kept-1', 'run-a', 111, '{"title":"first"}'),
+                       ('thread-kept-2', NULL,    222, '{"title":"second"}');
+                PRAGMA user_version = 2;
+                """;
+            _ = await command.ExecuteNonQueryAsync();
+        }
+
+        await using var connection = await OpenAsync();
+        await SqliteSchemaInitializer.InitializeSchemaAsync(connection);
+
+        (await ReadUserVersionAsync(connection))
+            .Should().Be(SqliteSchemaInitializer.LatestSchemaVersion);
+
+        // The columns step 3 adds are present...
+        foreach (var column in new[] { "tenant_id", "owner_user_id", "owner_app_id", "visibility" })
+        {
+            (await ColumnExistsAsync(connection, "thread_metadata", column))
+                .Should().BeTrue($"step 3 adds {column}");
+        }
+
+        // ...and the rows that were there before the ALTER are still there, unmodified, with the
+        // new columns null rather than defaulted. Null is what the startup repair looks for; a
+        // migration that defaulted tenant_id would make those conversations invisible to the repair
+        // and therefore permanently untenanted.
+        using var read = connection.CreateCommand();
+        read.CommandText = """
+            SELECT thread_id, current_run_id, last_updated, metadata_json, tenant_id
+            FROM thread_metadata ORDER BY thread_id;
+            """;
+
+        var rows = new List<(string ThreadId, string? RunId, long Updated, string? Json, bool TenantNull)>();
+        await using (var reader = await read.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                rows.Add((
+                    reader.GetString(0),
+                    reader.IsDBNull(1) ? null : reader.GetString(1),
+                    reader.GetInt64(2),
+                    reader.IsDBNull(3) ? null : reader.GetString(3),
+                    reader.IsDBNull(4)));
+            }
+        }
+
+        _ = rows.Should().Equal(
+            ("thread-kept-1", "run-a", 111L, """{"title":"first"}""", true),
+            ("thread-kept-2", null, 222L, """{"title":"second"}""", true));
+    }
+
+    private static async Task<bool> ColumnExistsAsync(
+        SqliteConnection connection,
+        string table,
+        string column)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = FormattableString.Invariant(
+            $"SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = $name;");
+        _ = command.Parameters.AddWithValue("$name", column);
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(),
+            System.Globalization.CultureInfo.InvariantCulture) > 0;
+    }
+
+    [Fact]
     public async Task TenantsTable_RefusesTwoTenantsClaimingTheSameEntraDirectory()
     {
         // The partial unique index is what makes a cross-tenant identity collision structurally

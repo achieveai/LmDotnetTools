@@ -254,6 +254,25 @@ id that was never minted produces. That is deliberate: conversation ids are gues
 `403` would be an existence oracle. A caller who already holds a grant gets `403` with a reason code
 instead, because for them there is nothing left to hide.
 
+**The refusals also cost the same shape of work (#389).** Identical bodies are not enough on their
+own: three different refusals reach that same `404` — the id names no row, the row belongs to
+another tenant, and the row is in the caller's own tenant but grants them nothing — and only the
+last of them used to consult the grant registry. One extra round trip is a small signal, but it is a
+signal, and it is one an authenticated member could read as "this id exists inside my tenant". The
+authorizer now issues that same lookup on the paths that would otherwise skip it, so all three
+answers make exactly one grant-registry call. For a caller with no end user (an `Identity:Apps`
+service credential) the equalised count is zero, because such a principal never consults grants on
+any path.
+
+Scope this claim precisely, in both directions:
+
+- It equalises the **shape** of the work, not the wall clock. Nothing here defends against an
+  attacker who can measure the cost of the *store* itself — a cached row against a cold one, say.
+  Wall-clock equalisation is not attempted, and a runbook should not claim it.
+- What was leaking before the fix was **existence only, and only inside the caller's own tenant** —
+  never contents, never whether a grant exists, never anything about a tenant the caller is not a
+  member of. Cross-tenant probing was already clean.
+
 Rights follow spec §7.4.1, and two of them surprise people:
 
 - A **tenant admin** may READ a member's private conversation but may not write or delete it.
@@ -281,10 +300,18 @@ claimed first. Two mechanisms do this, and both are needed:
    customer's tenant id would hand that customer's admins read access to it. Pick an unused id.
 
    Agent-owned threads — the `subagent-*` and `workflow-*` ids the agent pool creates rather than
-   the provisioning route — are **not** stamped at creation, so a run produces fresh untenanted rows
-   that this repair only claims at the NEXT boot. They fail closed in the meantime (`404`, like any
-   untenanted row), which is the right direction but is not the same as "every conversation carries a
-   tenant". Tracked on issue #385.
+   the provisioning route — used to reach this repair as fresh untenanted rows, claimed only at the
+   NEXT boot. They now **inherit** tenant and owner from their parent conversation at creation
+   (#385), so the repair no longer has to catch up with them.
+
+   Inheritance rather than re-resolution, deliberately: a sub-agent run outlives the HTTP request
+   that started it, and the request principal is gone by the time the child thread is created. The
+   parent's stored row is the only identity still available, and it is the correct one — the child
+   is work done on the parent's behalf.
+
+   **Visibility is not inherited.** Tenant and owner are identity; publication is a decision someone
+   made about the parent conversation, and it was not a decision about this one. A child of a
+   tenant-published parent starts private, and publishing it stays an explicit act.
 
 2. **Adoption.** `POST /api/admin/tenants/{tenantId}/adopt-legacy` moves conversations out of the
    quarantine tenant into a real one, optionally assigning an owner. It takes the operator secret,

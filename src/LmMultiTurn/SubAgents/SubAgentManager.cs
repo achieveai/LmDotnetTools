@@ -2599,6 +2599,14 @@ public sealed class SubAgentManager : IAsyncDisposable
                 ?? _options.DefaultConversationStoreFactory;
             store = storeFactory?.Invoke($"subagent-{agentId}");
 
+            // Stamp the child with the launching conversation's tenant and owner BEFORE the loop
+            // runs (#385). A sub-agent thread is minted here, never through the provisioning route,
+            // so nothing else ever gives it a tenant - and an untenanted row is indistinguishable
+            // from a missing one once Identity:Enforce is on.
+            await AgentThreadOwnership
+                .InheritAsync(store, lineage.ParentThreadId, SubAgentThreadId(agentId), CancellationToken.None)
+                .ConfigureAwait(false);
+
             // Build a fresh FunctionRegistry with filtered parent tools
             var registry = new FunctionRegistry();
             var enabledSet = BuildEnabledToolSet(

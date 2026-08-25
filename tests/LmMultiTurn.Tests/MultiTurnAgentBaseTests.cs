@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
@@ -989,6 +990,59 @@ public class MultiTurnAgentBaseTests
         updatedMetadata.Properties["preview"].Should().Be("First message preview");
 
         // Cleanup
+        await cts.CancelAsync();
+        await agent.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task UpdateMetadataAsync_PreservesOwnershipStampedAtCreation()
+    {
+        // Ownership is stamped ONCE, at creation, and never repaired later (spec 8.3). That design
+        // only holds if nothing downstream overwrites it - and this method is downstream of every
+        // conversation, because it runs after every completed run.
+        //
+        // It rebuilds ThreadMetadata from scratch and carries Properties and SessionMappings across
+        // by hand. The four owner columns were never added to that list, and SaveMetadataAsync
+        // upserts all four unconditionally (`SET tenant_id = excluded.tenant_id, ...`). So the
+        // first completed turn on a freshly provisioned conversation nulls its tenant and its
+        // owner. Under Identity:Enforce=true a null-tenant row is treated as absent, which means
+        // the conversation 404s for the person who just created it.
+        var store = new InMemoryConversationStore();
+        var threadId = "test-thread-ownership";
+
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = "old-run",
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                TenantId = "tnt_acme",
+                OwnerUserId = "entra-tid:owner-oid",
+                OwnerAppId = "codereview-daemon",
+                Visibility = Visibility.Shared,
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+
+        using var cts = new CancellationTokenSource();
+        var runTask = agent.RunAsync(cts.Token);
+
+        await agent.SendAsync([new TextMessage { Text = "Hello", Role = Role.User }]);
+        await Task.Delay(500);
+
+        var updated = await store.LoadMetadataAsync(threadId);
+
+        _ = updated.Should().NotBeNull();
+        _ = updated!.TenantId.Should().Be("tnt_acme");
+        _ = updated.OwnerUserId.Should().Be("entra-tid:owner-oid");
+        _ = updated.OwnerAppId.Should().Be("codereview-daemon");
+        _ = updated.Visibility.Should().Be(Visibility.Shared);
+
+        // Non-vacuity: the run really did write metadata, so the assertions above are reading a
+        // row this method rewrote rather than the untouched row the fixture seeded.
+        _ = updated.LatestRunId.Should().NotBe("old-run");
+
         await cts.CancelAsync();
         await agent.DisposeAsync();
     }
