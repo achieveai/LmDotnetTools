@@ -168,10 +168,12 @@ public sealed class EvaluatorConfig
                 .Append(Separator)
                 .Append(
                     string.Join(
-                        ',',
+                        TaskTypeSeparator,
                         gate
                             .AppliesTo.OrderBy(t => t, StringComparer.Ordinal)
-                            .Select(t => Field(t, "Gate task type", gate.GateId))
+                            .Select(t =>
+                                Field(t, "Gate task type", gate.GateId, TaskTypeSeparator)
+                            )
                     )
                 )
                 .Append(Separator)
@@ -292,6 +294,15 @@ public sealed class EvaluatorConfig
     ) => new(Gates, Judges, Aggregator, Options, logger);
 
     /// <summary>
+    /// Joins a gate's task types inside one field. A comma rather than the unit separator because
+    /// the separator already means "next field" here; whichever character is chosen, a value
+    /// carrying it is refused below, because a list delimiter forges a boundary exactly as a field
+    /// delimiter does — <c>{"a,b"}</c> and <c>{"a","b"}</c> render the same bytes and gate
+    /// different runs.
+    /// </summary>
+    private const char TaskTypeSeparator = ',';
+
+    /// <summary>
     /// One value on its way into the digest, refused if it could forge a boundary there.
     /// <para>
     /// The unit separator argument covers field boundaries only. Records are newline-delimited and
@@ -299,16 +310,32 @@ public sealed class EvaluatorConfig
     /// literal unit separator — could still make two different configurations hash the same, and
     /// the comparison refusal built on that hash would pass a genuinely incomparable pair.
     /// </para>
+    /// <para>
+    /// <paramref name="listSeparator"/> is supplied for a value that goes into the digest as one
+    /// element of a joined list. Inside such a field the join character is a boundary of its own,
+    /// so it is refused for the same reason and with the same consequence.
+    /// </para>
     /// </summary>
-    private static string Field(string value, string kind, string owner)
+    private static string Field(
+        string value,
+        string kind,
+        string owner,
+        char? listSeparator = null
+    )
     {
-        if (value.Contains('\n') || value.Contains(Separator))
+        var forgesListBoundary = listSeparator is { } separator && value.Contains(separator);
+
+        if (value.Contains('\n') || value.Contains(Separator) || forgesListBoundary)
         {
+            var offending = forgesListBoundary
+                ? $"a newline, a unit separator, or the comma '{listSeparator}' that joins its list"
+                : "a newline or a unit separator";
+
             throw new ArgumentException(
-                $"{kind} for '{owner}' contains a newline or a unit separator. Either can forge a "
-                    + "record or field boundary inside the evaluator config hash, making two "
-                    + "different configurations hash identically — and the comparison refusal "
-                    + "built on that hash would then pass a genuinely incomparable pair.",
+                $"{kind} for '{owner}' contains {offending}. Any of them can forge a record, field "
+                    + "or list boundary inside the evaluator config hash, making two different "
+                    + "configurations hash identically — and the comparison refusal built on that "
+                    + "hash would then pass a genuinely incomparable pair.",
                 nameof(value)
             );
         }

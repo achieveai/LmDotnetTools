@@ -646,9 +646,62 @@ public class BaselineComparerTests
     }
 
     /// <summary>
+    /// A severe outage breaches BOTH bounds, and only one refusal is reported. It must be the fault
+    /// rate: the floor says the run is too thin to compare, which is true of a genuinely thin corpus
+    /// too, while the fault rate says the harness could not reach its judges — the cause, and the
+    /// one a reader can act on. Order is the whole of the behaviour here, so it needs a case that
+    /// distinguishes the two; the outage test above sits exactly ON the floor, which is precisely
+    /// the input that cannot tell the orderings apart.
+    /// </summary>
+    [Fact]
+    public void A_run_breaching_both_bounds_is_refused_for_the_cause_not_the_symptom()
+    {
+        var baseline = Baseline(UniformRun(passing: 20, size: 20), minCoverage: 0.9);
+
+        // 8 of 20 faulted: fault rate 0.4 (over the 0.05 default) AND coverage 0.6 (under the 0.9
+        // floor). Both refusals apply; only the one naming the cause is worth reporting.
+        var outage = Run(
+            [
+                .. Enumerable.Range(0, 12).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+                .. Enumerable.Range(12, 8).Select(i => Faulted($"i{i}")),
+            ]
+        );
+
+        outage.FaultRate.Should().BeApproximately(0.4, 1e-9);
+        outage.Coverage.Should().BeApproximately(0.6, 1e-9);
+        outage.Coverage.Should().BeLessThan(baseline.MinCoverage);
+
+        BaselineComparer.Compare(outage, baseline).Refusal
+            .Should()
+            .Be(ComparisonRefusal.FaultRateAboveMaximum);
+    }
+
+    /// <summary>
     /// The bound lives on the baseline for the same reason MinCoverage does: the run being judged
     /// must not be able to relax the bar it is judged against.
     /// </summary>
+    /// <summary>
+    /// <c>From</c> validates both bounds; the init accessors did not, so a <c>with</c> expression
+    /// walked straight past them. A NaN bound is the worst of the reachable values because every
+    /// comparison against it is false: <c>run.FaultRate &gt; NaN</c> never fires, so the refusal is
+    /// permanently disarmed and every subsequent outage reads as a candidate regression — silently,
+    /// since a disarmed check produces no output to notice.
+    /// </summary>
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(-0.1)]
+    [InlineData(1.1)]
+    public void A_bound_cannot_be_rewritten_past_the_validation_its_factory_applied(double bad)
+    {
+        var baseline = Baseline(UniformRun(passing: 20, size: 20), minCoverage: 0.8);
+
+        var faultRate = () => baseline with { MaxFaultRate = bad };
+        var coverage = () => baseline with { MinCoverage = bad };
+
+        faultRate.Should().Throw<ArgumentOutOfRangeException>();
+        coverage.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
     [Fact]
     public void The_fault_rate_bound_is_the_baselines_to_set()
     {

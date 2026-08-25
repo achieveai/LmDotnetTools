@@ -118,7 +118,11 @@ public sealed record EvalBaseline
     /// Least coverage a candidate run may have and still be compared. It lives on the baseline so
     /// the run being judged cannot relax the bar it is judged against.
     /// </summary>
-    public required double MinCoverage { get; init; }
+    public required double MinCoverage
+    {
+        get => _minCoverage;
+        init => _minCoverage = Fraction(value, nameof(MinCoverage), "A coverage floor");
+    }
 
     /// <summary>
     /// Most of the corpus a candidate run may lose to faults and still be compared, in [0,1]. It
@@ -132,7 +136,36 @@ public sealed record EvalBaseline
     /// misreading this whole refusal machinery exists to prevent.
     /// </para>
     /// </summary>
-    public double MaxFaultRate { get; init; } = DefaultMaxFaultRate;
+    public double MaxFaultRate
+    {
+        get => _maxFaultRate;
+        init => _maxFaultRate = Fraction(value, nameof(MaxFaultRate), "A fault-rate bound");
+    }
+
+    private readonly double _minCoverage;
+    private readonly double _maxFaultRate = DefaultMaxFaultRate;
+
+    /// <summary>
+    /// A bound in [0,1], refused at the accessor rather than only in <see cref="From"/>. A record
+    /// built by a factory is still rewritable through a <c>with</c> expression, which walks straight
+    /// past the factory's checks, and NaN is the reachable value that does the most damage: every
+    /// comparison against it is false, so <c>run.FaultRate &gt; NaN</c> never fires and the refusal
+    /// is permanently disarmed. A disarmed check emits nothing, so the loss shows up only as
+    /// outages read as candidate regressions.
+    /// </summary>
+    private static double Fraction(double value, string name, string what)
+    {
+        if (double.IsNaN(value) || value < 0.0 || value > 1.0)
+        {
+            throw new ArgumentOutOfRangeException(
+                name,
+                value,
+                $"{what} is a fraction of the corpus and must be in [0,1]."
+            );
+        }
+
+        return value;
+    }
 
     /// <summary>
     /// The default fault-rate bound. Low, because a fault is an item the harness never measured at

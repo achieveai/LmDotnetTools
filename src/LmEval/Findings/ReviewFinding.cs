@@ -140,8 +140,11 @@ public static partial class ReviewFindingParser
     /// precedes it, falling back to the line's first tag when none does.
     /// <para>
     /// The fallback is what keeps a trailing tag covering the whole line, which is the common
-    /// single-tag shape. It cannot reintroduce the smearing this replaced: smearing needs two tags,
-    /// and with two tags every anchor after the first has a preceding one of its own.
+    /// single-tag shape. It is a fallback, NOT a pairing: on a line whose tags all trail its
+    /// citations — <c>a.cs:1 b.cs:2 [must] [nit]</c> — every citation takes the first tag and the
+    /// rest are dropped, because nothing in the text says which citation a trailing tag belongs to.
+    /// That is the deliberate cost of not smearing the last tag forward: a confident wrong pairing
+    /// reads as a measurement, while a coarse one is at least the severity the line leads with.
     /// </para>
     /// </summary>
     private static string? SeverityFor(

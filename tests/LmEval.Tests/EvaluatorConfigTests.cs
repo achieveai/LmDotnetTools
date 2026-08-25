@@ -238,6 +238,28 @@ public class EvaluatorConfigTests
         judge.SeenCandidateIds.Should().Equal("x");
     }
 
+    /// <summary>
+    /// The gate's task-type list is comma-joined, and the field guard refuses a newline and a unit
+    /// separator but not the comma — so a gate scoped to the single task type <c>"a,b"</c> and a gate
+    /// scoped to the two task types <c>"a"</c> and <c>"b"</c> rendered the same bytes and hashed the
+    /// same. That is the forgery class §3 of the hash fix exists to close, reopened one delimiter
+    /// down: the two configurations gate different runs, and the comparability refusal built on the
+    /// hash would call them the same evaluator.
+    /// </summary>
+    [Fact]
+    public void A_task_type_cannot_carry_the_delimiter_that_joins_its_list()
+    {
+        var forgery = () => Build([new MarkerGate("m", appliesTo: ["a,b"])]);
+
+        forgery.Should().Throw<ArgumentException>().WithMessage("*comma*");
+
+        // And the honest pair on either side of the collision still hashes apart, so the refusal
+        // above closes a real ambiguity rather than a test observing one that never existed.
+        Build([new MarkerGate("m", appliesTo: ["a", "b"])])
+            .Hash.Should()
+            .NotBe(Build([new MarkerGate("m", appliesTo: ["ab"])]).Hash);
+    }
+
     [Fact]
     public void Every_hashed_evaluator_field_moves_the_hash_on_its_own()
     {
