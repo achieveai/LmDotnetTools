@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using AchieveAi.LmDotnetTools.LmEval.Running;
 
 namespace AchieveAi.LmDotnetTools.LmEval.Gates;
 
@@ -15,7 +16,7 @@ namespace AchieveAi.LmDotnetTools.LmEval.Gates;
 /// that resolve, not for prose that reads as thorough.
 /// </para>
 /// </summary>
-public sealed partial class RequiredAnchorGate : GateBase
+public sealed partial class RequiredAnchorGate : GateBase, IConfigurationFingerprint
 {
     /// <summary>The stable id this gate records on every decision.</summary>
     public const string Id = "required-anchor";
@@ -31,6 +32,9 @@ public sealed partial class RequiredAnchorGate : GateBase
         ArgumentOutOfRangeException.ThrowIfLessThan(minimumAnchors, 1);
         _minimumAnchors = minimumAnchors;
     }
+
+    /// <summary>The citation floor, which is the whole of this gate's configuration.</summary>
+    public string? ConfigurationFingerprint => $"minimumAnchors={_minimumAnchors}";
 
     /// <inheritdoc />
     protected override GateDecision Evaluate(Candidate candidate)

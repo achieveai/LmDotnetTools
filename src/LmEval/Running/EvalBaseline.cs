@@ -1,0 +1,133 @@
+namespace AchieveAi.LmDotnetTools.LmEval.Running;
+
+/// <summary>
+/// A frozen tuple of (corpus snapshot, rubric version, variant config, evaluator config), recorded
+/// once and referenced thereafter, never recomputed silently.
+/// <para>
+/// The fourth element is the one the first three leave out. Corpus, rubric and variant hold the
+/// <i>candidate</i> side fixed; nothing held the <i>evaluator</i> side fixed, and it moves on its
+/// own — refitting reliability weights changes scores, and against a frozen baseline that reads as
+/// a candidate regression.
+/// </para>
+/// </summary>
+public sealed record EvalBaseline
+{
+    /// <summary>The task type this baseline partitions. Scores never cross task types.</summary>
+    public required string TaskType { get; init; }
+
+    /// <summary>Stable identity of this baseline.</summary>
+    public required string BaselineId { get; init; }
+
+    /// <summary>The rubric it was measured under.</summary>
+    public required string RubricId { get; init; }
+
+    /// <summary>Its exact version. A comparison across versions is refused, not warned about.</summary>
+    public required string RubricVersion { get; init; }
+
+    /// <summary>The corpus item count — the denominator every rate below is over.</summary>
+    public required int CorpusSize { get; init; }
+
+    /// <summary>
+    /// How many of <see cref="CorpusSize"/> yielded a counted score, so the baseline's own coverage
+    /// is frozen beside the conditional metrics it belongs to. Reporting
+    /// <see cref="MeanScore"/> or <see cref="P10Score"/> without the coverage they were computed
+    /// over is forbidden, and a <i>frozen</i> conditional metric is not an exception to that rule —
+    /// it is the case that most needs it, since the run it came from is long gone. Distinct from
+    /// <see cref="MinCoverage"/>, which is a floor imposed on the candidate, not a fact about this
+    /// baseline.
+    /// </summary>
+    public required int ScoredItems { get; init; }
+
+    /// <summary>Conditional mean over scored items only. Never read without <see cref="ScoredItems"/>.</summary>
+    public required double MeanScore { get; init; }
+
+    /// <summary>Conditional 10th percentile over scored items only — the tail a mean hides.</summary>
+    public required double P10Score { get; init; }
+
+    /// <summary>Passing items over <see cref="CorpusSize"/>, not over the scored subset.</summary>
+    public required double PassRate { get; init; }
+
+    /// <summary>Host-supplied mean cost per item, in USD micro-units.</summary>
+    public required long MeanCostMicros { get; init; }
+
+    /// <summary>
+    /// Items the panel could not decide, over <see cref="CorpusSize"/>.
+    /// <para>
+    /// <b>Spec deviation, deliberate and recorded.</b> The §5.2 record does not carry this field,
+    /// but §5.4's third regression trigger is "the NoDecision rate <i>rises</i> materially" — and a
+    /// rise has no meaning without a value to rise from. Every other field a trigger consumes is
+    /// frozen here; this one was left out, so the trigger was unimplementable as written. It is
+    /// added rather than silently reinterpreted as an absolute threshold, because an absolute
+    /// threshold is a different rule that would fire on a corpus that was always hard.
+    /// </para>
+    /// </summary>
+    public required double NoDecisionRate { get; init; }
+
+    /// <summary>Identity of the corpus snapshot. A comparison across two values is refused.</summary>
+    public required string CorpusSnapshotHash { get; init; }
+
+    /// <summary>
+    /// Identity of every score-affecting <i>evaluator</i> input. A comparison across two different
+    /// values is refused, not warned about.
+    /// </summary>
+    public required string EvaluatorConfigHash { get; init; }
+
+    /// <summary>
+    /// Least coverage a candidate run may have and still be compared. It lives on the baseline so
+    /// the run being judged cannot relax the bar it is judged against.
+    /// </summary>
+    public required double MinCoverage { get; init; }
+
+    /// <summary>
+    /// Freezes a completed run as the baseline for its task type. This is the only supported way to
+    /// mint one from measurement: every metric is copied from the run that produced it, so a
+    /// baseline can never claim a coverage or a hash belonging to some other run.
+    /// </summary>
+    /// <param name="baselineId">Stable identity for the new baseline.</param>
+    /// <param name="run">The run to freeze.</param>
+    /// <param name="minCoverage">The coverage floor to impose on future candidate runs, in [0,1].</param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="minCoverage"/> is outside [0,1].</exception>
+    /// <exception cref="ArgumentException">The run scored nothing, so it has no conditional metrics.</exception>
+    public static EvalBaseline From(string baselineId, EvalRun run, double minCoverage)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(baselineId);
+        ArgumentNullException.ThrowIfNull(run);
+
+        if (double.IsNaN(minCoverage) || minCoverage < 0.0 || minCoverage > 1.0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(minCoverage),
+                minCoverage,
+                "A coverage floor is a fraction of the corpus and must be in [0,1]."
+            );
+        }
+
+        if (run.MeanScore is not { } mean || run.P10Score is not { } p10)
+        {
+            throw new ArgumentException(
+                $"Run '{run.RunId}' scored none of its {run.CorpusSize} corpus items, so it has no "
+                    + "conditional mean or P10 to freeze. A baseline with no scored items would "
+                    + "compare every future run against nothing.",
+                nameof(run)
+            );
+        }
+
+        return new EvalBaseline
+        {
+            BaselineId = baselineId,
+            TaskType = run.TaskType,
+            RubricId = run.RubricId,
+            RubricVersion = run.RubricVersion,
+            CorpusSize = run.CorpusSize,
+            ScoredItems = run.ScoredItems,
+            MeanScore = mean,
+            P10Score = p10,
+            PassRate = run.PassRate,
+            MeanCostMicros = run.MeanCostMicros,
+            NoDecisionRate = run.NoDecisionRate,
+            CorpusSnapshotHash = run.CorpusSnapshotHash,
+            EvaluatorConfigHash = run.EvaluatorConfigHash,
+            MinCoverage = minCoverage,
+        };
+    }
+}

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmEval.Running;
 
 namespace AchieveAi.LmDotnetTools.LmEval.Gates;
 
@@ -10,7 +11,7 @@ namespace AchieveAi.LmDotnetTools.LmEval.Gates;
 /// a model whether well-formed JSON is well-formed spends tokens to get a less reliable answer.
 /// </para>
 /// </summary>
-public sealed class JsonSchemaGate : GateBase
+public sealed class JsonSchemaGate : GateBase, IConfigurationFingerprint
 {
     /// <summary>The stable id this gate records on every decision.</summary>
     public const string Id = "json-schema";
@@ -28,6 +29,14 @@ public sealed class JsonSchemaGate : GateBase
     {
         _requiredProperties = [.. requiredProperties ?? []];
     }
+
+    /// <summary>
+    /// The required-property set. Ordered so that the same set declared in a different order
+    /// fingerprints identically — order does not change which candidates this gate rejects.
+    /// </summary>
+    public string? ConfigurationFingerprint =>
+        "required="
+        + string.Join(',', _requiredProperties.OrderBy(p => p, StringComparer.Ordinal));
 
     /// <inheritdoc />
     protected override GateDecision Evaluate(Candidate candidate)
