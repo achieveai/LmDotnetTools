@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -428,7 +429,7 @@ public class SubAgentIntegrationTests
 
         // The background child races the parent's own run; wait deterministically for its
         // notification to land on the root's publish stream.
-        await WaitForConditionAsync(
+        await Wait.UntilAsync(
             () =>
             {
                 lock (descendantQuestionNotifications)
@@ -436,6 +437,7 @@ public class SubAgentIntegrationTests
                     return descendantQuestionNotifications.Count > 0;
                 }
             },
+            "the descendant-question notification landed on the root's publish stream",
             TimeSpan.FromSeconds(10));
 
         await cts.CancelAsync();
@@ -500,15 +502,6 @@ public class SubAgentIntegrationTests
                 await messages.DisposeAsync();
             }
         }, CancellationToken.None);
-    }
-
-    private static async Task WaitForConditionAsync(Func<bool> condition, TimeSpan timeout)
-    {
-        var deadline = DateTimeOffset.UtcNow + timeout;
-        while (!condition() && DateTimeOffset.UtcNow < deadline)
-        {
-            await Task.Delay(25);
-        }
     }
 
     #endregion

@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.Agents;
 
@@ -48,7 +49,7 @@ public class ConversationsRestContractTests
         sendResponse.Queued.Should().BeTrue();
 
         ConversationStatusResponse? status = null;
-        (await WaitUntilAsync(
+        await Wait.UntilAsync(
             async () =>
             {
                 var statusResult = await controller.GetStatus(
@@ -56,7 +57,8 @@ public class ConversationsRestContractTests
                 status = Assert.IsType<OkObjectResult>(statusResult).Value as ConversationStatusResponse;
                 return status?.Status == nameof(ConversationRunStatus.Completed) && status.Response != null;
             },
-            TimeSpan.FromSeconds(5))).Should().BeTrue();
+            "the accepted input resolved to a Completed run carrying a response",
+            TimeSpan.FromSeconds(5));
 
         status!.RunId.Should().NotBeNullOrEmpty();
         JsonSerializer.Serialize(status.Response).Should().Contain("Echo: hello");
@@ -98,7 +100,7 @@ public class ConversationsRestContractTests
         // Wait until run #1 is actually in progress (StartRunAsync ran; the agent is now blocked
         // on the gate) before sending the second message, so both inputs can never land in the
         // same drained batch.
-        (await WaitUntilAsync(
+        await Wait.UntilAsync(
             async () =>
             {
                 var statusResult = await controller.GetStatus(
@@ -106,7 +108,8 @@ public class ConversationsRestContractTests
                 var value = Assert.IsType<OkObjectResult>(statusResult).Value as ConversationStatusResponse;
                 return value?.Status == nameof(ConversationRunStatus.InProgress);
             },
-            TimeSpan.FromSeconds(5))).Should().BeTrue();
+            "run #1 reached InProgress, so the second message cannot land in the same drained batch",
+            TimeSpan.FromSeconds(5));
 
         var send2 = await controller.SendMessage(
             threadId, new SendMessageRequest { Text = "second" }, CancellationToken.None);
@@ -124,7 +127,7 @@ public class ConversationsRestContractTests
         gate.SetResult();
 
         ConversationStatusResponse? finalStatus1 = null;
-        (await WaitUntilAsync(
+        await Wait.UntilAsync(
             async () =>
             {
                 var statusResult = await controller.GetStatus(
@@ -132,10 +135,11 @@ public class ConversationsRestContractTests
                 finalStatus1 = Assert.IsType<OkObjectResult>(statusResult).Value as ConversationStatusResponse;
                 return finalStatus1?.Status == nameof(ConversationRunStatus.Completed) && finalStatus1.Response != null;
             },
-            TimeSpan.FromSeconds(5))).Should().BeTrue();
+            "releasing the gate let run #1 complete with a response",
+            TimeSpan.FromSeconds(5));
 
         ConversationStatusResponse? finalStatus2 = null;
-        (await WaitUntilAsync(
+        await Wait.UntilAsync(
             async () =>
             {
                 var statusResult = await controller.GetStatus(
@@ -143,7 +147,8 @@ public class ConversationsRestContractTests
                 finalStatus2 = Assert.IsType<OkObjectResult>(statusResult).Value as ConversationStatusResponse;
                 return finalStatus2?.Status == nameof(ConversationRunStatus.Completed) && finalStatus2.Response != null;
             },
-            TimeSpan.FromSeconds(5))).Should().BeTrue();
+            "the queued input #2 was drained into its own run, which completed with a response",
+            TimeSpan.FromSeconds(5));
 
         finalStatus1!.RunId.Should().NotBe(finalStatus2!.RunId);
         JsonSerializer.Serialize(finalStatus1.Response).Should().Contain("Echo: first");
@@ -204,7 +209,7 @@ public class ConversationsRestContractTests
         _ = restartedPool.GetOrCreateAgent(threadId, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
 
         ConversationStatusResponse? status = null;
-        (await WaitUntilAsync(
+        await Wait.UntilAsync(
             async () =>
             {
                 var statusResult = await restartedController.GetStatus(
@@ -212,7 +217,8 @@ public class ConversationsRestContractTests
                 status = Assert.IsType<OkObjectResult>(statusResult).Value as ConversationStatusResponse;
                 return status?.Status == nameof(ConversationRunStatus.Interrupted);
             },
-            TimeSpan.FromSeconds(5))).Should().BeTrue();
+            "the restarted process reconciled the orphaned accepted input into an Interrupted row",
+            TimeSpan.FromSeconds(5));
 
         status!.RunId.Should().NotBeNullOrEmpty();
     }
@@ -263,22 +269,6 @@ public class ConversationsRestContractTests
             registry.ToReal(),
             store,
             NullLogger<MultiTurnAgentPool>.Instance);
-    }
-
-    private static async Task<bool> WaitUntilAsync(Func<Task<bool>> condition, TimeSpan timeout)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
-        {
-            if (await condition())
-            {
-                return true;
-            }
-
-            await Task.Delay(20);
-        }
-
-        return await condition();
     }
 
     /// <summary>

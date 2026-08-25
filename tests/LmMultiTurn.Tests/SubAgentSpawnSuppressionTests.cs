@@ -8,6 +8,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 using Moq;
 using Xunit;
@@ -152,7 +153,7 @@ public class SubAgentSpawnSuppressionTests
         // immediately.
         await WaitForConditionAsync(
             () => created.SubAgentTools!.GetFunctions().Select(f => f.Contract.Name).Contains("Agent"),
-            "The run-scoped suppression was never disposed after the run ended.",
+            "the run-scoped suppression was disposed once the run ended, putting the Agent tool back",
             cts.Token);
 
         await cts.CancelAsync();
@@ -229,7 +230,7 @@ public class SubAgentSpawnSuppressionTests
         // the terminal message reaching this side of the channel).
         await WaitForConditionAsync(
             () => loop.SubAgentTools!.GetFunctions().Select(f => f.Contract.Name).Contains("Agent"),
-            "A failed run never released its suppression scope.",
+            "the failed run released its suppression scope, putting the Agent tool back",
             cts.Token);
 
         await cts.CancelAsync();
@@ -264,7 +265,7 @@ public class SubAgentSpawnSuppressionTests
                 store,
                 threadId,
                 history => history.OfType<ToolCallResultMessage>().Any(r => r.IsDeferred),
-                "The deferral was never persisted, so there is nothing for a restart to restore.",
+                "the deferral was persisted, so a restart has something to restore",
                 cts.Token);
         }
 
@@ -319,7 +320,7 @@ public class SubAgentSpawnSuppressionTests
                 store,
                 threadId,
                 history => history.OfType<ToolCallResultMessage>().Any(r => r.IsDeferred),
-                "The deferral was never persisted.",
+                "the deferral was persisted",
                 cts.Token);
         }
 
@@ -347,7 +348,7 @@ public class SubAgentSpawnSuppressionTests
             store,
             threadId,
             history => history.OfType<NotifyMessage>().Any(),
-            "The notification was not persisted under the restored parked run.",
+            "the notification was persisted under the restored parked run",
             cts.Token);
 
         await cts.CancelAsync();
@@ -403,7 +404,7 @@ public class SubAgentSpawnSuppressionTests
             store,
             threadId,
             history => history.OfType<NotifyMessage>().Any(),
-            "The parked notification was never folded into persisted history.",
+            "the parked notification was folded into persisted history",
             cts.Token);
 
         await loop.ResolveToolCallAsync(DeferredToolCallId, "children settled");
@@ -496,54 +497,48 @@ public class SubAgentSpawnSuppressionTests
     /// fire-and-forget, so anything a test asserts about what a RESTART — or a run parked between turns —
     /// can see has to wait for the write itself, not merely for the run that scheduled it.
     /// </summary>
-    private static async Task WaitForPersistedAsync(
+    /// <remarks>
+    /// The private deadline loop this replaced tested the deadline BEFORE each evaluation, so a write
+    /// that landed during the final sleep produced a timeout with the condition already true.
+    /// <see cref="Wait"/> evaluates first and checks the deadline afterwards, which removes that
+    /// window — it matters here because these waits run under solution-wide parallel load, where a
+    /// 20ms delay routinely takes ten times that (#343).
+    /// </remarks>
+    private static Task WaitForPersistedAsync(
         IConversationStore store,
         string threadId,
         Func<IReadOnlyList<IMessage>, bool> condition,
-        string timeoutMessage,
+        string because,
         CancellationToken ct)
     {
-        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            var history = MessagePersistenceConverter.FromPersistedMessages(
-                await store.LoadMessagesAsync(threadId, ct));
-            if (condition(history))
-            {
-                return;
-            }
-
-            await Task.Delay(20, ct);
-        }
-
-        throw new TimeoutException(timeoutMessage);
+        return Wait.UntilAsync(
+            async () => condition(
+                MessagePersistenceConverter.FromPersistedMessages(
+                    await store.LoadMessagesAsync(threadId, ct))),
+            because,
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromMilliseconds(20),
+            ct);
     }
 
     /// <summary>
-    /// Waits until <paramref name="condition"/> is true, or throws after a 10s timeout. Mirrors
-    /// <see cref="WaitForPersistedAsync"/>'s bounded-poll shape for the same reason: a terminal message
-    /// reaching <c>DrainAsync</c> and the producer's continuation that releases
-    /// <c>RunSpawnSuppression</c> are two separate, unsynchronized events, so anything asserting on the
-    /// disposal that continuation performs has to poll for it rather than check once immediately after
-    /// the terminal message is observed.
+    /// Waits until <paramref name="condition"/> is true. Mirrors <see cref="WaitForPersistedAsync"/>'s
+    /// bounded-poll shape for the same reason: a terminal message reaching <c>DrainAsync</c> and the
+    /// producer's continuation that releases <c>RunSpawnSuppression</c> are two separate,
+    /// unsynchronized events, so anything asserting on the disposal that continuation performs has to
+    /// poll for it rather than check once immediately after the terminal message is observed.
     /// </summary>
-    private static async Task WaitForConditionAsync(
+    private static Task WaitForConditionAsync(
         Func<bool> condition,
-        string timeoutMessage,
+        string because,
         CancellationToken ct)
     {
-        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            if (condition())
-            {
-                return;
-            }
-
-            await Task.Delay(20, ct);
-        }
-
-        throw new TimeoutException(timeoutMessage);
+        return Wait.UntilAsync(
+            condition,
+            because,
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromMilliseconds(20),
+            ct);
     }
 
     private static MultiTurnAgentLoop CreateLoop(
