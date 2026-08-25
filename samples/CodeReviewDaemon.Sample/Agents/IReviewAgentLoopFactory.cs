@@ -39,4 +39,17 @@ internal interface IReviewAgentLoopFactory
         ReviewToolContext? toolContext = null,
         PreparedReviewWorkspace? reviewWorkspace = null,
         string? resumeHostedThreadId = null);
+
+    /// <summary>
+    /// What <see cref="Create"/> will ACTUALLY run on given <paramref name="requestedModelId"/> — which is
+    /// not always what was asked for. The S2S factory discards the per-call id (provision carries no model
+    /// field), so a caller that wants to record or reason about the model has to ask instead of assume.
+    /// <para>
+    /// Returns <c>null</c> when the transport exposes no model identity at all. Null is <b>unknown</b>, not
+    /// a value: a caller comparing two nulls must not conclude the two runs shared a model, and one
+    /// persisting a null must not present it as a measurement. Anything a caller records from this is a
+    /// claim about production, so a factory must never return an id it will not honour.
+    /// </para>
+    /// </summary>
+    string? ResolveEffectiveModelId(string? requestedModelId);
 }

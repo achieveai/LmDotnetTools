@@ -11,8 +11,8 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// <summary>
 /// Grades a completed review (plan §15, AC#7). The judge drives one collect-only run over an
 /// <see cref="IMultiTurnAgent"/>, scores the reply through the shared LmEval harness, and
-/// <b>persists only</b> a <c>judge</c> <see cref="ReviewArtifact"/> carrying exactly
-/// <c>{score, rationale, variant_id}</c>.
+/// <b>persists only</b> a <c>judge</c> <see cref="ReviewArtifact"/> carrying exactly the fields of
+/// <see cref="JudgeArtifactPayload"/> — a closed set, not a minimum.
 /// <para>
 /// "Judge feedback v1 = persist only": the verdict is recorded for later human inspection — it is
 /// NEVER used to auto-route work, rewrite skills, or gate posting. The bounded payload shape is the
@@ -22,14 +22,20 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// This type is now an <b>adapter</b>, not a judge: parsing, abstention and scoring live in
 /// <see cref="JudgeGauntlet"/> so Revobot and the offline gauntlet cannot drift into two different
 /// definitions of what a score means. What stays here is everything Revobot-specific — the artifact
-/// shape, the run-id log line, and the mapping from a harness verdict back onto the v1 integer
-/// score this daemon has always persisted.
+/// shape, the run-id log line, and the mapping from a harness verdict back onto the integer score
+/// this daemon persists — or onto no score at all, when the harness would not put a number on the
+/// reply.
 /// </para>
 /// </summary>
 internal sealed class JudgeAgent
 {
-    /// <summary>Schema version of the <c>judge</c> artifact payload (append-compatible).</summary>
-    public const int JudgeArtifactSchemaVersion = 1;
+    /// <summary>
+    /// Schema version of the <c>judge</c> artifact payload (append-compatible). v2 per P6 §6.3: a
+    /// <b>nullable</b> score, and the judge/generator provenance the self-preference axis needs.
+    /// Readers must handle both versions — every v1 row is permanently unknown-provenance, and its
+    /// <c>0</c> permanently ambiguous, which is exactly why the version field exists.
+    /// </summary>
+    public const int JudgeArtifactSchemaVersion = 2;
 
     public const string JudgeArtifactKind = "judge";
 
@@ -95,8 +101,9 @@ internal sealed class JudgeAgent
 
     /// <summary>
     /// Sends <paramref name="request"/>'s judging material as one user turn, scores the model's
-    /// verdict through the harness, and persists a <c>judge</c> artifact holding only the score,
-    /// rationale, and variant id.
+    /// verdict through the harness, and persists a <c>judge</c> artifact holding exactly the fields of
+    /// <see cref="JudgeArtifactPayload"/>: the score (or none), the rationale, the variant, and the
+    /// judge/generator provenance §3.2 needs.
     /// </summary>
     public async Task<JudgeVerdict> JudgeAsync(JudgeRequest request, CancellationToken cancellationToken)
     {
@@ -123,12 +130,12 @@ internal sealed class JudgeAgent
         var ballot = verdict.Ballots.Count > 0 ? verdict.Ballots[0] : excluded?.Ballot;
 
         // A verdict the harness would not put a number on is an UNSCORED reply, not a zero. v1
-        // persists it as a zero and continues to, because changing a persisted score is a data
-        // change — but the warning makes the two distinguishable in the log, which they were not
-        // before. The condition is `Score is null`, which is EXACTLY the condition under which the
-        // 0 below is invented, and deliberately NOT `ballot.Abstained`: that predicate covers only
-        // one of the aggregator's two exclusion channels, so a reply carrying a real score with
-        // low self-reported confidence would be persisted as 0 with nothing anywhere saying so.
+        // invented a 0 for it, and 0 is a legitimate worst score under this rubric — its 0 anchor
+        // reads "no finding is correct" — so every stored verdict was ambiguous after the fact and
+        // any aggregate over them silently contaminated. v2 persists no score at all. The warning
+        // stays, and the condition is `Score is null`, deliberately NOT `ballot.Abstained`: that
+        // predicate covers only one of the aggregator's two exclusion channels, so a reply carrying
+        // a real score with low self-reported confidence would go unremarked.
         if (verdict.Score is null)
         {
             var unscoredReason = excluded is null
@@ -137,7 +144,7 @@ internal sealed class JudgeAgent
 
             _logger.LogWarning(
                 "Judge run {RunId} produced no usable score ({UnscoredReason}) for variant "
-                    + "'{Variant}'; recording score 0. This is an unscored reply, not a "
+                    + "'{Variant}'; recording no score. This is an unscored reply, not a "
                     + "worst-possible review.",
                 collected.RunId,
                 unscoredReason,
@@ -145,16 +152,27 @@ internal sealed class JudgeAgent
             );
         }
 
-        var score = verdict.Score is { } weighted
+        int? score = verdict.Score is { } weighted
             ? (int)Math.Round(weighted, MidpointRounding.AwayFromZero)
-            : 0;
+            : null;
 
         // The raw reply is the fallback rationale for the ballot-less verdict guarded above; the
         // parser already falls back to it for every reply it could read but not score.
         var rationale = ballot?.Reasoning ?? collected.Text;
 
-        // Persist ONLY {score, rationale, variant_id} — AC#7. No auto-routing, no skill rewriting.
-        var payload = new JudgeArtifactPayload(score, rationale, request.VariantId);
+        // Persist the bounded v2 shape — AC#7 plus §6.3's provenance. No auto-routing, no skill
+        // rewriting. The self-preference relation is stated rather than left to be derived: §3.2's
+        // axis is unmeasurable retrospectively, so a reader who compares nothing must still be able
+        // to see that a grade was issued by the model that wrote what it graded.
+        var payload = new JudgeArtifactPayload(
+            score,
+            rationale,
+            request.VariantId,
+            request.JudgeModelId,
+            request.GeneratorModelId,
+            SelfGraded(request),
+            verdict.Ballots.Count
+        );
         var artifact = _store.AddArtifact(new ReviewArtifact
         {
             ReviewRunId = request.ReviewRunId,
@@ -176,13 +194,27 @@ internal sealed class JudgeAgent
     }
 
     /// <summary>
+    /// Whether the grade was issued by the model that produced what it graded. <b>Null</b> when
+    /// either model is unrecorded: that is unknown, never "no" — a row that cannot name both sides
+    /// measures nothing on this axis, and §3.2 is explicit that a persisted judge identity without
+    /// the generator's beside it is worth nothing.
+    /// </summary>
+    private static bool? SelfGraded(JudgeRequest request) =>
+        request.JudgeModelId is { } judge && request.GeneratorModelId is { } generator
+            ? string.Equals(judge, generator, StringComparison.Ordinal)
+            : null;
+
+    /// <summary>
     /// Runs the already-collected reply through the harness: no gates (v1 grades whatever the
     /// review stage produced) and one judge, whose prompt renderer is the identity so the bytes the
     /// model actually saw are the bytes recorded, not a re-render of them.
     /// <para>
-    /// <see cref="Candidate.GeneratorFamily"/> is left null on purpose. Revobot's judge currently
-    /// runs on the reviewing run's own model, so there is no second family to exclude and claiming
-    /// one would assert an independence that does not hold — see the TODO at the judge stage.
+    /// <see cref="Candidate.GeneratorFamily"/> is left null on purpose, and NOT derived from
+    /// <see cref="JudgeRequest.GeneratorModelId"/>: a family is not a model id, no production resolver
+    /// maps one to the other, and a guessed family would arm §7.1(2)'s exclusion rule against a value
+    /// nothing verified. Whether the judge is independent of the generator is recorded as
+    /// <see cref="JudgeArtifactPayload.SelfGraded"/> — a statement of fact about this run — rather than
+    /// asserted here as a property the harness would then act on (#322).
     /// </para>
     /// </summary>
     private static Task<Verdict> ScoreAsync(
@@ -230,13 +262,48 @@ internal sealed record JudgeRequest(
     long ReviewRunId,
     string Provider,
     string VariantId,
-    string JudgingInput);
+    string JudgingInput)
+{
+    /// <summary>
+    /// The model the judge turn ran on. Recorded in the artifact so the self-preference axis is
+    /// measurable at all — it cannot be recovered later.
+    /// </summary>
+    public string? JudgeModelId { get; init; }
+
+    /// <summary>The model that produced the review being graded.</summary>
+    public string? GeneratorModelId { get; init; }
+}
 
 /// <summary>The judge's persisted verdict plus the id of the <c>judge</c> artifact it was written to.</summary>
-internal sealed record JudgeVerdict(int Score, string Rationale, string VariantId, long ArtifactId);
+internal sealed record JudgeVerdict(int? Score, string Rationale, string VariantId, long ArtifactId);
 
 /// <summary>
-/// The exact, bounded shape of a <c>judge</c> artifact payload: score, rationale, variant id — nothing
-/// more (AC#7). New fields must be additive and optional to preserve append-compatibility.
+/// The exact, bounded shape of a <c>judge</c> artifact payload (AC#7, schema v2). New fields must be
+/// additive and optional to preserve append-compatibility.
 /// </summary>
-internal sealed record JudgeArtifactPayload(int Score, string Rationale, string VariantId);
+/// <param name="Score">
+/// The grade, or <b>null</b> when the harness would not put a number on the reply. Nullable rather
+/// than a sentinel beside a non-null score: <c>0</c> is a legitimate worst grade under this rubric,
+/// so a reader who skips a would-be <c>Unscored</c> flag would still see a <c>0</c> and be unable to
+/// tell which one it is. A null cannot be misread that way.
+/// </param>
+/// <param name="Rationale">The judge's reasoning, or the raw reply when it could not be scored.</param>
+/// <param name="VariantId">Which review variant was graded.</param>
+/// <param name="JudgeModelId">The model that issued the grade. Null in a v1 row.</param>
+/// <param name="GeneratorModelId">The model that wrote what was graded. Null in a v1 row.</param>
+/// <param name="SelfGraded">
+/// Whether those two are the same model — the self-preference axis of §3.2, stated rather than left
+/// to be derived. Null when either side is unrecorded, which is unknown and never "no".
+/// </param>
+/// <param name="BallotCount">
+/// How many ballots the reduction counted. Zero distinguishes "no ballot survived" from "one ballot
+/// scored", which a null <see cref="Score"/> alone does not.
+/// </param>
+internal sealed record JudgeArtifactPayload(
+    int? Score,
+    string Rationale,
+    string VariantId,
+    string? JudgeModelId,
+    string? GeneratorModelId,
+    bool? SelfGraded,
+    int BallotCount);

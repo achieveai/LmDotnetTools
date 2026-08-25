@@ -120,6 +120,19 @@ internal sealed class S2SReviewAgentLoopFactory : IReviewAgentLoopFactory
     /// conversation list. The profile's display name follows so the parent review and its judge/variant
     /// reruns (separate conversations against the same workspace) stay distinguishable.
     /// </summary>
+    /// <summary>
+    /// The review host owns model selection, so the requested id is <b>ignored</b> — exactly as
+    /// <see cref="Create"/> ignores it — and the effective identity is the configured provider that
+    /// resolves the model there. It is prefixed so no reader mistakes it for a per-call model id: it names
+    /// the selector the daemon controls, and two conversations provisioned with the same selector run the
+    /// same model whatever it resolves to, which is the property the self-preference axis turns on.
+    /// Unconfigured, the transport names nothing and the answer is <c>null</c> — unknown.
+    /// </summary>
+    public string? ResolveEffectiveModelId(string? requestedModelId) =>
+        string.IsNullOrWhiteSpace(_options.LmStreamingProviderId)
+            ? null
+            : $"lmstreaming:{_options.LmStreamingProviderId}";
+
     private static string BuildTitle(AgentProfile profile, PreparedReviewWorkspace workspace)
     {
         var pr = $"Review PR #{workspace.PrId}";

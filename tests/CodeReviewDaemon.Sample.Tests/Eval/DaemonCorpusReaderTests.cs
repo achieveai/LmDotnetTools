@@ -1,11 +1,13 @@
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmEval.Corpus;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Eval;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
+using Microsoft.Extensions.Logging;
 
 namespace CodeReviewDaemon.Sample.Tests.Eval;
 
@@ -288,5 +290,63 @@ public sealed class DaemonCorpusReaderTests : IDisposable
         AddReview(second, "another review");
 
         (await LoadAsync(Reader())).SnapshotHash.Should().NotBe(before.SnapshotHash);
+    }
+
+    /// <summary>
+    /// <c>ORDER BY id LIMIT n</c> takes the OLDEST n rows. Once the store held more than the limit,
+    /// every subsequent snapshot was byte-identical to the last, drawn entirely from the earliest
+    /// history, and no review recorded after that point could ever enter an evaluation — silently,
+    /// because the snapshot hash stays stable and the comparability refusal is perfectly happy: the
+    /// corpus genuinely has not changed.
+    /// <para>
+    /// The window is stated by the caller now, so "the oldest n" is a choice a reader can see rather
+    /// than an accident of the ordering.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task The_corpus_is_drawn_from_the_window_the_caller_states()
+    {
+        var ids = new List<long>();
+        for (var i = 0; i < 4; i++)
+        {
+            var id = CreateRun($"pr-{i}");
+            AddContext(id, $"diff {i}");
+            AddReview(id, $"review {i}");
+            ids.Add(id);
+        }
+
+        var snapshot = await LoadAsync(
+            new DaemonCorpusReader(_store, _ => "openai", limit: 10, afterRunId: ids[1])
+        );
+
+        snapshot
+            .Items.Select(i => i.CandidateId)
+            .Should()
+            .BeEquivalentTo([$"{ids[2]}:primary", $"{ids[3]}:primary"]);
+    }
+
+    /// <summary>
+    /// And when the limit cuts the window short, that is said out loud. Truncation is the exact
+    /// condition under which the corpus stops accumulating, and the silence is what made the
+    /// original defect invisible — the ordering only decided which end it froze at.
+    /// </summary>
+    [Fact]
+    public async Task A_window_the_limit_cuts_short_is_reported_rather_than_silently_truncated()
+    {
+        for (var i = 0; i < 3; i++)
+        {
+            var id = CreateRun($"pr-{i}");
+            AddContext(id, $"diff {i}");
+            AddReview(id, $"review {i}");
+        }
+
+        var logger = new CapturingLogger<DaemonCorpusReader>();
+
+        var snapshot = await LoadAsync(
+            new DaemonCorpusReader(_store, _ => "openai", limit: 2, logger: logger)
+        );
+
+        snapshot.Size.Should().Be(2);
+        logger.CountAtLevel(LogLevel.Warning, "did not reach the end").Should().Be(1);
     }
 }

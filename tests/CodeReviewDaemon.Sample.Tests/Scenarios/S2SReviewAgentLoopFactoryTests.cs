@@ -48,6 +48,38 @@ public sealed class S2SReviewAgentLoopFactoryTests
         return collected;
     }
 
+    /// <summary>
+    /// The fake factory the executor tests run against can honour a per-call model id. THIS one cannot —
+    /// provision carries no model field — so the executor's provenance recording is only as honest as this
+    /// answer. Asserted against the real factory rather than the double, because a double that quietly
+    /// diverges here is exactly how a false independence claim reaches a persisted artifact.
+    /// </summary>
+    [Fact]
+    public void The_effective_model_is_the_configured_provider_never_the_requested_id()
+    {
+        using var http = new HttpClient(new FakeHttpMessageHandler()) { BaseAddress = new Uri("http://host/") };
+        var factory = NewFactory(new FakeHttpMessageHandler(), http);
+
+        factory.ResolveEffectiveModelId("anthropic/claude-opus-4").Should().Be("lmstreaming:openai");
+        factory.ResolveEffectiveModelId(null).Should().Be("lmstreaming:openai");
+    }
+
+    /// <summary>
+    /// And with no provider configured the transport names no model at all, which is unknown rather than
+    /// a value — a caller must not persist it as a measurement or compare two of them for equality.
+    /// </summary>
+    [Fact]
+    public void An_unconfigured_provider_names_no_effective_model()
+    {
+        using var http = new HttpClient(new FakeHttpMessageHandler()) { BaseAddress = new Uri("http://host/") };
+        var factory = new S2SReviewAgentLoopFactory(
+            new LmStreamingS2SClient(http, "s", "id", "key"),
+            new CodeReviewDaemonOptions { UseS2SReviewAgent = true, LmStreamingModeId = "workspace-agent" },
+            NullLoggerFactory.Instance);
+
+        factory.ResolveEffectiveModelId("anthropic/claude-opus-4").Should().BeNull();
+    }
+
     [Fact]
     public async Task Create_seeds_the_persisted_hosted_thread_and_never_provisions_on_resume()
     {

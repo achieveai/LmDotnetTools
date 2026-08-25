@@ -734,19 +734,27 @@ model's ability to recognize its own text moves self-preference linearly
 the judge's agent loop with `run.ModelId` — the model that generated the review under judgement:
 
 ```
-samples/CodeReviewDaemon.Sample/Orchestration/DaemonReviewStageExecutor.cs:3052
+samples/CodeReviewDaemon.Sample/Orchestration/DaemonReviewStageExecutor.cs (JudgeAsync)
     await using var loop = _loopFactory.Create(
         profile, run.ModelId, ThreadId(run, DaemonAgentFactory.JudgeProfileId), ...);
 ```
 
-So **the current `JudgeAsync` path judges every review with the model that wrote it.**
+So **the `JudgeAsync` path judged every review with the model that wrote it.**
 
 The claim stops there deliberately. A v1 `judge` artifact persists only
-`JudgeArtifactPayload(Score, Rationale, VariantId)`
-(`samples/CodeReviewDaemon.Sample/Agents/JudgeAgent.cs:153`) — **no judge-model provenance at all** —
-so it cannot be established from the stored data that any *particular historical* artifact was
-self-judged, only that the code path in force today does it. Historical rows are therefore
+`JudgeArtifactPayload(Score, Rationale, VariantId)` — **no judge-model provenance at all** — so it
+cannot be established from the stored data that any *particular historical* artifact was
+self-judged, only that the code path in force at the time does it. Historical rows are therefore
 `unknown-provenance`, not `self-judged`, and §5 must not classify them as either.
+
+> **Shipped (#326).** The judge model is now resolved through
+> `IReviewAgentLoopFactory.ResolveEffectiveModelId`, configurable via
+> `CodeReviewDaemon:JudgeModelId`, and recorded on every v2 row as `JudgeModelId` /
+> `GeneratorModelId` / `SelfGraded`. It still **defaults** to the reviewer's own model, because
+> changing what a recorded score means belongs with #322's tier rules — but the run now warns and the
+> row now says so, so from v2 onward this axis is measured rather than argued. On the S2S transport
+> the effective id is the configured `LmStreamingProviderId` (provision carries no per-call model
+> field), and a `JudgeModelId` set there is refused at boot rather than silently discarded.
 
 This is an independent argument for the schema v2 of §6.3: without a persisted judge model, the
 self-preference axis is unmeasurable retrospectively, and no amount of later analysis recovers it.
@@ -892,6 +900,12 @@ exactly (`:153`). Internally it becomes a thin adapter:
   behaviour change, `JudgeAgent` maps `Abstained → score 0, rationale = raw text` **and logs a
   warning naming the abstention**. The `0`-means-two-things defect becomes *visible* in logs without
   changing the artifact. Fixing it properly needs `judge` schema v2, scheduled in §6.3.
+
+  > **Superseded (#327).** Schema v2 shipped ahead of the experiment record, so the `0` is no longer
+  > invented: an unscored reply persists a null `Score` under `JudgeArtifactSchemaVersion = 2`. The
+  > warning above stayed and still gates on `Score is null` rather than `Ballot.Abstained` — the
+  > aggregator has two exclusion channels and only one sets `Abstained`. Rows written before the
+  > bump keep their `1` and their ambiguous `0`, which is what the version field is for.
 - Delete `ParseVerdict` (`:81`) and `UnwrapJson` (`:115`) — the harness's schema-validated parse
   replaces them. Their test coverage moves to `tests/LmEval.Tests` against the harness parser.
 
@@ -1312,14 +1326,31 @@ experiment's conclusion.
 
 ### 6.3 `judge` artifact schema v2
 
-Once the experiment record exists, `JudgeArtifactPayload`
-(`samples/CodeReviewDaemon.Sample/Agents/JudgeAgent.cs:153`) gains
-`JudgeArtifactSchemaVersion = 2` with additive-optional `Dispersion`, `BallotCount`, **`JudgeModelId`
-/ `JudgeModelFamily`**, and a **nullable** `Score`, retiring the `0`-means-parse-failure conflation
-from §4.2. The judge-model fields are what make the self-preference axis (§3.2) measurable at all —
-v1 records no judge provenance, so every pre-v2 row is permanently `unknown-provenance`. Readers must handle both
-versions; `ReviewArtifact.ArtifactSchemaVersion`
+`JudgeArtifactPayload` (`samples/CodeReviewDaemon.Sample/Agents/JudgeAgent.cs`) gains
+`JudgeArtifactSchemaVersion = 2` with additive-optional provenance fields and a **nullable** `Score`,
+retiring the `0`-means-parse-failure conflation from §4.2. The judge-model fields are what make the
+self-preference axis (§3.2) measurable at all — v1 records no judge provenance, so every pre-v2 row
+is permanently `unknown-provenance`. Readers must handle both versions;
+`ReviewArtifact.ArtifactSchemaVersion`
 (`samples/CodeReviewDaemon.Sample/Persistence/Models/ReviewArtifact.cs:17`) exists for exactly this.
+
+**Shipped (#326, #327),** ahead of the experiment record rather than after it — the axis is
+unmeasurable retrospectively, so every day spent on v1 rows is a day of data that cannot be
+recovered:
+
+| field | shipped | notes |
+|---|---|---|
+| `Score` | yes, **nullable** | null = the reduction produced no number; `0` is a real worst grade |
+| `BallotCount` | yes | separates "no ballot survived" from "one ballot scored", which a null `Score` alone does not |
+| `JudgeModelId` | yes | the **effective** id the transport resolved, never the requested one |
+| `GeneratorModelId` | yes | second operand of the §3.2 relation; a judge id alone measures nothing |
+| `SelfGraded` | yes | the relation itself, stated rather than derived. **Null**, never false, when either side is unrecorded |
+| `Dispersion` | **deferred** | single-judge today (`Degradation = SingleJudge`), so dispersion over one ballot is not a number worth recording. Lands with the panel in #322 |
+| `JudgeModelFamily` | **deferred** | no production family resolver exists. `SelfGraded` compares concrete ids ordinally, so two ids from one family read as independent. Lands with #322, which needs the resolver for §7.1(2) anyway |
+
+`SelfGraded` is recorded rather than left to a reader joining the two id columns because a null on
+either side must not collapse to "not self-graded": two unknowns are not evidence of independence,
+and a reader who skips that subtlety would count such rows as clean.
 
 ## 7. Routing cascade (#322)
 

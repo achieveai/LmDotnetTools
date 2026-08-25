@@ -36,6 +36,7 @@ public sealed class CodeReviewDaemonOptionsTests
                 ["CodeReviewDaemon:EnableAdoProvider"] = "true",
                 ["CodeReviewDaemon:EnabledRepos:0"] = "achieveai/LmDotnetTools",
                 ["CodeReviewDaemon:EnabledRepos:1"] = "contoso/widgets",
+                ["CodeReviewDaemon:JudgeModelId"] = "anthropic/claude-opus-4",
             })
             .Build();
 
@@ -48,6 +49,9 @@ public sealed class CodeReviewDaemonOptionsTests
         options.EnableABVariants.Should().BeTrue();
         options.EnableAdoProvider.Should().BeTrue();
         options.EnabledRepos.Should().Equal("achieveai/LmDotnetTools", "contoso/widgets");
+        // A misspelled key binds to "" without complaint, and "" is precisely the value that keeps the
+        // judge on the reviewer's own model — the failure this option exists to make visible.
+        options.JudgeModelId.Should().Be("anthropic/claude-opus-4");
     }
 
     [Fact]

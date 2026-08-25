@@ -2991,18 +2991,54 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // the S2S factory still requires a workspaceId to provision the hosted conversation.
         var judgeWorkspace = await EnsurePreparedAsync(run, repo, provider, cancellationToken)
             .ConfigureAwait(false);
-        // TODO(#322): judge shares the generator's model — self-preference, see P6 §3.2.
-        // Left as-is on purpose: swapping the judge model changes what the scores mean, which is a
-        // behaviour change. It is why the Candidate built in JudgeAgent sets no GeneratorFamily —
-        // there is no second family here to exclude, and claiming one would assert an independence
-        // that does not hold.
+        // The judge runs on JudgeModelId when one is configured, and on the reviewer's own model
+        // when none is. Unconfigured is still self-preference (P6 §3.2) and the warning below says
+        // so, but it stays the default deliberately: swapping the judge model changes what every
+        // score this daemon has recorded means, and #322 owns that behaviour change along with the
+        // model-tier rules of §7.1. What is no longer left implicit is WHICH model graded — the
+        // artifact records both sides, because §3.2's axis cannot be recovered retrospectively.
+        //
+        // Below: what we ASK for, then what the transport will actually run. The two differ on the S2S path,
+        // which discards the per-call id entirely, so every claim below is derived from the effective id:
+        // recording the requested one would put a model that graded nothing into the artifact, and — worse
+        // — a SelfGraded:false asserting an independence the transport never delivered.
+        var requestedJudgeModelId = string.IsNullOrWhiteSpace(_options.JudgeModelId)
+            ? run.ModelId
+            : _options.JudgeModelId;
+        var judgeModelId = _loopFactory.ResolveEffectiveModelId(requestedJudgeModelId);
+        var generatorModelId = _loopFactory.ResolveEffectiveModelId(run.ModelId);
+
+        // Gated on a NON-EMPTY effective id: an unnamed judge and an unnamed generator are two unknowns,
+        // not a finding. Firing here on null == null would warn on every run of a transport that names no
+        // model, naming none itself — an alarm that says nothing trains the reader past the one that does.
+        if (!string.IsNullOrWhiteSpace(judgeModelId)
+            && string.Equals(judgeModelId, generatorModelId, StringComparison.Ordinal))
+        {
+            _logger.LogWarning(
+                "Review run {ReviewRunId} is being graded by its own generator {ModelId}; the score "
+                    + "carries self-preference bias and is not an independent signal. Set "
+                    + "CodeReviewDaemon:JudgeModelId to a model from another family.",
+                run.Id,
+                judgeModelId);
+        }
+
+        // The REQUESTED id goes to the factory — a transport that can select per call must still get what
+        // was asked for; one that cannot has already said so above.
         await using var loop = _loopFactory.Create(
-            profile, run.ModelId, ThreadId(run, DaemonAgentFactory.JudgeProfileId), reviewWorkspace: judgeWorkspace);
+            profile,
+            requestedJudgeModelId,
+            ThreadId(run, DaemonAgentFactory.JudgeProfileId),
+            reviewWorkspace: judgeWorkspace);
         var judge = new JudgeAgent(loop, _store, _loggerFactory.CreateLogger<JudgeAgent>());
 
         var judgingInput = $"Grade this code review:\n\n{reviewText}";
         _ = await judge.JudgeAsync(
-            new JudgeRequest(run.Id, provider, run.VariantId, judgingInput), cancellationToken).ConfigureAwait(false);
+            new JudgeRequest(run.Id, provider, run.VariantId, judgingInput)
+            {
+                JudgeModelId = judgeModelId,
+                GeneratorModelId = generatorModelId,
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>True when the review's final text is the "nothing new to post" sentinel the prompt mandates
