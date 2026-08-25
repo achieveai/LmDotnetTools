@@ -48,7 +48,7 @@ public class WaitToolProviderTests : IAsyncLifetime
 
     // Bounded: an unbounded teardown turns one stalled test into an aborted run (#362).
     public Task DisposeAsync() =>
-        Wait.ForTeardownAsync(_runtime.DisposeAsync, "the trigger runtime under test");
+        Wait.ForTeardownAsync(_runtime, "the trigger runtime under test");
 
     private static string WaitArgs() =>
         JsonSerializer.Serialize(new { kind = "timer", args = new { }, timeout = "10m" });

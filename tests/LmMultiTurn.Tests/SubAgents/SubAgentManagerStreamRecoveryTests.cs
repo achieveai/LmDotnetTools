@@ -59,7 +59,7 @@ public class SubAgentManagerStreamRecoveryTests : IAsyncLifetime
         if (_manager != null)
         {
             // Bounded: an unbounded teardown turns one stalled test into an aborted run (#362).
-            await Wait.ForTeardownAsync(_manager.DisposeAsync, "the sub-agent manager under test");
+            await Wait.ForTeardownAsync(_manager, "the sub-agent manager under test");
         }
     }
 

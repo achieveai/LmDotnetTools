@@ -51,7 +51,7 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         if (_manager != null)
         {
             // Bounded: an unbounded teardown turns one stalled test into an aborted run (#362).
-            await Wait.ForTeardownAsync(_manager.DisposeAsync, "the sub-agent manager under test");
+            await Wait.ForTeardownAsync(_manager, "the sub-agent manager under test");
         }
     }
 
@@ -110,11 +110,13 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
 
         // Deterministically wait for the first run to reach terminal completion (owned provider disposed).
         await Wait.UntilAsync(
+            // TryPeek rather than Peek-in-a-try: Peek throws ArgumentException until the agent is
+            // registered, and a bare `catch { return false; }` reports a genuine manager fault as
+            // "not yet". The non-throwing variant makes the not-yet-registered case a value instead
+            // of an exception, so nothing has to be swallowed to express it.
             () =>
-            {
-                try { return manager.Peek(agentId).Contains("\"completed\"", StringComparison.Ordinal); }
-                catch { return false; }
-            },
+                manager.TryPeek(agentId, out var status)
+                && status.Contains("\"completed\"", StringComparison.Ordinal),
             "the sub-agent reported completed",
             TimeSpan.FromSeconds(10));
 
@@ -525,11 +527,13 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         var agentId = ParseAgentId(spawnJson);
 
         await Wait.UntilAsync(
+            // TryPeek rather than Peek-in-a-try: Peek throws ArgumentException until the agent is
+            // registered, and a bare `catch { return false; }` reports a genuine manager fault as
+            // "not yet". The non-throwing variant makes the not-yet-registered case a value instead
+            // of an exception, so nothing has to be swallowed to express it.
             () =>
-            {
-                try { return manager.Peek(agentId).Contains("\"completed\"", StringComparison.Ordinal); }
-                catch { return false; }
-            },
+                manager.TryPeek(agentId, out var status)
+                && status.Contains("\"completed\"", StringComparison.Ordinal),
             "the sub-agent reported completed",
             TimeSpan.FromSeconds(10));
 
@@ -661,11 +665,13 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         var agentId = ParseAgentId(spawnJson);
 
         await Wait.UntilAsync(
+            // TryPeek rather than Peek-in-a-try: Peek throws ArgumentException until the agent is
+            // registered, and a bare `catch { return false; }` reports a genuine manager fault as
+            // "not yet". The non-throwing variant makes the not-yet-registered case a value instead
+            // of an exception, so nothing has to be swallowed to express it.
             () =>
-            {
-                try { return manager.Peek(agentId).Contains("\"completed\"", StringComparison.Ordinal); }
-                catch { return false; }
-            },
+                manager.TryPeek(agentId, out var status)
+                && status.Contains("\"completed\"", StringComparison.Ordinal),
             "the sub-agent reported completed",
             TimeSpan.FromSeconds(10));
 
@@ -754,53 +760,60 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         ObservableFakeAgent? firstAgent = null;
 
         // Deliberately NOT registered with the fixture: this manager is wedged on purpose and is
-        // disposed by this test.
+        // disposed by this test. Which means THIS test owns its cleanup from the moment it exists —
+        // a failure during factory wiring, spawn, polling, or the DisposeEntered wait must not leak a
+        // manager parked in a gated dispose. Hence the try opens HERE, not once the wedge is set up.
         var manager = CreateManager(
             new Dictionary<string, SubAgentTemplate> { ["owned"] = DummyTemplate("owned") },
             registerForTeardown: false);
 
-        manager.TestAgentFactoryOverride = (agentId, _) =>
-        {
-            var idx = Interlocked.Increment(ref agentCallCount);
-            var agent = new ObservableFakeAgent
-            {
-                ThreadId = $"subagent-{agentId}",
-                RunMessages =
-                [
-                    new TextMessage { Text = $"run-{idx}-answer", Role = Role.Assistant },
-                    new RunCompletedMessage { CompletedRunId = $"run-{idx}" },
-                ],
-                DisposeGate = idx == 1 ? disposeGate : null,
-            };
-            if (idx == 1)
-            {
-                Volatile.Write(ref firstAgent, agent);
-            }
-
-            return agent;
-        };
-
-        manager.TestOwnedProviderOverride = (_, _) => new Mock<IStreamingAgent>().Object;
-
-        var spawnJson = await manager.SpawnAsync("owned", "task", runInBackground: true);
-        var agentId = ParseAgentId(spawnJson);
-
-        await Wait.UntilAsync(
-            () =>
-            {
-                try { return manager.Peek(agentId).Contains("\"completed\"", StringComparison.Ordinal); }
-                catch { return false; }
-            },
-            "the sub-agent reported completed",
-            TimeSpan.FromSeconds(10));
-
-        // Park the restart inside the gated dispose. This is the wedge: from here until the gate opens,
-        // the manager's own DisposeAsync cannot return.
-        var sendTask = Task.Run(() => manager.SendMessageAsync(agentId, "continue", runInBackground: true));
-        var wedged = manager.DisposeAsync().AsTask();
-
+        Task? wedged = null;
+        Task? relay = null;
+        var bodyCompleted = false;
         try
         {
+            manager.TestAgentFactoryOverride = (agentId, _) =>
+            {
+                var idx = Interlocked.Increment(ref agentCallCount);
+                var agent = new ObservableFakeAgent
+                {
+                    ThreadId = $"subagent-{agentId}",
+                    RunMessages =
+                    [
+                        new TextMessage { Text = $"run-{idx}-answer", Role = Role.Assistant },
+                        new RunCompletedMessage { CompletedRunId = $"run-{idx}" },
+                    ],
+                    DisposeGate = idx == 1 ? disposeGate : null,
+                };
+                if (idx == 1)
+                {
+                    Volatile.Write(ref firstAgent, agent);
+                }
+
+                return agent;
+            };
+
+            manager.TestOwnedProviderOverride = (_, _) => new Mock<IStreamingAgent>().Object;
+
+            var spawnJson = await manager.SpawnAsync("owned", "task", runInBackground: true);
+            var agentId = ParseAgentId(spawnJson);
+
+            await Wait.UntilAsync(
+                // TryPeek rather than Peek-in-a-try: Peek throws ArgumentException until the agent is
+                // registered, and a bare catch-all reports a genuine manager fault as "not yet". The
+                // non-throwing variant makes the not-yet-registered case a value instead of an
+                // exception, so nothing has to be swallowed to express it.
+                () =>
+                    manager.TryPeek(agentId, out var status)
+                    && status.Contains("\"completed\"", StringComparison.Ordinal),
+                "the sub-agent reported completed",
+                TimeSpan.FromSeconds(10));
+
+            // Park the restart inside the gated dispose. This is the wedge: from here until the gate
+            // opens, the manager's own DisposeAsync cannot return.
+            relay = Task.Run(() => manager.SendMessageAsync(agentId, "continue", runInBackground: true));
+            wedged = manager.DisposeAsync().AsTask();
+
             await Volatile.Read(ref firstAgent)!.DisposeEnteredTask.WaitAsync(TimeSpan.FromSeconds(30));
 
             // This stands in for the throw: the body simply never releases the gate. The bound is
@@ -829,18 +842,80 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
             // to be released too rather than only bounded.
             wedged.IsCompleted.Should().BeFalse(
                 "the bound reports the stall; only opening the gate can actually finish the teardown");
+
+            bodyCompleted = true;
         }
         finally
         {
-            // Open the gate so the abandoned teardown can drain; the enclosing test owns this manager.
+            // Open the gate however the body ended — nothing below can make progress until it is open.
             _ = disposeGate.TrySetResult();
+
+            var cleanup = ReleaseOwnedManagerAsync(manager, wedged, relay);
+            if (bodyCompleted)
+            {
+                // Nothing is in flight, so a cleanup failure IS the result and must be reported.
+                await cleanup;
+            }
+            else
+            {
+                // An assertion already failed. Observe the cleanup so it cannot resurface as an
+                // unobserved-task exception, but never let it mask the failure that actually matters.
+                _ = cleanup.ContinueWith(
+                    static c => _ = c.Exception,
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Finishes off the proof test's deliberately-unregistered manager: drains the disposal it already
+    /// started (or disposes it if it never got that far) and then the relay raced against it.
+    /// </summary>
+    private static async Task ReleaseOwnedManagerAsync(
+        SubAgentManager manager,
+        Task? wedged,
+        Task? relay)
+    {
+        if (wedged is not null)
+        {
+            await wedged.WaitAsync(TimeSpan.FromSeconds(30));
+        }
+        else
+        {
+            // The body failed before disposal was ever started, so nothing else will dispose it.
+            await Wait.ForTeardownAsync(manager, "the proof's own unregistered sub-agent manager");
         }
 
-        await wedged.WaitAsync(TimeSpan.FromSeconds(30));
-        try { await sendTask.WaitAsync(TimeSpan.FromSeconds(30)); }
-        catch (Exception ex) when (ex is not TimeoutException)
+        if (relay is not null)
         {
-            // A relay racing a manager disposal may legitimately fault; the wedge is what is under test.
+            await DrainRelayRacingDisposalAsync(relay);
+        }
+    }
+
+    /// <summary>
+    /// Awaits a relay that was deliberately raced against its own manager's disposal, tolerating ONLY
+    /// the two outcomes that race can legitimately produce.
+    /// </summary>
+    /// <remarks>
+    /// A blanket <c>catch (Exception) when (ex is not TimeoutException)</c> here would let an
+    /// <see cref="InvalidOperationException"/> — or any unrelated relay defect — pass silently, which
+    /// would leave the regression test above GREEN while the thing it exists to prove was broken.
+    /// That is precisely the vacuity class this whole change set is closing, so it does not get to
+    /// live inside the proof.
+    /// </remarks>
+    private static async Task DrainRelayRacingDisposalAsync(Task sendTask)
+    {
+        try
+        {
+            await sendTask.WaitAsync(TimeSpan.FromSeconds(30));
+        }
+        catch (Exception ex)
+            when (ex is ObjectDisposedException or OperationCanceledException)
+        {
+            // Disposing the manager mid-relay ends the relay. Anything else is a real failure and
+            // must reach the runner.
         }
     }
 

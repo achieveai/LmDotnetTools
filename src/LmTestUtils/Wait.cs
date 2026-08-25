@@ -151,6 +151,24 @@ public static class Wait
     /// disposal keeps running in the background; that is deliberate, since the alternative — waiting
     /// on it — is precisely the defect.
     /// </para>
+    /// <para>
+    /// Two omissions are deliberate. There is no <c>CancellationToken</c>, unlike
+    /// <see cref="UntilAsync(Func{bool}, string, TimeSpan?, TimeSpan?, CancellationToken, string?, string?, int)"/>:
+    /// a poll is abandonable, a teardown ceiling is not. A cancellable ceiling is one a caller can
+    /// turn back into an unnamed failure just by passing the ambient test token, which is the defect
+    /// this exists to remove. And <paramref name="because"/> is not null-guarded, matching
+    /// <c>UntilAsync</c>, which guards only its condition: a null description degrades the message,
+    /// it does not make the failure silent, and that is the property worth guarding.
+    /// </para>
+    /// <para>
+    /// The ceiling covers the <see cref="ValueTask"/> the delegate returns, not any synchronous work
+    /// it does before returning one — an <c>async</c> method runs on the caller's thread until its
+    /// first <c>await</c>. That is sound rather than a gap: C# forbids <c>await</c> inside a
+    /// <c>lock</c>, so a pre-<c>await</c> section cannot block on a gate another party forgot to
+    /// open, which is the wedge class this exists to bound. It can only spend CPU or block on a
+    /// synchronous <c>.Result</c>/<c>.Wait()</c> — so a disposal that does either is out of contract,
+    /// and should be fixed there rather than bounded here.
+    /// </para>
     /// </remarks>
     /// <param name="teardown">Invoked once; its returned <see cref="ValueTask"/> is what gets bounded.</param>
     /// <param name="because">
@@ -177,12 +195,33 @@ public static class Wait
         try
         {
             await work.WaitAsync(budget);
+            return;
+        }
+        catch (TimeoutException) when (work.IsCompleted)
+        {
+            // NOT our ceiling, and the distinction cannot be made on exception type alone:
+            // WaitAsync reports a ceiling breach with the same TimeoutException that it propagates
+            // verbatim when the teardown ITSELF throws one. Catching by type would relabel a real
+            // disposal failure as "the 30s ceiling elapsed" when it did not — a helper whose whole
+            // purpose is accurate failure reporting, lying about which deadline fired.
+            //
+            // Whether `work` has completed is the race-safe discriminator: WaitAsync only gives up
+            // while the work is still pending. This branch therefore covers both the teardown's own
+            // TimeoutException and the vanishing case where the ceiling lost a photo-finish to a
+            // teardown completing in the same instant. In both, the teardown's outcome is the truth,
+            // so re-await it: that rethrows its exception with the original message and stack (via
+            // ExceptionDispatchInfo), or simply returns if it actually succeeded.
+            await work;
+            return;
         }
         catch (TimeoutException)
         {
+            // `work` is still running, so the ceiling is the only thing that can have fired.
+            //
             // The abandoned teardown outlives this await. Observe whatever it eventually does so a
             // later fault cannot surface as an unobserved-task exception on the finalizer thread,
-            // attributed to some unrelated test.
+            // attributed to some unrelated test. Task.WaitAsync does NOT mark the source task's
+            // fault observed, so this continuation is the only thing that does.
             _ = work.ContinueWith(
                 static t => _ = t.Exception,
                 CancellationToken.None,
@@ -198,6 +237,30 @@ public static class Wait
                     + "dotnet test aborted the entire run instead of reporting the failure."
             );
         }
+    }
+
+    /// <inheritdoc cref="ForTeardownAsync(Func{ValueTask}, string, TimeSpan?, string?, string?, int)" />
+    /// <param name="subject">
+    /// Disposed once; its <see cref="IAsyncDisposable.DisposeAsync"/> is what gets bounded. The
+    /// overload that exists so a fixture reads <c>ForTeardownAsync(_manager, "...")</c> rather than
+    /// passing <c>_manager.DisposeAsync</c> as a method group.
+    /// </param>
+    /// <param name="because">As above.</param>
+    /// <param name="timeout">Ceiling for the whole teardown. Defaults to <see cref="DefaultTeardownTimeout"/>.</param>
+    /// <param name="waiter">Supplied by the compiler. Names the calling member in the failure message.</param>
+    /// <param name="file">Supplied by the compiler. Names the calling file in the failure message.</param>
+    /// <param name="line">Supplied by the compiler. Names the calling line in the failure message.</param>
+    public static Task ForTeardownAsync(
+        IAsyncDisposable subject,
+        string because,
+        TimeSpan? timeout = null,
+        [CallerMemberName] string? waiter = null,
+        [CallerFilePath] string? file = null,
+        [CallerLineNumber] int line = 0
+    )
+    {
+        ArgumentNullException.ThrowIfNull(subject);
+        return ForTeardownAsync(subject.DisposeAsync, because, timeout, waiter, file, line);
     }
 
     /// <summary>

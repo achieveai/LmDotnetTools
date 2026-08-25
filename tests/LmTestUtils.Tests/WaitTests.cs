@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 
 namespace LmTestUtils.Tests;
@@ -143,4 +144,232 @@ public class WaitTests
             () => Wait.UntilAsync(throws, "a condition that throws", Brief, Tick)
         );
     }
+
+    #region ForTeardownAsync
+
+    /// <summary>
+    /// Marks the fault raised by the abandoned teardown below, so the assertion cannot be satisfied
+    /// or defeated by an unobserved exception from some OTHER test sharing this process.
+    /// </summary>
+    private const string AbandonedTeardownFault = "abandoned-teardown-fault-8f2c1d";
+
+    [Fact]
+    public async Task A_teardown_that_never_returns_throws_naming_what_was_being_torn_down()
+    {
+        var never = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var thrown = await Assert.ThrowsAsync<TimeoutException>(
+            () => Wait.ForTeardownAsync(() => new ValueTask(never.Task), "the widget host", Brief)
+        );
+
+        Assert.Contains("the widget host", thrown.Message, StringComparison.Ordinal);
+        Assert.Contains(
+            nameof(A_teardown_that_never_returns_throws_naming_what_was_being_torn_down),
+            thrown.Message,
+            StringComparison.Ordinal
+        );
+        Assert.Contains("WaitTests.cs", thrown.Message, StringComparison.Ordinal);
+
+        never.SetResult();
+    }
+
+    [Fact]
+    public async Task A_teardown_that_itself_times_out_surfaces_its_own_failure_not_the_ceiling()
+    {
+        // Task.WaitAsync reports a ceiling breach with the SAME exception type it propagates when the
+        // awaited work throws one itself, so a catch keyed on type alone reports every internally
+        // timing-out disposal as "the ceiling elapsed" — losing the real message and stack, and
+        // naming a deadline that never fired. Nothing here looks at elapsed time (#343): the claim is
+        // purely which exception comes out.
+        const string ownFailure = "the subject's own disposal deadline";
+
+        var thrown = await Assert.ThrowsAsync<TimeoutException>(
+            () =>
+                Wait.ForTeardownAsync(
+                    () =>
+                        new ValueTask(
+                            Task.Run(async () =>
+                            {
+                                await Task.Yield();
+                                throw new TimeoutException(ownFailure);
+                            })
+                        ),
+                    "a subject whose disposal times out internally",
+                    Generous
+                )
+        );
+
+        Assert.Equal(ownFailure, thrown.Message);
+        Assert.DoesNotContain("tearing down", thrown.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "a subject whose disposal times out internally",
+            thrown.Message,
+            StringComparison.Ordinal
+        );
+    }
+
+    [Fact]
+    public async Task A_teardown_that_faults_before_the_ceiling_surfaces_that_fault_unchanged()
+    {
+        // The same discriminator, for the ordinary case: a non-TimeoutException fault must not be
+        // touched either. Generous budget, already-failing work — the ceiling is never in play.
+        const string boom = "disposal-blew-up";
+
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(
+            () =>
+                Wait.ForTeardownAsync(
+                    () => new ValueTask(Task.FromException(new InvalidOperationException(boom))),
+                    "a subject whose disposal fails outright",
+                    Generous
+                )
+        );
+
+        Assert.Equal(boom, thrown.Message);
+    }
+
+    [Fact]
+    public async Task A_teardown_abandoned_at_the_ceiling_has_its_later_fault_observed()
+    {
+        // The bound does not cancel the teardown, it abandons it — so the teardown can still fault
+        // AFTER nobody is awaiting it. Left unobserved, that fault surfaces from the finalizer
+        // thread as an UnobservedTaskException with no connection to the test that caused it, which
+        // in a parallel run gets attributed to whatever happened to be executing. Task.WaitAsync does
+        // NOT mark the source task's fault observed, so the continuation in ForTeardownAsync is the
+        // only thing that does.
+        var unobserved = new List<string>();
+        void Collect(object? _, UnobservedTaskExceptionEventArgs e)
+        {
+            lock (unobserved)
+            {
+                unobserved.AddRange(e.Exception.Flatten().InnerExceptions.Select(x => x.Message));
+            }
+        }
+
+        TaskScheduler.UnobservedTaskException += Collect;
+        try
+        {
+            await AbandonThenFaultAsync();
+
+            // Nothing above still references the abandoned task, so collecting it runs the finalizer
+            // that would raise the event if its fault were still unobserved.
+            for (var i = 0; i < 3; i++)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+            }
+
+            GC.Collect();
+
+            lock (unobserved)
+            {
+                Assert.DoesNotContain(AbandonedTeardownFault, unobserved);
+            }
+        }
+        finally
+        {
+            TaskScheduler.UnobservedTaskException -= Collect;
+        }
+    }
+
+    /// <summary>
+    /// Times out a teardown and only THEN faults it, letting every reference to that task go out of
+    /// scope on return. Separated so the abandoned task is unreachable while the caller collects —
+    /// a live local (or a retained <see cref="TaskCompletionSource"/>) would keep it alive and the
+    /// finalizer would never run, making the assertion above pass for the wrong reason.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static async Task AbandonThenFaultAsync()
+    {
+        var abandoned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _ = await Assert.ThrowsAsync<TimeoutException>(
+            () =>
+                Wait.ForTeardownAsync(
+                    () => new ValueTask(abandoned.Task),
+                    "a teardown that outlives its ceiling",
+                    Brief
+                )
+        );
+
+        abandoned.SetException(new InvalidOperationException(AbandonedTeardownFault));
+    }
+
+    [Fact]
+    public async Task A_teardown_with_no_named_ceiling_uses_the_teardown_default_not_the_poll_default()
+    {
+        // Costs its full 30s every run, deliberately: the ONLY way to observe which constant the
+        // ceiling resolved to is to let it elapse and read the budget back out of the message.
+        // Nothing here is timing-sensitive despite that — the teardown never completes, so there is
+        // no race for a starved runner (#343) to lose; a slow machine only makes it slower.
+        Assert.NotEqual(
+            Wait.DefaultTimeout,
+            Wait.DefaultTeardownTimeout
+        );
+
+        var never = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var thrown = await Assert.ThrowsAsync<TimeoutException>(
+            () => Wait.ForTeardownAsync(() => new ValueTask(never.Task), "an unbudgeted teardown")
+        );
+
+        Assert.Contains(
+            $"Timed out after {Wait.DefaultTeardownTimeout.TotalSeconds:0.###}s",
+            thrown.Message,
+            StringComparison.Ordinal
+        );
+
+        never.SetResult();
+    }
+
+    [Fact]
+    public async Task A_null_teardown_is_rejected_by_name_rather_than_NullReferenced()
+    {
+        var thrown = await Assert.ThrowsAsync<ArgumentNullException>(
+            () => Wait.ForTeardownAsync((Func<ValueTask>)null!, "a teardown that was never supplied")
+        );
+
+        Assert.Equal("teardown", thrown.ParamName);
+    }
+
+    [Fact]
+    public async Task A_null_subject_is_rejected_by_name_rather_than_NullReferenced()
+    {
+        var thrown = await Assert.ThrowsAsync<ArgumentNullException>(
+            () => Wait.ForTeardownAsync((IAsyncDisposable)null!, "a subject that was never supplied")
+        );
+
+        Assert.Equal("subject", thrown.ParamName);
+    }
+
+    [Fact]
+    public async Task A_disposable_subject_is_bounded_the_same_way_as_a_teardown_delegate()
+    {
+        var subject = new NeverReturningDisposable();
+
+        var thrown = await Assert.ThrowsAsync<TimeoutException>(
+            () => Wait.ForTeardownAsync(subject, "the subject under test", Brief)
+        );
+
+        Assert.Contains("the subject under test", thrown.Message, StringComparison.Ordinal);
+        Assert.Contains(
+            nameof(A_disposable_subject_is_bounded_the_same_way_as_a_teardown_delegate),
+            thrown.Message,
+            StringComparison.Ordinal
+        );
+
+        subject.Release();
+    }
+
+    /// <summary>An <see cref="IAsyncDisposable"/> whose disposal blocks until released.</summary>
+    private sealed class NeverReturningDisposable : IAsyncDisposable
+    {
+        private readonly TaskCompletionSource _release =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal void Release() => _release.TrySetResult();
+
+        public async ValueTask DisposeAsync() => await _release.Task;
+    }
+
+    #endregion
 }

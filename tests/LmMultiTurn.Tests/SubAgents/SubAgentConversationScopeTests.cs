@@ -34,10 +34,30 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
+        // Bounded AND best-effort. Bounding each teardown (#362) turned a stall into a throw, and a
+        // throw mid-loop would exit DisposeAsync with every LATER manager still undisposed — trading
+        // one leak shape for another. Collect, dispose them all, then report together.
+        List<Exception>? failures = null;
         foreach (var manager in _managers)
         {
-            // Bounded: an unbounded teardown turns one stalled test into an aborted run (#362).
-            await Wait.ForTeardownAsync(manager.DisposeAsync, "a sub-agent manager created by this test");
+            try
+            {
+                await Wait.ForTeardownAsync(manager, "a sub-agent manager created by this test");
+            }
+            catch (Exception ex)
+            {
+                // Collected, never swallowed: rethrown as an aggregate below.
+                (failures ??= []).Add(ex);
+            }
+        }
+
+        if (failures is not null)
+        {
+            throw new AggregateException(
+                "One or more sub-agent managers failed to tear down within their ceiling; every "
+                    + "manager was still disposed before this was reported.",
+                failures
+            );
         }
     }
 
