@@ -255,9 +255,23 @@ internal sealed class ReviewStore : IDisposable
     /// it would put an item in the corpus that no candidate can be built from.
     /// </param>
     /// <param name="limit">Most rows to return.</param>
-    public IReadOnlyList<ReviewRun> ListReviewRuns(ReviewStage minimumStage, int limit)
+    /// <param name="afterId">
+    /// Exclusive lower bound on <c>id</c>. Zero (the default) starts at the beginning of the table.
+    /// <para>
+    /// It exists because <c>ORDER BY id LIMIT n</c> takes the <b>oldest</b> n rows, so once the
+    /// store holds more than the limit every later call returns the same set forever and no review
+    /// recorded after that point can enter a corpus. Flipping to <c>DESC</c> has the opposite
+    /// failure — the set drifts on every call and nothing is ever comparable — so the caller states
+    /// its window instead, and the reader above says out loud when the limit cut that window short.
+    /// </para>
+    /// </param>
+    public IReadOnlyList<ReviewRun> ListReviewRuns(
+        ReviewStage minimumStage,
+        int limit,
+        long afterId = 0)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+        ArgumentOutOfRangeException.ThrowIfNegative(afterId);
 
         // Stage is persisted as its enum NAME, so SQL cannot order it. The ordinal comparison is
         // done here, where the enum's own ordering is available, rather than by hardcoding a name
@@ -273,7 +287,9 @@ internal sealed class ReviewStore : IDisposable
         using var gate = _gate.EnterScope();
         using var command = _connection.CreateCommand();
         command.CommandText =
-            $"SELECT * FROM review_run WHERE stage IN ({placeholders}) ORDER BY id LIMIT $limit;";
+            $"SELECT * FROM review_run WHERE stage IN ({placeholders}) AND id > $afterId "
+            + "ORDER BY id LIMIT $limit;";
+        _ = command.Parameters.AddWithValue("$afterId", afterId);
         for (var i = 0; i < eligible.Count; i++)
         {
             _ = command.Parameters.AddWithValue($"$stage{i}", eligible[i]);

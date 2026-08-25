@@ -54,17 +54,29 @@ internal sealed class DaemonCorpusReader : ICorpusReader
     private readonly ReviewStore _store;
     private readonly ModelFamilyResolver _familyResolver;
     private readonly int _limit;
+    private readonly long _afterRunId;
     private readonly ILogger<DaemonCorpusReader>? _logger;
 
     /// <summary>Builds a reader over the daemon's store.</summary>
     /// <param name="store">The daemon's review store.</param>
     /// <param name="familyResolver">Maps a model id to its family; may return null for unknown.</param>
     /// <param name="limit">Most runs to consider.</param>
+    /// <param name="afterRunId">
+    /// Exclusive lower bound on the review run id to consider — the lower edge of an explicit
+    /// selection window. Zero (the default) starts at the beginning of the table, which is what the
+    /// store did unconditionally: <c>ORDER BY id LIMIT n</c> takes the OLDEST n rows, so once the
+    /// store held more than <paramref name="limit"/> qualifying runs every snapshot was identical to
+    /// the last, drawn entirely from the earliest history, and silently so — the snapshot hash stays
+    /// stable, and the comparability refusal that would otherwise say "you are not measuring what
+    /// you think you are measuring" is perfectly happy, because the corpus genuinely has not
+    /// changed.
+    /// </param>
     /// <param name="logger">Optional diagnostics.</param>
     public DaemonCorpusReader(
         ReviewStore store,
         ModelFamilyResolver familyResolver,
         int limit = 1000,
+        long afterRunId = 0,
         ILogger<DaemonCorpusReader>? logger = null
     )
     {
@@ -73,6 +85,7 @@ internal sealed class DaemonCorpusReader : ICorpusReader
         _familyResolver =
             familyResolver ?? throw new ArgumentNullException(nameof(familyResolver));
         _limit = limit;
+        _afterRunId = afterRunId;
         _logger = logger;
     }
 
@@ -83,8 +96,9 @@ internal sealed class DaemonCorpusReader : ICorpusReader
         cancellationToken.ThrowIfCancellationRequested();
 
         var candidates = new List<Candidate>();
+        var runs = _store.ListReviewRuns(ReviewStage.Reviewed, _limit, _afterRunId);
 
-        foreach (var run in _store.ListReviewRuns(ReviewStage.Reviewed, _limit))
+        foreach (var run in runs)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -149,6 +163,33 @@ internal sealed class DaemonCorpusReader : ICorpusReader
                     )
                 );
             }
+        }
+
+        if (runs.Count == _limit)
+        {
+            // The condition under which the corpus stops accumulating, said out loud. The ordering
+            // only decides which end it freezes at; the silence is what made this invisible.
+            _logger?.LogWarning(
+                "Corpus '{CorpusId}' filled its limit of {Limit} review runs and did not reach the "
+                    + "end of its window: it covers ids ({AfterRunId}, {LastRunId}] and every run "
+                    + "recorded later is outside it. Advance afterRunId or raise the limit, or this "
+                    + "corpus will not change again.",
+                corpusId,
+                _limit,
+                _afterRunId,
+                runs[^1].Id
+            );
+        }
+        else
+        {
+            _logger?.LogInformation(
+                "Corpus '{CorpusId}' read {RunCount} review runs from window ({AfterRunId}, end] "
+                    + "and built {CandidateCount} candidates.",
+                corpusId,
+                runs.Count,
+                _afterRunId,
+                candidates.Count
+            );
         }
 
         return Task.FromResult(CorpusSnapshot.Create(corpusId, candidates));
