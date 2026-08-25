@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -107,12 +108,13 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         var agentId = ParseAgentId(spawnJson);
 
         // Deterministically wait for the first run to reach terminal completion (owned provider disposed).
-        await WaitForConditionAsync(
+        await Wait.UntilAsync(
             () =>
             {
                 try { return manager.Peek(agentId).Contains("\"completed\"", StringComparison.Ordinal); }
                 catch { return false; }
             },
+            "the sub-agent reported completed",
             TimeSpan.FromSeconds(10));
 
         using var observeCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
@@ -513,12 +515,13 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         var spawnJson = await manager.SpawnAsync("owned", "task", runInBackground: true);
         var agentId = ParseAgentId(spawnJson);
 
-        await WaitForConditionAsync(
+        await Wait.UntilAsync(
             () =>
             {
                 try { return manager.Peek(agentId).Contains("\"completed\"", StringComparison.Ordinal); }
                 catch { return false; }
             },
+            "the sub-agent reported completed",
             TimeSpan.FromSeconds(10));
 
         using var observeCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
@@ -640,20 +643,22 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         var spawnJson = await manager.SpawnAsync("owned", "task", runInBackground: true);
         var agentId = ParseAgentId(spawnJson);
 
-        await WaitForConditionAsync(
+        await Wait.UntilAsync(
             () =>
             {
                 try { return manager.Peek(agentId).Contains("\"completed\"", StringComparison.Ordinal); }
                 catch { return false; }
             },
+            "the sub-agent reported completed",
             TimeSpan.FromSeconds(10));
 
         // Drive the restart off the test thread: it blocks inside the gated dispose.
         var sendTask = Task.Run(() => manager.SendMessageAsync(agentId, "continue", runInBackground: true));
 
         ObservableFakeAgent firstAgent;
-        await WaitForConditionAsync(
+        await Wait.UntilAsync(
             () => { lock (createdAgents) { return createdAgents.Count >= 1; } },
+            "the first agent instance was created",
             TimeSpan.FromSeconds(10));
         lock (createdAgents)
         {
@@ -816,14 +821,6 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         return doc.RootElement.GetProperty("agent_id").GetString()!;
     }
 
-    private static async Task WaitForConditionAsync(Func<bool> condition, TimeSpan timeout)
-    {
-        var deadline = DateTimeOffset.UtcNow + timeout;
-        while (!condition() && DateTimeOffset.UtcNow < deadline)
-        {
-            await Task.Delay(25);
-        }
-    }
 
     #endregion
 }
