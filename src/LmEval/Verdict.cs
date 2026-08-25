@@ -112,9 +112,45 @@ public sealed record AggregationContext
 
     /// <summary>
     /// Reliability snapshot keyed by <see cref="IJudge.JudgeId"/> for this (task type, rubric
-    /// version). A judge absent from the map weighs 1.0.
+    /// version). Each weight is in [0,1] (§2.9) and a judge absent from the map weighs 1.0.
     /// </summary>
     public required IReadOnlyDictionary<string, double> Reliability { get; init; }
+
+    /// <summary>
+    /// Throws unless every weight in <paramref name="reliability"/> is a number in [0,1], the range
+    /// §2.9 fits them on.
+    /// <para>
+    /// Out of range is <b>rejected, not clamped</b>. The weights normalise a mean, so a weight
+    /// above 1 or below 0 lets the aggregate score leave
+    /// [<see cref="Rubric.MinScore"/>, <see cref="Rubric.MaxScore"/>] — the interval
+    /// <see cref="Ballot.WeightedScore"/> promises it stays inside — and lets a verdict's score
+    /// contradict the outcome its ballots decided, e.g. two failing ballots aggregating above the
+    /// pass threshold. Clamping would silently repair the fitting bug that produced the weight and
+    /// leave the calibration wrong; NaN fails the same test.
+    /// </para>
+    /// </summary>
+    /// <param name="reliability">The snapshot to validate.</param>
+    /// <param name="paramName">Name of the caller's parameter, for the thrown exception.</param>
+    /// <exception cref="ArgumentOutOfRangeException">A weight is NaN or outside [0,1].</exception>
+    internal static void ValidateReliability(
+        IReadOnlyDictionary<string, double> reliability,
+        string paramName
+    )
+    {
+        foreach (var entry in reliability)
+        {
+            if (double.IsNaN(entry.Value) || entry.Value < 0.0 || entry.Value > 1.0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    paramName,
+                    entry.Value,
+                    $"Reliability weight for judge '{entry.Key}' must be in [0,1]; a weight "
+                        + "outside it lets the aggregate score leave the rubric's scale and "
+                        + "contradict the outcome its ballots decided."
+                );
+            }
+        }
+    }
 
     /// <summary>
     /// Judges that faulted rather than returning a ballot, and why — this is how degradation is

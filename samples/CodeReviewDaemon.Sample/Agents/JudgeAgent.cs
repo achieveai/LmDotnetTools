@@ -113,23 +113,34 @@ internal sealed class JudgeAgent
         var verdict = await ScoreAsync(request, collected.Text, cancellationToken)
             .ConfigureAwait(false);
 
-        // Exactly one ballot exists: the transport below is an already-completed task over text
-        // collected above, so the judge cannot fault. It is counted when the reply parsed and
-        // excluded when it did not.
-        var ballot = verdict.Ballots.Count > 0
-            ? verdict.Ballots[0]
-            : verdict.ExcludedBallots[0].Ballot;
+        // At most one ballot exists: the transport below is an already-completed task over text
+        // collected above, so the judge cannot fault today. That ballot is COUNTED when the harness
+        // both read the reply and was willing to tally it, and EXCLUDED otherwise — abstention and
+        // below-floor confidence are two SEPARATE exclusion channels and a ballot that parsed
+        // perfectly can still land on the second one. Neither list is indexed unguarded: a gate, a
+        // second judge or a real transport would let a verdict arrive carrying no ballot at all.
+        var excluded = verdict.ExcludedBallots.Count > 0 ? verdict.ExcludedBallots[0] : null;
+        var ballot = verdict.Ballots.Count > 0 ? verdict.Ballots[0] : excluded?.Ballot;
 
-        // A reply the harness could not read is an ABSTENTION, not a zero. v1 persists it as a
-        // zero and continues to, because changing a persisted score is a data change — but the
-        // warning makes the two distinguishable in the log, which they were not before.
-        if (ballot.Abstained)
+        // A verdict the harness would not put a number on is an UNSCORED reply, not a zero. v1
+        // persists it as a zero and continues to, because changing a persisted score is a data
+        // change — but the warning makes the two distinguishable in the log, which they were not
+        // before. The condition is `Score is null`, which is EXACTLY the condition under which the
+        // 0 below is invented, and deliberately NOT `ballot.Abstained`: that predicate covers only
+        // one of the aggregator's two exclusion channels, so a reply carrying a real score with
+        // low self-reported confidence would be persisted as 0 with nothing anywhere saying so.
+        if (verdict.Score is null)
         {
+            var unscoredReason = excluded is null
+                ? verdict.TieBreakRule
+                : excluded.Ballot.AbstainReason ?? excluded.ExclusionReason;
+
             _logger.LogWarning(
-                "Judge run {RunId} could not be read ({AbstainReason}) for variant '{Variant}'; "
-                    + "recording score 0. This is an unscored reply, not a worst-possible review.",
+                "Judge run {RunId} produced no usable score ({UnscoredReason}) for variant "
+                    + "'{Variant}'; recording score 0. This is an unscored reply, not a "
+                    + "worst-possible review.",
                 collected.RunId,
-                ballot.AbstainReason,
+                unscoredReason,
                 request.VariantId
             );
         }
@@ -137,7 +148,10 @@ internal sealed class JudgeAgent
         var score = verdict.Score is { } weighted
             ? (int)Math.Round(weighted, MidpointRounding.AwayFromZero)
             : 0;
-        var rationale = ballot.Reasoning;
+
+        // The raw reply is the fallback rationale for the ballot-less verdict guarded above; the
+        // parser already falls back to it for every reply it could read but not score.
+        var rationale = ballot?.Reasoning ?? collected.Text;
 
         // Persist ONLY {score, rationale, variant_id} — AC#7. No auto-routing, no skill rewriting.
         var payload = new JudgeArtifactPayload(score, rationale, request.VariantId);

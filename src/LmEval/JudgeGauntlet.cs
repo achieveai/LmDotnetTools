@@ -61,9 +61,13 @@ public sealed class JudgeGauntlet
     /// <param name="candidate">The candidate to judge.</param>
     /// <param name="rubric">The rubric to judge it against. Its task type must match the candidate's.</param>
     /// <param name="reliability">
-    /// The per-judge reliability snapshot for this (task type, rubric version). A judge absent from
-    /// the map weighs 1.0, so an uncalibrated harness is usable on day one.
+    /// The per-judge reliability snapshot for this (task type, rubric version). Every weight is in
+    /// [0,1] (§2.9); a judge absent from the map weighs 1.0, so an uncalibrated harness is usable
+    /// on day one.
     /// </param>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// A reliability weight is NaN or outside [0,1].
+    /// </exception>
     /// <param name="cancellationToken">Cancellation. A caller's cancellation is never a judge fault.</param>
     public async Task<Verdict> RunAsync(
         Candidate candidate,
@@ -75,6 +79,11 @@ public sealed class JudgeGauntlet
         ArgumentNullException.ThrowIfNull(candidate);
         ArgumentNullException.ThrowIfNull(rubric);
         ArgumentNullException.ThrowIfNull(reliability);
+
+        // Same predicate the reducer enforces, applied before the panel is billed: a misfitted
+        // weight is a property of the run, so paying for two judge calls per candidate across a
+        // whole corpus before the reduction rejects it would be pure waste.
+        AggregationContext.ValidateReliability(reliability, nameof(reliability));
         cancellationToken.ThrowIfCancellationRequested();
 
         if (!string.Equals(candidate.TaskType, rubric.TaskType, StringComparison.Ordinal))

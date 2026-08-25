@@ -48,6 +48,12 @@ public sealed class WeightedMeanAggregator : IBallotAggregator
         ArgumentNullException.ThrowIfNull(ballots);
         ArgumentNullException.ThrowIfNull(context);
 
+        // The weights normalise the mean below, so an out-of-range one is what would let Score
+        // leave the rubric's scale or land on the opposite side of the threshold from the outcome
+        // the ballots decided. Checked here rather than only at the harness boundary because this
+        // is the code whose invariant it breaks, and this reducer is directly constructible.
+        AggregationContext.ValidateReliability(context.Reliability, nameof(context));
+
         var arbiterId = context.Options.ArbiterJudge?.JudgeId;
 
         // 1. Partition. An abstention and a self-distrusted score are both recorded and both

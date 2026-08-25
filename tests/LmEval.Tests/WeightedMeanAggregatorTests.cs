@@ -257,17 +257,56 @@ public sealed class WeightedMeanAggregatorTests
 
     /// <summary>
     /// §2.9 — Score is the reliability-WEIGHTED mean, not the arithmetic one. An unweighted mean of
-    /// 9 and 5 is 7.0; weighting the 9 at 3.0 moves it to 8.0.
+    /// 9 and 5 is 7.0; trusting the 9 three times as much as the 5 moves it to 8.0. The weights are
+    /// in [0,1] because that is the range §2.9 fits them on and the aggregator now rejects any
+    /// other — what makes this test discriminating is their RATIO, not their magnitude.
     /// </summary>
     [Fact]
     public void The_score_is_weighted_by_judge_reliability()
     {
         var verdict = Aggregate(
             [Ballot("a", "anthropic", 9.0), Ballot("b", "openai", 5.0)],
-            Context(reliability: new Dictionary<string, double> { ["a"] = 3.0, ["b"] = 1.0 })
+            Context(reliability: new Dictionary<string, double> { ["a"] = 0.75, ["b"] = 0.25 })
         );
 
-        verdict.Score.Should().Be(8.0, "9*3 + 5*1 over 4 is 8, not the unweighted 7");
+        verdict.Score.Should().Be(8.0, "9*0.75 + 5*0.25 over 1.0 is 8, not the unweighted 7");
+    }
+
+    /// <summary>
+    /// §2.9 fits reliability in [0,1] and nothing used to enforce it. The weights normalise the
+    /// mean, so a weight outside the range lets the aggregate leave the rubric's own scale — 10 and
+    /// 8 weighted 5.0 and -4.0 aggregate to 18 on a 0-10 rubric — and lets Score contradict
+    /// Outcome: two FAILING ballots (5 and 3, threshold 6) weighted 2.0 and -1.0 aggregate to 7,
+    /// so a downstream reader segmenting on Score sees a pass the outcome calls a fail.
+    /// </summary>
+    [Theory]
+    [InlineData(5.0)]
+    [InlineData(-4.0)]
+    [InlineData(double.NaN)]
+    public void A_reliability_weight_outside_zero_to_one_is_rejected(double weight)
+    {
+        var act = () =>
+            Aggregate(
+                [Ballot("a", "anthropic", 10.0), Ballot("b", "openai", 8.0)],
+                Context(reliability: new Dictionary<string, double> { ["a"] = weight })
+            );
+
+        act.Should().Throw<ArgumentOutOfRangeException>().WithMessage("*'a'*[0,1]*");
+    }
+
+    /// <summary>
+    /// The boundaries themselves are legal: 0 and 1 are inside the fitted range, and rejecting them
+    /// would break every uncalibrated harness the moment a judge was fitted to either extreme.
+    /// </summary>
+    [Fact]
+    public void The_endpoints_of_the_reliability_range_are_accepted()
+    {
+        var verdict = Aggregate(
+            [Ballot("a", "anthropic", 9.0), Ballot("b", "openai", 7.0)],
+            Context(reliability: new Dictionary<string, double> { ["a"] = 1.0, ["b"] = 0.0 })
+        );
+
+        verdict.Score.Should().Be(9.0);
     }
 
     [Fact]

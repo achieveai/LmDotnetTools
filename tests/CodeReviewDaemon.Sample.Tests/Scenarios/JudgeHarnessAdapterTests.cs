@@ -61,7 +61,49 @@ public sealed class JudgeHarnessAdapterTests
         verdict.Rationale.Should().Be("I could not produce a structured verdict.");
         store.GetArtifacts(reviewRunId).Should().ContainSingle();
 
-        logger.CountAtLevel(LogLevel.Warning, "could not be read").Should().Be(1);
+        logger.CountAtLevel(LogLevel.Warning, "no usable score").Should().Be(1);
+    }
+
+    /// <summary>
+    /// The aggregator has TWO exclusion channels — <c>Abstained</c>, and a confidence below
+    /// <c>HarnessOptions.AbstainFloor</c> — and only the first sets <c>Abstained</c>. A reply that
+    /// parsed perfectly and carries a real score can therefore still be excluded, leaving zero
+    /// counted ballots, a null <c>Verdict.Score</c>, and the invented <c>0</c> this adapter
+    /// persists. Gating the warning on <c>Abstained</c> makes that case silent: the artifact
+    /// records a genuine 7 as a 0 with no log line anywhere. The warning is gated on the condition
+    /// that actually invents the zero.
+    /// <para>
+    /// The daemon's live <c>judge: v1.0</c> prompt does not ask for <c>confidence</c>, but the
+    /// harness's own <c>RubricPromptRenderer</c> instructs the model to emit it, so this becomes
+    /// the normal path the moment any consumer renders with the default.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_parsed_reply_excluded_on_confidence_still_warns_before_persisting_zero()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var reviewRunId = SeedRun(store);
+        var logger = new CapturingLogger<JudgeAgent>();
+
+        var agent = new FakeMultiTurnAgent(
+            RunId,
+            new TextMessage
+            {
+                Text = "{\"score\": 7, \"rationale\": \"Solid.\", \"confidence\": 0.2}",
+                Role = Role.Assistant,
+                RunId = RunId,
+            }
+        );
+
+        var verdict = await new JudgeAgent(agent, store, logger).JudgeAsync(
+            new JudgeRequest(reviewRunId, Provider, "b", "grade"),
+            CancellationToken.None
+        );
+
+        verdict.Score.Should().Be(0);
+        verdict.Rationale.Should().Be("Solid.");
+        logger.CountAtLevel(LogLevel.Warning, "no usable score").Should().Be(1);
     }
 
     /// <summary>
@@ -93,7 +135,7 @@ public sealed class JudgeHarnessAdapterTests
         );
 
         verdict.Score.Should().Be(7);
-        logger.CountAtLevel(LogLevel.Warning, "could not be read").Should().Be(0);
+        logger.CountAtLevel(LogLevel.Warning, "no usable score").Should().Be(0);
     }
 
     /// <summary>
