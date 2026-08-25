@@ -50,7 +50,8 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
     {
         if (_manager != null)
         {
-            await _manager.DisposeAsync();
+            // Bounded: an unbounded teardown turns one stalled test into an aborted run (#362).
+            await Wait.ForTeardownAsync(_manager.DisposeAsync, "the sub-agent manager under test");
         }
     }
 
@@ -477,6 +478,14 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         // the swap) until the test releases it.
         var disposeGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        // #362: the restart parks INSIDE this gate, and the fixture's teardown awaits that same
+        // instance's DisposeAsync. A body that throws before the explicit release below therefore
+        // leaves teardown blocked on a gate nobody will ever open — which does not fail this test, it
+        // wedges the testhost until dotnet test aborts the whole assembly and the assertion that
+        // actually failed is never reported. The explicit release stays where the test means it; this
+        // guard only covers the paths that never reach it.
+        using var gateRelease = new DisposeGateRelease(disposeGate);
+
         var manager = CreateManager(new Dictionary<string, SubAgentTemplate>
         {
             ["owned"] = DummyTemplate("owned"),
@@ -606,6 +615,14 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         var agentCallCount = 0;
         var disposeGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        // #362: the restart parks INSIDE this gate, and the fixture's teardown awaits that same
+        // instance's DisposeAsync. A body that throws before the explicit release below therefore
+        // leaves teardown blocked on a gate nobody will ever open — which does not fail this test, it
+        // wedges the testhost until dotnet test aborts the whole assembly and the assertion that
+        // actually failed is never reported. The explicit release stays where the test means it; this
+        // guard only covers the paths that never reach it.
+        using var gateRelease = new DisposeGateRelease(disposeGate);
+
         var manager = CreateManager(new Dictionary<string, SubAgentTemplate>
         {
             ["owned"] = DummyTemplate("owned"),
@@ -714,6 +731,119 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
             "the transition was handled as a stream end, not by cancelling the observer");
     }
 
+    [Fact]
+    public async Task Teardown_WhenABodyThrowsBeforeReleasingAGatedDispose_FailsByNameInsteadOfWedgingTheRun()
+    {
+        // #362. The two tests above drive an owned-provider restart off the test thread and park it
+        // inside a gated DisposeAsync, releasing the gate later in the body. Between those two points
+        // the manager's registered live instance IS the gated one, so SubAgentManager.DisposeAsync —
+        // which awaits `state.Agent.DisposeAsync()` — cannot return until the gate opens.
+        //
+        // A body that throws in that window never reaches its release. Unbounded, the fixture's
+        // teardown then blocks forever: not one failed test, but dotnet test's inactivity blame-dump
+        // aborting the WHOLE assembly, so the assertion that actually failed is never reported and
+        // every test queued behind it never runs. #337 made waits throw, which is what turned this
+        // pre-existing structure from unreachable into ordinary CI.
+        //
+        // Reproduce exactly that — gate armed, restart parked, body threw, gate never opened — and
+        // prove the bound turns it into one named failure. The structural claim is the named
+        // TimeoutException, NOT how long anything took: #343 means a starved runner can stretch any
+        // interval, so nothing here asserts elapsed time.
+        var disposeGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var agentCallCount = 0;
+        ObservableFakeAgent? firstAgent = null;
+
+        // Deliberately NOT registered with the fixture: this manager is wedged on purpose and is
+        // disposed by this test.
+        var manager = CreateManager(
+            new Dictionary<string, SubAgentTemplate> { ["owned"] = DummyTemplate("owned") },
+            registerForTeardown: false);
+
+        manager.TestAgentFactoryOverride = (agentId, _) =>
+        {
+            var idx = Interlocked.Increment(ref agentCallCount);
+            var agent = new ObservableFakeAgent
+            {
+                ThreadId = $"subagent-{agentId}",
+                RunMessages =
+                [
+                    new TextMessage { Text = $"run-{idx}-answer", Role = Role.Assistant },
+                    new RunCompletedMessage { CompletedRunId = $"run-{idx}" },
+                ],
+                DisposeGate = idx == 1 ? disposeGate : null,
+            };
+            if (idx == 1)
+            {
+                Volatile.Write(ref firstAgent, agent);
+            }
+
+            return agent;
+        };
+
+        manager.TestOwnedProviderOverride = (_, _) => new Mock<IStreamingAgent>().Object;
+
+        var spawnJson = await manager.SpawnAsync("owned", "task", runInBackground: true);
+        var agentId = ParseAgentId(spawnJson);
+
+        await Wait.UntilAsync(
+            () =>
+            {
+                try { return manager.Peek(agentId).Contains("\"completed\"", StringComparison.Ordinal); }
+                catch { return false; }
+            },
+            "the sub-agent reported completed",
+            TimeSpan.FromSeconds(10));
+
+        // Park the restart inside the gated dispose. This is the wedge: from here until the gate opens,
+        // the manager's own DisposeAsync cannot return.
+        var sendTask = Task.Run(() => manager.SendMessageAsync(agentId, "continue", runInBackground: true));
+        var wedged = manager.DisposeAsync().AsTask();
+
+        try
+        {
+            await Volatile.Read(ref firstAgent)!.DisposeEnteredTask.WaitAsync(TimeSpan.FromSeconds(30));
+
+            // This stands in for the throw: the body simply never releases the gate. The bound is
+            // short only because the gate is never opened, so the teardown CANNOT complete however
+            // long we allow — the outcome does not depend on timing at all.
+            var ceiling = TimeSpan.FromSeconds(2);
+            var failure = await FluentActions
+                .Awaiting(() => Wait.ForTeardownAsync(
+                    () => new ValueTask(wedged),
+                    "the sub-agent manager whose registered instance is parked in a gated dispose",
+                    ceiling))
+                .Should()
+                .ThrowAsync<TimeoutException>(
+                    "an unreleased gate must fail the teardown by name rather than block it forever");
+
+            failure.Which.Message.Should().Contain(
+                "the sub-agent manager whose registered instance is parked in a gated dispose",
+                "the message must name WHAT was being torn down — a bare timeout tells the next reader "
+                + "nothing the stack trace did not");
+            failure.Which.Message.Should().Contain(
+                nameof(Teardown_WhenABodyThrowsBeforeReleasingAGatedDispose_FailsByNameInsteadOfWedgingTheRun),
+                "the message must name the caller whose teardown stalled");
+
+            // The teardown really is still blocked — the bound abandoned it, it did not cancel it.
+            // That is the structural difference between a bound and a fix, and it is why the gate has
+            // to be released too rather than only bounded.
+            wedged.IsCompleted.Should().BeFalse(
+                "the bound reports the stall; only opening the gate can actually finish the teardown");
+        }
+        finally
+        {
+            // Open the gate so the abandoned teardown can drain; the enclosing test owns this manager.
+            _ = disposeGate.TrySetResult();
+        }
+
+        await wedged.WaitAsync(TimeSpan.FromSeconds(30));
+        try { await sendTask.WaitAsync(TimeSpan.FromSeconds(30)); }
+        catch (Exception ex) when (ex is not TimeoutException)
+        {
+            // A relay racing a manager disposal may legitimately fault; the wedge is what is under test.
+        }
+    }
+
     [Theory]
     [InlineData(typeof(InvalidOperationException))]
     [InlineData(typeof(OperationCanceledException))]
@@ -780,9 +910,14 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
             },
         };
 
+    // registerForTeardown: whether the fixture's DisposeAsync tears this manager down. Only the
+    // teardown-bound proof below passes false — it wedges its manager deliberately and disposes it
+    // itself, so handing the same mid-abandoned disposal to the fixture would make every OTHER test in
+    // this class pay that manager's bound.
     private SubAgentManager CreateManager(
         IReadOnlyDictionary<string, SubAgentTemplate> templates,
-        int maxConcurrent = 5)
+        int maxConcurrent = 5,
+        bool registerForTeardown = true)
     {
         var options = new SubAgentOptions
         {
@@ -796,7 +931,11 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
             parentHandlers: new Dictionary<string, ToolHandler>(),
             options: options,
             source: new MutableSubAgentTemplateSource(options.Templates));
-        _manager = manager;
+        if (registerForTeardown)
+        {
+            _manager = manager;
+        }
+
         return manager;
     }
 
@@ -964,4 +1103,18 @@ internal sealed class ObservableFakeAgent : IMultiTurnAgent
             await DisposeGate.Task;
         }
     }
+}
+
+/// <summary>
+/// Releases a <see cref="ObservableFakeAgent.DisposeGate"/> however the enclosing test body ends.
+/// </summary>
+/// <remarks>
+/// A gated dispose is the instance the manager's own <c>DisposeAsync</c> awaits during a restart, so
+/// a gate left closed by a throwing body does not fail that test — it blocks the fixture's teardown,
+/// which unbounded aborts the entire assembly (#362). <c>using</c> compiles to a <c>finally</c>, so
+/// every exit path opens the gate; the explicit release stays in the body where the test means it.
+/// </remarks>
+internal sealed class DisposeGateRelease(TaskCompletionSource gate) : IDisposable
+{
+    public void Dispose() => gate.TrySetResult();
 }

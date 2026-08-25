@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -35,7 +36,8 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
     {
         foreach (var manager in _managers)
         {
-            await manager.DisposeAsync();
+            // Bounded: an unbounded teardown turns one stalled test into an aborted run (#362).
+            await Wait.ForTeardownAsync(manager.DisposeAsync, "a sub-agent manager created by this test");
         }
     }
 

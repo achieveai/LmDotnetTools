@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -131,22 +132,23 @@ public class NotifyEnvelopeDeliveryTests
 
         await cts.CancelAsync();
 
-        // AddToHistory persists fire-and-forget, so give the last fire's write a brief window to
-        // land after its RunCompletedMessage (which fires whether or not the injected run's own
-        // provider call succeeds — see the remarks on this test's precondition caveat).
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        // AddToHistory persists fire-and-forget, so the write lands after its RunCompletedMessage
+        // (which fires whether or not the injected run's own provider call succeeds — see the remarks
+        // on this test's precondition caveat). Loud: a deadline that returned the last snapshot
+        // silently left every caller to re-derive, from its own assertion failure, that the wait was
+        // what actually gave up.
         IReadOnlyList<IMessage> history = [];
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            history = MessagePersistenceConverter.FromPersistedMessages(
-                await store.LoadMessagesAsync(threadId));
-            if (history.OfType<TextMessage>().Any(
-                m => m.Role == Role.User && m.Text.Contains("<trigger>")))
+        await Wait.UntilAsync(
+            async () =>
             {
-                break;
-            }
-            await Task.Delay(50);
-        }
+                history = MessagePersistenceConverter.FromPersistedMessages(
+                    await store.LoadMessagesAsync(threadId));
+                return history.OfType<TextMessage>().Any(
+                    m => m.Role == Role.User && m.Text.Contains("<trigger>"));
+            },
+            "the fire-and-forget AddToHistory write put a <trigger> envelope into persisted history",
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromMilliseconds(50));
 
         return history;
     }

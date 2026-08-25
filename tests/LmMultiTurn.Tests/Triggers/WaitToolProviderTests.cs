@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
@@ -45,7 +46,9 @@ public class WaitToolProviderTests : IAsyncLifetime
         return Task.CompletedTask;
     }
 
-    public async Task DisposeAsync() => await _runtime.DisposeAsync();
+    // Bounded: an unbounded teardown turns one stalled test into an aborted run (#362).
+    public Task DisposeAsync() =>
+        Wait.ForTeardownAsync(_runtime.DisposeAsync, "the trigger runtime under test");
 
     private static string WaitArgs() =>
         JsonSerializer.Serialize(new { kind = "timer", args = new { }, timeout = "10m" });

@@ -1237,13 +1237,15 @@ public class MultiTurnAgentPoolTests
         pool.ActiveAgentCount.Should().Be(1);
     }
 
+    // No timeout of its own: the workspace write is the same fire-and-forget metadata write as every
+    // other property, so it inherits WaitForPersistedPropertyAsync's budget. Restating one here is how
+    // this call site kept its 1s while the shared default was raised to 5s for #343 starvation.
     private static async Task<string> WaitForPersistedWorkspaceAsync(
         IConversationStore store,
-        string threadId,
-        int timeoutMs = 1000
+        string threadId
     )
     {
-        return await WaitForPersistedPropertyAsync(store, threadId, MultiTurnAgentPool.WorkspacePropertyKey, timeoutMs);
+        return await WaitForPersistedPropertyAsync(store, threadId, MultiTurnAgentPool.WorkspacePropertyKey);
     }
 
     private static async Task<string> WaitForPersistedPropertyAsync(
