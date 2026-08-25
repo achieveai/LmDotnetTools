@@ -1,5 +1,7 @@
 # Copilot Proxy Bidirectional API Implementation Plan
 
+**Status:** Implemented — shipped in `114668ff`. See `samples/CopilotAnthropicProxy.Sample/Translation/ModelRoute.cs` and the `/v1/responses` + `/v1/chat/completions` routes in `Program.cs`.
+
 > Steps use checkbox (`- [ ]`) syntax so progress can be tracked task-by-task.
 
 **Goal:** Let Claude Code, Codex CLI, and opencode each drive *any* GitHub Copilot model through `samples/CopilotAnthropicProxy.Sample`, regardless of which API dialect the client speaks.

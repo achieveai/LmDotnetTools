@@ -1,5 +1,7 @@
 # Layer-2 Knowledge Base — Implementation Plan
 
+**Status:** Implemented — shipped in `8643e137`. See `samples/CodeReviewDaemon.Sample/Agents/KnowledgeAgent.cs` (including the `NO_KNOWLEDGE` gate), `KnowledgeIndex.cs` and `KnowledgeTableOfContents.cs`, wired behind `EnableKnowledgeAgent`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax.
 
 **Goal:** At PR-close, distill durable knowledge from a PR's accumulated review notes into a layered, queryable `KnowledgeBase/`; reviews consult it.

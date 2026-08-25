@@ -1,5 +1,7 @@
 # LmStreaming.Sample Output-Token Policy Implementation Plan
 
+**Status:** Implemented — shipped in `b3699ed4` (#267). See `samples/LmStreaming.Sample/Configuration/AgentOutputTokenOptions.cs` and `Services/AgentOutputTokenPolicy.cs`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Configure `LmStreaming.Sample` to use 24,576 output tokens for primary conversations and 16,384 for sample-created delegated agents while preserving explicit budgets and the global library's existing 8,192 fallback.

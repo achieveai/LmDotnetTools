@@ -1,5 +1,7 @@
 # Sandbox Per-Plugin Selection (Gateway) Implementation Plan
 
+**Status:** Implemented in the gateway repository, not this one — `8c0b41d` on `master` of `SandboxedOstoolsMcpServer`. Both named gaps are closed: command allow-listing in `get_command_discoveries`, MCP-server filtering via `session_mcp_servers`. Task 12's live-gateway HTTP check is an operational step and is unconfirmed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let a sandbox-create caller narrow which plugins (not just which marketplaces) are mounted/exposed for a session, with structured `{marketplace, plugin}` identity, tri-state selection semantics, deterministic dependency resolution, a fail-closed capability signal, and restart-durable persistence — closing the two confirmed gateway gaps (no command allow-listing, no MCP-server locate/filter wiring) along the way.

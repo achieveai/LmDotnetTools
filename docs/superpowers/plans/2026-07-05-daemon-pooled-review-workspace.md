@@ -1,5 +1,7 @@
 # Daemon Pooled Review Workspace (Layer 1) — Implementation Plan
 
+**Status:** Implemented — pooled slots in `b866c36b`, PR-lifecycle sweeper in `ce88e11a`. See `samples/CodeReviewDaemon.Sample/Workspace/ReviewSlot.cs`, `Agents/ScopedToolFilter.cs` and `Orchestration/PrLifecycleSweeper.cs`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the daemon's per-run ephemeral clone + read-only reviewer with a warm host-side pool of `AchieveAiReviews` checkouts, a scoped-writable reviewer that takes PR-specific notes, and a persistent per-PR branch that carries memory across re-reviews and merges-or-deletes on PR close.

@@ -1,5 +1,7 @@
 # LmStreaming Standalone Publish Implementation Plan
 
+**Status:** Implemented — shipped in `22c3e52d` (#290). `samples/LmStreaming.Sample/publish-launch.ps1` now runs the direct build to publish to validate to launch pipeline, with no Vite dev-server path.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make `samples/LmStreaming.Sample/publish-launch.ps1` directly build, publish, validate, and run a Production artifact from a temporary repository scratchpad directory without starting a Vite development server.

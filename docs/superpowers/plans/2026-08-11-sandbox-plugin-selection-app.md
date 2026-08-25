@@ -1,5 +1,7 @@
 ﻿# Sandbox Plugin Selection (App Layer) Implementation Plan
 
+**Status:** Implemented — shipped in `471f125a` (#285). See `src/Sandbox/SandboxSessionRegistry.PluginSelection.cs`, `Models/Optional.cs`, `WorkspacePluginSelectionService.cs` and the capability-gated checkboxes in `WorkspaceSelector.vue`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let the sample app's workspace UI/API select a subset of gateway plugins per workspace (tri-state: legacy-all / none / explicit subset), persist that selection with optimistic concurrency, and safely migrate live sandbox sessions onto the new selection without dropping in-flight agent runs.

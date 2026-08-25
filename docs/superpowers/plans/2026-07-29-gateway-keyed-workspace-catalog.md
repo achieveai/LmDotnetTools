@@ -1,5 +1,7 @@
 # Gateway-Keyed Workspace Catalog Implementation Plan
 
+**Status:** Implemented — shipped in `48a36b2c`. See `samples/LmStreaming.Sample/Persistence/GatewayWorkspaceCatalogResolver.cs` and `Services/WorkspaceCatalogCompatibilityService.cs`. The plan's optional browser-E2E scenario `GatewayWorkspaceIsolationTests.cs` was never written.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Isolate LmStreaming.Sample workspace catalogs by canonical sandbox gateway URL + process AppId, archive ambiguous legacy data safely, validate marketplace compatibility before persistence/session creation, and prevent the client from showing stale workspaces when the backend is unavailable.
