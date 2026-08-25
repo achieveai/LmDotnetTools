@@ -374,4 +374,148 @@ public class BaselineComparerTests
 
         act.Should().Throw<ArgumentOutOfRangeException>();
     }
+
+    // ---- pinning what the survivors of the #364 mutation audit left unpinned ------------------
+
+    /// <summary>
+    /// §5.4's third trigger says the no-decision rate <b>rises</b> materially. Nothing supplied a
+    /// FALLING rate, so <c>noDecisionDelta &gt; margin</c> survived becoming
+    /// <c>Math.Abs(noDecisionDelta) &gt; margin</c> — under which a run that got materially BETTER
+    /// at deciding is reported as a regression.
+    /// </summary>
+    [Fact]
+    public void A_no_decision_rate_that_falls_past_the_margin_is_not_a_regression()
+    {
+        // Baseline: half the corpus undecided. Candidate: all of it decided. The delta is -0.5,
+        // five times the default margin in the improving direction.
+        var noisy = Run(
+            [
+                .. Enumerable.Range(0, 5).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+                .. Enumerable.Range(5, 5).Select(i => Undecided($"i{i}")),
+            ]
+        );
+        var baseline = Baseline(noisy, minCoverage: 0.4);
+
+        var comparison = BaselineComparer.Compare(UniformRun(passing: 10, size: 10), baseline);
+
+        comparison.IsRefused.Should().BeFalse();
+        comparison.NoDecisionRateDelta.Should().BeApproximately(-0.5, 1e-9);
+        comparison
+            .Triggers.Should()
+            .NotHaveFlag(
+                RegressionTrigger.NoDecisionRise,
+                "a panel that got BETTER at deciding has not stopped being able to judge"
+            );
+    }
+
+    /// <summary>
+    /// <c>BaselineCoverage</c> survived being replaced by <c>run.Coverage</c>, because every test
+    /// asserting on it used a fully-scored baseline against a fully-scored run, where both are 1.0.
+    /// This is the comparison where the two genuinely differ.
+    /// </summary>
+    [Fact]
+    public void The_baselines_own_coverage_is_reported_and_is_not_the_runs()
+    {
+        // Baseline: 6 of 10 scored. Candidate: 9 of 10 scored. Two different numbers, both asserted.
+        var thin = Run(
+            [
+                .. Enumerable.Range(0, 6).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+                .. Enumerable.Range(6, 4).Select(i => Undecided($"i{i}")),
+            ]
+        );
+        var baseline = Baseline(thin, minCoverage: 0.5);
+
+        var candidate = Run(
+            [
+                .. Enumerable.Range(0, 9).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+                .. Enumerable.Range(9, 1).Select(i => Undecided($"i{i}")),
+            ]
+        );
+
+        var comparison = BaselineComparer.Compare(candidate, baseline);
+
+        comparison.IsRefused.Should().BeFalse();
+        comparison.BaselineCoverage.Should().BeApproximately(0.6, 1e-9);
+        comparison.Coverage.Should().BeApproximately(0.9, 1e-9);
+        comparison.BaselineCoverage.Should().NotBe(comparison.Coverage);
+    }
+
+    /// <summary>
+    /// The refusal path reports both coverages too, and it is a separate construction site — so it
+    /// can drift from the comparing one without any test noticing.
+    /// </summary>
+    [Fact]
+    public void A_refusal_also_reports_the_baselines_own_coverage_and_not_the_runs()
+    {
+        var thin = Run(
+            [
+                .. Enumerable.Range(0, 6).Select(i => Scored($"i{i}", 8.0, VerdictOutcome.Pass)),
+                .. Enumerable.Range(6, 4).Select(i => Undecided($"i{i}")),
+            ]
+        );
+        var baseline = Baseline(thin, minCoverage: 0.5);
+
+        var comparison = BaselineComparer.Compare(
+            UniformRun(passing: 8, rubricVersion: "9.9"),
+            baseline
+        );
+
+        comparison.Refusal.Should().Be(ComparisonRefusal.RubricVersionDiffers);
+        comparison.BaselineCoverage.Should().BeApproximately(0.6, 1e-9);
+        comparison.Coverage.Should().Be(1.0);
+    }
+
+    /// <summary>
+    /// The 2.5th-percentile index survived becoming the median: the only test touching the interval
+    /// pinned that two calls AGREE, which a reproducibly-wrong index satisfies perfectly, since the
+    /// seed is fixed and the result is reproducible by construction.
+    /// <para>
+    /// Pinned here against facts derived independently of the implementation: a lower bound of a 95%
+    /// interval sits strictly BELOW the point estimate the resampling is centred on (the median does
+    /// not), and it brackets that estimate on both sides.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void The_bootstrap_lower_bound_sits_strictly_below_the_point_estimate()
+    {
+        // A 50% pass rate over 10 items is the highest-variance case available, so the resampled
+        // distribution is wide and its 2.5th percentile is far from its median.
+        var baseline = Baseline(UniformRun(passing: 10, size: 10), minCoverage: 0.4);
+        var candidate = UniformRun(passing: 5, size: 10);
+
+        var comparison = BaselineComparer.Compare(candidate, baseline);
+
+        var pointEstimate = comparison.PassRateDelta!.Value;
+        comparison
+            .PassRateDeltaLower!.Value.Should()
+            .BeLessThan(
+                pointEstimate,
+                "the 2.5th percentile of the resampled deltas is below their centre; the MEDIAN is at it"
+            );
+        comparison.PassRateDeltaUpper!.Value.Should().BeGreaterThan(pointEstimate);
+    }
+
+    /// <summary>
+    /// The other half of the same claim: a 95% interval narrows as the corpus grows, because the
+    /// sampling error it measures does. A wrong-but-reproducible percentile index does not have to.
+    /// </summary>
+    [Fact]
+    public void The_bootstrap_interval_narrows_as_the_corpus_grows()
+    {
+        static double Width(int size)
+        {
+            var baseline = Baseline(UniformRun(passing: size, size: size), minCoverage: 0.4);
+            var comparison = BaselineComparer.Compare(
+                UniformRun(passing: size / 2, size: size),
+                baseline
+            );
+            return comparison.PassRateDeltaUpper!.Value - comparison.PassRateDeltaLower!.Value;
+        }
+
+        var narrow = Width(400);
+        var wide = Width(20);
+
+        narrow.Should().BeLessThan(wide);
+        narrow.Should().BePositive();
+    }
 }

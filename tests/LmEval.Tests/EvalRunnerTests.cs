@@ -701,4 +701,66 @@ public class EvalRunnerTests
         comparison.RefusalDetail.Should().Contain("scored no items at all");
         comparison.PassRateDelta.Should().BeNull();
     }
+
+    // ---- gate scoping (IGate.AppliesTo) -------------------------------------------------------
+
+    /// <summary>
+    /// <see cref="IGate.AppliesTo"/> decides whether a gate participates at all, and a gate that
+    /// runs short-circuits to a fail with no score that stays in the pass rate's denominator.
+    /// Silently not running is therefore a large, quiet move in the reported rate — and every gate
+    /// fixture in this assembly declared the set empty, so nothing anywhere exercised it.
+    /// </summary>
+    [Fact]
+    public async Task A_gate_scoped_to_another_task_type_sees_no_candidate_and_moves_no_rate()
+    {
+        var elsewhere = new MarkerGate(
+            EvalFixtures.RejectMarker,
+            gateId: "scoped",
+            appliesTo: ["summarization"]
+        );
+
+        var run = await EvalFixtures.RunAsync(
+            EvalFixtures.Config([elsewhere]),
+            EvalFixtures.Snapshot(
+                EvalFixtures.Item("clean"),
+                EvalFixtures.Item("dirty", content: EvalFixtures.RejectMarker)
+            )
+        );
+
+        run.Items.Should().OnlyContain(i => i.Verdict!.GateDecisions.Count == 0);
+        run.GateRejectedCount.Should().Be(0, "a gate scoped elsewhere cannot reject anything here");
+        run.ScoredItems.Should().Be(2);
+        run.PassRate.Should().Be(1.0);
+    }
+
+    /// <summary>
+    /// The other half: scoped to the corpus's OWN task type, the same gate runs against every
+    /// candidate and the rejection lands. Read against the test above, the pair is what makes the
+    /// scoping field behaviourally pinned rather than merely present.
+    /// </summary>
+    [Fact]
+    public async Task A_gate_scoped_to_the_corpus_task_type_sees_every_candidate()
+    {
+        var here = new MarkerGate(
+            EvalFixtures.RejectMarker,
+            gateId: "scoped",
+            appliesTo: [HarnessFixtures.TaskType]
+        );
+
+        var run = await EvalFixtures.RunAsync(
+            EvalFixtures.Config([here]),
+            EvalFixtures.Snapshot(
+                EvalFixtures.Item("clean"),
+                EvalFixtures.Item("dirty", content: EvalFixtures.RejectMarker)
+            )
+        );
+
+        run.Items.Should().OnlyContain(i => i.Verdict!.GateDecisions.Count == 1);
+        run.GateRejectedCount.Should().Be(1);
+        run.Items.Single(i => i.CandidateId == "dirty")
+            .Exclusion.Should()
+            .Be(ScoreExclusion.GateRejected);
+        run.ScoredItems.Should().Be(1);
+        run.PassRate.Should().Be(0.5, "the rejected item leaves the numerator and stays in the denominator");
+    }
 }
