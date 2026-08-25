@@ -44,7 +44,7 @@ internal static class PublishLaunchScriptHost
     public static PwshResult InvokeForJson(string expression, TimeSpan? timeout = null)
     {
         var command =
-            $". '{QuoteSingle(ScriptPath)}'; ({expression}) | ConvertTo-Json -Depth 12 -Compress";
+            $". '{QuoteSingle(ScriptPath)}'; {CaptureStructurally($"({expression}) | ConvertTo-Json -Depth 12 -Compress")}";
         return Run(command, timeout);
     }
 
@@ -55,9 +55,43 @@ internal static class PublishLaunchScriptHost
     /// </summary>
     public static PwshResult InvokeForEffect(string expression, TimeSpan? timeout = null)
     {
-        var command = $". '{QuoteSingle(ScriptPath)}'; {expression} | Out-Null";
+        var command = $". '{QuoteSingle(ScriptPath)}'; {CaptureStructurally($"{expression} | Out-Null")}";
         return Run(command, timeout);
     }
+
+    /// <summary>
+    /// Wraps <paramref name="body"/> so a terminating error reaches stderr as the exact message the
+    /// script composed, rather than as pwsh's rendering of an ErrorRecord.
+    ///
+    /// <para>
+    /// This is the whole of the fix for issue #340. pwsh's default ConciseView error formatter does
+    /// two things to a thrown message on its way to stderr: it word-wraps at the host width -- a
+    /// fixed 120 columns once stdout is redirected, whatever the parent terminal is -- and it
+    /// decorates every fragment with ANSI SGR escapes. A wrap landing on a space inside an absolute
+    /// path, routine on any machine whose profile directory contains one (C:\Users\Some Name\...),
+    /// therefore splits that path and stuffs escape sequences into the gap, so
+    /// <c>StandardError.Should().Contain(thatPath)</c> fails against perfectly correct output.
+    /// Collapsing the whitespace back -- the mitigation this replaces -- cannot repair it: the
+    /// escapes are injected AT the wrap point and survive the collapse.
+    /// </para>
+    ///
+    /// <para>
+    /// Writing through <see cref="Console.Error"/> bypasses the PowerShell formatter completely: no
+    /// wrap, no gutter, no escapes, at any host width and for any path. Assertions then read the
+    /// message the script DECIDED to compose instead of how a shell chose to render it, so they no
+    /// longer depend on the profile path, the console width, or the terminal.
+    /// </para>
+    ///
+    /// <para>
+    /// Note what this deliberately does NOT do: it sets no <c>$ErrorActionPreference</c>. A
+    /// try/catch changes no preference, so the script's own top-level
+    /// <c>$ErrorActionPreference = 'Stop'</c> stays the only thing promoting a non-terminating error
+    /// to a terminating one; deleting that line still fails the affected tests, via a zero exit
+    /// code, exactly as it did before -- see this class's remarks above.
+    /// </para>
+    /// </summary>
+    private static string CaptureStructurally(string body) =>
+        $"try {{ {body} }} catch {{ [Console]::Error.WriteLine($_.Exception.Message); exit 1 }}";
 
     public static PwshResult Run(string command, TimeSpan? timeout = null)
     {
@@ -69,6 +103,11 @@ internal static class PublishLaunchScriptHost
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+        // Belt-and-braces for the raw Run() entry point, which has no try/catch to route a message
+        // around the formatter: NO_COLOR is pwsh 7.2+'s host-level opt out of ANSI decoration, so
+        // what the formatter does emit is at least plain text and legible in an xUnit failure
+        // message. It does not stop the wrapping -- only CaptureStructurally does that.
+        startInfo.Environment["NO_COLOR"] = "1";
         startInfo.ArgumentList.Add("-NoProfile");
         startInfo.ArgumentList.Add("-NonInteractive");
         startInfo.ArgumentList.Add("-Command");
