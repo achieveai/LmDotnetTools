@@ -1,6 +1,6 @@
 # Daemon SDK-Backed Review-Store Setup Implementation Plan
 
-**Status:** Implemented (code) — shipped in `75d8a0b6`. `ReviewSlotPreparer` now owns store recloning and `Workspace/SlotHygiene.cs` provides `EnsureStoreAsync`. Task 7's live run against MCQdbDEV PR #11229 is an operational step that cannot be verified from this repository; treat it as unconfirmed.
+**Status:** Implemented (code) — `Workspace/ReviewSlotPreparer.cs` owns store recloning and is where `EnsureStoreAsync` is declared and implemented (added in `faba9bfd`). `Workspace/SlotHygiene.cs` is a different type providing the `EnsureCleanAsync` / `StripAsync` slot hygiene it builds on (added in `aa3e4775`, #215). `75d8a0b6`, cited here previously, changes `ReviewSessionProvisioner` only and introduces neither file. Task 7's live run against MCQdbDEV PR #11229 is an operational step that cannot be verified from this repository; treat it as unconfirmed.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

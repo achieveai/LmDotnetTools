@@ -1,6 +1,6 @@
 ﻿# Sandbox Plugin Selection (App Layer) Implementation Plan
 
-**Status:** Implemented — shipped in `471f125a` (#285). See `src/Sandbox/SandboxSessionRegistry.PluginSelection.cs`, `Models/Optional.cs`, `WorkspacePluginSelectionService.cs` and the capability-gated checkboxes in `WorkspaceSelector.vue`.
+**Status:** Implemented — shipped in `471f125a` (#285). See `src/LmAgentInfra/Sandbox/SandboxSessionRegistry.PluginSelection.cs` — not `src/Sandbox/`, which is a real but unrelated project (`AchieveAi.LmDotnetTools.Sandbox.csproj`) and is where this line previously sent readers — plus `samples/LmStreaming.Sample/Models/Optional.cs`, `samples/LmStreaming.Sample/Services/WorkspacePluginSelectionService.cs` and the capability-gated checkboxes in `samples/LmStreaming.Sample/ClientApp/src/components/WorkspaceSelector.vue`.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
