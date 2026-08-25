@@ -44,6 +44,29 @@ public record SubAgentOptions
     public Func<string, IConversationStore>? DefaultConversationStoreFactory { get; init; }
 
     /// <summary>
+    /// Provenance-aware counterpart to <see cref="DefaultConversationStoreFactory"/> (#275). Where the
+    /// plain factory is handed only the child thread id — so a host that wants to stamp a parent→child
+    /// link has to capture the parent identity ONCE, at the level it configures, and every descendant
+    /// then inherits that same captured identity — this variant is invoked by the SPAWNING manager and
+    /// handed that manager's OWN identity: the child's actual parent thread id (this manager's parent
+    /// thread) and a describe callback over THIS manager's live roster. A grandchild is therefore
+    /// attributed to its real parent and its snapshot resolves against the manager that actually spawned
+    /// it, instead of both collapsing to the root.
+    /// <para>
+    /// Like <see cref="ChildToolProviderFactory"/>, and UNLIKE the three spawn-authority hooks, this is
+    /// safe to inherit verbatim through <see cref="ForChildLoop"/> precisely because it takes its
+    /// identity from the invoking manager rather than from a value captured at one level. It is
+    /// therefore deliberately NOT cleared there. Preferred over <see cref="DefaultConversationStoreFactory"/>
+    /// for a spawned child when both are set; a template's own
+    /// <see cref="SubAgentTemplate.ConversationStoreFactory"/> still wins over both. Null (default) =
+    /// fall back to <see cref="DefaultConversationStoreFactory"/>, unchanged for every existing host.
+    /// </para>
+    /// </summary>
+    public Func<string, string?, Func<string, SubAgentSnapshot?>, IConversationStore>?
+        ProvenanceAwareConversationStoreFactory
+    { get; init; }
+
+    /// <summary>
     /// Tool names that a spawned sub-agent must NOT inherit from the parent, even when its
     /// template sets <c>EnabledTools = null</c> ("inherit everything"). The parent keeps these
     /// tools; only the snapshot handed to sub-agents excludes them. This is the general seam that
@@ -202,6 +225,12 @@ public record SubAgentOptions
     /// delegate, they would reject the delegate's ordinary sub-agents (whose names are not workflow
     /// units), silently overwrite their model selection, and publish the controller's authored metadata
     /// as if it described work the delegate invented. See #244.
+    /// <para>
+    /// <see cref="ProvenanceAwareConversationStoreFactory"/> and <see cref="ChildToolProviderFactory"/>
+    /// are deliberately NOT among the cleared hooks: both take their identity from the invoking manager
+    /// (a child's collaboration id, or the spawning manager's own parent thread and roster), so inheriting
+    /// them verbatim resolves each descendant correctly rather than misattributing it to the root (#275).
+    /// </para>
     /// </summary>
     internal SubAgentOptions ForChildLoop() =>
         this with

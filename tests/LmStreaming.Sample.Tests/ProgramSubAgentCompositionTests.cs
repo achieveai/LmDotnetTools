@@ -550,6 +550,70 @@ public sealed class ProgramSubAgentCompositionTests
     }
 
     [Fact]
+    public async Task ApplyDefaultSubAgentStore_StampProvenance_ResolvesParentPerCaller_AndClearsStaleTerminalForRunningGrandchild()
+    {
+        // #275: with stampProvenance the fallback is a ProvenanceAwareConversationStoreFactory whose
+        // parent thread and roster snapshot come from the SPAWNING manager, not a single pair captured
+        // here at the root. Proven by handing the factory a NESTED parent (the shape a grandchild's
+        // manager has) and a describe that resolves a RUNNING snapshot: the stamp must name that nested
+        // parent and, because the snapshot is running, clear a stale terminal instant through
+        // SubAgentProvenance's RemovalMarker merge — the terminal-merge path that never ran for a
+        // grandchild while its snapshot resolved to null.
+        var backing = new InMemoryConversationStore();
+        var options = global::Program.ApplyDefaultSubAgentStore(
+            new SubAgentOptions { Templates = new Dictionary<string, SubAgentTemplate>() },
+            backing,
+            stampProvenance: true);
+
+        options.DefaultConversationStoreFactory.Should().BeNull(
+            "provenance stamping routes through the provenance-aware seam, not the plain default factory");
+        options.ProvenanceAwareConversationStoreFactory.Should().NotBeNull();
+
+        const string nestedParent = "subagent-child-not-root";
+        const string grandchildThread = "subagent-grandchild-1";
+        var runningSnapshot = new SubAgentSnapshot(
+            AgentId: "grandchild-1",
+            Name: "gc",
+            TemplateName: "worker",
+            Task: "do work",
+            Status: SubAgentStatus.Running,
+            ThreadId: grandchildThread,
+            LastActivityUtc: null,
+            TerminalAtUtc: null);
+
+        var childStore = options.ProvenanceAwareConversationStoreFactory!(
+            grandchildThread,
+            nestedParent,
+            queryThread => string.Equals(queryThread, grandchildThread, StringComparison.Ordinal)
+                ? runningSnapshot
+                : null);
+
+        childStore.Should().BeOfType<NonOwningConversationStore>();
+
+        // A stale terminal instant from a prior transition; the running-snapshot stamp must remove it.
+        await childStore.SaveMetadataAsync(
+            grandchildThread,
+            new ThreadMetadata
+            {
+                ThreadId = grandchildThread,
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty.Add(
+                    SubAgentProvenance.TerminalAtKey, 999L),
+            });
+
+        var stamped = await backing.LoadMetadataAsync(grandchildThread);
+        stamped.Should().NotBeNull();
+        stamped!.Properties.Should().NotBeNull();
+        stamped.Properties![SubAgentProvenance.ParentThreadIdKey].Should().Be(
+            nestedParent,
+            "the child is attributed to the caller's own parent, not a root captured once at startup");
+        stamped.Properties[SubAgentProvenance.StatusKey].Should().Be("running");
+        stamped.Properties.Should().NotContainKey(
+            SubAgentProvenance.TerminalAtKey,
+            "a running snapshot's RemovalMarker must clear the stale terminal instant");
+    }
+
+    [Fact]
     public async Task SpawnedSubAgent_PersistsTranscript_ViaWiredDefaultStore()
     {
         var fakeStore = new InMemoryConversationStore();

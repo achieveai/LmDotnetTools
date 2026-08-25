@@ -1518,26 +1518,21 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // advertises as addressable. The failure cleanup below tolerates it for the same reason.
             }
 
-            // Observe the old RunTask to avoid unobserved exceptions
-            // (must cancel first so the task receives the cancellation signal)
+            // Observe the old RunTask/MonitorTask to avoid unobserved exceptions (must cancel first so
+            // the task receives the cancellation signal). Bounded through AwaitBoundedTaskAsync for the
+            // SAME reason DisposeAsync and CleanupFailedSpawnAsync are (#373/#396): cancellation is
+            // requested but not guaranteed to be observed, so a run that ignores its token would
+            // otherwise wedge this restart — and every caller behind it — forever (#404).
             if (state.RunTask != null)
             {
-                try { await state.RunTask; }
-                catch (OperationCanceledException) { }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Old RunTask faulted for sub-agent {AgentId}", state.AgentId);
-                }
+                await AwaitBoundedTaskAsync(
+                    state.RunTask, $"Old RunTask for sub-agent {state.AgentId}", "restart");
             }
 
             if (state.MonitorTask != null)
             {
-                try { await state.MonitorTask; }
-                catch (OperationCanceledException) { }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Old MonitorTask faulted for sub-agent {AgentId}", state.AgentId);
-                }
+                await AwaitBoundedTaskAsync(
+                    state.MonitorTask, $"Old MonitorTask for sub-agent {state.AgentId}", "restart");
             }
 
             state.Cts.Dispose();
@@ -1704,24 +1699,19 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // Already torn down by a racing path; nothing to cancel.
             }
 
+            // Bounded for the same #404 reason as the success-path awaits above: a run/monitor that
+            // ignores its token must not wedge this failure cleanup (and the disposal/restart awaiting
+            // behind it) indefinitely.
             if (state.RunTask != null)
             {
-                try { await state.RunTask; }
-                catch (OperationCanceledException) { }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "RunTask faulted during restart cleanup for sub-agent {AgentId}", state.AgentId);
-                }
+                await AwaitBoundedTaskAsync(
+                    state.RunTask, $"RunTask for sub-agent {state.AgentId}", "restart cleanup");
             }
 
             if (state.MonitorTask != null)
             {
-                try { await state.MonitorTask; }
-                catch (OperationCanceledException) { }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "MonitorTask faulted during restart cleanup for sub-agent {AgentId}", state.AgentId);
-                }
+                await AwaitBoundedTaskAsync(
+                    state.MonitorTask, $"MonitorTask for sub-agent {state.AgentId}", "restart cleanup");
             }
 
             try { await state.Agent.DisposeAsync(); }
@@ -2495,6 +2485,44 @@ public sealed class SubAgentManager : IAsyncDisposable
     }
 
     /// <summary>
+    /// Resolves the conversation store for a spawned child. A template's own
+    /// <see cref="SubAgentTemplate.ConversationStoreFactory"/> wins; otherwise the provenance-aware host
+    /// factory (#275) is preferred, invoked with THIS manager's own identity — the child's real parent
+    /// thread (<see cref="AgentLineage.ParentThreadId"/> is this manager's parent thread) and a describe
+    /// callback over this manager's own live roster — so a grandchild is attributed to its actual parent
+    /// and its snapshot resolves here, not against a root captured once. The describe is a LIVE callback
+    /// resolved at metadata-write time, not now: the child is not yet registered when its store is built,
+    /// but it is by the time the store first persists. Falls back to the plain
+    /// <see cref="SubAgentOptions.DefaultConversationStoreFactory"/> for hosts that set only that one.
+    /// </summary>
+    private IConversationStore? ResolveChildStore(
+        string agentId,
+        SubAgentTemplate template,
+        AgentLineage lineage)
+    {
+        var childThreadId = SubAgentThreadId(agentId);
+
+        if (template.ConversationStoreFactory is { } templateStoreFactory)
+        {
+            return templateStoreFactory.Invoke(childThreadId);
+        }
+
+        if (_options.ProvenanceAwareConversationStoreFactory is { } provenanceStoreFactory)
+        {
+            return provenanceStoreFactory.Invoke(
+                childThreadId,
+                lineage.ParentThreadId,
+                queryThreadId => ListAgents()
+                    .FirstOrDefault(snapshot => string.Equals(
+                        snapshot.ThreadId,
+                        queryThreadId,
+                        StringComparison.Ordinal)));
+        }
+
+        return _options.DefaultConversationStoreFactory?.Invoke(childThreadId);
+    }
+
+    /// <summary>
     /// A spawn deferred because the concurrency pool was full when <see cref="SpawnAsync"/> ran. It
     /// carries everything the pump needs to build the agent later, plus <see cref="StateReady"/> — a
     /// bridge the pump completes with the live <see cref="SubAgentState"/> so a FOREGROUND (blocking)
@@ -2719,11 +2747,10 @@ public sealed class SubAgentManager : IAsyncDisposable
                 }
             }
 
-            // Determine conversation store
-            var storeFactory =
-                template.ConversationStoreFactory
-                ?? _options.DefaultConversationStoreFactory;
-            store = storeFactory?.Invoke($"subagent-{agentId}");
+            // Determine conversation store (see ResolveChildStore): a template's own factory wins;
+            // otherwise the provenance-aware host factory (#275) is preferred, invoked with THIS manager's
+            // own identity so a grandchild is attributed to its actual parent instead of a captured root.
+            store = ResolveChildStore(agentId, template, lineage);
 
             // Stamp the child with the launching conversation's tenant and owner BEFORE the loop
             // runs (#385). A sub-agent thread is minted here, never through the provisioning route,
