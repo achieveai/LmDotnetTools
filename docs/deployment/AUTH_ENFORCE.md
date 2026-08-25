@@ -144,3 +144,78 @@ included in any response body, in any of the components documented here. Errors 
 callers (401 bodies, `SandboxCredentialConflictException` messages, `sandbox_auth_failed`) name
 app **ids** only, never app **keys** or the S2S secret. If you add a new log statement anywhere on
 these paths, keep this invariant.
+
+## A third boundary: end-user sign-in (`Identity:Enforce`, issue #301)
+
+The two boundaries above authenticate *services*. Neither of them establishes **who the human
+is** — a browser request carries no `X-Sbx-*` pair and no `X-S2S-Auth`, and passes both guards
+untouched. P1 adds a third, independent boundary for that, with its own switch and its own secret.
+As above: do not reuse one boundary's secret for another.
+
+| Name | Direction | Purpose | Config key | Env var |
+|---|---|---|---|---|
+| `Authorization: Bearer` | Browser → LmStreaming.Sample | The signed-in user's Entra access token | `AzureAd:ClientId` / `AzureAd:TenantId` | n/a (public SPA client) |
+| `X-Operator-Secret` | Operator → `POST /api/admin/tenants` | Authorises creating a tenant | `Identity:OperatorSecret` | `LMSTREAMING_IDENTITY_OPERATOR_SECRET` (bridged to the config key at startup) |
+
+### `Identity:Enforce` is global
+
+One process-wide flag, not per tenant. With it **false** (the default) an unauthenticated `/api`
+request resolves to a development principal instead of being refused, so every existing call path
+and every existing test keeps working. With it **true**, anonymous `/api` requests get `401` — for
+every customer in that process at once. A shared deployment cannot stage the flip customer by
+customer; that is the trade made in exchange for one unambiguous answer to "is this deployment
+enforcing?".
+
+Leaving `AzureAd:ClientId` empty is a second, independent off switch: with no client id, no JWT
+bearer handler is registered at all and no token can be presented.
+
+### Tenants are provisioned explicitly, before anyone signs in
+
+A first sign-in from an unknown Entra directory is a **rejection**, never an implicit new tenant.
+The user gets `403` with a stable code — `tenant_not_provisioned`, or `tenant_suspended` for a
+directory that is known but stopped — and the SPA renders a screen explaining it. That response
+deliberately carries no redirect and no `WWW-Authenticate` challenge: a challenge would send the
+browser back to Entra, and signing in again cannot conjure a provisioned tenant, so it would loop.
+
+Onboard a customer before their first sign-in:
+
+```bash
+curl -X POST http://<host>/api/admin/tenants \
+  -H "X-Operator-Secret: $LMSTREAMING_IDENTITY_OPERATOR_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"tenantId":"tnt_acme","entraTenantId":"<their entra tid guid>",
+       "displayName":"Acme Corp","firstAdminUpn":"dana@acme.example"}'
+```
+
+`firstAdminUpn` is recorded now and bound to that person's durable `{tid}:{oid}` id on their first
+successful sign-in — the operator cannot know their object id yet. It binds **once**; a later
+sign-in by anyone whose UPN was reassigned to that mailbox does not take the admin row over.
+
+Two properties of this route differ from `X-S2S-Auth` on purpose, and both matter:
+
+- **It is unconditional.** `InboundS2SAuthAttribute` only enforces on requests carrying an S2S
+  marker header. This one always requires its header.
+- **It fails closed.** `InboundS2SAuthAttribute` disables itself when its secret is blank, which is
+  right for a same-origin UI path that would otherwise break. Here an unset secret answers `503`
+  and never succeeds — the alternative failure mode is a world-writable tenant registry.
+
+`Identity:SeedTenants` provisions tenants from configuration at startup, idempotently, and is
+**ignored entirely while `Identity:Enforce` is true**. It exists for development and single-tenant
+installs. Configuration files get copied between environments, and a stale entry that could mint a
+real tenant in an enforcing deployment would defeat explicit provisioning through its own
+convenience feature.
+
+### Recommended flip order
+
+1. Register the Entra app, set `AzureAd:ClientId`; leave `Identity:Enforce` false. Sign-in now
+   works and is exercised, but nothing is refused.
+2. Set `LMSTREAMING_IDENTITY_OPERATOR_SECRET` and provision every tenant that will need one.
+   Confirm each expected user signs in and resolves to the tenant you expect.
+3. Set `Identity:Enforce` true. Anonymous `/api` requests now get `401`.
+
+### Known gap
+
+The two WebSocket transports (`/ws` and `/ws/subagent`) carry no token: the browser WebSocket API
+admits no custom headers, and `/ws` sits outside the `/api` prefix the identity middleware guards.
+They remain unauthenticated even with `Identity:Enforce` true. Closing that needs a query-string or
+first-frame scheme and is tracked on issue #301.

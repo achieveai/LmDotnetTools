@@ -113,6 +113,11 @@ public static class IdentityServiceCollectionExtensions
             JwtBearerDefaults.AuthenticationScheme,
             options =>
             {
+                // ASP.NET Core's default is five minutes, which is generous enough that a token
+                // stays usable for five minutes past its own expiry. Two minutes still absorbs
+                // ordinary NTP drift between our host and the issuer (spec 5.3).
+                options.TokenValidationParameters.ClockSkew = TimeSpan.FromSeconds(120);
+
                 // Chained, not replaced: Microsoft.Identity.Web installs its own OnTokenValidated
                 // (scope and app-role validation among others), and overwriting it would silently
                 // drop those checks.
