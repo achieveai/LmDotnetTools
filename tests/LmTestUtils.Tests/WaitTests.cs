@@ -145,6 +145,73 @@ public class WaitTests
         );
     }
 
+    [Fact]
+    public async Task A_timeout_with_an_observed_supplier_appends_the_last_observed_state()
+    {
+        // #358: without a way to report what the wait actually saw, a timeout only proves the
+        // condition never held -- it says nothing about how close it got, so the next reader has
+        // to reproduce the failure just to find out what the state looked like when it gave up.
+        var thrown = await Assert.ThrowsAsync<TimeoutException>(
+            () =>
+                Wait.UntilAsync(
+                    () => false,
+                    "the widget was flushed",
+                    Brief,
+                    Tick,
+                    observed: () => "status=pending"
+                )
+        );
+
+        Assert.Contains("Last observed: status=pending.", thrown.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_timeout_with_no_observed_supplier_omits_the_last_observed_clause()
+    {
+        // The existing callers that do not pass observed must see byte-for-byte the same message as
+        // before -- a dangling "Last observed:" clause with nothing after it would be worse than
+        // saying nothing.
+        var thrown = await Assert.ThrowsAsync<TimeoutException>(
+            () => Wait.UntilAsync(() => false, "the widget was flushed", Brief, Tick)
+        );
+
+        Assert.DoesNotContain("Last observed", thrown.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task The_observed_supplier_is_never_invoked_when_the_condition_succeeds()
+    {
+        var invoked = false;
+
+        await Wait.UntilAsync(
+            () => true,
+            "the condition already holds",
+            Generous,
+            Tick,
+            observed: () =>
+            {
+                invoked = true;
+                return "should never run";
+            }
+        );
+
+        Assert.False(invoked, "observed must only be paid for on the failure path, not the happy one");
+    }
+
+    [Fact]
+    public async Task A_cancelled_token_exits_the_wait_with_OperationCanceledException_not_a_timeout()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        // ThrowsAnyAsync, not ThrowsAsync: Task.Delay raises the TaskCanceledException subtype, not the
+        // base OperationCanceledException exactly -- the contract is "cancellation surfaces as some
+        // OperationCanceledException, not a TimeoutException", not the precise concrete type.
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => Wait.UntilAsync(() => false, "a wait that gets cancelled", Generous, Tick, cancellationToken: cts.Token)
+        );
+    }
+
     #region ForTeardownAsync
 
     /// <summary>

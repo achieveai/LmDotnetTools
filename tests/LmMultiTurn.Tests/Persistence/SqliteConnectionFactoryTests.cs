@@ -97,17 +97,30 @@ public class SqliteConnectionFactoryTests : IDisposable
 
         // Three full cycles of saturate-then-release. One cycle would pass even if permits were
         // released only once; the point is that the pool is still whole after repeated use.
+        //
+        // The acquire loop and the release loop are split by a `try`/`finally` (#372): without it, a
+        // throw partway through acquiring `maxConnections` connections -- or from an assertion this
+        // test grows later -- would leave whatever was already acquired holding its permit forever.
+        // SqliteConnectionFactory.DisposeAsync then drains the pool by re-acquiring every permit with
+        // no timeout, so even ONE leaked permit here wedges this test's own `await using factory`
+        // teardown, which escalates from a failing test to an aborted assembly (#362's failure mode,
+        // reached through a different door).
         for (var cycle = 0; cycle < 3; cycle++)
         {
             var connections = new List<SqliteConnection>();
-            for (var i = 0; i < maxConnections; i++)
+            try
             {
-                connections.Add(await factory.GetConnectionAsync());
+                for (var i = 0; i < maxConnections; i++)
+                {
+                    connections.Add(await factory.GetConnectionAsync());
+                }
             }
-
-            foreach (var connection in connections)
+            finally
             {
-                await connection.DisposeAsync();
+                foreach (var connection in connections)
+                {
+                    await connection.DisposeAsync();
+                }
             }
         }
 
@@ -133,6 +146,11 @@ public class SqliteConnectionFactoryTests : IDisposable
         var databasePath = Path.Combine(_root, "sync-permits.db");
         await using var factory = new SqliteConnectionFactory(databasePath, maxConnections);
 
+        // Unlike DisposedConnections_ReturnTheirPermits_SoTheFactoryDoesNotStarve's acquire-loop /
+        // release-loop split, acquire and dispose here are adjacent with nothing between them that
+        // could throw and skip the release -- and PooledConnection.Dispose(bool) itself already
+        // releases the permit from a `finally`, so it does so even if the underlying native close
+        // faults. No acquire/finally/release span is needed for this loop (#372).
         for (var i = 0; i < 3; i++)
         {
             var connection = await factory.GetConnectionAsync();

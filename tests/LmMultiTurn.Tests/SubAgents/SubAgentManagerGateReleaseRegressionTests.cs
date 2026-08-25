@@ -580,8 +580,23 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         using var spawnDoc = JsonDocument.Parse(spawnJson);
         var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
 
+        // Parsed and compared on the "status" property rather than a raw substring match (#359):
+        // Peek's JSON is not attacker-controlled here, but a substring check on "\"completed\""
+        // would equally match a status of e.g. "not_completed" or a value embedded elsewhere in the
+        // payload (recent_turns text, model id) -- the exact field is what the assertion means.
         await Wait.UntilAsync(
-            () => { try { return _manager!.Peek(agentId).Contains("\"completed\""); } catch { return false; } },
+            () =>
+            {
+                try
+                {
+                    return JsonDocument.Parse(_manager!.Peek(agentId)).RootElement.GetProperty("status").GetString()
+                        == "completed";
+                }
+                catch
+                {
+                    return false;
+                }
+            },
             "the sub-agent reported completed",
             TimeSpan.FromSeconds(10));
 
@@ -590,7 +605,18 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
 
         // The restarted monitor faults and records the generation-aware terminal Error.
         await Wait.UntilAsync(
-            () => { try { return _manager!.Peek(agentId).Contains("\"error\""); } catch { return false; } },
+            () =>
+            {
+                try
+                {
+                    return JsonDocument.Parse(_manager!.Peek(agentId)).RootElement.GetProperty("status").GetString()
+                        == "error";
+                }
+                catch
+                {
+                    return false;
+                }
+            },
             "the restarted sub-agent reported error",
             TimeSpan.FromSeconds(10));
 
@@ -598,10 +624,9 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         restartSendGate.SetResult(true);
         _ = await restartTask.WaitAsync(TimeSpan.FromSeconds(10));
 
-        // TryArmRunning must NOT resurrect the faulted run: status stays Error, never Running.
-        _manager.Peek(agentId).Should().Contain("\"error\"",
-            "a monitor fault recorded against the run generation must block TryArmRunning from restoring Running");
-        _manager.Peek(agentId).Should().NotContain("\"running\"");
+        // TryArmRunning must NOT resurrect the faulted run: status stays exactly "error", never "running".
+        JsonDocument.Parse(_manager.Peek(agentId)).RootElement.GetProperty("status").GetString()
+            .Should().Be("error", "a monitor fault recorded against the run generation must block TryArmRunning from restoring Running");
     }
 
     [Fact]
@@ -735,6 +760,37 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
             "the terminal completion released the slot, so the pump started the queued sub-agent");
     }
 
+    [Fact]
+    public async Task DisposeAsync_BoundsAWedgedRunTask_RatherThanHangingForever()
+    {
+        // #373: production DisposeAsync used to await each sub-agent's RunTask/MonitorTask with no
+        // ceiling. Cts.CancelAsync() and StopAsync(5s) precede that await, but neither GUARANTEES the
+        // task actually observes cancellation -- a RunTask that ignores its token (simulated here via
+        // RunImpl) would otherwise hang DisposeAsync, and every real host shutting down behind it,
+        // forever. The test-only ceiling override keeps this fast without weakening what it proves:
+        // the production ceiling is the same code path, just a smaller number.
+        var manager = CreateManagerWithTemplates(1, new Dictionary<string, SubAgentTemplate>
+        {
+            ["worker"] = DummyTemplate("worker"),
+        });
+        manager.TestPerAgentBackgroundTaskDisposeCeiling = TimeSpan.FromMilliseconds(200);
+        manager.TestAgentFactoryOverride = (_, _) => new FakeMultiTurnAgent
+        {
+            RunImpl = _ => Task.Delay(Timeout.InfiniteTimeSpan, CancellationToken.None),
+        };
+        _manager = manager;
+
+        _ = await manager.SpawnAsync("worker", "task", runInBackground: true);
+
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        await manager.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+        elapsed.Stop();
+
+        elapsed.Elapsed.Should().BeLessThan(
+            TimeSpan.FromSeconds(2),
+            "a RunTask that never observes cancellation must be abandoned at the per-agent ceiling, not awaited forever");
+    }
+
     #region Helpers
 
 
@@ -826,6 +882,14 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
     /// </summary>
     public Func<int, CancellationToken, IAsyncEnumerable<IMessage>>? SubscribeImpl { get; set; }
 
+    /// <summary>
+    /// Overrides <see cref="RunAsync"/>'s body entirely (#373), so a test can make RunTask ignore its
+    /// token and hang forever -- proving <see cref="SubAgentManager.DisposeAsync"/>'s per-agent
+    /// teardown ceiling actually bounds a wedged background task rather than hanging behind it. Null
+    /// (default) keeps the normal cancellable "run forever until cancelled" behavior below.
+    /// </summary>
+    public Func<CancellationToken, Task>? RunImpl { get; set; }
+
     public ValueTask<SendReceipt> SendAsync(
         List<IMessage> messages,
         string? inputId = null,
@@ -874,7 +938,14 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
         IsRunning = true;
         try
         {
-            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            if (RunImpl != null)
+            {
+                await RunImpl(ct);
+            }
+            else
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            }
         }
         finally
         {

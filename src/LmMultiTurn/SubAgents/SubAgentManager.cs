@@ -94,6 +94,17 @@ public sealed class SubAgentManager : IAsyncDisposable
     // itself (this manager's owner IS the root) or was threaded through from further up.
     private readonly Func<NotifyMessage, CancellationToken, ValueTask> _descendantQuestionSink;
 
+    /// <summary>
+    /// Ceiling for awaiting a sub-agent's RunTask/MonitorTask in <see cref="DisposeAsync"/>'s per-agent
+    /// teardown loop (#373). Both awaits are preceded on this same path by <c>Cts.CancelAsync()</c> and
+    /// a bounded <c>StopAsync(5s)</c>, so in the healthy case both tasks are already complete by the time
+    /// this ceiling applies -- it exists for the case where a task ignores its token (or disposal is
+    /// ever reached without that preceding cancel), so a stuck background task degrades shutdown into a
+    /// logged warning instead of hanging <see cref="DisposeAsync"/>, and every real host process behind
+    /// it, forever.
+    /// </summary>
+    private static readonly TimeSpan PerAgentBackgroundTaskDisposeCeiling = TimeSpan.FromSeconds(10);
+
     private readonly ConcurrentDictionary<string, SubAgentState> _agents = new();
     private readonly ConcurrentDictionary<string, string> _namesToIds = new();
     private readonly SemaphoreSlim _concurrencyGate;
@@ -150,6 +161,13 @@ public sealed class SubAgentManager : IAsyncDisposable
 
     /// <summary>Test-only barrier immediately before the shutdown-serialized registration commit.</summary>
     internal Func<Task>? TestBeforeAgentRegistrationAsync { get; set; }
+
+    /// <summary>
+    /// Test-only override for <see cref="PerAgentBackgroundTaskDisposeCeiling"/> (#373), so a test can
+    /// prove the ceiling actually bounds <see cref="DisposeAsync"/> without paying its full production
+    /// value. Null (the default) keeps the production ceiling.
+    /// </summary>
+    internal TimeSpan? TestPerAgentBackgroundTaskDisposeCeiling { get; set; }
 
     /// <summary>
     /// The parent agent's handle on the collaboration, or null when collaboration is off. Null is the
@@ -2262,25 +2280,18 @@ public sealed class SubAgentManager : IAsyncDisposable
                 _logger.LogWarning(ex, "StopAsync failed for sub-agent {AgentId}", state.AgentId);
             }
 
-            // Await background tasks to ensure clean shutdown
+            // Await background tasks to ensure clean shutdown. Bounded (#373): CancelAsync and
+            // StopAsync above already requested this, but neither GUARANTEES it -- a task that ignores
+            // its token would otherwise hang DisposeAsync, and every real host shutting down behind it,
+            // forever.
             if (state.RunTask != null)
             {
-                try { await state.RunTask; }
-                catch (OperationCanceledException) { }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "RunTask faulted for sub-agent {AgentId}", state.AgentId);
-                }
+                await AwaitBoundedDuringDisposeAsync(state.RunTask, "RunTask", state.AgentId);
             }
 
             if (state.MonitorTask != null)
             {
-                try { await state.MonitorTask; }
-                catch (OperationCanceledException) { }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "MonitorTask faulted for sub-agent {AgentId}", state.AgentId);
-                }
+                await AwaitBoundedDuringDisposeAsync(state.MonitorTask, "MonitorTask", state.AgentId);
             }
 
             try { await state.Agent.DisposeAsync(); }
@@ -2366,6 +2377,64 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         _queueSignal.Dispose();
         _pumpCts.Dispose();
+    }
+
+    /// <summary>
+    /// Awaits <paramref name="task"/> during <see cref="DisposeAsync"/>, but never past
+    /// <see cref="PerAgentBackgroundTaskDisposeCeiling"/> (or its test override). A task still running
+    /// once the ceiling passes is abandoned rather than awaited further, so one wedged sub-agent cannot
+    /// hang the whole manager's shutdown -- and, by extension, whatever host process is disposing it.
+    /// </summary>
+    private async Task AwaitBoundedDuringDisposeAsync(Task task, string taskName, string agentId)
+    {
+        var ceiling = TestPerAgentBackgroundTaskDisposeCeiling ?? PerAgentBackgroundTaskDisposeCeiling;
+        try
+        {
+            await task.WaitAsync(ceiling);
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected: state.Cts.CancelAsync() and StopAsync() above already requested this.
+        }
+        catch (TimeoutException) when (!task.IsCompleted)
+        {
+            _logger.LogWarning(
+                "{TaskName} for sub-agent {AgentId} did not complete within {CeilingSeconds}s of "
+                    + "disposal; abandoning it so shutdown can proceed.",
+                taskName,
+                agentId,
+                ceiling.TotalSeconds
+            );
+
+            // The abandoned task outlives this await. Observe whatever it eventually does so a later
+            // fault cannot surface as an unobserved-task exception on the finalizer thread, attributed
+            // to unrelated code -- Task.WaitAsync does NOT mark the source task's fault observed.
+            _ = task.ContinueWith(
+                static (t, state) =>
+                {
+                    if (t.Exception is not { } fault)
+                    {
+                        return;
+                    }
+
+                    var (logger, name, id) = ((ILogger, string, string))state!;
+                    logger.LogWarning(
+                        fault,
+                        "{TaskName} for sub-agent {AgentId} faulted after disposal had already abandoned it",
+                        name,
+                        id
+                    );
+                },
+                (_logger, taskName, agentId),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default
+            );
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "{TaskName} faulted for sub-agent {AgentId}", taskName, agentId);
+        }
     }
 
     /// <summary>

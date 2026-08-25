@@ -715,7 +715,7 @@ public sealed class ChatWebSocketManagerClientToolResultTests
             $"the spawned child '{agentId}' parked on its own AskUserQuestion, i.e. registered a deferred tool call",
             TimeSpan.FromSeconds(30),
             TimeSpan.FromMilliseconds(20),
-            ct);
+            cancellationToken: ct);
     }
 
     private static Task ObserveAsync(MultiTurnAgentLoop loop, Action<IMessage> onMessage, CancellationToken ct)

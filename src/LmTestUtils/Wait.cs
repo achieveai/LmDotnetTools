@@ -67,6 +67,11 @@ public static class Wait
     /// </param>
     /// <param name="timeout">Deadline for the whole wait. Defaults to <see cref="DefaultTimeout"/>.</param>
     /// <param name="pollInterval">Gap between evaluations. Defaults to <see cref="DefaultPollInterval"/>.</param>
+    /// <param name="observed">
+    /// Optional. Invoked only once the deadline has actually passed, to capture the last-observed
+    /// state for the timeout message. Never called when the condition succeeds — a supplier that
+    /// itself reads live state should not pay that cost, or risk its own exception, on the hot path.
+    /// </param>
     /// <param name="cancellationToken">Abandons the wait; surfaces as an <see cref="OperationCanceledException"/>.</param>
     /// <param name="waiter">Supplied by the compiler. Names the calling member in the failure message.</param>
     /// <param name="file">Supplied by the compiler. Names the calling file in the failure message.</param>
@@ -76,6 +81,7 @@ public static class Wait
         string because,
         TimeSpan? timeout = null,
         TimeSpan? pollInterval = null,
+        Func<string>? observed = null,
         CancellationToken cancellationToken = default,
         [CallerMemberName] string? waiter = null,
         [CallerFilePath] string? file = null,
@@ -94,14 +100,16 @@ public static class Wait
             $"Timed out after {budget.TotalSeconds:0.###}s waiting until {because}. "
                 + $"Waiter: {waiter} ({Path.GetFileName(file)}:{line}). The condition never held, so "
                 + "whatever this wait was a precondition for was never actually reached."
+                + (observed is null ? string.Empty : $" Last observed: {observed()}.")
         );
     }
 
-    /// <inheritdoc cref="UntilAsync(Func{bool}, string, TimeSpan?, TimeSpan?, CancellationToken, string?, string?, int)" />
+    /// <inheritdoc cref="UntilAsync(Func{bool}, string, TimeSpan?, TimeSpan?, Func{string}?, CancellationToken, string?, string?, int)" />
     /// <param name="condition">Asynchronous form; otherwise as above.</param>
     /// <param name="because">As above.</param>
     /// <param name="timeout">Deadline for the whole wait. Defaults to <see cref="DefaultTimeout"/>.</param>
     /// <param name="pollInterval">Gap between evaluations. Defaults to <see cref="DefaultPollInterval"/>.</param>
+    /// <param name="observed">As above.</param>
     /// <param name="cancellationToken">Abandons the wait; surfaces as an <see cref="OperationCanceledException"/>.</param>
     /// <param name="waiter">Supplied by the compiler. Names the calling member in the failure message.</param>
     /// <param name="file">Supplied by the compiler. Names the calling file in the failure message.</param>
@@ -111,6 +119,7 @@ public static class Wait
         string because,
         TimeSpan? timeout = null,
         TimeSpan? pollInterval = null,
+        Func<string>? observed = null,
         CancellationToken cancellationToken = default,
         [CallerMemberName] string? waiter = null,
         [CallerFilePath] string? file = null,
@@ -129,6 +138,7 @@ public static class Wait
             $"Timed out after {budget.TotalSeconds:0.###}s waiting until {because}. "
                 + $"Waiter: {waiter} ({Path.GetFileName(file)}:{line}). The condition never held, so "
                 + "whatever this wait was a precondition for was never actually reached."
+                + (observed is null ? string.Empty : $" Last observed: {observed()}.")
         );
     }
 
@@ -137,7 +147,7 @@ public static class Wait
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The counterpart to <see cref="UntilAsync(Func{bool}, string, TimeSpan?, TimeSpan?, CancellationToken, string?, string?, int)"/>
+    /// The counterpart to <see cref="UntilAsync(Func{bool}, string, TimeSpan?, TimeSpan?, Func{string}?, CancellationToken, string?, string?, int)"/>
     /// for the other unbounded shape a test suite keeps re-inventing: a fixture's
     /// <c>IAsyncLifetime.DisposeAsync</c> that simply <c>await</c>s the subject's own disposal. When
     /// a test body throws before releasing something that disposal is blocked on, that bare await
@@ -153,7 +163,7 @@ public static class Wait
     /// </para>
     /// <para>
     /// Two omissions are deliberate. There is no <c>CancellationToken</c>, unlike
-    /// <see cref="UntilAsync(Func{bool}, string, TimeSpan?, TimeSpan?, CancellationToken, string?, string?, int)"/>:
+    /// <see cref="UntilAsync(Func{bool}, string, TimeSpan?, TimeSpan?, Func{string}?, CancellationToken, string?, string?, int)"/>:
     /// a poll is abandonable, a teardown ceiling is not. A cancellable ceiling is one a caller can
     /// turn back into an unnamed failure just by passing the ambient test token, which is the defect
     /// this exists to remove. And <paramref name="because"/> is not null-guarded, matching
@@ -267,7 +277,7 @@ public static class Wait
     /// Polls until <paramref name="condition"/> holds, reporting whether it did rather than throwing.
     /// </summary>
     /// <remarks>
-    /// Prefer <see cref="UntilAsync(Func{bool}, string, TimeSpan?, TimeSpan?, CancellationToken, string?, string?, int)"/>.
+    /// Prefer <see cref="UntilAsync(Func{bool}, string, TimeSpan?, TimeSpan?, Func{string}?, CancellationToken, string?, string?, int)"/>.
     /// Reach for this only to wait on the <em>other</em> side's progress before asserting that
     /// something has NOT happened, and pass a condition that also becomes true on the regression, so
     /// a broken implementation fails fast instead of burning the whole deadline first.
