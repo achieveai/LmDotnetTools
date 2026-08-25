@@ -103,32 +103,13 @@ public sealed class EvaluatorConfig
         ArgumentNullException.ThrowIfNull(options);
         ArgumentException.ThrowIfNullOrWhiteSpace(reliabilitySnapshotId);
 
-        // The panel invariants themselves stay where they already are, validated once when the
-        // gauntlet is constructed. What is checked here is the one the gauntlet cannot see: the
-        // arbiter is not part of the configured panel, so nothing before this point compares its
-        // id against theirs — and the reduction tells the arbiter's ballot from a panel ballot by
-        // JudgeId equality alone. A shared id makes the reducer read a panel ballot as the
-        // arbiter's deciding vote, which records a genuine straddle as a consensus. The straddle
-        // rate is this runner's headline judge-reliability diagnostic, and a silently low straddle
-        // rate is worse than none at all, so the collision is refused here rather than measured
-        // through.
+        // Delegated rather than restated: panel size, family disjointness, judge-id uniqueness
+        // and the arbiter-versus-panel id collision are one coherent set of configuration rules,
+        // and holding a second copy here is how the two would drift into disagreeing about which
+        // configurations are legal. The gauntlet this config builds runs the same check.
+        JudgePanel.ValidateConfiguration(judges, options.ArbiterJudge);
+
         var arbiter = options.ArbiterJudge;
-        if (arbiter is not null)
-        {
-            var collision = judges.FirstOrDefault(j =>
-                string.Equals(j.JudgeId, arbiter.JudgeId, StringComparison.Ordinal)
-            );
-            if (collision is not null)
-            {
-                throw new ArgumentException(
-                    $"Arbiter judge id '{arbiter.JudgeId}' is also a panel judge id. The reduction "
-                        + "partitions ballots into panel and arbiter by judge id alone, so a shared "
-                        + "id makes a genuine straddle record as a consensus and suppresses the "
-                        + "straddle rate this runner reports.",
-                    nameof(options)
-                );
-            }
-        }
 
         var humanSources = (humanSignalSources ?? []).ToList();
 

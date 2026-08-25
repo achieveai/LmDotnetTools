@@ -46,12 +46,13 @@ public sealed class JudgeGauntlet
     {
         ArgumentNullException.ThrowIfNull(gates);
         ArgumentNullException.ThrowIfNull(judges);
-        JudgePanel.ValidateConfiguration(judges);
+        ArgumentNullException.ThrowIfNull(options);
+        JudgePanel.ValidateConfiguration(judges, options.ArbiterJudge);
 
         _gates = gates;
         _judges = judges;
         _aggregator = aggregator ?? throw new ArgumentNullException(nameof(aggregator));
-        _options = options ?? throw new ArgumentNullException(nameof(options));
+        _options = options;
         _logger = logger;
     }
 

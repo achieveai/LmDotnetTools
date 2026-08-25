@@ -302,6 +302,83 @@ public sealed class JudgeGauntletTests
         verdict.Score.Should().Be(8.0);
     }
 
+    /// <summary>
+    /// §2.12.3 — the reduction partitions ballots into panel and arbiter by <c>JudgeId</c> equality
+    /// alone, so an arbiter sharing a panel judge's id makes that judge's ballot read as the
+    /// arbiter's. The panel then has one ballot left, which can never straddle: a genuine 9-vs-3
+    /// disagreement records as a consensus and the straddle rate — the headline diagnostic this
+    /// slice exists to produce — reads silently low.
+    /// </summary>
+    [Fact]
+    public void An_arbiter_sharing_a_panel_judge_id_throws_at_construction()
+    {
+        var construct = () =>
+            Gauntlet(
+                [],
+                [new FakeJudge("a", "anthropic"), new FakeJudge("b", "openai")],
+                new HarnessOptions { ArbiterJudge = new FakeJudge("a", "google") }
+            );
+
+        construct.Should().Throw<ArgumentException>().WithMessage("*is also a panel judge id*");
+    }
+
+    /// <summary>
+    /// The same partitioning reads a judge id as an identity, so two panel judges sharing one make
+    /// every reliability weight, every exclusion record and every arbiter test ambiguous.
+    /// </summary>
+    [Fact]
+    public void Two_panel_judges_sharing_a_judge_id_throw_at_construction()
+    {
+        var construct = () =>
+            Gauntlet([], [new FakeJudge("a", "anthropic"), new FakeJudge("a", "openai")]);
+
+        construct.Should().Throw<ArgumentException>().WithMessage("*judge id*");
+    }
+
+    /// <summary>
+    /// §2.12.6 — the two <see cref="PanelDegradation.None"/> arms are "no arbiter configured" and
+    /// "arbiter in the generator's own family", told apart post-hoc from the arbiter's family. An
+    /// arbiter that RAN and declined to decide satisfies neither, so recording it as None makes an
+    /// escalation that happened and failed indistinguishable from one that was never attempted.
+    /// </summary>
+    [Fact]
+    public async Task An_arbiter_that_abstains_is_ArbiterUnavailable_rather_than_a_chosen_non_escalation()
+    {
+        var arbiter = new FakeJudge("arb", "google", score: 3.0, abstained: true);
+        var first = new FakeJudge("a", "anthropic", score: 9.0);
+        var second = new FakeJudge("b", "openai", score: 3.0);
+
+        var verdict = await Run(
+            Gauntlet([], [first, second], new HarnessOptions { ArbiterJudge = arbiter }),
+            HarnessFixtures.Candidate()
+        );
+
+        arbiter.Calls.Should().Be(1, "we tried");
+        verdict.Outcome.Should().Be(VerdictOutcome.Split);
+        verdict.Degradation.Should().Be(PanelDegradation.ArbiterUnavailable);
+        verdict.DegradationReason.Should().Contain("abstained");
+    }
+
+    /// <summary>
+    /// Abstention and below-floor confidence are two separate exclusion channels, and an arbiter
+    /// whose ballot lands on the second one is just as absent from the tally as one that abstained.
+    /// </summary>
+    [Fact]
+    public async Task An_arbiter_below_the_abstain_floor_is_ArbiterUnavailable()
+    {
+        var arbiter = new FakeJudge("arb", "google", score: 3.0, confidence: 0.1);
+        var first = new FakeJudge("a", "anthropic", score: 9.0);
+        var second = new FakeJudge("b", "openai", score: 3.0);
+
+        var verdict = await Run(
+            Gauntlet([], [first, second], new HarnessOptions { ArbiterJudge = arbiter }),
+            HarnessFixtures.Candidate()
+        );
+
+        verdict.Degradation.Should().Be(PanelDegradation.ArbiterUnavailable);
+        verdict.DegradationReason.Should().Contain("confidence-below-floor");
+    }
+
     // ---- the two-panel logic and the arbiter (§2.12.3) ----------------------------------------
 
     /// <summary>

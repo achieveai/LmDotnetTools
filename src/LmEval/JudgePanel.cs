@@ -70,7 +70,7 @@ public static class JudgePanel
         ArgumentNullException.ThrowIfNull(configured);
         ArgumentNullException.ThrowIfNull(candidate);
         ArgumentNullException.ThrowIfNull(options);
-        ValidateConfiguration(configured);
+        ValidateConfiguration(configured, options.ArbiterJudge);
 
         var generatorFamily = candidate.GeneratorFamily;
 
@@ -104,8 +104,17 @@ public static class JudgePanel
     /// panel <see cref="PanelComposition"/> deliberately cannot represent.
     /// </summary>
     /// <param name="configured">The configured judges.</param>
+    /// <param name="arbiter">
+    /// The configured arbiter, or null when none is. It is passed in because the panel's own
+    /// members are not the whole configuration: the reduction tells the arbiter's ballot from a
+    /// panel ballot by <see cref="IJudge.JudgeId"/> equality alone, so nothing else in the system
+    /// is in a position to notice a shared id.
+    /// </param>
     /// <exception cref="ArgumentException">The configuration is invalid.</exception>
-    public static void ValidateConfiguration(IReadOnlyList<IJudge> configured)
+    public static void ValidateConfiguration(
+        IReadOnlyList<IJudge> configured,
+        IJudge? arbiter = null
+    )
     {
         ArgumentNullException.ThrowIfNull(configured);
 
@@ -124,6 +133,49 @@ public static class JudgePanel
                 $"Judges '{configured[0].JudgeId}' and '{configured[1].JudgeId}' share the same model family "
                     + $"'{configured[0].ModelFamily}'. Agreement between two same-family judges is false "
                     + "consensus, not signal, so a two-judge panel must be family-disjoint.",
+                nameof(configured)
+            );
+        }
+
+        // Judge ids are IDENTITIES: the reliability snapshot is keyed on them, every exclusion
+        // record names one, and the reduction partitions panel from arbiter on them. Two judges
+        // sharing one makes each of those ambiguous, and the panel-versus-arbiter partition wrong.
+        if (
+            configured.Count == 2
+            && string.Equals(
+                configured[0].JudgeId,
+                configured[1].JudgeId,
+                StringComparison.Ordinal
+            )
+        )
+        {
+            throw new ArgumentException(
+                $"Both configured judges carry the judge id '{configured[0].JudgeId}'. A judge id "
+                    + "is the key the reliability snapshot, every exclusion record and the "
+                    + "panel-versus-arbiter partition are all read on, so two judges cannot share "
+                    + "one.",
+                nameof(configured)
+            );
+        }
+
+        // The arbiter is not part of the configured panel, so nothing else compares its id against
+        // theirs -- and the reduction reads a panel ballot carrying the arbiter's id as the
+        // arbiter's deciding vote. That partitions the ballot out of the panel, leaves one ballot
+        // where a straddle needs two, and records a genuine disagreement as a consensus. The
+        // straddle rate is the headline judge-reliability diagnostic, and a silently low one is
+        // worse than none at all, so the collision is refused rather than measured through.
+        if (
+            arbiter is not null
+            && configured.Any(j =>
+                string.Equals(j.JudgeId, arbiter.JudgeId, StringComparison.Ordinal)
+            )
+        )
+        {
+            throw new ArgumentException(
+                $"Arbiter judge id '{arbiter.JudgeId}' is also a panel judge id. The reduction "
+                    + "partitions ballots into panel and arbiter by judge id alone, so a shared "
+                    + "id makes a genuine straddle record as a consensus and suppresses the "
+                    + "straddle rate this harness reports.",
                 nameof(configured)
             );
         }

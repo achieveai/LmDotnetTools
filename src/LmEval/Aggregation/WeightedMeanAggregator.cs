@@ -157,6 +157,18 @@ public sealed class WeightedMeanAggregator : IBallotAggregator
         //    to escalate" — no arbiter, or one in the generator's own family — is None. The rule
         //    string is the same for both on purpose: the degradation is the discriminator, and
         //    encoding it twice would let the two drift.
+        //
+        //    Faulting is not the only way an escalation fails. An arbiter that RAN and returned an
+        //    abstention — or a ballot below the abstain floor — throws nothing and leaves no
+        //    countable ballot, so discriminating on the fault alone recorded it as None. §2.12.6's
+        //    two None arms are "no arbiter configured" and "arbiter in the generator's own family",
+        //    told apart post-hoc from the arbiter's family; a row where the arbiter declined to
+        //    decide satisfies neither, and post-hoc reconstruction reads it as the first — an
+        //    escalation that happened and failed, recorded as one never attempted.
+        var arbiterExcluded = excluded.FirstOrDefault(e =>
+            IsArbiter(e.Ballot.JudgeId, arbiterId)
+        );
+
         return Build(
             candidate,
             rubric,
@@ -167,12 +179,14 @@ public sealed class WeightedMeanAggregator : IBallotAggregator
             score: WeightedMean(counted),
             dispersion: dispersion,
             tieBreakRule: TieBreakRules.SplitUnresolved,
-            degradation: arbiterFault is null
+            degradation: arbiterFault is null && arbiterExcluded is null
                 ? PanelDegradation.None
                 : PanelDegradation.ArbiterUnavailable,
-            degradationReason: arbiterFault is null
-                ? null
-                : FaultReason("arbiter-faulted", [arbiterFault])
+            degradationReason: arbiterFault is not null
+                ? FaultReason("arbiter-faulted", [arbiterFault])
+                : arbiterExcluded is not null
+                    ? $"arbiter-excluded:{arbiterExcluded.ExclusionReason}"
+                    : null
         );
     }
 
