@@ -1,5 +1,7 @@
 # Plural Agent Control Tools Implementation Plan
 
+**Status:** Superseded — do not implement Tasks 2-6 as written. The unconditional singular-to-plural rename this plan specifies did not ship. Task 1 (`SubAgentManager.CheckAgents`) landed in `48a36b2c`, but the shipped design is dual-surface: `d43c7392` added `CheckAgents`/`WaitForAgents` only while collaboration is active, and `SubAgentToolProvider` still registers singular `CheckAgent`/`WaitAgent` otherwise.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace singular `CheckAgent` with batch `CheckAgents` and add non-destructive batch `WaitForAgents`, reducing polling/tool calls while steering models to wait at least 30 seconds for agents that may take 5–15 minutes.

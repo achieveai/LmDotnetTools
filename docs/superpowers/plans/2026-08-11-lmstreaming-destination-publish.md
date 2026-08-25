@@ -1,5 +1,7 @@
 # LmStreaming.Sample Destination-Directory Publish Plan
 
+**Status:** Implemented — shipped in `22c3e52d` (#290). `-DestinationDirectory` and all six helpers exist in `publish-launch.ps1`, covered by `tests/LmStreaming.Sample.Tests/PublishLaunchDestinationTests.cs`.
+
 ## Global Constraints
 
 - No npm/dotnet in tests: C# invokes PS helpers with mocked staging
@@ -88,5 +90,4 @@ Dot-source:
 [x] Candidates as siblings
 [x] Unrecognized pre-build rejection
 
-Status: Plan complete, ready for implementation
 Generated: 2026-08-11

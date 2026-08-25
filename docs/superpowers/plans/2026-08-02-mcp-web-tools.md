@@ -1,5 +1,7 @@
 # MCP Web Tools Implementation Plan
 
+**Status:** Implemented — shipped in `cc21abc9`. See `samples/CopilotAnthropicProxy.Sample/Mcp/`: `McpToolSnapshotStore.cs`, `McpJinaToolCatalog.cs`, `McpToolComposition.cs`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Compose GitHub-first `web_search` and `web_fetch` tools into the existing `/mcp` endpoints, with local Jina fallback tools when a valid `JINA_API_KEY` is configured.

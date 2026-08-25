@@ -1,5 +1,7 @@
 # Wait/Trigger Follow-ups (#140–#145) Implementation Plan
 
+**Status:** Implemented — `WaitMode` in `31478866` (#140), the durable notify store in `fdbe89fe` (#145). All four trigger sources exist under `samples/LmStreaming.Sample/Triggers/`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship the six follow-ups deferred from the #107 Wait/trigger primitive — notify mode (#140), a `file_tail` source (#141), a `process` source (#142), a cron+interval `schedule` kind (#143), a sub-agent-completion source (#144), and durable notify-watcher restore (#145).

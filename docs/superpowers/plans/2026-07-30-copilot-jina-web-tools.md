@@ -1,5 +1,7 @@
 # Copilot and Jina Web Tools Implementation Plan
 
+**Status:** Implemented — shipped in `b3699ed4` (#267). See `samples/LmStreaming.Sample/Services/CopilotWebSearchRegistration.cs`, wired at both Copilot paths in `Program.cs`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Expose Copilot's hosted `web_search` through its readonly MCP endpoint for every Copilot provider path, retain Jina `WebFetch`, and fall back to Jina `WebSearch` when hosted search is unavailable.

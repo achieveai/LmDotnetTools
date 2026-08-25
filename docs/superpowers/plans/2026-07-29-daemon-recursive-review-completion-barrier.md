@@ -1,5 +1,7 @@
 # Daemon Recursive Review Completion Barrier Implementation Plan
 
+**Status:** Implemented — shipped in `26f4a0f4`. See `samples/CodeReviewDaemon.Sample/Agents/ReviewSubAgentCompletion.cs` and the `recursive=true` descendant-graph endpoint in `ConversationsController.cs`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Prevent CodeReviewDaemon from judging or posting until every review descendant visible through its provenance contract is terminal, then produce and deliver one same-thread authoritative synthesis.

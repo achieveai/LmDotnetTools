@@ -1,5 +1,7 @@
 # Skill + Sub-agent-enabled, Cross-repo Code-Review Daemon — Implementation Plan
 
+**Status:** Implemented — shipped in `54c8c7c7` (#152). Shared discovery lives in `samples/LmSampleShared/Discovery/`, per-run provisioning in `samples/CodeReviewDaemon.Sample/Orchestration/ReviewSessionProvisioner.cs`, gated by `CodeReviewDaemonOptions.EnableToolAssistedReview`. The plan's `Agents/ToolScopedReviewLoop.cs` was folded into other types rather than landing as its own file.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Turn the Code-Review Daemon's review agent from a diff-only text reviewer into a tool-using, `code-reviewer`-skill-driven, cross-repo reviewer that invokes the real `code-reviewer:*` sub-agents from the gb-plugins marketplace and reads across the connected repos + shared `Contracts/`, while preserving the invariant that **the daemon — not the agent — owns all posting.**

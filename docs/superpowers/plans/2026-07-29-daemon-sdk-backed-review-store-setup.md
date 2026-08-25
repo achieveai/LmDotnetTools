@@ -1,5 +1,7 @@
 # Daemon SDK-Backed Review-Store Setup Implementation Plan
 
+**Status:** Implemented (code) — shipped in `75d8a0b6`. `ReviewSlotPreparer` now owns store recloning and `Workspace/SlotHygiene.cs` provides `EnsureStoreAsync`. Task 7's live run against MCQdbDEV PR #11229 is an operational step that cannot be verified from this repository; treat it as unconfirmed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make CodeReviewDaemon use one typed `SandboxClient`-backed run session to prepare and review an in-process pooled checkout, while retaining the host-only scoped commit/push gate, then prove the flow live on MCQdbDEV PR #11229.

@@ -1,5 +1,7 @@
 # Resilient Stream Delivery and Agent Waiting Implementation Plan
 
+**Status:** Implemented — shipped in `94969b20` (#278). See `src/LmMultiTurn/Delivery/ReplayMessagePolicy.cs`, `Messages/StreamRecoveryMessage.cs`, `Recovery/TurnAttemptState.cs` and `ClientApp/src/composables/streamResync.ts`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make large LmStreaming conversations recover automatically from slow-consumer/socket loss using canonical full messages, recover interrupted provider turns without repeating completed work, and give Workspace Agent an unambiguous agent-wait surface.
