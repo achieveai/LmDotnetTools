@@ -370,4 +370,14 @@ internal sealed record KnowledgeEntryMeta(
     string Scope,
     IReadOnlyList<string> SourcePrs,
     string Updated
-);
+)
+{
+    /// <summary>
+    /// The title a reader actually sees: <see cref="Title"/> when it says anything, and <see cref="File"/>
+    /// when it does not (issue #259) — e.g. blank frontmatter, or a title cleared because it carried an
+    /// escaping link. Named once and shared by every site that surfaces an entry's title — the write-side
+    /// <c>_toc.md</c> renderer, the read-side digest renderer, and its scorer — so an entry never renders
+    /// with an empty label in one place while showing its path in another.
+    /// </summary>
+    public string EffectiveTitle => string.IsNullOrWhiteSpace(Title) ? File : Title;
+}

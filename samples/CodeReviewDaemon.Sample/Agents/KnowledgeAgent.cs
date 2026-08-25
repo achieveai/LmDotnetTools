@@ -737,7 +737,9 @@ internal sealed class KnowledgeAgent
             .WriteFileAsync(JoinPath(knowledgeBaseDir, IndexFileName), index, cancellationToken)
             .ConfigureAwait(false);
 
-        var tocEntries = metas.Select(meta => new KnowledgeEntry(meta.File, meta.Title)).ToList();
+        // A blank frontmatter title falls back to the file path, matching the read-side EffectiveTitle
+        // rule — otherwise _toc.md renders a link with an empty label (issue #259).
+        var tocEntries = metas.Select(meta => new KnowledgeEntry(meta.File, meta.EffectiveTitle)).ToList();
         var toc = KnowledgeTableOfContents.Render(tocEntries);
         await _fileSystem
             .WriteFileAsync(JoinPath(knowledgeBaseDir, TocFileName), toc, cancellationToken)
