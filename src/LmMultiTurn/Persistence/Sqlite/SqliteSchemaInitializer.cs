@@ -187,6 +187,59 @@ public static class SqliteSchemaInitializer
         CREATE INDEX IF NOT EXISTS ix_tenant_admins_user ON tenant_admins (user_id);
         """;
 
+    // migration step 3 - ownership on thread_metadata (P1 spec 8.3). Nullable, because SQLite
+    // cannot add a NOT NULL column without a default AND because null is the signal for "legacy,
+    // unclaimed" (8.5). visibility is STORED rather than derived from the presence of a grant row:
+    // deriving it would make the policy issue a second query before it could even build a
+    // ResourceDescriptor, and would make Private and Shared indistinguishable the moment a grant
+    // expired rather than being revoked. A null reads as Private.
+    //
+    // DEVIATION from spec 8.5.1, deliberate and explained in the PR body: this step is DDL only.
+    // The quarantine tenant row and the null-tenant backfill are NOT here. 8.5.4 already requires
+    // both to run on every startup rather than once at version 3, and the tenant registry is not
+    // guaranteed to live in this database file - the sample's conversations are a FILE store, so
+    // there is no file in which a `tenants` row and a `thread_metadata` row are ever siblings.
+    // A copy of the guard here would read whichever (usually empty) `tenants` table happens to sit
+    // in this file, which is exactly the check that must not be vacuous.
+    private static readonly string[] AddThreadMetadataOwnerColumnsSql =
+    [
+        "ALTER TABLE thread_metadata ADD COLUMN tenant_id     TEXT;",
+        "ALTER TABLE thread_metadata ADD COLUMN owner_user_id TEXT;",
+        "ALTER TABLE thread_metadata ADD COLUMN owner_app_id  TEXT;",
+        "ALTER TABLE thread_metadata ADD COLUMN visibility    TEXT;",
+    ];
+
+    // Exactly matches the WHERE and ORDER BY of the listing filter in spec 7.5.
+    private const string CreateThreadMetadataOwnerIndexSql = """
+        CREATE INDEX IF NOT EXISTS idx_thread_metadata_owner
+        ON thread_metadata (tenant_id, owner_user_id, last_updated DESC);
+        """;
+
+    // migration step 4 - named sharing (P1 spec 8.4). One table serves conversations, workspaces
+    // and modes so the three resource slices share the sharing surface, the policy code and the
+    // audit shape. The role vocabulary is closed by a CHECK rather than only by the policy: grants
+    // never confer delete, share or publish, and there is no role value that maps to those three,
+    // by construction - so a bad grant cannot sit in the table waiting for a policy bug to honour
+    // it.
+    private const string CreateResourceGrantsTableSql = """
+        CREATE TABLE IF NOT EXISTS resource_grants (
+            tenant_id     TEXT NOT NULL,
+            resource_type TEXT NOT NULL,
+            resource_id   TEXT NOT NULL,
+            subject_id    TEXT NOT NULL,
+            role          TEXT NOT NULL CHECK (role IN ('viewer','editor')),
+            granted_by    TEXT NOT NULL,
+            granted_at    INTEGER NOT NULL,
+            expires_at    INTEGER,
+            PRIMARY KEY (tenant_id, resource_type, resource_id, subject_id)
+        );
+        """;
+
+    private const string CreateResourceGrantsSubjectIndexSql = """
+        CREATE INDEX IF NOT EXISTS idx_resource_grants_subject
+        ON resource_grants (tenant_id, subject_id, resource_type);
+        """;
+
     /// <summary>One ordered migration step, applied atomically with its version bump.</summary>
     /// <param name="Version">
     /// The <c>PRAGMA user_version</c> the database holds after this step commits. This array is
@@ -227,6 +280,18 @@ public static class SqliteSchemaInitializer
                 CreateTenantsEntraIndexSql,
                 CreateTenantAdminsTableSql,
                 CreateTenantAdminsUserIndexSql,
+            ]),
+        new(
+            3,
+            [
+                .. AddThreadMetadataOwnerColumnsSql,
+                CreateThreadMetadataOwnerIndexSql,
+            ]),
+        new(
+            4,
+            [
+                CreateResourceGrantsTableSql,
+                CreateResourceGrantsSubjectIndexSql,
             ]),
     ];
 

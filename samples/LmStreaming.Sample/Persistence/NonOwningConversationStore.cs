@@ -189,6 +189,14 @@ public sealed class NonOwningConversationStore : IConversationStore, IRunLedgerS
         CancellationToken ct = default) =>
         _conversation.ListThreadsAsync(limit, offset, ct);
 
+    /// <inheritdoc />
+    public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+        ConversationListScope scope,
+        int limit = 50,
+        int offset = 0,
+        CancellationToken ct = default) =>
+        _conversation.ListThreadsAsync(scope, limit, offset, ct);
+
     // === IRunLedgerStore ===
 
     /// <inheritdoc />

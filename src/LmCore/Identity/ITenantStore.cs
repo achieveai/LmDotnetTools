@@ -8,6 +8,14 @@ public enum TenantStatus
 
     /// <summary>Provisioned but sign-in is refused, e.g. non-payment. Distinguishable in support.</summary>
     Suspended = 1,
+
+    /// <summary>
+    /// The quarantine tenant of spec 8.5 - the holding pen pre-identity data is stamped with. It
+    /// has no Entra directory, so no token can ever resolve to it, and its status is not
+    /// <see cref="Active"/>, so adding one by hand would still not produce a sign-in. Data leaves
+    /// quarantine by being MOVED (adopt-legacy), never by a rule being relaxed.
+    /// </summary>
+    Quarantined = 2,
 }
 
 /// <summary>The outcome of one tenant-provisioning attempt.</summary>
@@ -104,6 +112,46 @@ public interface ITenantStore
         string upn,
         string userId,
         DateTimeOffset boundAt,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Lower-cases every stored <c>entra_tenant_id</c> that is not already lower-cased (#347).
+    /// </summary>
+    /// <remarks>
+    /// A startup repair rather than a one-time migration, for the same reason the null-tenant stamp
+    /// is one (spec 8.5.4): a rolled-back build has never heard of normalization and would write
+    /// mixed-case ids again, and rolling forward would not repair them because the schema version
+    /// is already past. Rows whose lower-cased form would collide with an existing row are left
+    /// alone - two tenants claiming one directory in different cases is a pre-existing data defect,
+    /// and refusing to start is a worse answer to it than leaving it exactly as broken as it was.
+    /// </remarks>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>How many rows were rewritten.</returns>
+    Task<int> NormalizeEntraTenantIdsAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Ensures the quarantine tenant of spec 8.5.1 exists under <paramref name="tenantId"/>, and
+    /// verifies that the configured id names THAT row and no other.
+    /// </summary>
+    /// <remarks>
+    /// This is statement 1 of the backfill, and it is a recurring check rather than a one-time
+    /// migration step (spec 8.5.4): a configured id that drifts onto a real, active tenant would
+    /// otherwise hand every unstamped row to that customer's admins, once per reboot, indefinitely.
+    /// An <c>INSERT OR IGNORE</c> cannot express "ignore only when the existing row is the one I
+    /// meant", which is why the check and the insert are one transaction here rather than one
+    /// statement.
+    /// </remarks>
+    /// <param name="tenantId">The configured <c>Identity:LegacyTenantId</c>.</param>
+    /// <param name="createdAt">Creation timestamp, used only when the row is created.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>
+    /// True when the id names the quarantine tenant afterwards; false when it names some other
+    /// tenant, in which case nothing was written and the caller must fail with
+    /// <c>legacy_tenant_id_collision</c>.
+    /// </returns>
+    Task<bool> TryEnsureQuarantineTenantAsync(
+        string tenantId,
+        DateTimeOffset createdAt,
         CancellationToken ct = default);
 
     /// <summary>

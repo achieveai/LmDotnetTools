@@ -59,6 +59,13 @@ internal sealed class UnavailableTenantStore : ITenantStore
 
     public Task<bool> IsTenantAdminAsync(string tenantId, string userId, CancellationToken ct = default) =>
         throw Fail();
+
+    public Task<int> NormalizeEntraTenantIdsAsync(CancellationToken ct = default) => throw Fail();
+
+    public Task<bool> TryEnsureQuarantineTenantAsync(
+        string tenantId,
+        DateTimeOffset createdAt,
+        CancellationToken ct = default) => throw Fail();
 }
 
 /// <summary>

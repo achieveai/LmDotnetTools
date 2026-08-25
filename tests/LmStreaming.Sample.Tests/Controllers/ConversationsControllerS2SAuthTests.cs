@@ -46,6 +46,7 @@ public class ConversationsControllerS2SAuthTests
             statusResolver ?? new ConversationStatusResolver(store, store as IRunLedgerStore ?? new InMemoryConversationStore()),
             TimeProvider.System,
             new WorkflowRunRegistry(),
+            TestAuthorizers.Disabled(),
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
             new SubAgentScanCoverageCache(),

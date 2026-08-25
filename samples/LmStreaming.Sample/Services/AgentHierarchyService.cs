@@ -471,7 +471,7 @@ public sealed class AgentHierarchyService(
     /// </summary>
     /// <remarks>
     ///     <b>One call, deliberately — not a paging loop.</b>
-    ///     <see cref="IConversationStore.ListThreadsAsync"/> is contractually "ordered by last updated
+    ///     <see cref="IConversationStore.ListThreadsAsync(int, int, CancellationToken)"/> is contractually "ordered by last updated
     ///     descending", so paging with a growing offset sorts on a column the live conversations being
     ///     scanned are mutating: a thread touched between two pages moves toward the front and pushes an
     ///     unread neighbour back across the offset boundary, where the next page skips it. The roster that

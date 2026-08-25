@@ -1,7 +1,10 @@
 using System.ComponentModel.DataAnnotations;
 using AchieveAi.LmDotnetTools.LmCore.Identity;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using LmStreaming.Sample.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
+using Microsoft.Extensions.Options;
 
 namespace LmStreaming.Sample.Controllers;
 
@@ -117,29 +120,101 @@ public sealed class ProvisionTenantRequest
     public string? FirstAdminUpn { get; set; }
 }
 
+/// <summary>Request body for <c>POST /api/admin/tenants/{tenantId}/adopt-legacy</c> (spec 8.5.3).</summary>
+public sealed class AdoptLegacyRequest
+{
+    /// <summary>
+    /// Owner to assign, as the <c>{tid}:{oid}</c> pair of spec 3.3. Optional: omitting it lands the
+    /// rows in the tenant unowned, where the tenant's own admins can see them and nobody else can.
+    /// That is the recommended first step.
+    /// </summary>
+    public string? OwnerUserId { get; set; }
+
+    /// <summary>
+    /// <c>thread</c>. Workspaces and modes are stamped by the JSON stores of spec 8.6, which this
+    /// slice does not build, so any other value is refused rather than silently treated as
+    /// <c>thread</c> - an operator who asked to adopt workspaces must not be told it worked.
+    /// </summary>
+    public string ResourceType { get; set; } = AdoptLegacyResourceTypes.Thread;
+
+    /// <summary>Restrict to these ids, or omit for every quarantined resource of that type.</summary>
+    public IList<string>? ResourceIds { get; set; }
+
+    /// <summary>
+    /// Rehearse without writing customer data. The audit record is still written: a rehearsal that
+    /// leaves no trace is a reconnaissance tool.
+    /// </summary>
+    public bool DryRun { get; set; }
+}
+
+/// <summary>The resource types <c>adopt-legacy</c> accepts.</summary>
+public static class AdoptLegacyResourceTypes
+{
+    /// <summary>A conversation thread. The only type P1 slice 2 stamps.</summary>
+    public const string Thread = "thread";
+}
+
+/// <summary>Response body for a successful (or rehearsed) adoption.</summary>
+public sealed class AdoptLegacyResponse
+{
+    /// <summary>Tenant the rows moved (or would move) into.</summary>
+    public required string TenantId { get; init; }
+
+    /// <summary>How many rows moved, or would have.</summary>
+    public required int AffectedCount { get; init; }
+
+    /// <summary>Whether this was a rehearsal.</summary>
+    public required bool DryRun { get; init; }
+
+    /// <summary>A bounded sample of the affected ids, so an operator can eyeball a rehearsal.</summary>
+    public required IReadOnlyList<string> Sample { get; init; }
+}
+
 /// <summary>Tenant provisioning. The only supported way to make an Entra directory a customer.</summary>
 [ApiController]
 [Route("api/admin/tenants")]
 [OperatorSecretAuth]
 public sealed class TenantsController : ControllerBase
 {
+    /// <summary>How many affected ids a response echoes back. A rehearsal over 40,000 rows must
+    /// not answer with 40,000 ids.</summary>
+    private const int SampleSize = 20;
+
     private readonly ITenantStore _tenantStore;
     private readonly IAuditSink _auditSink;
     private readonly TimeProvider _timeProvider;
+    private readonly IConversationStore _conversationStore;
+    private readonly IOptions<IdentityOptions> _identityOptions;
+    private readonly ILogger<TenantsController> _logger;
 
     /// <summary>Creates the controller.</summary>
     /// <param name="tenantStore">Tenant registry.</param>
     /// <param name="auditSink">Receives one record per provisioning attempt.</param>
     /// <param name="timeProvider">Clock stamped onto the created tenant.</param>
-    public TenantsController(ITenantStore tenantStore, IAuditSink auditSink, TimeProvider timeProvider)
+    /// <param name="conversationStore">Conversation store whose rows adoption moves.</param>
+    /// <param name="identityOptions">Supplies the quarantine tenant id adoption selects on.</param>
+    /// <param name="logger">Diagnostics.</param>
+    public TenantsController(
+        ITenantStore tenantStore,
+        IAuditSink auditSink,
+        TimeProvider timeProvider,
+        IConversationStore conversationStore,
+        IOptions<IdentityOptions> identityOptions,
+        ILogger<TenantsController> logger)
     {
         ArgumentNullException.ThrowIfNull(tenantStore);
         ArgumentNullException.ThrowIfNull(auditSink);
         ArgumentNullException.ThrowIfNull(timeProvider);
+        ArgumentNullException.ThrowIfNull(conversationStore);
+        ArgumentNullException.ThrowIfNull(identityOptions);
+        ArgumentNullException.ThrowIfNull(logger);
 
         _tenantStore = tenantStore;
         _auditSink = auditSink;
         _timeProvider = timeProvider;
+        _conversationStore = conversationStore;
+        _identityOptions = identityOptions;
+        _logger = logger;
     }
 
     /// <summary>Provisions a tenant.</summary>
@@ -185,6 +260,216 @@ public sealed class TenantsController : ControllerBase
             _ => Conflict(new { error = "conflict", code = "entra_tenant_id_claimed" }),
         };
     }
+
+
+    /// <summary>
+    /// Moves quarantined conversations into a real tenant, optionally assigning an owner
+    /// (spec 8.5.3).
+    /// </summary>
+    /// <remarks>
+    /// The only operation in P1 that moves customer data across a tenancy boundary, which is why it
+    /// has a rehearsal mode and why every call - rehearsed, applied or rejected - writes one
+    /// <see cref="AdministrationAuditRecord"/>. "No customer row was written" never means "no audit
+    /// record was written".
+    /// </remarks>
+    /// <param name="tenantId">The tenant to adopt into. Must exist and be active.</param>
+    /// <param name="request">What to adopt, and whether to rehearse.</param>
+    /// <param name="ct">Cancellation token.</param>
+    [HttpPost("{tenantId}/adopt-legacy")]
+    public async Task<IActionResult> AdoptLegacyAsync(
+        string tenantId,
+        [FromBody] AdoptLegacyRequest request,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var quarantineTenantId = _identityOptions.Value.LegacyTenantId;
+
+        if (!string.Equals(request.ResourceType, AdoptLegacyResourceTypes.Thread, StringComparison.Ordinal))
+        {
+            return RejectAdoption(
+                tenantId,
+                request,
+                StatusCodes.Status400BadRequest,
+                "unsupported_resource_type");
+        }
+
+        var tenant = await _tenantStore.FindByTenantIdAsync(tenantId, ct).ConfigureAwait(false);
+
+        // A suspended or absent tenant is the same answer. Distinguishing them would let an
+        // operator secret holder enumerate which tenant ids exist but are switched off.
+        if (tenant is not { Status: TenantStatus.Active })
+        {
+            return RejectAdoption(tenantId, request, StatusCodes.Status404NotFound, "tenant_not_found");
+        }
+
+        // Adopting INTO the quarantine tenant would be a no-op that reported success: the source
+        // and target selections are the same rows, so every one of them is "already adopted".
+        if (string.Equals(tenantId, quarantineTenantId, StringComparison.Ordinal))
+        {
+            return RejectAdoption(
+                tenantId,
+                request,
+                StatusCodes.Status400BadRequest,
+                "target_is_quarantine_tenant");
+        }
+
+        var ownerUserId = string.IsNullOrWhiteSpace(request.OwnerUserId)
+            ? null
+            : request.OwnerUserId.Trim();
+
+        // Validated BEFORE any write. A user id from another Entra directory would produce rows
+        // that 7.4 step 2 then denies to everybody - the data would be re-quarantined under a name
+        // that looks adopted, which is worse than leaving it where it was.
+        if (ownerUserId is not null && !OwnerBelongsToTenant(ownerUserId, tenant.EntraTenantId))
+        {
+            return RejectAdoption(
+                tenantId,
+                request,
+                StatusCodes.Status400BadRequest,
+                "owner_tenant_mismatch");
+        }
+
+        if (_conversationStore is not IConversationOwnershipStore ownership)
+        {
+            return RejectAdoption(
+                tenantId,
+                request,
+                StatusCodes.Status503ServiceUnavailable,
+                "adoption_unsupported_store");
+        }
+
+        // ResourceIds is distinguished from its absence, not normalised into it: an explicitly empty
+        // list means "adopt nothing", and treating it as "omitted" would adopt EVERY quarantined
+        // conversation on a call that asked for none.
+        var resourceIds = request.ResourceIds?.ToArray();
+
+        var eligible = await ownership
+            .ListThreadIdsByTenantAsync(quarantineTenantId, resourceIds, ct)
+            .ConfigureAwait(false);
+
+        if (request.DryRun)
+        {
+            WriteAdoptionAudit(
+                tenantId,
+                ownerUserId,
+                eligible.Count,
+                dryRun: true,
+                AdministrationOutcome.Rehearsed,
+                reason: null);
+
+            return Ok(new AdoptLegacyResponse
+            {
+                TenantId = tenantId,
+                AffectedCount = eligible.Count,
+                DryRun = true,
+                Sample = [.. eligible.Take(SampleSize)],
+            });
+        }
+
+        var affected = await ownership
+            .AdoptThreadsAsync(quarantineTenantId, tenantId, ownerUserId, resourceIds, ct)
+            .ConfigureAwait(false);
+
+        WriteAdoptionAudit(
+            tenantId,
+            ownerUserId,
+            affected,
+            dryRun: false,
+            AdministrationOutcome.Applied,
+            reason: null);
+
+        _logger.LogWarning(
+            "Adopted {AffectedCount} legacy conversation(s) from {QuarantineTenantId} into {TenantId}.",
+            affected,
+            quarantineTenantId,
+            tenantId);
+
+        return Ok(new AdoptLegacyResponse
+        {
+            TenantId = tenantId,
+            AffectedCount = affected,
+            DryRun = false,
+            Sample = [.. eligible.Take(SampleSize)],
+        });
+    }
+
+    /// <summary>
+    /// Whether an owner id names a user of the target tenant's Entra directory.
+    /// </summary>
+    /// <remarks>
+    /// Split on the FIRST colon only. An <c>oid</c> is a GUID today, but the pair's contract is
+    /// "tid, colon, the rest"; splitting on every colon would reject a future subject format by
+    /// arity rather than by tenancy, which is a different refusal wearing the same code.
+    /// </remarks>
+    private static bool OwnerBelongsToTenant(string ownerUserId, string? entraTenantId)
+    {
+        // A tenant with no directory can be matched by nothing. It cannot be resolved from a token
+        // either, so adopting rows into it would hide them from everyone.
+        if (string.IsNullOrWhiteSpace(entraTenantId))
+        {
+            return false;
+        }
+
+        var separator = ownerUserId.IndexOf(':', StringComparison.Ordinal);
+        if (separator <= 0 || separator == ownerUserId.Length - 1)
+        {
+            return false;
+        }
+
+        // Case-insensitive because a directory id is a GUID, whose textual case carries no meaning -
+        // and because #347's normalisation stores it lower-cased while an operator will paste it
+        // from a portal that shows it however it likes.
+        return string.Equals(
+            ownerUserId[..separator],
+            entraTenantId,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Answers a refused adoption, writing its audit record first. Every early return goes through
+    /// here so that "rejected calls are audited too" is a property of the shape, not of remembering.
+    /// </summary>
+    private ObjectResult RejectAdoption(
+        string tenantId,
+        AdoptLegacyRequest request,
+        int statusCode,
+        string code)
+    {
+        WriteAdoptionAudit(
+            tenantId,
+            string.IsNullOrWhiteSpace(request.OwnerUserId) ? null : request.OwnerUserId.Trim(),
+            affectedCount: 0,
+            request.DryRun,
+            AdministrationOutcome.Rejected,
+            code);
+
+        return new ObjectResult(new { error = "rejected", code })
+        {
+            StatusCode = statusCode,
+        };
+    }
+
+    private void WriteAdoptionAudit(
+        string tenantId,
+        string? ownerUserId,
+        int affectedCount,
+        bool dryRun,
+        AdministrationOutcome outcome,
+        string? reason) =>
+        _auditSink.Write(new AdministrationAuditRecord
+        {
+            Operation = "tenant.adopt_legacy",
+            RemoteAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+            TargetTenantId = tenantId,
+            TargetOwnerUserId = ownerUserId,
+            AffectedCount = affectedCount,
+            DryRun = dryRun,
+            Outcome = outcome,
+            Reason = reason,
+            CorrelationId = HttpContext.TraceIdentifier,
+            EventClass = AuditEventClass.Security,
+        });
 
     private void WriteAudit(TenantRecord record, TenantProvisionOutcome outcome)
     {

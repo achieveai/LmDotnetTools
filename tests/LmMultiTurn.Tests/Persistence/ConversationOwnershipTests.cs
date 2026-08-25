@@ -1,0 +1,377 @@
+using AchieveAi.LmDotnetTools.LmCore.Identity;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
+using FluentAssertions;
+using Microsoft.Data.Sqlite;
+using Xunit;
+
+namespace LmMultiTurn.Tests.Persistence;
+
+/// <summary>
+/// Pins the owner columns, the scoped listing of P1 spec 7.5, and the tenancy maintenance of 8.5
+/// across ALL THREE conversation stores.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Written from the point of view of an authenticated user of tenant A trying to read tenant B's
+/// conversations. The happy path (an owner sees their own) is the least interesting claim here -
+/// what these pin is the set of rows that must NOT come back.
+/// </para>
+/// <para>
+/// Every claim runs against the SQL store, the file store and the in-memory store from one theory
+/// body. Three implementations of one predicate is exactly the shape that drifts, and the sample
+/// ships the FILE store (<c>Program.cs</c>) while the spec's predicate is written in SQL - so the
+/// implementation the product actually runs is the one a SQL-only test would never touch.
+/// </para>
+/// </remarks>
+public sealed class ConversationOwnershipTests : IAsyncLifetime
+{
+    private const string TenantA = "tnt_a";
+    private const string TenantB = "tnt_b";
+    private const string UserA = "dir-a:user-1";
+    private const string UserA2 = "dir-a:user-2";
+    private const string UserB = "dir-b:user-9";
+
+    private string _root = null!;
+    private readonly List<IAsyncDisposable> _disposables = [];
+
+    public Task InitializeAsync()
+    {
+        _root = Path.Combine(Path.GetTempPath(), $"ownership_{Guid.NewGuid():N}");
+        _ = Directory.CreateDirectory(_root);
+        return Task.CompletedTask;
+    }
+
+    public async Task DisposeAsync()
+    {
+        foreach (var disposable in _disposables)
+        {
+            await disposable.DisposeAsync();
+        }
+
+        SqliteConnection.ClearAllPools();
+        await Task.Delay(50);
+
+        try
+        {
+            Directory.Delete(_root, recursive: true);
+        }
+        catch (IOException)
+        {
+            // A leaked temp directory is not a test failure.
+        }
+    }
+
+    /// <summary>The three store flavours, by name, so a failure says which one drifted.</summary>
+    public static TheoryData<string> StoreKinds => ["sqlite", "file", "memory"];
+
+    private IConversationStore CreateStore(string kind)
+    {
+        switch (kind)
+        {
+            case "sqlite":
+                var sqlite = new SqliteConversationStore(
+                    Path.Combine(_root, $"conv_{Guid.NewGuid():N}.db"));
+                _disposables.Add(sqlite);
+                return sqlite;
+            case "file":
+                var directory = Path.Combine(_root, $"file_{Guid.NewGuid():N}");
+                _ = Directory.CreateDirectory(directory);
+                return new FileConversationStore(directory);
+            default:
+                return new InMemoryConversationStore();
+        }
+    }
+
+    private static async Task WriteAsync(
+        IConversationStore store,
+        string threadId,
+        string? tenantId,
+        string? ownerUserId = null,
+        string? ownerAppId = null,
+        Visibility? visibility = null,
+        long lastUpdated = 1_000) =>
+        await store.UpdateMetadataAsync(
+            threadId,
+            _ => new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LastUpdated = lastUpdated,
+                TenantId = tenantId,
+                OwnerUserId = ownerUserId,
+                OwnerAppId = ownerAppId,
+                Visibility = visibility,
+            },
+            CancellationToken.None);
+
+    private static ConversationListScope Scope(
+        string tenantId,
+        string? userId = null,
+        string? appId = null,
+        bool isTenantAdmin = false,
+        params string[] granted) =>
+        new()
+        {
+            TenantId = tenantId,
+            UserId = userId,
+            AppId = appId,
+            IsTenantAdmin = isTenantAdmin,
+            GrantedThreadIds = new HashSet<string>(granted, StringComparer.Ordinal),
+        };
+
+    /// <summary>
+    /// The four owner columns survive a write and a read. Without this every claim below could pass
+    /// vacuously by never storing anything for the filter to match.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(StoreKinds))]
+    public async Task OwnerColumns_RoundTrip(string kind)
+    {
+        var store = CreateStore(kind);
+        await WriteAsync(store, "t1", TenantA, UserA, "app-1", Visibility.Shared);
+
+        var loaded = await store.LoadMetadataAsync("t1", CancellationToken.None);
+
+        _ = loaded.Should().NotBeNull();
+        _ = loaded!.TenantId.Should().Be(TenantA);
+        _ = loaded.OwnerUserId.Should().Be(UserA);
+        _ = loaded.OwnerAppId.Should().Be("app-1");
+        _ = loaded.Visibility.Should().Be(Visibility.Shared);
+    }
+
+    /// <summary>
+    /// The outer boundary. A user of tenant B never sees a conversation of tenant A, whatever else
+    /// is true about it - including a conversation whose owner id happens to be theirs.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(StoreKinds))]
+    public async Task Listing_ExcludesAnotherTenantsConversations(string kind)
+    {
+        var store = CreateStore(kind);
+        await WriteAsync(store, "a-own", TenantA, UserA);
+
+        // The SAME owner id stamped into the OTHER tenant, listed AS that owner. Only this shape
+        // proves the tenant conjunct: a row owned by anyone else is already excluded by the owner
+        // conjunct, so dropping the tenant one entirely would leave such a test green. This row is
+        // excluded by tenancy alone.
+        await WriteAsync(store, "b-same-owner", TenantB, UserA);
+
+        var listed = await store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, CancellationToken.None);
+
+        _ = listed.Select(t => t.ThreadId).Should().BeEquivalentTo(["a-own"]);
+    }
+
+    /// <summary>
+    /// Spec 7.1 principle 4: a null owner matches nobody. The C# stores are where this can go wrong
+    /// - <c>null == null</c> is true - and getting it wrong hands every unclaimed conversation to
+    /// every app-only caller.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(StoreKinds))]
+    public async Task Listing_NullOwnerMatchesNobody(string kind)
+    {
+        var store = CreateStore(kind);
+        await WriteAsync(store, "unowned", TenantA, ownerUserId: null, ownerAppId: null);
+
+        var asUser = await store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, CancellationToken.None);
+        var asApp = await store.ListThreadsAsync(
+            Scope(TenantA, userId: null, appId: null), 50, 0, CancellationToken.None);
+
+        _ = asUser.Should().BeEmpty();
+        _ = asApp.Should().BeEmpty();
+    }
+
+    /// <summary>A user sees their own conversations and not a tenant-mate's.</summary>
+    [Theory]
+    [MemberData(nameof(StoreKinds))]
+    public async Task Listing_OwnerSeesOwnAndNotAPeers(string kind)
+    {
+        var store = CreateStore(kind);
+        await WriteAsync(store, "mine", TenantA, UserA);
+        await WriteAsync(store, "theirs", TenantA, UserA2);
+
+        var listed = await store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, CancellationToken.None);
+
+        _ = listed.Select(t => t.ThreadId).Should().BeEquivalentTo(["mine"]);
+    }
+
+    /// <summary>
+    /// The grant branch. A conversation someone shared with this user appears in their list; the
+    /// same conversation does not appear for a user with no grant.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(StoreKinds))]
+    public async Task Listing_IncludesGrantedConversations(string kind)
+    {
+        var store = CreateStore(kind);
+        await WriteAsync(store, "shared", TenantA, UserA2, visibility: Visibility.Shared);
+
+        var withGrant = await store.ListThreadsAsync(
+            Scope(TenantA, UserA, granted: "shared"), 50, 0, CancellationToken.None);
+        var withoutGrant = await store.ListThreadsAsync(
+            Scope(TenantA, UserA), 50, 0, CancellationToken.None);
+
+        _ = withGrant.Select(t => t.ThreadId).Should().BeEquivalentTo(["shared"]);
+        _ = withoutGrant.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The admin branch of 7.4 mirrored into the listing. Omitting it produces the worst outcome
+    /// available: an EMPTY list for a tenant admin while the point read on the same rows allows.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(StoreKinds))]
+    public async Task Listing_TenantAdminSeesEveryConversationInTheirTenantAndNoOther(string kind)
+    {
+        var store = CreateStore(kind);
+        await WriteAsync(store, "a1", TenantA, UserA);
+        await WriteAsync(store, "a2", TenantA, UserA2);
+        await WriteAsync(store, "b1", TenantB, UserB);
+
+        var listed = await store.ListThreadsAsync(
+            Scope(TenantA, UserA, isTenantAdmin: true), 50, 0, CancellationToken.None);
+
+        _ = listed.Select(t => t.ThreadId).Should().BeEquivalentTo(["a1", "a2"]);
+    }
+
+    /// <summary>
+    /// An app-only caller matches on app id and never on the grant branch (spec 7.4 step 3): a
+    /// grant names a person, and a service credential is not one.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(StoreKinds))]
+    public async Task Listing_AppOnlyCallerMatchesAppIdAndIgnoresGrants(string kind)
+    {
+        var store = CreateStore(kind);
+        await WriteAsync(store, "app-owned", TenantA, ownerUserId: null, ownerAppId: "app-1");
+        await WriteAsync(store, "user-owned", TenantA, UserA2);
+
+        var listed = await store.ListThreadsAsync(
+            Scope(TenantA, userId: null, appId: "app-1", granted: "user-owned"),
+            50,
+            0,
+            CancellationToken.None);
+
+        _ = listed.Select(t => t.ThreadId).Should().BeEquivalentTo(["app-owned"]);
+    }
+
+    /// <summary>
+    /// The filter runs BEFORE the page is cut, not after it. With ten rows of which only the oldest
+    /// belongs to the caller, a filter applied to an already-trimmed page of five returns nothing.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(StoreKinds))]
+    public async Task Listing_FiltersBeforePaging(string kind)
+    {
+        var store = CreateStore(kind);
+
+        for (var i = 0; i < 9; i++)
+        {
+            await WriteAsync(store, $"peer-{i}", TenantA, UserA2, lastUpdated: 2_000 + i);
+        }
+
+        await WriteAsync(store, "mine", TenantA, UserA, lastUpdated: 1_000);
+
+        var listed = await store.ListThreadsAsync(Scope(TenantA, UserA), 5, 0, CancellationToken.None);
+
+        _ = listed.Select(t => t.ThreadId).Should().BeEquivalentTo(["mine"]);
+    }
+
+    /// <summary>
+    /// The startup repair of 8.5.4 claims every unstamped row for the quarantine tenant, and claims
+    /// only those - a row already in a real tenant is not moved.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(StoreKinds))]
+    public async Task StampUnownedThreads_ClaimsOnlyUnstampedRows(string kind)
+    {
+        var store = CreateStore(kind);
+        var ownership = (IConversationOwnershipStore)store;
+
+        await WriteAsync(store, "legacy-1", tenantId: null);
+        await WriteAsync(store, "legacy-2", tenantId: null);
+        await WriteAsync(store, "already", TenantA, UserA);
+
+        var stamped = await ownership.StampUnownedThreadsAsync("tnt_quarantine", CancellationToken.None);
+
+        _ = stamped.Should().Be(2);
+        _ = (await store.LoadMetadataAsync("legacy-1", CancellationToken.None))!.TenantId
+            .Should().Be("tnt_quarantine");
+        _ = (await store.LoadMetadataAsync("already", CancellationToken.None))!.TenantId
+            .Should().Be(TenantA);
+    }
+
+    /// <summary>
+    /// Adoption selects on the SOURCE tenant, which is what makes a repeated call idempotent rather
+    /// than destructive: the second run finds nothing, and the row adopted by the first is not
+    /// re-stamped into a second tenant.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(StoreKinds))]
+    public async Task AdoptThreads_IsIdempotentAndAssignsOwner(string kind)
+    {
+        var store = CreateStore(kind);
+        var ownership = (IConversationOwnershipStore)store;
+
+        await WriteAsync(store, "q1", "tnt_quarantine");
+        await WriteAsync(store, "q2", "tnt_quarantine");
+
+        var first = await ownership.AdoptThreadsAsync(
+            "tnt_quarantine", TenantA, UserA, null, CancellationToken.None);
+        var second = await ownership.AdoptThreadsAsync(
+            "tnt_quarantine", TenantB, UserB, null, CancellationToken.None);
+
+        _ = first.Should().Be(2);
+        _ = second.Should().Be(0);
+
+        var adopted = await store.LoadMetadataAsync("q1", CancellationToken.None);
+        _ = adopted!.TenantId.Should().Be(TenantA);
+        _ = adopted.OwnerUserId.Should().Be(UserA);
+    }
+
+    /// <summary>
+    /// An explicitly EMPTY id list adopts nothing. Collapsing it into "no restriction" would turn a
+    /// call that named no conversations into a full-tenant adoption - the difference between a
+    /// no-op and moving every quarantined conversation in the deployment.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(StoreKinds))]
+    public async Task AdoptThreads_EmptySelectionAdoptsNothing(string kind)
+    {
+        var store = CreateStore(kind);
+        var ownership = (IConversationOwnershipStore)store;
+
+        await WriteAsync(store, "q1", "tnt_quarantine");
+
+        var affected = await ownership.AdoptThreadsAsync(
+            "tnt_quarantine", TenantA, UserA, [], CancellationToken.None);
+
+        _ = affected.Should().Be(0);
+        _ = (await store.LoadMetadataAsync("q1", CancellationToken.None))!.TenantId
+            .Should().Be("tnt_quarantine");
+    }
+
+    /// <summary>
+    /// The rehearsal's row set is the applied call's row set. A dry run that reported a different
+    /// count from the one the apply would move is a rehearsal of nothing.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(StoreKinds))]
+    public async Task ListThreadIdsByTenant_MatchesWhatAdoptionWouldMove(string kind)
+    {
+        var store = CreateStore(kind);
+        var ownership = (IConversationOwnershipStore)store;
+
+        await WriteAsync(store, "q1", "tnt_quarantine");
+        await WriteAsync(store, "q2", "tnt_quarantine");
+        await WriteAsync(store, "real", TenantA, UserA);
+
+        var rehearsed = await ownership.ListThreadIdsByTenantAsync(
+            "tnt_quarantine", null, CancellationToken.None);
+        var applied = await ownership.AdoptThreadsAsync(
+            "tnt_quarantine", TenantA, null, null, CancellationToken.None);
+
+        _ = rehearsed.Should().BeEquivalentTo(["q1", "q2"]);
+        _ = applied.Should().Be(rehearsed.Count);
+    }
+}

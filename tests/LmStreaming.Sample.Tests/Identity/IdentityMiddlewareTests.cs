@@ -40,6 +40,15 @@ internal sealed class StubTenantStore : ITenantStore
 
     public Task<bool> IsTenantAdminAsync(string tenantId, string userId, CancellationToken ct = default) =>
         Task.FromResult(false);
+
+    public Task<int> NormalizeEntraTenantIdsAsync(CancellationToken ct = default) =>
+        Task.FromResult(0);
+
+    public Task<bool> TryEnsureQuarantineTenantAsync(
+        string tenantId,
+        DateTimeOffset createdAt,
+        CancellationToken ct = default) =>
+        Task.FromResult(true);
 }
 
 /// <summary>

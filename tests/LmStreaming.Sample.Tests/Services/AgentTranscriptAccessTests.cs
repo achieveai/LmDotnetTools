@@ -815,6 +815,7 @@ public sealed class AgentTranscriptAccessTests
             new ConversationStatusResolver(Mock.Of<IConversationStore>(), new InMemoryConversationStore()),
             TimeProvider.System,
             workflowRunRegistry,
+            TestAuthorizers.Disabled(),
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
             scanCoverageCache ?? new SubAgentScanCoverageCache(),

@@ -326,6 +326,7 @@ public sealed class AgentOwnedThreadRouteTests
             new ConversationStatusResolver(store, new InMemoryConversationStore()),
             TimeProvider.System,
             new WorkflowRunRegistry(),
+            TestAuthorizers.Disabled(),
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
             new SubAgentScanCoverageCache(),

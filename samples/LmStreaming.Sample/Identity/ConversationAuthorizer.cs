@@ -1,0 +1,260 @@
+using AchieveAi.LmDotnetTools.LmCore.Identity;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+
+namespace LmStreaming.Sample.Identity;
+
+/// <summary>
+/// One access decision about one conversation, plus whether the refusal must hide the
+/// conversation's existence.
+/// </summary>
+/// <param name="Allowed">Whether the action is permitted.</param>
+/// <param name="Reason">The policy's stable reason code (spec 7.4.1). Contract.</param>
+/// <param name="HidesExistence">
+/// True when the refusal must be answered as <c>404</c> rather than <c>403</c>. A <c>403</c> is an
+/// admission that the id names something; for a caller outside the tenant that admission is itself
+/// the leak, because thread ids are enumerable across a deployment.
+/// </param>
+public sealed record ConversationAccessResult(bool Allowed, string Reason, bool HidesExistence);
+
+/// <summary>
+/// The one place a conversation route turns a <see cref="ThreadMetadata"/> row plus the current
+/// request's <see cref="Principal"/> into an allow or a refusal.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Injected as a SINGLE dependency rather than as its four collaborators so that
+/// <c>ConversationsController</c> gains one constructor parameter instead of four - and, more
+/// importantly, so no route can assemble its own variation of the decision. Every conversation
+/// route resolves through <see cref="AuthorizeAsync"/> or <see cref="CreateListScopeAsync"/>.
+/// </para>
+/// <para>
+/// Note what this does NOT do: it never decides on its own contents. Every allow and every deny
+/// below <see cref="IsEnforced"/> comes from <see cref="IResourceAccessPolicy"/>. What lives here
+/// is the mapping from a store row to a <see cref="ResourceDescriptor"/>, and from a reason code to
+/// an HTTP status - both of which are transport concerns the policy is deliberately ignorant of.
+/// </para>
+/// </remarks>
+public sealed class ConversationAuthorizer
+{
+    /// <summary>
+    /// Reason codes whose refusal must be a <c>404</c>. Each one means "this caller has no
+    /// relationship at all with the resource", which is indistinguishable from the resource not
+    /// existing - and must stay indistinguishable, or the API becomes an existence oracle for
+    /// another tenant's conversation ids.
+    /// </summary>
+    private static readonly HashSet<string> ExistenceHidingReasons = new(StringComparer.Ordinal)
+    {
+        "cross_tenant",
+        "no_relationship",
+        "app_only_no_owner",
+        NotFoundReason,
+    };
+
+    /// <summary>Refusal for a conversation with no row at all, or an unstamped legacy row.</summary>
+    public const string NotFoundReason = "conversation_not_found";
+
+    /// <summary>Refusal when enforcement is on and the request carries no principal.</summary>
+    public const string UnauthenticatedReason = "authentication_required";
+
+    /// <summary>
+    /// Tenant id used by a listing scope built for a request that carries no principal. A tenant id
+    /// is minted as <c>tnt_*</c> and a seeded one is a plain identifier, so a value carrying a colon
+    /// and a space cannot collide with a stored one - and every row therefore fails the scope's very
+    /// first comparison.
+    /// </summary>
+    private const string UnsatisfiableTenantId = "no principal: matches nothing";
+
+    private readonly IPrincipalAccessor _principalAccessor;
+    private readonly IResourceAccessPolicy _policy;
+    private readonly IResourceGrantStore _grants;
+    private readonly IEnforcementGate _enforcement;
+    private readonly TimeProvider _timeProvider;
+
+    /// <summary>Creates the authorizer.</summary>
+    /// <param name="principalAccessor">Supplies the current request's principal.</param>
+    /// <param name="policy">The decision point of spec 7.4.</param>
+    /// <param name="grants">Grant registry, read to build the listing scope.</param>
+    /// <param name="enforcement">Whether <c>Identity:Enforce</c> is on.</param>
+    /// <param name="timeProvider">Clock used to exclude expired grants.</param>
+    public ConversationAuthorizer(
+        IPrincipalAccessor principalAccessor,
+        IResourceAccessPolicy policy,
+        IResourceGrantStore grants,
+        IEnforcementGate enforcement,
+        TimeProvider timeProvider)
+    {
+        ArgumentNullException.ThrowIfNull(principalAccessor);
+        ArgumentNullException.ThrowIfNull(policy);
+        ArgumentNullException.ThrowIfNull(grants);
+        ArgumentNullException.ThrowIfNull(enforcement);
+        ArgumentNullException.ThrowIfNull(timeProvider);
+
+        _principalAccessor = principalAccessor;
+        _policy = policy;
+        _grants = grants;
+        _enforcement = enforcement;
+        _timeProvider = timeProvider;
+    }
+
+    /// <summary>Whether this deployment enforces authorization.</summary>
+    public bool IsEnforced => _enforcement.IsEnforced;
+
+    /// <summary>The current request's principal, or null outside a request.</summary>
+    public Principal? Current => _principalAccessor.Current;
+
+    /// <summary>The grant registry, for the sharing routes.</summary>
+    public IResourceGrantStore Grants => _grants;
+
+    /// <summary>The clock, so a caller computes grant expiry against the same one this does.</summary>
+    public TimeProvider Clock => _timeProvider;
+
+    /// <summary>Addresses one conversation as a policy resource.</summary>
+    /// <param name="threadId">The conversation's id.</param>
+    public static ResourceRef ConversationRef(string threadId) =>
+        new(ResourceTypes.Conversation, threadId);
+
+    /// <summary>
+    /// Decides one action on one conversation.
+    /// </summary>
+    /// <param name="threadId">The conversation being addressed.</param>
+    /// <param name="metadata">
+    /// The stored row, or null when there is none. A missing row and a row belonging to another
+    /// tenant produce the SAME refusal, because they must be indistinguishable to the caller.
+    /// </param>
+    /// <param name="action">The action being attempted.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public async Task<ConversationAccessResult> AuthorizeAsync(
+        string threadId,
+        ThreadMetadata? metadata,
+        AccessAction action,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
+
+        if (!_enforcement.IsEnforced)
+        {
+            // Step 0 of spec 7.4, taken here as well as inside the policy so that a route can skip
+            // loading the row it would only need in order to be refused. The policy would answer
+            // AllowDisabled for the same input; short-circuiting cannot change the outcome, only
+            // the work done to reach it.
+            return new ConversationAccessResult(true, AccessDecision.AllowDisabled.Reason, false);
+        }
+
+        var principal = _principalAccessor.Current;
+        if (principal is null)
+        {
+            // IdentityMiddleware answers 401 before a route runs, so this is unreachable through
+            // HTTP. It is here so that a future caller reaching the authorizer outside the request
+            // pipeline fails closed rather than authorizing with no identity at all.
+            return new ConversationAccessResult(false, UnauthenticatedReason, false);
+        }
+
+        // An absent row and an unstamped row are the same refusal on purpose. An unstamped row is
+        // one the startup repair has not reached (a rolled-back build wrote it, and the process has
+        // not restarted since); it belongs to no tenant, so no tenant may read it.
+        if (metadata is null || metadata.TenantId is null)
+        {
+            return new ConversationAccessResult(false, NotFoundReason, true);
+        }
+
+        var descriptor = new ResourceDescriptor
+        {
+            Ref = ConversationRef(threadId),
+            TenantId = metadata.TenantId,
+            OwnerUserId = metadata.OwnerUserId,
+            OwnerAppId = metadata.OwnerAppId,
+            Visibility = metadata.Visibility ?? Visibility.Private,
+        };
+
+        var decision = await _policy
+            .EvaluateAsync(principal, descriptor, action, ct)
+            .ConfigureAwait(false);
+
+        return new ConversationAccessResult(
+            decision.Allowed,
+            decision.Reason,
+            !decision.Allowed && ExistenceHidingReasons.Contains(decision.Reason));
+    }
+
+    /// <summary>
+    /// Builds the listing filter of spec 7.5, resolving the principal's grants once for the whole
+    /// page rather than once per row. Returns null when enforcement is off, which means "no
+    /// filter" - the pre-P1 listing, unchanged.
+    /// </summary>
+    /// <param name="ct">Cancellation token.</param>
+    public async Task<ConversationListScope?> CreateListScopeAsync(CancellationToken ct = default)
+    {
+        if (!_enforcement.IsEnforced)
+        {
+            return null;
+        }
+
+        var principal = _principalAccessor.Current;
+        if (principal is null)
+        {
+            // A scope no row can satisfy, rather than a null that would be read as "no filter".
+            // Returning null here is the fail-OPEN version of this method and would list every
+            // conversation in the deployment to an unauthenticated caller.
+            return new ConversationListScope { TenantId = UnsatisfiableTenantId };
+        }
+
+        var user = principal.EffectiveUserId;
+
+        // An app-only principal never consults grants (spec 7.4 step 3), so the set stays empty
+        // rather than being resolved against a null subject.
+        IReadOnlyList<string> granted = user is null
+            ? []
+            : await _grants
+                .ListGrantedResourceIdsAsync(
+                    principal.TenantId,
+                    user,
+                    ResourceTypes.Conversation,
+                    _timeProvider.GetUtcNow(),
+                    ct)
+                .ConfigureAwait(false);
+
+        return new ConversationListScope
+        {
+            TenantId = principal.TenantId,
+            UserId = user,
+            AppId = principal.AppId,
+            IsTenantAdmin = principal.Roles.Contains(ResourceAccessPolicy.AdminRole),
+            GrantedThreadIds = new HashSet<string>(granted, StringComparer.Ordinal),
+        };
+    }
+
+    /// <summary>
+    /// Stamps ownership onto a newly created conversation, so the row is claimed at creation rather
+    /// than by a later repair.
+    /// </summary>
+    /// <remarks>
+    /// Runs whether or not enforcement is on. That ordering is the whole point of the rollout in
+    /// <c>docs/deployment/AUTH_ENFORCE.md</c>: conversations created during the pre-enforcement
+    /// window must already carry an owner, or flipping the flag would make every one of them
+    /// invisible to the person who created it. While enforcement is off the development principal
+    /// supplies <c>Identity:LegacyTenantId</c> - the same id the quarantine stamp uses - so those
+    /// rows are picked up by <c>adopt-legacy</c> exactly like genuinely legacy ones.
+    /// </remarks>
+    /// <param name="metadata">The row about to be written.</param>
+    public ThreadMetadata StampOwnership(ThreadMetadata metadata)
+    {
+        ArgumentNullException.ThrowIfNull(metadata);
+
+        var principal = _principalAccessor.Current;
+        if (principal is null)
+        {
+            return metadata;
+        }
+
+        return metadata with
+        {
+            // Existing values win. A re-provision of an id that already exists must not be able to
+            // move a conversation between tenants or between users; that is the durable form of
+            // the pool's caller freeze.
+            TenantId = metadata.TenantId ?? principal.TenantId,
+            OwnerUserId = metadata.OwnerUserId ?? principal.EffectiveUserId,
+            OwnerAppId = metadata.OwnerAppId ?? principal.AppId,
+            Visibility = metadata.Visibility ?? Visibility.Private,
+        };
+    }
+}

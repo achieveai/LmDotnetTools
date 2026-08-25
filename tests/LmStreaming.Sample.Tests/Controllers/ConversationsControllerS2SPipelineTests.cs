@@ -66,6 +66,13 @@ public sealed class ConversationsControllerS2SPipelineTests
                         _ = services.AddSingleton(sp => new ConversationDescendantScanner(
                             sp.GetRequiredService<IConversationStore>(),
                             NullLogger<ConversationDescendantScanner>.Instance));
+
+                        // Added when ConversationsController gained its authorization seam (#302).
+                        // These tests are about the S2S marker/secret pipeline, which runs as a
+                        // filter BEFORE the controller is activated and is unchanged by #302; the
+                        // authorizer is registered with enforcement OFF so every expectation here
+                        // - including which requests are reachable - stays exactly as it was.
+                        _ = services.AddSingleton(TestAuthorizers.Disabled());
                         _ = services
                             .AddControllers()
                             .AddApplicationPart(typeof(ConversationsController).Assembly);
