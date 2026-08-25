@@ -2,11 +2,13 @@ using AchieveAi.LmDotnetTools.LmTestUtils;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using FluentAssertions;
 using Moq;
@@ -99,11 +101,68 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
         agent!.ThreadId.Should().Be($"subagent-{id1}");
     }
 
+    [Fact]
+    public async Task SpawnAsync_StampsTheChildThread_WithTheLaunchingConversationsOwnership()
+    {
+        // #385. A subagent-* thread id is minted inside the spawn, never through the HTTP
+        // provisioning route that stamps ownership, so without this it persists with a null tenant
+        // forever - and a null tenant reads as an absent row under Identity:Enforce, which makes
+        // the sub-agent's transcript unreadable to the person whose conversation spawned it.
+        var store = new InMemoryConversationStore();
+        const string parent = "thread-conversation-owned";
+
+        await store.SaveMetadataAsync(
+            parent,
+            new ThreadMetadata
+            {
+                ThreadId = parent,
+                LastUpdated = 1_000,
+                TenantId = "tnt_acme",
+                OwnerUserId = "entra-tid:owner-oid",
+                OwnerAppId = "codereview-daemon",
+                Visibility = Visibility.Shared,
+            });
+
+        var manager = CreateManager(parent, store);
+        var agentId = ParseAgentId(
+            await manager.SpawnAsync("worker", "do work", name: "a", runInBackground: true));
+
+        var metadata = await store.LoadMetadataAsync($"subagent-{agentId}");
+
+        metadata.Should().NotBeNull();
+        metadata!.TenantId.Should().Be("tnt_acme");
+        metadata.OwnerUserId.Should().Be("entra-tid:owner-oid");
+        metadata.OwnerAppId.Should().Be("codereview-daemon");
+
+        // Visibility is deliberately NOT inherited - see AgentThreadOwnership. Tenant and owner are
+        // identity; "Shared" is a publication decision about the PARENT that nobody made about this
+        // transcript.
+        metadata.Visibility.Should().Be(Visibility.Private);
+    }
+
+    [Fact]
+    public async Task SpawnAsync_FromAnUntenantedConversation_WritesNoOwnershipAtAll()
+    {
+        // Non-vacuity for the test above, and the enforcement-off path. A helper that stamped
+        // unconditionally would satisfy those assertions while inventing metadata on every
+        // deployment that never asked for identity.
+        var store = new InMemoryConversationStore();
+        var manager = CreateManager("thread-conversation-untenanted", store);
+
+        var agentId = ParseAgentId(
+            await manager.SpawnAsync("worker", "do work", name: "a", runInBackground: true));
+
+        var metadata = await store.LoadMetadataAsync($"subagent-{agentId}");
+
+        metadata?.TenantId.Should().BeNull();
+        metadata?.OwnerUserId.Should().BeNull();
+    }
+
     private static string GuidOf(string agentId) => agentId.Split('-')[0];
 
     private static string TagOf(string agentId) => agentId.Split('-')[1];
 
-    private SubAgentManager CreateManager(string parentThreadId)
+    private SubAgentManager CreateManager(string parentThreadId, IConversationStore? store = null)
     {
         var parentMock = new Mock<IMultiTurnAgent>();
         parentMock.Setup(p => p.ThreadId).Returns(parentThreadId);
@@ -135,6 +194,7 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
                 },
             },
             MaxConcurrentSubAgents = 5,
+            DefaultConversationStoreFactory = store is null ? null : _ => store,
         };
 
         var manager = new SubAgentManager(

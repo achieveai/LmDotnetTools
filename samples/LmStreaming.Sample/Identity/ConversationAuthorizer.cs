@@ -157,6 +157,8 @@ public sealed class ConversationAuthorizer
             return new ConversationAccessResult(false, UnauthenticatedReason, false);
         }
 
+        await EqualizeGrantLookupAsync(principal, threadId, metadata, ct).ConfigureAwait(false);
+
         // An absent row and an unstamped row are the same refusal on purpose. An unstamped row is
         // one the startup repair has not reached (a rolled-back build wrote it, and the process has
         // not restarted since); it belongs to no tenant, so no tenant may read it.
@@ -182,6 +184,81 @@ public sealed class ConversationAuthorizer
             decision.Allowed,
             decision.Reason,
             !decision.Allowed && ExistenceHidingReasons.Contains(decision.Reason));
+    }
+
+    /// <summary>
+    /// Issues the grant lookup on the refusal paths that would otherwise skip it, so every refusal
+    /// this method can produce costs the same shape of work (#389).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Three refusals leave here as the same existence-hiding <c>404</c>: the id names no row, the
+    /// row belongs to another tenant, and the row is in the caller's own tenant but grants them
+    /// nothing. Only the third reached <see cref="ResourceAccessPolicy"/>'s grant lookup, so the
+    /// three answers were byte-identical and one round trip apart - and an authenticated caller
+    /// could read that difference as "this id exists inside my tenant".
+    /// </para>
+    /// <para>
+    /// The narrow-looking fix - a lookup only on the absent-row path - is the WRONG one, and worth
+    /// naming because it is the obvious one. It equalises the two same-tenant answers by making the
+    /// cross-tenant answer the odd one out, turning an intra-tenant existence oracle into a
+    /// cross-tenant existence oracle. That is a strictly worse trade: the caller is already a
+    /// trusted member of their own tenant, and thread ids are enumerable across the deployment.
+    /// Every path that skips the policy's lookup issues one here instead.
+    /// </para>
+    /// <para>
+    /// It does NOT run for an app-only principal, and that is equalisation too, not an exemption: a
+    /// principal with no end user never consults grants on ANY path (spec 7.4 step 3), so those
+    /// paths already cost the same as each other, and adding a lookup to one of them would be the
+    /// same mistake in the other direction.
+    /// </para>
+    /// <para>
+    /// The result is discarded, and it must be: this call confers nothing and decides nothing. The
+    /// decision is <see cref="IResourceAccessPolicy"/>'s alone, which is why this lives beside the
+    /// refusal rather than inside it. It also writes no audit entry and logs nothing - the refusal
+    /// paths this pads are the silent ones by design, and a log line here would reintroduce the
+    /// same oracle in a place an operator can read.
+    /// </para>
+    /// <para>
+    /// A known consequence, accepted on purpose: a refusal that previously did no I/O can now fail
+    /// if the grant registry is unavailable, turning a <c>404</c> into a <c>500</c>. It is NOT
+    /// wrapped in a catch. A swallow here would restore the very asymmetry this removes - the
+    /// same-tenant path does not swallow, so a registry outage would once again make the two
+    /// answers distinguishable, and this time by a difference an attacker can provoke at will. Only
+    /// requests that were going to be refused anyway are affected; no request that would have
+    /// succeeded now fails.
+    /// </para>
+    /// </remarks>
+    private async Task EqualizeGrantLookupAsync(
+        Principal principal,
+        string threadId,
+        ThreadMetadata? metadata,
+        CancellationToken ct)
+    {
+        if (principal.EffectiveUserId is not { } user)
+        {
+            return;
+        }
+
+        var policyWillLookUp = metadata?.TenantId is not null
+            && string.Equals(metadata.TenantId, principal.TenantId, StringComparison.Ordinal);
+
+        if (policyWillLookUp)
+        {
+            return;
+        }
+
+        // Against the CALLER's tenant, never the row's. It is the query the same-tenant path would
+        // have issued, which is the whole point; issuing it against another tenant would both cost
+        // differently and read another tenant's registry for no reason.
+        _ = await _grants
+            .FindGrantAsync(
+                principal.TenantId,
+                ConversationRef(threadId),
+                user,
+                _timeProvider.GetUtcNow(),
+                ct)
+            .ConfigureAwait(false);
     }
 
     /// <summary>

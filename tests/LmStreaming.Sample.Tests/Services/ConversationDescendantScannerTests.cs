@@ -32,13 +32,15 @@ public sealed class ConversationDescendantScannerTests
         IConversationStore store,
         string parentThreadId,
         string agentId,
-        string childThreadId) =>
+        string childThreadId,
+        string? tenantId = null) =>
         store.SaveMetadataAsync(
             childThreadId,
             new ThreadMetadata
             {
                 ThreadId = childThreadId,
                 LastUpdated = 0,
+                TenantId = tenantId,
                 Properties = SubAgentProvenance.Build(
                     parentThreadId,
                     new SubAgentSnapshot(
@@ -80,6 +82,41 @@ public sealed class ConversationDescendantScannerTests
         nodes.Select(n => n.ThreadId).Should().Equal("subagent-a", "subagent-b", "subagent-a1", "subagent-a1x");
         nodes.Select(n => n.Depth).Should().Equal(1, 1, 2, 3);
         nodes.Should().NotContain(n => n.ThreadId == root);
+    }
+
+    /// <summary>
+    /// A tenanted root can have an UNTENANTED descendant, and the scan must still find it. #385 has an
+    /// agent thread inherit its parent's tenant AT CREATION, from the parent's stored row as it stands at
+    /// that instant - so a child minted before its parent's own stamp has landed keeps a null tenant while
+    /// the root ends up stamped. The persisted scan narrows to the ROOT's tenant for efficiency (#388a);
+    /// if that narrowing dropped the null-tenant child it would silently vanish from the roster (and from
+    /// the cache that then holds the incomplete answer for the process lifetime), which is the same
+    /// disclosure-shaped failure as an offset page skipping a row. The scope must therefore admit the
+    /// root's own tenant OR an untenanted row.
+    /// </summary>
+    [Fact]
+    public async Task ScanAsync_IncludesAnUntenantedDescendant_OfATenantedRoot()
+    {
+        const string root = "thread-root";
+        const string tenant = "tnt_a";
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            root,
+            new ThreadMetadata { ThreadId = root, LastUpdated = 0, TenantId = tenant });
+
+        // The ordinary child: it inherited the root's tenant at creation.
+        await SeedChildAsync(store, root, "tenanted", "subagent-tenanted", tenantId: tenant);
+
+        // The racing child: minted before the parent's stamp landed, so it is still untenanted while the
+        // root is stamped. A root-tenant-only scope would drop exactly this row.
+        await SeedChildAsync(store, root, "untenanted", "subagent-untenanted", tenantId: null);
+
+        var nodes = await CreateScanner(store).ScanAsync(root);
+
+        _ = nodes
+            .Select(n => n.ThreadId)
+            .Should()
+            .BeEquivalentTo("subagent-tenanted", "subagent-untenanted");
     }
 
     /// <summary>A cycle in the persisted parent stamps must be cut, not looped on.</summary>
@@ -624,5 +661,68 @@ public sealed class ConversationDescendantScannerTests
 
         public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
             inner.DeleteThreadAsync(threadId, ct);
+    }
+
+    /// <summary>
+    /// The scan is narrowed by the ROOT's tenant at the store, not after the fact (#388a).
+    /// </summary>
+    /// <remarks>
+    /// The projection this scan feeds keys on the PARENT THREAD ID alone, and a thread id is not a
+    /// tenant-scoped name. A row in another tenant stamped with this root's id therefore used to
+    /// walk straight into the graph - and the graph is cached per root, so it stayed there. That is
+    /// not a hypothetical shape: ids in the agent-owned space are derived from an agent id, so two
+    /// tenants running the same template collide by construction.
+    /// </remarks>
+    [Fact]
+    public async Task ScanAsync_WhenTheRootIsTenanted_ExcludesAnotherTenantsRowStampedWithTheSameParent()
+    {
+        const string root = "thread-root";
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            root,
+            new ThreadMetadata { ThreadId = root, LastUpdated = 0, TenantId = "tnt_a" });
+        await SeedChildAsync(store, root, "mine", "subagent-mine", tenantId: "tnt_a");
+        await SeedChildAsync(store, root, "theirs", "subagent-theirs", tenantId: "tnt_b");
+
+        var nodes = await CreateScanner(store).ScanAsync(root);
+
+        nodes.Select(n => n.ThreadId).Should().Equal("subagent-mine");
+    }
+
+    /// <summary>
+    /// Non-vacuity for the test above: the exclusion is the TENANT, not the second row.
+    /// </summary>
+    [Fact]
+    public async Task ScanAsync_WhenTheRootIsTenanted_StillReturnsEveryChildInside()
+    {
+        const string root = "thread-root";
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            root,
+            new ThreadMetadata { ThreadId = root, LastUpdated = 0, TenantId = "tnt_a" });
+        await SeedChildAsync(store, root, "mine", "subagent-mine", tenantId: "tnt_a");
+        await SeedChildAsync(store, root, "sibling", "subagent-sibling", tenantId: "tnt_a");
+
+        var nodes = await CreateScanner(store).ScanAsync(root);
+
+        nodes.Select(n => n.ThreadId).Should().Equal("subagent-mine", "subagent-sibling");
+    }
+
+    /// <summary>
+    /// A root written before tenancy existed still gets its descendants. The scoped overload cannot
+    /// express "tenant is null", so this path falls back to the unscoped one rather than narrowing
+    /// to a tenant nobody is in and returning an empty graph.
+    /// </summary>
+    [Fact]
+    public async Task ScanAsync_WhenTheRootCarriesNoTenant_StillReturnsItsDescendants()
+    {
+        const string root = "thread-root";
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(root, new ThreadMetadata { ThreadId = root, LastUpdated = 0 });
+        await SeedChildAsync(store, root, "legacy", "subagent-legacy");
+
+        var nodes = await CreateScanner(store).ScanAsync(root);
+
+        nodes.Select(n => n.ThreadId).Should().Equal("subagent-legacy");
     }
 }

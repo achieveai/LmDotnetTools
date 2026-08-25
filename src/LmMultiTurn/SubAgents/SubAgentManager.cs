@@ -678,6 +678,11 @@ public sealed class SubAgentManager : IAsyncDisposable
     {
         SubAgentState? state = null;
 
+        // When this spawn reassigns an already-live name away from a predecessor, remember whom it took
+        // it from. If the spawn then fails, cleanup restores the name to that still-live predecessor
+        // instead of deleting it - otherwise a failed spawn silently strips a working agent of its name.
+        string? displacedNameOwnerId = null;
+
         try
         {
             ct.ThrowIfCancellationRequested();
@@ -751,6 +756,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                         && existingId != agentId
                         && _agents.ContainsKey(existingId))
                     {
+                        displacedNameOwnerId = existingId;
                         _logger.LogWarning(
                             "Sub-agent name '{Name}' already maps to agent {ExistingId}; reassigning it "
                                 + "to the newly spawned agent {AgentId}. SendMessage by this name will now "
@@ -800,7 +806,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // State may have been constructed but rejected at the shutdown-serialized registration
                 // boundary, or it may have registered and failed later. The shared cleanup handles both:
                 // dictionary removals are idempotent and it disposes the constructed loop/provider.
-                await CleanupFailedSpawnAsync(agentId, effectiveName, state, gateGuard);
+                await CleanupFailedSpawnAsync(
+                    agentId, effectiveName, state, gateGuard, displacedNameOwnerId);
             }
 
             throw;
@@ -1122,7 +1129,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         string agentId,
         string? name,
         SubAgentState state,
-        GateReleaseGuard gateGuard)
+        GateReleaseGuard gateGuard,
+        string? displacedNameOwnerId = null)
     {
         _ = _agents.TryRemove(agentId, out _);
         RetireFromCollaboration(agentId, "error");
@@ -1130,7 +1138,20 @@ public sealed class SubAgentManager : IAsyncDisposable
             && _namesToIds.TryGetValue(name, out var mappedId)
             && mappedId == agentId)
         {
-            _ = _namesToIds.TryRemove(name, out _);
+            // This spawn owns the name only because it took it from a live predecessor. Restoring it
+            // rather than deleting it keeps that predecessor addressable by name; a plain remove would
+            // let a failed spawn strip a working agent of a name it never lost on its own account. Only
+            // when the predecessor is still live - it may have been retired meanwhile, in which case the
+            // name is genuinely orphaned and removed.
+            if (!string.IsNullOrWhiteSpace(displacedNameOwnerId)
+                && _agents.ContainsKey(displacedNameOwnerId))
+            {
+                _namesToIds[name] = displacedNameOwnerId;
+            }
+            else
+            {
+                _ = _namesToIds.TryRemove(name, out _);
+            }
         }
 
         try
@@ -2703,6 +2724,14 @@ public sealed class SubAgentManager : IAsyncDisposable
                 template.ConversationStoreFactory
                 ?? _options.DefaultConversationStoreFactory;
             store = storeFactory?.Invoke($"subagent-{agentId}");
+
+            // Stamp the child with the launching conversation's tenant and owner BEFORE the loop
+            // runs (#385). A sub-agent thread is minted here, never through the provisioning route,
+            // so nothing else ever gives it a tenant - and an untenanted row is indistinguishable
+            // from a missing one once Identity:Enforce is on.
+            await AgentThreadOwnership
+                .InheritAsync(store, lineage.ParentThreadId, SubAgentThreadId(agentId), CancellationToken.None)
+                .ConfigureAwait(false);
 
             // Build a fresh FunctionRegistry with filtered parent tools
             var registry = new FunctionRegistry();

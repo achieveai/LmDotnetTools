@@ -290,6 +290,15 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 Properties = existing?.Properties,
                 SessionMappings = sessionMappings,
+
+                // Carried, exactly as the base implementation does. This override REPLACES the
+                // base write rather than extending it, so the base class's carry-forward does not
+                // reach here - a field omitted below is written back as NULL, and a conversation
+                // with a null tenant is invisible to its own owner under Identity:Enforce.
+                TenantId = existing?.TenantId,
+                OwnerUserId = existing?.OwnerUserId,
+                OwnerAppId = existing?.OwnerAppId,
+                Visibility = existing?.Visibility,
             };
 
             await Store.SaveMetadataAsync(ThreadId, metadata, ct);

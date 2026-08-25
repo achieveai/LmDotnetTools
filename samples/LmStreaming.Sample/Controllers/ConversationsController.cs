@@ -716,15 +716,21 @@ public class ConversationsController(
         }
 
         var metadata = await store.LoadMetadataAsync(threadId, ct);
-        if (metadata == null)
-        {
-            return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
-        }
 
+        // Authorize BEFORE the null-metadata 404: the authorizer runs its equalising grant lookup for a
+        // never-minted thread exactly as for a forbidden cross-tenant one, so short-circuiting the missing
+        // case here would make a missing thread cost zero look-ups and a forbidden one cost one - a
+        // work-shape existence oracle (#389) even with byte-identical 404 bodies.
         if (Refuse(threadId, await authorizer.AuthorizeAsync(threadId, metadata, AccessAction.Write, ct))
             is { } denied)
         {
             return denied;
+        }
+
+        // Reachable only with enforcement OFF (an allowed decision over null metadata): still unknown.
+        if (metadata == null)
+        {
+            return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
         }
 
         var persistedModeId =
@@ -1247,15 +1253,21 @@ public class ConversationsController(
         }
 
         var metadata = await store.LoadMetadataAsync(threadId, ct);
-        if (metadata == null)
-        {
-            return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
-        }
 
+        // Authorize BEFORE the null-metadata 404: the authorizer runs its equalising grant lookup for a
+        // never-minted thread exactly as for a forbidden cross-tenant one, so short-circuiting the missing
+        // case here would make a missing thread cost zero look-ups and a forbidden one cost one - a
+        // work-shape existence oracle (#389) even with byte-identical 404 bodies.
         if (Refuse(threadId, await authorizer.AuthorizeAsync(threadId, metadata, AccessAction.Read, ct))
             is { } denied)
         {
             return denied;
+        }
+
+        // Reachable only with enforcement OFF (an allowed decision over null metadata): still unknown.
+        if (metadata == null)
+        {
+            return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
         }
 
         var result = runId != null

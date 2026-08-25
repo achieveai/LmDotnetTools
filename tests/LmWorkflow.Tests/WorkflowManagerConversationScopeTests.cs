@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using FluentAssertions;
 using Xunit;
@@ -19,6 +20,78 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow.Tests;
 public class WorkflowManagerConversationScopeTests
 {
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(30);
+
+    [Fact]
+    public async Task StartAsync_StampsTheControllerThread_WithTheLaunchingConversationsOwnership()
+    {
+        // #385. The controller thread id is minted here, never through the HTTP provisioning route
+        // that stamps ownership, so without this it persists with a null tenant forever - and a
+        // null tenant is treated as an absent row under Identity:Enforce, which makes the workflow
+        // controller's own transcript unreadable to the person who started the workflow.
+        var store = new InMemoryConversationStore();
+
+        await store.SaveMetadataAsync(
+            "thread-conv-alpha",
+            new ThreadMetadata
+            {
+                ThreadId = "thread-conv-alpha",
+                LastUpdated = 1_000,
+                TenantId = "tnt_acme",
+                OwnerUserId = "entra-tid:owner-oid",
+                OwnerAppId = "codereview-daemon",
+                Visibility = Visibility.Shared,
+            });
+
+        var controller = ScriptedController(DriveMinimalToTerminal);
+
+        await using var manager = new WorkflowManager(
+            () => controller.Object,
+            EmptyControllerOptions(),
+            controllerConversationStore: store,
+            launchConversationId: () => "thread-conv-alpha"
+        );
+
+        var result = await manager.StartAsync("pr-review", MinimalDefinition(), WorkflowStartMode.Sync);
+        result.Status.Should().Be("completed");
+
+        var metadata = await store.LoadMetadataAsync("workflow-pr-review-thread-conv-alpha");
+
+        metadata.Should().NotBeNull();
+        metadata!.TenantId.Should().Be("tnt_acme");
+        metadata.OwnerUserId.Should().Be("entra-tid:owner-oid");
+        metadata.OwnerAppId.Should().Be("codereview-daemon");
+
+        // Visibility is deliberately NOT inherited. Tenant and owner are identity - the controller
+        // thread genuinely belongs to whoever owns the launching conversation. "Shared" is a
+        // publication decision made about that conversation, and applying it to a transcript nobody
+        // chose to publish would widen access by inference.
+        metadata.Visibility.Should().Be(Visibility.Private);
+    }
+
+    [Fact]
+    public async Task StartAsync_WithAnUntenantedLaunchingConversation_WritesNoOwnershipAtAll()
+    {
+        // Non-vacuity for the test above, and the enforcement-off path. A helper that stamped
+        // unconditionally would pass the assertions there while inventing metadata rows on every
+        // deployment that never asked for identity - so the "nothing to inherit means write
+        // nothing" half has to be pinned separately.
+        var store = new InMemoryConversationStore();
+        var controller = ScriptedController(DriveMinimalToTerminal);
+
+        await using var manager = new WorkflowManager(
+            () => controller.Object,
+            EmptyControllerOptions(),
+            controllerConversationStore: store,
+            launchConversationId: () => "thread-conv-alpha"
+        );
+
+        _ = await manager.StartAsync("pr-review", MinimalDefinition(), WorkflowStartMode.Sync);
+
+        var metadata = await store.LoadMetadataAsync("workflow-pr-review-thread-conv-alpha");
+
+        metadata?.TenantId.Should().BeNull();
+        metadata?.OwnerUserId.Should().BeNull();
+    }
 
     [Fact]
     public async Task StartAsync_ScopesControllerThread_ToLaunchingConversation()

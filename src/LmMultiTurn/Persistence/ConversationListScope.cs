@@ -1,3 +1,5 @@
+using AchieveAi.LmDotnetTools.LmCore.Identity;
+
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 
 /// <summary>
@@ -50,6 +52,72 @@ public sealed record ConversationListScope
         new HashSet<string>(StringComparer.Ordinal);
 
     /// <summary>
+    /// Also admit rows that carry NO tenant, in addition to <see cref="TenantId"/>. Off by default,
+    /// and never set on a principal-facing listing scope.
+    /// </summary>
+    /// <remarks>
+    /// For the background sub-agent scans ONLY (see <c>SubAgentScanScope</c>). A tenanted root can
+    /// have an untenanted descendant: an agent thread inherits its parent's tenant at creation from
+    /// the parent's stored row as it stands then (#385), so a child minted before its parent's own
+    /// stamp lands keeps a null tenant while the root ends up stamped. Narrowing those scans to the
+    /// root's tenant alone would silently drop that child from a roster that is then cached, so the
+    /// scan opts into "this tenant OR untenanted". This is safe precisely because a scan then narrows
+    /// its result by recorded parentage - an untenanted row that is not this root's descendant is
+    /// discarded by that projection, not admitted by this flag. It is NOT safe on a caller-facing
+    /// listing, where admitting untenanted rows would hand pre-tenancy data to whoever asked, which is
+    /// why the principal scope leaves it false.
+    /// </remarks>
+    public bool IncludeUntenanted { get; init; }
+
+    /// <summary>
+    /// The whole of one tenant, with no principal narrowing inside it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// For BACKGROUND scans that have no principal and cannot acquire one - the persisted sub-agent
+    /// scans run from an agent turn as well as from HTTP, and the request whose principal they
+    /// would borrow is long gone by then. Their answer is also cached per root, so borrowing the
+    /// first caller's identity would publish that caller's view to everyone who asked afterwards.
+    /// </para>
+    /// <para>
+    /// It sets <see cref="IsTenantAdmin"/>, which reads alarmingly and is why it exists as a named
+    /// factory rather than as an object initializer at each call site: the flag is the predicate's
+    /// spelling of "no narrowing WITHIN the tenant", and the tenant filter still runs first and
+    /// still runs unconditionally. It confers nothing across a tenant boundary. Do NOT reach for
+    /// this to answer a request on a caller's behalf - a caller has a principal, and
+    /// <c>ConversationAuthorizer.CreateListScopeAsync</c> is how that becomes a scope.
+    /// </para>
+    /// </remarks>
+    /// <param name="tenantId">The tenant to scan.</param>
+    public static ConversationListScope ForTenant(string tenantId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
+
+        return new ConversationListScope { TenantId = tenantId, IsTenantAdmin = true };
+    }
+
+    /// <summary>
+    /// As <see cref="ForTenant"/>, but also admits untenanted rows - the scope the background
+    /// sub-agent scans use so a tenanted root's still-untenanted descendant is not dropped.
+    /// </summary>
+    /// <remarks>
+    /// See <see cref="IncludeUntenanted"/> for why this is safe for a scan (its result is narrowed by
+    /// recorded parentage afterwards) and never for a caller-facing listing.
+    /// </remarks>
+    /// <param name="tenantId">The tenant to scan, alongside untenanted rows.</param>
+    public static ConversationListScope ForTenantIncludingUntenanted(string tenantId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
+
+        return new ConversationListScope
+        {
+            TenantId = tenantId,
+            IsTenantAdmin = true,
+            IncludeUntenanted = true,
+        };
+    }
+
+    /// <summary>
     /// Whether the given row is admitted. The single in-memory spelling of the SQL predicate, so
     /// the file and in-memory stores cannot drift from the SQL one.
     /// </summary>
@@ -60,7 +128,11 @@ public sealed record ConversationListScope
 
         if (!string.Equals(metadata.TenantId, TenantId, StringComparison.Ordinal))
         {
-            return false;
+            // A scan scope (and only a scan scope) also admits an untenanted row: a tenanted root can
+            // have a still-untenanted descendant, and dropping it here would lose it from the roster.
+            // The scan narrows by recorded parentage afterwards, so an untenanted row that is not this
+            // root's descendant does not survive that projection. See IncludeUntenanted.
+            return IncludeUntenanted && string.IsNullOrWhiteSpace(metadata.TenantId);
         }
 
         if (IsTenantAdmin)
@@ -70,6 +142,17 @@ public sealed record ConversationListScope
 
         if (UserId is not null)
         {
+            // The tenant-published branch of 7.4, which the point-read policy has and this
+            // predicate did not. Its absence was the exact failure the remarks above describe: a
+            // published conversation answered 200 on a direct read while being silently missing
+            // from the list. Inside the UserId guard, because an app-only principal never becomes
+            // a tenant member - the policy says so explicitly, and placing it above this guard
+            // would hand every published conversation to every service credential in the tenant.
+            if (metadata.Visibility == Visibility.TenantPublished)
+            {
+                return true;
+            }
+
             // The non-null guard on the OWNER is the C# half of spec 7.1 principle 4. SQL gets this
             // right on its own because NULL = 'x' is NULL; C# `==` on two nulls is true, which
             // would hand every unclaimed row to every caller with no user id.

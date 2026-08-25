@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Agents;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
+using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
@@ -146,6 +147,65 @@ public class ClaudeAgentLoopSystemInitRelayTests
         metadata.SessionMappings![$"claude-sdk:{expectedSessionId}"]
             .Should().Be(metadata.LatestRunId,
                 "the mapping value must be the run id the session id belongs to");
+    }
+
+    [Fact]
+    public async Task OneShot_PreservesOwnershipStampedAtCreation()
+    {
+        // The sibling half of the same defect fixed in MultiTurnAgentBase.UpdateMetadataAsync.
+        // This override does not call base - it replaces the write entirely, so that fix does not
+        // reach here. It rebuilds ThreadMetadata to merge the SDK session mapping, and every field
+        // it does not name is written back as NULL by SaveMetadataAsync's unconditional upsert.
+        //
+        // Fixing only the base class would leave every Claude-backed conversation un-stamping
+        // itself on its first turn while the base-class test went green - which is exactly how a
+        // "single seam" claim gets shipped past a sibling that falsifies it.
+        var scriptedMessages = new List<IMessage>
+        {
+            new TextMessage { Text = "hello", Role = Role.Assistant },
+            new ResultEventMessage { IsError = false },
+        };
+
+        var mockClient = new ScriptedClaudeAgentSdkClient(scriptedMessages, "sess-owner-1");
+        var store = new InMemoryConversationStore();
+        var threadId = "oneshot-ownership-test";
+
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                TenantId = "tnt_acme",
+                OwnerUserId = "entra-tid:owner-oid",
+                OwnerAppId = "codereview-daemon",
+                Visibility = Visibility.Shared,
+            });
+
+        await using (var loop = new ClaudeAgentLoop(
+            claudeOptions: new ClaudeAgentSdkOptions
+            {
+                Mode = ClaudeAgentSdkMode.OneShot,
+                MaxTurnsPerRun = 5,
+            },
+            mcpServers: null,
+            threadId: threadId,
+            store: store,
+            clientFactory: (_, _) => mockClient))
+        {
+            await DriveOneRunAsync(loop);
+        }
+
+        var metadata = await store.LoadMetadataAsync(threadId);
+
+        metadata.Should().NotBeNull();
+        metadata!.TenantId.Should().Be("tnt_acme");
+        metadata.OwnerUserId.Should().Be("entra-tid:owner-oid");
+        metadata.OwnerAppId.Should().Be("codereview-daemon");
+        metadata.Visibility.Should().Be(Visibility.Shared);
+
+        // Non-vacuity: this override really did rewrite the row.
+        metadata.SessionMappings.Should().ContainKey("claude-sdk:sess-owner-1");
     }
 
     [Fact]

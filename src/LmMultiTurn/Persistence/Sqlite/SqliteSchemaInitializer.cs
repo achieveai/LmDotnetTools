@@ -327,8 +327,10 @@ public static class SqliteSchemaInitializer
         // Fast path: an already-migrated database is the common case (every store instance calls
         // this on first use), and it should not take the write lock. The read is advisory only -
         // the authoritative one happens under the lock below.
-        if (await ReadUserVersionAsync(connection, transaction: null, ct).ConfigureAwait(false)
-            >= LatestSchemaVersion)
+        var advisory = await ReadUserVersionAsync(connection, transaction: null, ct).ConfigureAwait(false);
+        ThrowIfNewerThanThisBuild(advisory);
+
+        if (advisory == LatestSchemaVersion)
         {
             return;
         }
@@ -338,6 +340,11 @@ public static class SqliteSchemaInitializer
         try
         {
             var current = await ReadUserVersionAsync(connection, transaction, ct).ConfigureAwait(false);
+
+            // Re-checked under the lock, not only on the advisory read. Between the two reads
+            // another process holding a newer build can migrate the file forward; the advisory
+            // check would have seen the old version and waved it through.
+            ThrowIfNewerThanThisBuild(current);
 
             foreach (var step in Migrations)
             {
@@ -378,6 +385,37 @@ public static class SqliteSchemaInitializer
             }
 
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Refuses a database some newer build already migrated, rather than opening it optimistically.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The check used to be <c>&gt;= LatestSchemaVersion</c>, which cannot tell "already current"
+    /// apart from "ahead of me". A deployment rolled back to an older binary would then run every
+    /// query in this assembly against a schema it has no model for - reading tables whose columns
+    /// have moved and writing rows the newer build will later read back.
+    /// </para>
+    /// <para>
+    /// There is no safe alternative to refusing. This build cannot migrate downward, and it cannot
+    /// know what the newer version changed. Failing to open is loud, immediate and reversible by
+    /// redeploying the newer binary; proceeding is silent and corrupts as it goes. The same rule
+    /// already governs workflow snapshots elsewhere in this repository.
+    /// </para>
+    /// </remarks>
+    private static void ThrowIfNewerThanThisBuild(int version)
+    {
+        if (version > LatestSchemaVersion)
+        {
+            var detail = FormattableString.Invariant(
+                $"The database is at schema version {version}, which is newer than the version {LatestSchemaVersion} this build understands.");
+
+            throw new NotSupportedException(
+                detail
+                    + " It was migrated by a later build and cannot be migrated back. Deploy that"
+                    + " build again, or point this process at a different database.");
         }
     }
 

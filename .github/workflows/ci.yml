@@ -41,3 +41,36 @@ jobs:
       - name: Validate build and tests
         shell: pwsh
         run: ./scripts/ci-test.ps1
+
+  clientapp-tests:
+    name: ClientApp unit tests (vitest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: samples/LmStreaming.Sample/ClientApp
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: samples/LmStreaming.Sample/ClientApp/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The client's fast unit layer, on every PR. Before this job the ~270 identity test lines
+      # (#347/#348 - including the expire()/token-provider regression BE3 fixed) ran in NO always-on
+      # CI job: only inside the path-filtered browser E2E workflow, behind a full SPA + Playwright
+      # bring-up, so a red client suite could ship on a PR that did not touch the E2E trigger paths.
+      # This runs them here, in seconds. Type-checking the suite (npm run type-check:test, via
+      # tsconfig.vitest.json) is the intended next gate; it currently surfaces PRE-EXISTING type
+      # errors in ~11 unrelated component/composable test files that must be cleared first, tracked
+      # in #406 so this identity change does not carry that cleanup.
+      - name: Run unit tests (vitest)
+        run: npm run test:run

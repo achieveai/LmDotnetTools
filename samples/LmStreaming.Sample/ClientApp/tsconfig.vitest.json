@@ -1,0 +1,19 @@
+{
+  // Type-checks the Vitest suite, which the app tsconfig deliberately EXCLUDES (src/__tests__
+  // is not shipped). Without this, a type error in a test file - a renamed export, a changed
+  // signature, a wrong mock shape - is invisible until the suite is run, and the ~270 client
+  // test lines that guard the identity regressions (#347/#348) could rot silently. Extends the
+  // app config so the tests are checked under the same strictness the source is.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["vitest/globals", "node"],
+    "noEmit": true
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "src/**/*.vue",
+    "src/__tests__/**/*.ts"
+  ],
+  "exclude": []
+}

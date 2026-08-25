@@ -32,6 +32,14 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
     private const string UserA2 = "dir-a:user-2";
     private const string UserB = "dir-b:user-9";
 
+    /// <summary>
+    /// One more id than the bundled SQLite will bind as parameters to a single statement
+    /// (<c>SQLITE_MAX_VARIABLE_NUMBER</c>, 32,766 since 3.32). Sized to the engine under test
+    /// rather than to the 999 the issue quotes - see the ceiling tests for why that distinction is
+    /// the whole point.
+    /// </summary>
+    private const int AboveBinderCeiling = 32_767;
+
     private string _root = null!;
     private readonly List<IAsyncDisposable> _disposables = [];
 
@@ -162,6 +170,30 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// The background sub-agent scan opts into "this tenant OR untenanted"
+    /// (<see cref="ConversationListScope.ForTenantIncludingUntenanted"/>), so a tenanted root's
+    /// still-untenanted descendant is not dropped by the #388a narrowing. A CALLER-facing scope must not
+    /// admit that same untenanted row - both halves are pinned here, in every store, because the SQLite
+    /// predicate and the in-memory <c>Admits</c> spelling are written separately and can drift.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(StoreKinds))]
+    public async Task Listing_ScanScopeAdmitsUntenanted_WhileACallerScopeDoesNot(string kind)
+    {
+        var store = CreateStore(kind);
+        await WriteAsync(store, "tenanted", TenantA, UserA);
+        await WriteAsync(store, "untenanted", tenantId: null, ownerUserId: UserA);
+
+        var scanned = await store.ListThreadsAsync(
+            ConversationListScope.ForTenantIncludingUntenanted(TenantA), 50, 0, CancellationToken.None);
+        var asCaller = await store.ListThreadsAsync(
+            Scope(TenantA, UserA), 50, 0, CancellationToken.None);
+
+        _ = scanned.Select(t => t.ThreadId).Should().BeEquivalentTo(["tenanted", "untenanted"]);
+        _ = asCaller.Select(t => t.ThreadId).Should().BeEquivalentTo(["tenanted"]);
+    }
+
+    /// <summary>
     /// Spec 7.1 principle 4: a null owner matches nobody. The C# stores are where this can go wrong
     /// - <c>null == null</c> is true - and getting it wrong hands every unclaimed conversation to
     /// every app-only caller.
@@ -259,6 +291,59 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
     /// The filter runs BEFORE the page is cut, not after it. With ten rows of which only the oldest
     /// belongs to the caller, a filter applied to an already-trimmed page of five returns nothing.
     /// </summary>
+    [Theory]
+    [MemberData(nameof(StoreKinds))]
+    public async Task Listing_IncludesATenantPublishedConversation_TheCallerNeitherOwnsNorHoldsAGrantOn(
+        string kind)
+    {
+        // The listing predicate has to mirror EVERY allow branch of spec 7.4, and the
+        // tenant-published branch had no counterpart here. The point read already allows this row
+        // (ResourceAccessPolicy adds the TenantMember relationship for a published resource), so
+        // without it the two disagree in the worst direction the type's own doc comment describes:
+        // a 200 on the direct read, and silently missing from the list.
+        var store = CreateStore(kind);
+
+        await WriteAsync(store, "published", TenantA, UserA2, visibility: Visibility.TenantPublished);
+
+        var listed = await store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, CancellationToken.None);
+
+        _ = listed.Select(t => t.ThreadId).Should().BeEquivalentTo(["published"]);
+    }
+
+    [Theory]
+    [MemberData(nameof(StoreKinds))]
+    public async Task Listing_StillExcludesAPrivateConversation_OwnedByAnotherMemberOfTheSameTenant(
+        string kind)
+    {
+        // Non-vacuity for the test above. A branch that admitted every same-tenant row - rather
+        // than only the published ones - would satisfy it while handing every member's private
+        // conversations to every other member.
+        var store = CreateStore(kind);
+
+        await WriteAsync(store, "private-peer", TenantA, UserA2, visibility: Visibility.Private);
+        await WriteAsync(store, "unset-peer", TenantA, UserA2);
+
+        var listed = await store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, CancellationToken.None);
+
+        _ = listed.Should().BeEmpty();
+    }
+
+    [Theory]
+    [MemberData(nameof(StoreKinds))]
+    public async Task Listing_DoesNotPublishAcrossTenants(string kind)
+    {
+        // Publication is scoped to the tenant that published it. The tenant filter runs first, and
+        // a branch placed ahead of it would turn "published to my organisation" into "published to
+        // everyone".
+        var store = CreateStore(kind);
+
+        await WriteAsync(store, "other-published", TenantB, "user-b", visibility: Visibility.TenantPublished);
+
+        var listed = await store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, CancellationToken.None);
+
+        _ = listed.Should().BeEmpty();
+    }
+
     [Theory]
     [MemberData(nameof(StoreKinds))]
     public async Task Listing_FiltersBeforePaging(string kind)
@@ -373,5 +458,81 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
 
         _ = rehearsed.Should().BeEquivalentTo(["q1", "q2"]);
         _ = applied.Should().Be(rehearsed.Count);
+    }
+
+    /// <summary>
+    /// Neither id list in this store has a parameter ceiling any more (#388). Both used to bind one
+    /// parameter per id, so a caller naming more ids than the binder allows did not get a wrong
+    /// answer - it threw, and took the whole listing or the whole adoption down with it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The issue names the historical 999-variable limit, and the first draft of these tests used
+    /// 1,200 ids for that reason. That draft was worthless: restoring the per-id binding left it
+    /// green, because the SQLite bundled with Microsoft.Data.Sqlite raises
+    /// <c>SQLITE_MAX_VARIABLE_NUMBER</c> to 32,766. 999 is not a ceiling this build can hit, so a
+    /// test sized for it exercises nothing. <see cref="AboveBinderCeiling"/> is sized to the limit
+    /// this engine actually enforces, which is the only size at which the claim is falsifiable.
+    /// </para>
+    /// <para>
+    /// SQLite-only, deliberately. The ceiling is a property of the parameter binder; the file and
+    /// in-memory stores compare ids in managed code and have no such limit, so running these
+    /// against them would spend the time and prove nothing the theories above do not.
+    /// </para>
+    /// <para>
+    /// The id sets are large but nearly all of them name rows that do not exist, because what is
+    /// under test is the number of ids BOUND, not the number of rows matched. Seeding tens of
+    /// thousands of rows would make the test slow without making it stronger.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Listing_AcceptsAGrantSetAboveTheBinderParameterCeiling()
+    {
+        var store = CreateStore("sqlite");
+
+        await WriteAsync(store, "granted-peer", TenantA, UserA2, visibility: Visibility.Private);
+        await WriteAsync(store, "ungranted-peer", TenantA, UserA2, visibility: Visibility.Private);
+
+        var granted = new List<string> { "granted-peer" };
+        for (var i = 0; i < AboveBinderCeiling; i++)
+        {
+            granted.Add(FormattableString.Invariant($"absent-{i}"));
+        }
+
+        var listed = await store.ListThreadsAsync(
+            Scope(TenantA, UserA, granted: [.. granted]), 50, 0, CancellationToken.None);
+
+        // Both halves matter. The first says the oversized call completed at all; the second says
+        // it still filtered - a clause that collapsed to "match everything" under the new shape
+        // would satisfy the first assertion while handing over a peer's private conversation.
+        _ = listed.Select(t => t.ThreadId).Should().BeEquivalentTo(["granted-peer"]);
+    }
+
+    [Fact]
+    public async Task Adoption_AcceptsAnIdListAboveTheBinderParameterCeiling()
+    {
+        var store = CreateStore("sqlite");
+        var ownership = (IConversationOwnershipStore)store;
+
+        await WriteAsync(store, "q1", "tnt_quarantine");
+        await WriteAsync(store, "q2", "tnt_quarantine");
+
+        var selection = new List<string> { "q1" };
+        for (var i = 0; i < AboveBinderCeiling; i++)
+        {
+            selection.Add(FormattableString.Invariant($"absent-{i}"));
+        }
+
+        var rehearsed = await ownership.ListThreadIdsByTenantAsync(
+            "tnt_quarantine", selection, CancellationToken.None);
+        var applied = await ownership.AdoptThreadsAsync(
+            "tnt_quarantine", TenantA, UserA, selection, CancellationToken.None);
+
+        // q2 is the non-vacuity partner: it is in the source tenant and NOT in the selection, so a
+        // restriction that silently stopped restricting would adopt it too.
+        _ = rehearsed.Should().BeEquivalentTo(["q1"]);
+        _ = applied.Should().Be(1);
+        _ = (await store.LoadMetadataAsync("q2", CancellationToken.None))!.TenantId
+            .Should().Be("tnt_quarantine");
     }
 }

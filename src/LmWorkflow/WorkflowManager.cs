@@ -528,6 +528,17 @@ public sealed class WorkflowManager : IAsyncDisposable
                 inheritedTools?.Contracts.Count ?? 0
             );
 
+            // Stamp the controller thread with the launching conversation's tenant and owner
+            // (#385). It is minted above rather than provisioned, so nothing else gives it one -
+            // and an untenanted row reads as a missing one once Identity:Enforce is on.
+            await AgentThreadOwnership
+                .InheritAsync(
+                    _controllerConversationStore,
+                    _launchConversationId?.Invoke(),
+                    controllerThreadId,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+
             handle = await WorkflowSession
                 .StartAsync(
                     objective: StartObjective,
