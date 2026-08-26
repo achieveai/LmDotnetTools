@@ -1,4 +1,3 @@
-using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmEval;
 using AchieveAi.LmDotnetTools.LmEval.Corpus;
 using CodeReviewDaemon.Sample.Agents;
@@ -55,8 +54,30 @@ internal sealed class DaemonCorpusReader : ICorpusReader
     /// <summary>Variant label for the primary arm when the run recorded none.</summary>
     private const string PrimaryVariantFallback = "primary";
 
-    private static readonly JsonSerializerOptions PayloadOptions =
-        new() { PropertyNameCaseInsensitive = true };
+    /// <summary>
+    /// The daemon's own model-id convention read as a family: everything before the first
+    /// <c>/</c> in <c>provider/model</c>, which is the same string
+    /// <see cref="JudgeAgent"/> records as a ballot's model family.
+    /// <para>
+    /// An id this convention does not fit resolves to <b>null</b>, not to itself. Null is recorded
+    /// as <i>unknown</i> and segmented out of the aggregates; a bare id returned as its own family
+    /// would be recorded as a family that is <i>not the judge's</i>, which is the answer
+    /// generator-family exclusion acts on — so guessing here turns "we cannot classify this model"
+    /// into "this model is safe to grade", silently, for every id whose provider was never recorded.
+    /// </para>
+    /// </summary>
+    /// <param name="modelId">The model that produced the review, or null when the run recorded none.</param>
+    public static string? ProviderFamily(string? modelId)
+    {
+        if (string.IsNullOrWhiteSpace(modelId))
+        {
+            return null;
+        }
+
+        var slash = modelId.IndexOf('/', StringComparison.Ordinal);
+
+        return slash > 0 ? modelId[..slash] : null;
+    }
 
     private readonly ReviewStore _store;
     private readonly ModelFamilyResolver _familyResolver;
@@ -101,7 +122,23 @@ internal sealed class DaemonCorpusReader : ICorpusReader
         cancellationToken.ThrowIfCancellationRequested();
 
         var candidates = new List<Candidate>();
-        var runs = _store.ListReviewRuns(ReviewStage.Reviewed, limit, afterCursor);
+
+        // One row MORE than the window, then trimmed. `fetched.Count == limit` cannot tell "the
+        // limit cut this short" from "the history happens to end exactly here", and it answered
+        // TRUE for both — so a window that reached the end of the history reported Truncated, which
+        // says "there is more to read". The caller acts on that flag by coming back immediately
+        // instead of waiting out its interval, and the operator warning below names the freeze
+        // condition, so a false positive there costs a re-read and a misleading warning every time
+        // the history lands on a round number. The extra row is never handed to anyone: it is the
+        // existence proof and nothing else, and it stays in the next window.
+        //
+        // Saturating, because limit + 1 at int.MaxValue is negative and ListReviewRuns refuses it —
+        // a caller asking for everything would get an ArgumentOutOfRangeException naming an
+        // argument it never passed. At that limit there cannot be a row beyond the window anyway.
+        var fetchLimit = limit == int.MaxValue ? limit : limit + 1;
+        var fetched = _store.ListReviewRuns(ReviewStage.Reviewed, fetchLimit, afterCursor);
+        var truncated = fetched.Count > limit;
+        var runs = truncated ? [.. fetched.Take(limit)] : fetched;
 
         foreach (var run in runs)
         {
@@ -169,8 +206,6 @@ internal sealed class DaemonCorpusReader : ICorpusReader
                 );
             }
         }
-
-        var truncated = runs.Count == limit;
 
         // The upper edge REACHED, not the edge of what yielded candidates. A run the reader looked
         // at and rejected — no recorded diff, an unparseable payload — is still a run it will never
@@ -275,22 +310,21 @@ internal sealed class DaemonCorpusReader : ICorpusReader
             return null;
         }
 
-        try
-        {
-            return JsonSerializer.Deserialize<T>(artifact.Payload, PayloadOptions);
-        }
-        catch (JsonException ex)
+        var payload = EvalArtifactJson.TryRead<T>(artifact.Payload, out var failure);
+
+        if (failure is not null)
         {
             // A payload written by an older schema version is host data of unknown quality. It
             // costs this run one corpus item; letting it throw would cost the whole corpus.
             _logger?.LogWarning(
-                ex,
+                failure,
                 "Artifact {ArtifactId} of kind {ArtifactKind} did not deserialize; it is skipped.",
                 artifact.Id,
                 kind
             );
-            return null;
         }
+
+        return payload;
     }
 
     private static string? Blank(string? value) =>

@@ -492,6 +492,104 @@ public sealed class DaemonCorpusReaderTests : IDisposable
             .BeEquivalentTo([$"{second}:primary"], "the first load's rows are behind the cursor");
     }
 
+    /// <summary>
+    /// The family resolver the daemon actually wires in. Every unclassifiable shape resolves to
+    /// <b>null</b> rather than to the id itself: null is recorded as <i>unknown</i> and segmented
+    /// out of the aggregates, where a bare id returned as its own family would be recorded as a
+    /// family that is not the judge's — the answer generator-family exclusion acts on. Guessing
+    /// here turns "we cannot classify this model" into "this model is safe to grade".
+    /// </summary>
+    [Theory]
+    [InlineData("openai/gpt-5", "openai")]
+    [InlineData("anthropic/claude-opus-4.5", "anthropic")]
+    [InlineData("openrouter/meta/llama-4", "openrouter")]
+    [InlineData(null, null)]
+    [InlineData("", null)]
+    [InlineData("   ", null)]
+    [InlineData("gpt-5", null)]
+    [InlineData("/gpt-5", null)]
+    public void The_provider_prefix_is_the_family_and_anything_else_is_unknown(
+        string? modelId,
+        string? expected
+    ) => DaemonCorpusReader.ProviderFamily(modelId).Should().Be(expected);
+
+    /// <summary>
+    /// Records <paramref name="count"/> reviewed runs, each with an input and a review.
+    /// </summary>
+    private void Reviewed(int count)
+    {
+        for (var i = 0; i < count; i++)
+        {
+            var id = CreateRun($"pr-{i}");
+            AddContext(id, $"diff {i}");
+            AddReview(id, $"review {i}");
+        }
+    }
+
+    /// <summary>
+    /// The exact-fit boundary, and the case the truncation signal used to get wrong. A history that
+    /// ends <b>exactly</b> at the limit fills the window without stopping short of anything:
+    /// <c>Truncated</c> promises "there is more to read", and at exact fit there is not.
+    /// <para>
+    /// The consequence is not cosmetic. The caller acts on this flag — a truncated sweep is meant to
+    /// come back immediately rather than wait out its interval — so a false positive here makes
+    /// every sweep that happens to land on a round number re-run at once, and the operator warning
+    /// that names the freeze condition fires on a window that reached the end of the history.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_window_that_ends_exactly_at_the_limit_is_not_reported_as_truncated()
+    {
+        Reviewed(3);
+
+        var logger = new CapturingLogger<DaemonCorpusReader>();
+
+        var page = await LoadAsync(new DaemonCorpusReader(_store, _ => "openai", logger), limit: 3);
+
+        page.Snapshot.Should().NotBeNull();
+        page.Snapshot!.Size.Should().Be(3, "the window still yields every run it was asked for");
+        page.Truncated
+            .Should()
+            .BeFalse("the history ended at the limit; it did not continue past it");
+        logger.CountAtLevel(LogLevel.Warning, "did not reach the end").Should().Be(0);
+    }
+
+    /// <summary>
+    /// The other side of the same boundary, and the non-vacuity half: one more run than the limit is
+    /// genuinely truncated. Without this, "never truncated" satisfies the case above.
+    /// </summary>
+    [Fact]
+    public async Task A_window_with_one_run_beyond_the_limit_is_reported_as_truncated()
+    {
+        Reviewed(4);
+
+        var page = await LoadAsync(Reader(), limit: 3);
+
+        page.Snapshot.Should().NotBeNull();
+        page.Snapshot!.Size.Should().Be(3, "the window is capped at the limit, not at the limit + 1");
+        page.Truncated.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// The run beyond the limit is <b>left for the next window</b>, not consumed by this one. The
+    /// over-fetch that tells exact fit from truncation must not leak into what the caller is handed
+    /// or into the edge it resumes from — otherwise the boundary fix would silently drop one run
+    /// out of every corpus.
+    /// </summary>
+    [Fact]
+    public async Task The_run_that_proves_truncation_is_left_for_the_next_window()
+    {
+        Reviewed(4);
+
+        var reader = Reader();
+        var first = await LoadAsync(reader, limit: 3);
+        var second = await LoadAsync(reader, afterCursor: first.NextCursor, limit: 3);
+
+        second.Snapshot.Should().NotBeNull("the fourth run is still waiting to be read");
+        second.Snapshot!.Size.Should().Be(1);
+        second.Truncated.Should().BeFalse();
+    }
+
     [Fact]
     public async Task A_negative_cursor_or_a_non_positive_limit_is_refused()
     {

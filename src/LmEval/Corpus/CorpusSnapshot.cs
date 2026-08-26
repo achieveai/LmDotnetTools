@@ -215,6 +215,13 @@ public sealed record CorpusPage
     /// freeze invisible. Truncation is the exact condition under which the corpus stops
     /// accumulating, and a consumer cannot act on a warning it never reads.
     /// </para>
+    /// <para>
+    /// A window that filled its limit and reached the end of the history is <b>not</b> truncated:
+    /// "the window is full" and "there is more to read" are different facts, and an implementation
+    /// that reports the first for the second sends a caller back for rows that do not exist. That
+    /// costs a redundant sweep every time the history lands on a round number, so an implementation
+    /// has to distinguish the two rather than infer one from the row count.
+    /// </para>
     /// </summary>
     public required bool Truncated { get; init; }
 }

@@ -1,12 +1,22 @@
-using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmEval;
 using AchieveAi.LmDotnetTools.LmEval.Corpus;
 using AchieveAi.LmDotnetTools.LmEval.Findings;
 using CodeReviewDaemon.Sample.Agents;
-using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 
 namespace CodeReviewDaemon.Sample.Eval;
+
+/// <summary>
+/// Reads one review run's recorded artifacts.
+/// <para>
+/// A delegate rather than the store itself, for the same reason <see cref="ModelFamilyResolver"/> is
+/// one: it is the whole of what this sweep needs from persistence, and naming it makes the sweep's
+/// read pattern something a test can observe. The count of calls is the claim — one per run, not one
+/// per candidate — and there is no way to state it against a concrete store.
+/// </para>
+/// </summary>
+/// <param name="reviewRunId">The run whose artifacts to read.</param>
+internal delegate IReadOnlyList<ReviewArtifact> ReviewArtifactReader(long reviewRunId);
 
 /// <summary>
 /// What one sweep measured over one window of recorded reviews.
@@ -115,23 +125,22 @@ internal sealed class EvalCorpusSweep
     /// </summary>
     private const int LastAmbiguousJudgeSchemaVersion = 1;
 
-    private static readonly JsonSerializerOptions PayloadOptions =
-        new() { PropertyNameCaseInsensitive = true };
-
-    private readonly ReviewStore _store;
+    private readonly ReviewArtifactReader _readArtifacts;
     private readonly ICorpusReader _reader;
     private readonly EvalCorpusWatermark _watermark;
     private readonly int _limit;
     private readonly ILogger<EvalCorpusSweep>? _logger;
 
     /// <summary>Builds the sweep.</summary>
-    /// <param name="store">The daemon's review store, for the recorded judge rows.</param>
+    /// <param name="readArtifacts">
+    /// Reads a run's recorded artifacts; in production <c>ReviewStore.GetArtifacts</c>.
+    /// </param>
     /// <param name="reader">The corpus reader; in production <see cref="DaemonCorpusReader"/>.</param>
     /// <param name="watermark">Where the window edge is kept between sweeps.</param>
     /// <param name="limit">Most review runs one sweep considers.</param>
     /// <param name="logger">Optional diagnostics.</param>
     public EvalCorpusSweep(
-        ReviewStore store,
+        ReviewArtifactReader readArtifacts,
         ICorpusReader reader,
         EvalCorpusWatermark watermark,
         int limit = 1000,
@@ -139,11 +148,38 @@ internal sealed class EvalCorpusSweep
     )
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
-        _store = store ?? throw new ArgumentNullException(nameof(store));
+        _readArtifacts = readArtifacts ?? throw new ArgumentNullException(nameof(readArtifacts));
         _reader = reader ?? throw new ArgumentNullException(nameof(reader));
         _watermark = watermark ?? throw new ArgumentNullException(nameof(watermark));
         _limit = limit;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// This sweep's read-through cache of <see cref="ReviewArtifactReader"/>, one entry per run.
+    /// <para>
+    /// One run yields two candidates over the same input — the primary arm and the collect-only B
+    /// arm — and the grade lookup ran once per candidate against a read that returns the run's
+    /// <b>whole</b> artifact list, <c>review-context</c> diff included. At a window of a thousand
+    /// runs that is thousands of full diffs materialised out of SQLite to find a judge row already
+    /// in hand. Scoped to the sweep and not to the instance: a cached artifact list held across
+    /// sweeps would hide a re-judge recorded between them.
+    /// </para>
+    /// </summary>
+    private sealed class ArtifactCache(ReviewArtifactReader read)
+    {
+        private readonly Dictionary<long, IReadOnlyList<ReviewArtifact>> _byRun = [];
+
+        public IReadOnlyList<ReviewArtifact> For(long reviewRunId)
+        {
+            if (!_byRun.TryGetValue(reviewRunId, out var artifacts))
+            {
+                artifacts = read(reviewRunId);
+                _byRun[reviewRunId] = artifacts;
+            }
+
+            return artifacts;
+        }
     }
 
     /// <summary>Runs one sweep and advances the window.</summary>
@@ -188,6 +224,7 @@ internal sealed class EvalCorpusSweep
     private EvalSweepReport Summarise(long from, CorpusPage page)
     {
         var candidates = page.Snapshot?.Items ?? [];
+        var artifacts = new ArtifactCache(_readArtifacts);
 
         var findingCount = 0;
         var anchoredFindingCount = 0;
@@ -208,7 +245,7 @@ internal sealed class EvalCorpusSweep
                 citingNothing++;
             }
 
-            switch (RecordedGrade(candidate))
+            switch (RecordedGrade(candidate, artifacts))
             {
                 case { } grade when grade.Ambiguous:
                     ambiguousLegacy++;
@@ -258,7 +295,7 @@ internal sealed class EvalCorpusSweep
     /// history the corpus covers. Marked here and excluded from the mean, never averaged.
     /// </para>
     /// </summary>
-    private RecordedJudgeGrade? RecordedGrade(Candidate candidate)
+    private RecordedJudgeGrade? RecordedGrade(Candidate candidate, ArtifactCache artifacts)
     {
         if (
             !candidate.Metadata.TryGetValue(
@@ -280,8 +317,8 @@ internal sealed class EvalCorpusSweep
         // arm says nothing about the B arm's score — matching them by run alone would hand every
         // candidate of a run whichever arm happened to be judged last.
         foreach (
-            var artifact in _store
-                .GetArtifacts(reviewRunId)
+            var artifact in artifacts
+                .For(reviewRunId)
                 .Where(a =>
                     string.Equals(
                         a.ArtifactKind,
@@ -292,9 +329,32 @@ internal sealed class EvalCorpusSweep
                 .OrderByDescending(a => a.Id)
         )
         {
-            if (Deserialise(artifact) is not { } payload)
+            var payload = EvalArtifactJson.TryRead<JudgeArtifactPayload>(
+                artifact.Payload,
+                out var failure
+            );
+
+            if (payload is null)
             {
-                continue;
+                // STOPS here rather than stepping over the row. The field that would rule this row
+                // out as some other arm's is the field that could not be read, so skipping past it
+                // is not "this row was not ours" — it is promoting a grade the daemon has already
+                // superseded, silently, with a stale number reported as current. This is the same
+                // rule DaemonCorpusReader.Latest<T> applies on the same table: the newest row of a
+                // kind is the answer, and if it cannot be read there is no answer.
+                //
+                // Ungraded is the honest report. The three-way split below exists precisely so a
+                // missing grade is not read as a bad one, and one unreadable row still costs this
+                // candidate its grade rather than the sweep its window.
+                _logger?.LogWarning(
+                    failure,
+                    "Judge artifact {ArtifactId} for review run {ReviewRunId} did not deserialize; "
+                        + "its candidate counts as ungraded rather than inheriting the grade this "
+                        + "row superseded.",
+                    artifact.Id,
+                    reviewRunId
+                );
+                return null;
             }
 
             if (
@@ -310,27 +370,6 @@ internal sealed class EvalCorpusSweep
         }
 
         return null;
-    }
-
-    private JudgeArtifactPayload? Deserialise(ReviewArtifact artifact)
-    {
-        try
-        {
-            return JsonSerializer.Deserialize<JudgeArtifactPayload>(
-                artifact.Payload,
-                PayloadOptions
-            );
-        }
-        catch (JsonException ex)
-        {
-            // One unreadable row costs this candidate its grade, not the sweep its window.
-            _logger?.LogWarning(
-                ex,
-                "Judge artifact {ArtifactId} did not deserialize; its candidate counts as ungraded.",
-                artifact.Id
-            );
-            return null;
-        }
     }
 
     /// <summary>

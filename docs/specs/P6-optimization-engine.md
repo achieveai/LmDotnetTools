@@ -1031,6 +1031,73 @@ completion, and `InputAcceptance` / `AcceptedInputEntry`
 name** — not quality acceptance. Closing that gap is §8's job; until it lands the runner's
 human-agreement numbers come from the fixed-finding proxy, with that fact recorded on the run.
 
+#### 5.1.1 How a corpus is read: the window is stated per call
+
+`ICorpusReader` takes its window as **arguments**, not as constructor state, and returns the edge it
+reached:
+
+```csharp
+Task<CorpusPage> LoadAsync(string corpusId, long afterCursor, int limit, CancellationToken ct);
+
+sealed record CorpusPage
+{
+    CorpusSnapshot? Snapshot { get; init; }   // null, not empty
+    required long NextCursor { get; init; }
+    required bool Truncated { get; init; }
+}
+```
+
+**Why not a window held by the reader.** A reader constructed with one fixed lower edge and a limit
+issues `ORDER BY id LIMIT n`, which takes the **oldest** n rows. Once the store holds more than
+`limit` qualifying runs, every load returns the same earliest history — for ever, and silently. The
+silence is the part that matters: the corpus snapshot hash stays stable, so §5.4's comparability
+refusals are all perfectly satisfied. They are the machinery that says "you are not measuring what
+you think you are measuring", and here they have no complaint, because the corpus genuinely has not
+changed. A window stated per call has no such state to go stale.
+
+The three return values each answer a question a caller cannot otherwise answer:
+
+- **`Snapshot` is `null`, not an empty snapshot**, when the window yielded no candidate.
+  `CorpusSnapshot.Create` refuses an empty item list — an empty denominator makes every rate over it
+  undefined rather than zero (§5.3) — and a scheduled sweep that found nothing new is the normal
+  outcome, not an error. The two need different shapes so the normal one is not an exception.
+- **`NextCursor` is the edge REACHED**, not the edge of what yielded candidates. A source record the
+  reader looked at and rejected — no recorded diff, an unreadable payload — is still one it will
+  never learn anything new about, so leaving the cursor behind it makes every later window re-read
+  it and never reach what came after. The distinguishing case is a window in which *nothing* paired:
+  whenever anything pairs, "last record seen" and "last record used" coincide, and only an
+  all-rejected window separates them.
+- **`Truncated` says the limit cut the window short of the end of the history**, so the caller comes
+  back rather than concluding it has seen everything. It is on the contract rather than in a log
+  line because a log line is what made the original freeze invisible, and because a consumer has to
+  *act* on it. A window that filled its limit and reached the end is **not** truncated: an
+  implementation that infers truncation from the row count alone reports it at exact fit, which
+  sends the caller back for rows that do not exist.
+
+**Who advances the cursor.** The consumer, and the value has to survive the process — "nobody
+advanced it" is the same silent freeze, arrived at from the other side. In the daemon that is
+`EvalCorpusWatermark`, which keeps the edge in the existing `poll_cursor` record under
+`provider = "eval-corpus"`, scoped by corpus id. That table is already the daemon's general
+"(provider, scope) → where this reader got to" record, with an opaque payload and a documented
+resync-on-mismatch contract; a second table with the same semantics would be a second answer to a
+question the schema already answers. Two consequences are recorded rather than left to be
+discovered: the stored id is **nullable on the way in**, so a payload that lost its only field reads
+as unreadable instead of binding to `default(long)` and restarting the sweep over the whole history
+in silence; and a reader at an older payload version **overwrites** a newer row rather than refusing
+to write, because the cost of that clobber is re-reading history — which is idempotent — where the
+cost of refusing is a reader that can never record its own progress.
+
+**The daemon's consumer** is `EvalCorpusSweep`, which reads the watermark, loads one window, measures
+each candidate's citation surface with `ReviewFindingParser`, joins it to the `judge` row the daemon
+recorded for **that arm** (not that run — one run holds a judge row per arm, and the A arm's grade
+says nothing about the B arm's), and advances the watermark. It deliberately does **not** re-judge
+the corpus through `EvalRunner`: that costs a model call per candidate and needs a live panel and a
+frozen baseline, none of which exists yet, and it would put the expensive half of the loop in front
+of the cheap half that can already be trusted. Grades are reported in four arms that partition the
+window — scored, unscored (the harness ran and declined to put a number on the reply), *ambiguous
+legacy* (a `judge` row at `artifact_schema_version <= 1`, whose non-nullable `0` cannot be told from
+a real worst grade), and ungraded — and the mean is `null`, never `0.0`, when nothing was scored.
+
 ### 5.2 Baseline per task type
 
 ```csharp
@@ -1092,39 +1159,54 @@ therefore moves the reported pass rate with nothing about the candidate having c
 the exact comparison this hash exists to refuse. Ordered, because gates short-circuit: the same set
 in a different order rejects on a different gate and yields a different `gate_reason`.
 
-**`EvalBaseline.From` refuses its source run on the inconclusive-gate bound the baseline will
-impose, before it freezes anything.** §5.4's refusals protect the *candidate* side, and the baseline
-side has no comparison to be refused at — so a bound enforced only downstream leaves the one input it
-cannot recover from unguarded. A gate outage is the case that reaches it: an inconclusive gate does not
-block (§2.10), so an outage run scores every item and arrives at `From` with a full pass rate, a
-full coverage and a zero fault rate. It clears the only check that existed — "the run scored
-nothing" — and freezes a pass rate **measured with the gates off** as the number every later run is
-compared against. A poisoned baseline is strictly worse than a poisoned candidate: the candidate
-distorts one comparison and is refused, the baseline distorts every comparison after it and is
-refused by nothing.
+**`EvalBaseline.From` refuses its source run on the same bounds the baseline will impose, before it
+freezes anything.** §5.4's refusals protect the *candidate* side, and the baseline side has no
+comparison to be refused at — so a bound enforced only downstream leaves the one input it cannot
+recover from unguarded. A poisoned baseline is strictly worse than a poisoned candidate: the
+candidate distorts one comparison and is refused, the baseline distorts every comparison after it
+and is refused by nothing.
 
-Two properties of that refusal are load-bearing:
+All three bounds reach it, and each does so for the same reason — the run arrives looking healthy on
+every number a reader would sanity-check:
 
+- **A gate outage.** An inconclusive gate does not block (§2.10), so an outage run scores every item
+  and arrives with a full pass rate, a full coverage and a zero fault rate. It clears the
+  scored-nothing check and freezes a pass rate **measured with the gates off** (#427).
+- **A judge-provider outage.** A faulted item leaves the pass rate's numerator and stays in its
+  denominator, so a run with a fault rate of 0.5 still has a non-null `MeanScore` and walks past the
+  scored-nothing check exactly as an outage run does — freezing a **fault-depressed** pass rate
+  (#441).
+- **A run too thin to compare.** A run below the floor is one §5.4 refuses to compare *against* a
+  baseline; freezing it publishes its conditional mean and P10 — computed over the very subset the
+  floor calls unrepresentative — as the numbers every later candidate is held to (#441).
+
+Three properties of those refusals are load-bearing:
+
+- **Each bound is read from the parameter that is stored**, never re-stated as a literal. The bound a
+  run is frozen under and the bound that run's baseline will impose are the same value by
+  construction, so they cannot drift.
 - **The null sentinel is respected exactly as at comparison.** `InconclusiveGateRate == null` is the
   run that recorded no gate decision at all, and a gateless harness is a real configuration; refusing
-  every baseline it could mint would make the bound unusable rather than safe.
-- **It is checked ahead of the scored-nothing arm**, mirroring §5.4's ordering, where the gate bound
-  sits ahead of the coverage floor and of the "scored no items at all" case that shares its refusal.
-  Freezing a run and comparing it then name the same cause, and a reader is never told "this run
-  scored nothing" about a run whose gates were the reason.
+  every baseline it could mint would make the bound unusable rather than safe. `FaultRate` has no
+  such sentinel and needs none: `0.0` there is a count of rows the run definitely holds no verdict
+  for, which is a measurement and not an absence.
+- **The order mirrors §5.4's exactly** — fault rate, then inconclusive-gate rate, then the coverage
+  floor, then the "scored no items at all" arm. Fault ahead of gate, because a faulted item holds no
+  verdict at all where a gate-impaired item still produced one, so when both break the judge outage
+  is the larger loss and the cause worth naming. Gate ahead of the floor, because the floor cannot
+  see a gate outage at *any* severity. Floor ahead of the scored-nothing arm, which shares its
+  refusal at §5.4 and which stays reachable when no floor is set. Freezing a run and comparing it
+  therefore name the same cause, and a reader is never told "this run scored nothing" about a run
+  whose gates were the reason.
 
-**The gate bound is the only one `From` turns on its source run.** `minCoverage` and `maxFaultRate`
-are validated as arguments and then stored; neither is evaluated against the run being frozen. So
-the sibling of the case above is still open: a run with a fault rate of 0.5 has a non-null
-`MeanScore`, walks past the scored-nothing check exactly as an outage run does, and freezes a pass
-rate depressed by faults the baseline itself will refuse a candidate for. It is named here rather
-than left for a reader to infer from the absence, because the paragraph above reads as a general
-guarantee and is not one.
+Boundaries match §5.4 exactly: the fault and gate bounds are **exclusive** (a rate *at* the bound
+clears it) and the coverage floor is **inclusive** (coverage *at* the floor clears it). A run that
+would compare cleanly must be able to become a baseline.
 
-The bound argument itself is validated in `From` before it is read, not only on the way into
-`MaxInconclusiveGateRate`: every other bound here is merely carried, but this one decides a
-comparison inside the factory, and a bound outside [0,1] would otherwise refuse a perfectly clean
-source run and report it as a gate outage.
+The gate-bound argument itself is validated in `From` before it is read, not only on the way into
+`MaxInconclusiveGateRate`: `MinCoverage` and `MaxFaultRate` are validated by `From`'s own explicit
+range checks at the top, and this one is not, so a bound outside [0,1] would otherwise decide a
+comparison inside the factory and refuse a perfectly clean source run as a gate outage.
 
 ### 5.3 What a run emits
 
