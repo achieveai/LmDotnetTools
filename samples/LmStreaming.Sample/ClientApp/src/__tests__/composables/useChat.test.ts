@@ -1224,6 +1224,24 @@ describe('useChat first-send reservation vs. navigation (#435)', () => {
     expect(chat.isSending.value).toBe(false);
   });
 
+  it('leaves a resumed run streaming when an abandoned reservation lands', async () => {
+    const provision = deferredProvision();
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId: provision.hook });
+
+    const { sending } = await sendAndAwaitReservation(chat, provision);
+    await chat.clearMessages();
+    chat.setThreadId('thread-b');
+    // Conversation B has a run of its own still going — what `resumeStreamIfActive` establishes on a
+    // switch INTO a streaming conversation. This is why the abandoned path must not lower the flags:
+    // `clearMessages` deliberately leaves them alone for exactly this window.
+    chat.markStreamLoading();
+
+    provision.resolve('thread-abandoned');
+    await sending;
+
+    expect(chat.isLoading.value).toBe(true);
+  });
+
   it('still adopts the reservation for a send the user did not abandon', async () => {
     const provision = deferredProvision();
     const chat = useChat({ getModeId: () => 'default', provisionThreadId: provision.hook });

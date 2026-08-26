@@ -400,4 +400,21 @@ describe('ShareConversationModal mutation lands after the thread changed (#445)'
       expectThreadTwoUntouched(wrapper);
     }
   );
+
+  it('does not un-busy a mutation the new thread has of its own', async () => {
+    const { wrapper, fetchSpy, settleMutation } = await mutationInFlightAcrossSwitch('add');
+
+    // A second add, this time on thread-2, held open in its turn.
+    fetchSpy.mockReturnValueOnce(new Promise<Response>(() => {}));
+    await wrapper.find('[data-testid="share-add-button"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('[data-testid="share-add-button"]').attributes('disabled')).toBeDefined();
+
+    // The abandoned thread-1 mutation finishes. Lowering `busy` here would re-enable the control
+    // while thread-2's own add is still in flight, and the next click would submit it twice.
+    settleMutation(jsonResponse(viewerGrant));
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="share-add-button"]').attributes('disabled')).toBeDefined();
+  });
 });
