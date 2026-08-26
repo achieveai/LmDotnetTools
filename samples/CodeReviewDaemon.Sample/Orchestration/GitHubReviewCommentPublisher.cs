@@ -36,9 +36,6 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
     /// </summary>
     private const int MaxListPages = 5;
 
-    /// <summary>Per-comment body cap when listing existing findings — enough to recognize a duplicate.</summary>
-    private const int MaxBodyChars = 280;
-
     private readonly HttpClient _httpClient;
     private readonly IOAuthTokenProvider _tokenProvider;
     private readonly ILogger<GitHubReviewCommentPublisher> _logger;
@@ -406,11 +403,11 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
             : null;
     }
 
-    private static string Trim(string body)
-    {
-        var oneLine = body.ReplaceLineEndings(" ").Trim();
-        return oneLine.Length <= MaxBodyChars ? oneLine : oneLine[..MaxBodyChars] + "…";
-    }
+    /// <summary>
+    /// Per-comment cap, shared with the ADO publisher via <see cref="ExistingCommentBody"/> so the two cannot
+    /// drift into showing the reviewer different amounts of the same conversation (#225).
+    /// </summary>
+    private static string Trim(string body) => ExistingCommentBody.Summarize(body);
 
     private async Task<HttpRequestMessage> BuildRequestAsync(
         HttpMethod method, string url, SandboxOperation operation, CancellationToken cancellationToken)

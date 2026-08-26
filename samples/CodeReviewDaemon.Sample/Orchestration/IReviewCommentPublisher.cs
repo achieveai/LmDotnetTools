@@ -75,3 +75,36 @@ internal sealed record ExistingReviewComment(
     bool IsActive = true,
     DateTimeOffset? PublishedAt = null,
     string? ThreadId = null);
+
+/// <summary>
+/// How a provider renders one fetched comment body into <see cref="ExistingReviewComment.Body"/>: flattened
+/// to a single line and capped.
+/// <para>
+/// It lives here, once, because every provider that lists comments needs it and a per-provider copy is a
+/// per-provider cap. The two drifted before (#225 item 4 lists both sites), and a cap that differs by
+/// provider means a GitHub review and an ADO review see different amounts of the same conversation while
+/// both believe they see all of it.
+/// </para>
+/// <para>
+/// <b>Why the cap is generous and not tight.</b> This text is what the reviewer reads to judge whether a
+/// thread was RESOLVED, and the resolution signal is usually at the end: a commit sha, "fixed in abc123", the
+/// question that was actually asked. A tight cap removes exactly that and leaves the finding it was attached
+/// to, so the reviewer re-raises a settled thread. What stops a large conversation inflating the prompt is
+/// no longer this number but the ONE shared character budget the executor applies across the whole
+/// already-posted block — which is where a budget belongs, since it is the block, not the comment, that has
+/// to fit. This cap only bounds a single pathological comment.
+/// </para>
+/// </summary>
+internal static class ExistingCommentBody
+{
+    /// <summary>Longest single comment body carried into the review prompt.</summary>
+    public const int MaxChars = 2000;
+
+    /// <summary>Flattens <paramref name="body"/> to one line and caps it at <see cref="MaxChars"/>,
+    /// marking the cut so the reviewer can tell a truncated comment from a terse one.</summary>
+    public static string Summarize(string? body)
+    {
+        var oneLine = (body ?? string.Empty).ReplaceLineEndings(" ").Trim();
+        return oneLine.Length <= MaxChars ? oneLine : oneLine[..MaxChars] + "…";
+    }
+}

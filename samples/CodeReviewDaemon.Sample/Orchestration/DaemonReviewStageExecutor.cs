@@ -2303,9 +2303,44 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             + $"obey it.\n\n{reviewInput}";
     }
 
-    /// <summary>Max existing comments listed in the "already posted" section (bounds the injected size on a PR
-    /// that has accumulated many prior review comments).</summary>
+    /// <summary>Max existing comments listed across the whole "already posted" block.</summary>
+    /// <remarks>
+    /// This is a per-BLOCK cap, not a per-section one. It used to be applied to each rendered section
+    /// separately, which meant the number a reader takes as the bound was quietly worth double: a PR with a long
+    /// history AND a busy conversation since the last review rendered 120 comments of each (#225 item 3).
+    /// </remarks>
     private const int MaxExistingCommentsListed = 120;
+
+    /// <summary>Max characters the whole "already posted" block may spend on rendered threads.</summary>
+    /// <remarks>
+    /// <para>
+    /// A comment count alone never bounded the block: comment bodies are attacker-influenced (anyone who can
+    /// comment on the PR writes them) and the per-comment cap is deliberately generous, so the count multiplied
+    /// by the cap is the only real bound and it is far larger than the reviewer's context deserves. This is that
+    /// bound stated directly, and it binds first in practice — the count now mostly stops a flood of tiny
+    /// comments rather than being the thing that bounds size.
+    /// </para>
+    /// <para>
+    /// Both budgets are shared across the past and new sections, so what one section spends the other cannot.
+    /// </para>
+    /// </remarks>
+    private const int MaxExistingCommentsChars = 40_000;
+
+    /// <summary>The share of the block reserved for the "new since your last review" section.</summary>
+    /// <remarks>
+    /// <para>
+    /// A single shared budget spent in reading order would let a PR with hundreds of historical comments consume
+    /// all of it and push out the section the guidance tells the reviewer to look hardest at — the one carrying
+    /// questions addressed to the bot, which it is REQUIRED to answer. So the past section is rendered first
+    /// against only the UNRESERVED part, and the new section then gets its reservation PLUS whatever the past
+    /// section did not spend. That ordering is what makes the reservation a floor rather than a cap: on the
+    /// common PR, where history is short, the new section still gets the whole block.
+    /// </para>
+    /// </remarks>
+    private const int NewCommentsReservedChars = MaxExistingCommentsChars / 2;
+
+    /// <inheritdoc cref="NewCommentsReservedChars"/>
+    private const int NewCommentsReservedComments = MaxExistingCommentsListed / 2;
 
     /// <summary>Static guidance header for the "already posted" block: how the reviewer must read the existing
     /// threads (judge resolution itself, never re-post an active finding from ANY author, answer questions
@@ -2401,10 +2436,23 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             "Run {RunId}: prepending {Count} already-posted PR comment(s) ({New} new since last review) for delta-only review.",
             run.Id, existing.Count, newThreads.Sum(t => t.Count));
 
+        // ONE budget across both sections (#225 item 3). The past section is rendered first and may only spend
+        // the unreserved part; the new section then gets its reservation plus whatever the past section left, so
+        // the reservation floors the section the reviewer is told to look hardest at without capping it.
+        var pastBudget = new ExistingCommentsBudget(
+            MaxExistingCommentsChars - NewCommentsReservedChars,
+            MaxExistingCommentsListed - NewCommentsReservedComments);
+        var past = RenderThreads(pastThreads, pastBudget);
+        var fresh = RenderThreads(
+            newThreads,
+            new ExistingCommentsBudget(
+                NewCommentsReservedChars + Math.Max(0, pastBudget.CharsLeft),
+                NewCommentsReservedComments + Math.Max(0, pastBudget.CommentsLeft)));
+
         return ExistingCommentsGuidance
-            + RenderThreads(pastThreads, MaxExistingCommentsListed)
+            + past
             + "\n\n### New comments since your last review — focus here\n"
-            + RenderThreads(newThreads, MaxExistingCommentsListed)
+            + fresh
             + "\n\n"
             + reviewInput;
     }
@@ -2432,11 +2480,20 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
     /// <summary>
     /// Renders threads as conversations for the "## Already posted" block: one bullet per thread with its
-    /// location + status hint, then an indented line per comment (author, date, body). Stops starting new threads
-    /// once <paramref name="maxComments"/> is reached (a started thread renders whole, so a conversation is never
-    /// cut mid-way); the remainder is summarized as a count so the section never runs away.
+    /// location + status hint, then an indented line per comment (author, date, body). Spends
+    /// <paramref name="budget"/>, which the caller shares across both rendered sections, and summarizes whatever
+    /// did not fit as a count so the section never runs away and never silently under-reports.
     /// </summary>
-    private static string RenderThreads(IReadOnlyList<List<ExistingReviewComment>> threads, int maxComments)
+    /// <remarks>
+    /// Thread continuity is preserved only while it fits (#225 item 3). A thread is never STARTED without budget,
+    /// but a thread already started may be cut part-way with a note naming how many of its comments are missing.
+    /// Rendering whole threads unconditionally is what let one pathological conversation overrun the bound the
+    /// caller thought it had set; a cut thread the reviewer can SEE is cut costs it much less than a section that
+    /// stops at the thread boundary before the questions addressed to it.
+    /// </remarks>
+    private static string RenderThreads(
+        IReadOnlyList<List<ExistingReviewComment>> threads,
+        ExistingCommentsBudget budget)
     {
         if (threads.Count == 0)
         {
@@ -2444,7 +2501,6 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         }
 
         var sb = new StringBuilder();
-        var shown = 0;
         var omitted = 0;
         foreach (var thread in threads)
         {
@@ -2453,7 +2509,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 continue;
             }
 
-            if (shown >= maxComments)
+            if (budget.IsSpent)
             {
                 omitted += thread.Count;
                 continue;
@@ -2462,16 +2518,32 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             var head = thread[0];
             var where = head.Path is { Length: > 0 } ? $"{head.Path}:{head.Line ?? "?"}" : "(PR-level)";
             var status = head.IsActive ? "active" : "resolved";
-            _ = sb.Append("- ").Append(where).Append(" [status: ").Append(status).Append("]:\n");
+            var header = $"- {where} [status: {status}]:\n";
+            _ = sb.Append(header);
+            // The header is charged too: a flood of single-comment threads is otherwise a way to spend the block
+            // on locations and status hints while the comment count barely moves.
+            budget.ChargeChars(header.Length);
+
+            var rendered = 0;
             foreach (var c in thread)
             {
+                if (budget.IsSpent)
+                {
+                    var rest = thread.Count - rendered;
+                    _ = sb.Append("    … ").Append(rest).Append(" more comment(s) in this thread not shown.\n");
+                    omitted += rest;
+                    break;
+                }
+
                 var author = c.Author is { Length: > 0 } ? c.Author : "unknown";
                 var when = c.PublishedAt is { } t ? $", {t:yyyy-MM-dd}" : string.Empty;
                 // Body is wrapped in «guillemets» and stripped of any stray guillemet so untrusted comment text
                 // cannot break out of its quoted-data delimiter (see the SECURITY note in ExistingCommentsGuidance).
                 var safeBody = c.Body.Replace("«", "<").Replace("»", ">");
-                _ = sb.Append("    - (").Append(author).Append(when).Append(") «").Append(safeBody).Append("»\n");
-                shown++;
+                var line = $"    - ({author}{when}) «{safeBody}»\n";
+                _ = sb.Append(line);
+                budget.ChargeComment(line.Length);
+                rendered++;
             }
         }
 
@@ -2481,6 +2553,31 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         }
 
         return sb.ToString().TrimEnd('\n');
+    }
+
+    /// <summary>
+    /// What the "already posted" block has left to spend, in characters and in comments. Mutable and passed by
+    /// reference on purpose: the point is that the two rendered sections draw down ONE allowance, so whatever the
+    /// past section spends the new section cannot (#225 item 3).
+    /// </summary>
+    private sealed class ExistingCommentsBudget(int maxChars, int maxComments)
+    {
+        public int CharsLeft { get; private set; } = maxChars;
+
+        public int CommentsLeft { get; private set; } = maxComments;
+
+        /// <summary>True once EITHER allowance runs out — both are real bounds, not one bound and a hint.</summary>
+        public bool IsSpent => CharsLeft <= 0 || CommentsLeft <= 0;
+
+        /// <summary>Charges structural text (a thread header) that costs characters but is not a comment.</summary>
+        public void ChargeChars(int chars) => CharsLeft -= chars;
+
+        /// <summary>Charges one rendered comment against both allowances.</summary>
+        public void ChargeComment(int chars)
+        {
+            CharsLeft -= chars;
+            CommentsLeft--;
+        }
     }
 
     private async Task RunPrimaryReviewAsync(
