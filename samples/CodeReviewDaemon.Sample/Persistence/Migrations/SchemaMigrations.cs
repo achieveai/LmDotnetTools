@@ -18,6 +18,7 @@ internal static class SchemaMigrations
         new Migration(2, V2Sql),
         new Migration(3, V3Sql),
         new Migration(4, V4Sql),
+        new Migration(5, V5Sql),
     ];
 
     // ── v1: initial orchestration schema ─────────────────────────────────────────────────────────
@@ -147,5 +148,43 @@ internal static class SchemaMigrations
     // into one shared public file. Neither is recoverable, so absence stays absence.
     private const string V4Sql = """
         ALTER TABLE review_run ADD COLUMN pr_author TEXT NULL;
+        """;
+
+    // ── v5: the delta-review cutoff and the dedup-context signal (#225 items 1 + 2) ───────────────
+    //
+    // last_posted_review_at — when THIS run's review was proven to reach the PR. The "new since my last
+    // review" cutoff used to be derived by scanning comment BODIES for a bracketed bot prefix, which is a
+    // formatting convention pretending to be a fact: a summary posted without the prefix left the cutoff
+    // null, and a null cutoff classifies every later human reply as PAST, defeating exactly the
+    // new-comment handling it feeds. This column is the provider-agnostic fact the scan was standing in
+    // for. It is stamped ONLY on proven delivery (see IsDeliveryProven), never on an attempt: a timestamp
+    // claiming a post that did not happen would move the cutoff PAST real comments and hide them, which is
+    // strictly worse than the null it replaces.
+    //
+    // Written per run but read per PR (MAX over repo_id + pr_id). A run's identity includes head_sha, so a
+    // new head starts a new row while the CUTOFF must span heads — the bot's last word on the PR is the
+    // bot's last word regardless of which head it was reviewing. "O"-formatted UTC keeps MAX lexicographic
+    // and chronological at once, per the v3 note above.
+    //
+    // NULL-able with no default, for v4's reason: a pre-migration row genuinely does not know when — or
+    // whether — it posted, and NULL already means "no stamped evidence" to every reader. A fabricated
+    // instant would silently push the cutoff forward and suppress comments the bot is required to answer.
+    //
+    // dedup_context_lost — this run synthesized its review WITHOUT the list of comments already on the PR,
+    // because the provider listing failed. Posting such a review onto a PR that already carries one is how
+    // the duplicate-review spam #224 removed comes back. The flag is durable rather than in-memory
+    // precisely because the decision is made at the Reviewed stage and consumed at the Posted stage, which
+    // may be a different process after a restart — an in-memory flag would post blind on exactly the retry
+    // path that most needs to know.
+    //
+    // NOT NULL DEFAULT 0, which is the opposite choice from the column above, and deliberately so. 0 means
+    // "context was not lost", so every pre-migration row and every run in flight across the upgrade keeps
+    // posting. Defaulting to 1 would fail closed in the abstract and, in practice, silence delivery for
+    // every run mid-flight at deploy time on no evidence at all. The accepted residual is bounded to runs
+    // that crossed the migration boundary having genuinely lost their dedup context — at most one review
+    // round, on a signal that did not exist when they ran.
+    private const string V5Sql = """
+        ALTER TABLE review_run ADD COLUMN last_posted_review_at TEXT NULL;
+        ALTER TABLE review_run ADD COLUMN dedup_context_lost    INTEGER NOT NULL DEFAULT 0;
         """;
 }

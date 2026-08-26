@@ -913,17 +913,14 @@ if (daemonOptions.StrandedRunGraceHours > 0)
         var providers = sp.GetServices<IPrProvider>().ToList();
         var orchestrator = sp.GetRequiredService<PrOrchestrator>();
 
-        // #429: the retry-pending fast path, clamped to be strictly faster than the abandonment window it
-        // rides beside. Zero switches it off; a value at or above the abandonment window would be a "fast"
-        // path that is slower than the slow one, which the reconciler refuses at construction — so it is
-        // clamped here rather than left to take the host down on a typo. Both listings share one pass and one
-        // resume cap, so this widens WHEN a retry-pending run is picked up, never HOW MANY run at once.
+        // #429: the retry-pending fast path. The rule that it must be strictly faster than the abandonment
+        // window it rides beside is the reconciler's — it refuses a slower one at construction — so the
+        // resolution lives there too rather than being restated here, where the two could drift apart and
+        // only meet at host start. Zero switches the path off. Both listings share one pass and one resume
+        // cap, so this knob widens WHEN a retry-pending run is picked up, never HOW MANY run at once.
         var grace = TimeSpan.FromHours(daemonOptions.StrandedRunGraceHours);
-        var retryPendingGrace = daemonOptions.StrandedRunRetryPendingGraceMinutes > 0
-            ? TimeSpan.FromTicks(Math.Min(
-                TimeSpan.FromMinutes(daemonOptions.StrandedRunRetryPendingGraceMinutes).Ticks,
-                grace.Ticks - 1))
-            : default;
+        var retryPendingGrace = StrandedRunReconciler.ResolveRetryPendingGrace(
+            daemonOptions.StrandedRunRetryPendingGraceMinutes, grace);
 
         return new StrandedRunReconciler(
             listStrandedRuns: store.ListStrandedRuns,

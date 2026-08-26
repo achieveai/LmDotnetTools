@@ -122,14 +122,6 @@ internal sealed class ReviewStore : IDisposable
     // ── review_run (§6) ──────────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Inserts <paramref name="run"/>, or returns the existing row when its identity tuple already
-    /// exists. Idempotent: the same (repo, pr, head/base, kind, variant, mode) tuple never creates a
-    /// second run. <c>trigger_watermark</c> (the PR's <c>updated_at</c>) is stored for diagnostics but is
-    /// deliberately NOT part of the identity — posting a review comment mutates <c>updated_at</c>, so
-    /// keying identity on it would spawn a fresh run (and a duplicate review) on the very next poll. A
-    /// review is scoped to a commit; a new <c>head_sha</c> is what legitimately starts a new run.
-    /// </summary>
-    /// <summary>
     /// Inserts <paramref name="run"/>, or returns the existing row when this reviewed commit already has
     /// one. A run's identity is the COMMIT: <c>(repo, pr, head_sha, base_sha, review_kind, variant_id)</c>.
     /// It deliberately excludes <c>mode</c> and <c>trigger_watermark</c>: <c>mode</c> (post vs collect-only)
@@ -321,6 +313,114 @@ internal sealed class ReviewStore : IDisposable
         _ = command.Parameters.AddWithValue("$now", UtcNow());
         _ = command.Parameters.AddWithValue("$id", id);
         _ = command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Records that <paramref name="runId"/>'s review is proven to be on the PR, at
+    /// <paramref name="postedAtUtc"/>. This is the durable half of the delta-review cutoff (#225 item 1).
+    /// </summary>
+    /// <remarks>
+    /// Call this ONLY on proven delivery. The value's whole worth is that a later review can trust "anything
+    /// after this is new", and a stamp written on an attempt would move the cutoff past comments that arrived
+    /// while the post was failing — hiding exactly the discussion the next review is required to answer. It is
+    /// deliberately not part of <see cref="UpdateReviewRunState"/>: that method drives the resume axes and
+    /// refreshes <c>updated_at</c>, which the stranded-run reconciler reads as "somebody is working on this".
+    /// The instant is a parameter rather than read from the clock here so the caller that knows delivery
+    /// happened also decides when, and so a test can seed a cutoff without waiting for one.
+    /// <para>
+    /// FIRST WRITE WINS — hence <c>AND last_posted_review_at IS NULL</c>. Proven delivery is not a
+    /// once-only observation: the Posted stage is retried after any terminal failure, and on that retry
+    /// <c>ReviewPoster</c> replays the outbox row, which still proves a comment is on the PR. So the
+    /// caller can truthfully report proven delivery many times over for ONE posted comment, each time holding a
+    /// fresh clock reading. Taking the latest would walk the cutoff forward across the whole outage and bury
+    /// every comment left during it. A run posts at most once — its identity includes <c>head_sha</c>, so a new
+    /// push opens a new row, and within a row the outbox guarantees exactly-once — therefore any write after
+    /// the first is necessarily a re-observation of the same comment, and the first reading is the closest one
+    /// to when it was actually published.
+    /// </para>
+    /// <para>
+    /// The stamp is the daemon's clock, the comments it is later compared against carry the provider's, and
+    /// the two are not the same clock. The asymmetry is deliberate rather than merely tolerated: a daemon
+    /// running BEHIND the provider is harmless — the cutoff falls early and at worst re-reads a comment it has
+    /// already answered — while a daemon running AHEAD can bury a comment published within the skew. That is
+    /// the direction that loses discussion, so if this is ever tightened, tighten it by moving the stamp
+    /// earlier (the provider's own published-at for the posted comment), never later.
+    /// </para>
+    /// </remarks>
+    public void MarkReviewPosted(long runId, DateTimeOffset postedAtUtc)
+    {
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            UPDATE review_run SET last_posted_review_at = $at WHERE id = $id AND last_posted_review_at IS NULL;
+            """;
+        _ = command.Parameters.AddWithValue("$at", Utc(postedAtUtc));
+        _ = command.Parameters.AddWithValue("$id", runId);
+        _ = command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// The latest instant at which ANY run for this PR was proven to have posted its review, or null when no
+    /// run ever has. This is the delta-review cutoff: comments after it are new since the bot last spoke.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately spans head shas. A run's identity includes <c>head_sha</c>, so every new head opens a new
+    /// row — but the bot's last word on a PR is its last word whichever head it was reviewing, and scoping the
+    /// cutoff to one row would reset it on every push and re-classify the whole conversation as past.
+    /// <c>MAX</c> over the stored text is chronological because <see cref="Utc"/> writes fixed-width UTC.
+    /// Null is a real answer meaning "this PR has never carried a posted review", and callers use it as such —
+    /// see the fetch-failure path in <c>DaemonReviewStageExecutor.PrependExistingCommentsAsync</c>, where it
+    /// is the difference between a first review that is safe to post blind and a re-review that is not.
+    /// </remarks>
+    public DateTimeOffset? GetLastPostedReviewAt(long repoId, string prId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(prId);
+
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT MAX(last_posted_review_at) FROM review_run WHERE repo_id = $repoId AND pr_id = $prId;
+            """;
+        _ = command.Parameters.AddWithValue("$repoId", repoId);
+        _ = command.Parameters.AddWithValue("$prId", prId);
+        var value = command.ExecuteScalar();
+        return value is string text && text.Length > 0
+            ? DateTimeOffset.Parse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind)
+            : null;
+    }
+
+    /// <summary>
+    /// Records that <paramref name="runId"/> built its review WITHOUT the list of comments already on the PR
+    /// (the provider listing failed), so the delivery boundary can decline to post it blind (#225 item 2).
+    /// </summary>
+    /// <remarks>
+    /// One-way and idempotent: nothing clears it, because nothing later in the run's life re-acquires the
+    /// context the review was already written without. A retry that wants to post must be a NEW run, which
+    /// gets its own fetch and its own flag.
+    /// </remarks>
+    public void MarkDedupContextLost(long runId)
+    {
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            UPDATE review_run SET dedup_context_lost = 1 WHERE id = $id;
+            """;
+        _ = command.Parameters.AddWithValue("$id", runId);
+        _ = command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Whether <paramref name="runId"/> was flagged by <see cref="MarkDedupContextLost"/>. Read at the
+    /// delivery boundary rather than carried on the in-memory run, so a Posted stage reached after a restart —
+    /// the retry that most needs the answer — still gets it.
+    /// </summary>
+    public bool WasDedupContextLost(long runId)
+    {
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = "SELECT dedup_context_lost FROM review_run WHERE id = $id;";
+        _ = command.Parameters.AddWithValue("$id", runId);
+        return command.ExecuteScalar() is long flag && flag != 0;
     }
 
     /// <summary>

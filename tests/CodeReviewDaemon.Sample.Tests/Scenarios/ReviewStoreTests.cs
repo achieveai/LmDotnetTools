@@ -623,6 +623,137 @@ public sealed class ReviewStoreTests
             Workers * PerWorker, "no write was lost, duplicated, or rolled back by a racing command");
     }
 
+    // ── the delta-review cutoff and the dedup-context signal (#225 items 1 + 2) ───────────────────
+
+    [Fact]
+    public void A_pr_that_has_never_carried_a_posted_review_reports_no_cutoff()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+        _ = store.CreateOrGetReviewRun(SampleRun(repoId));
+
+        store.GetLastPostedReviewAt(repoId, "118").Should().BeNull(
+            "null is a real answer — it is what lets the fetch-failure path tell a first review, which is safe "
+                + "to post blind, from a re-review, which is not");
+    }
+
+    [Fact]
+    public void The_posted_review_cutoff_returns_what_delivery_stamped()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+        var runId = store.CreateOrGetReviewRun(SampleRun(repoId)).Id;
+        var postedAt = DateTimeOffset.Parse("2026-07-20T10:00:00Z");
+
+        store.MarkReviewPosted(runId, postedAt);
+
+        store.GetLastPostedReviewAt(repoId, "118").Should().Be(postedAt);
+    }
+
+    [Fact]
+    public void The_posted_review_cutoff_survives_a_new_head_because_it_spans_runs()
+    {
+        // The property the whole design turns on. A run's identity includes head_sha, so every push opens a NEW
+        // review_run row — but the bot's last word on a PR is its last word whichever head it was reviewing.
+        // Read per-row instead of per-PR and the cutoff resets on every push, re-classifying the entire
+        // conversation as "past" and burying the questions the next review is required to answer.
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+        var first = store.CreateOrGetReviewRun(SampleRun(repoId)).Id;
+        var second = store.CreateOrGetReviewRun(SampleRun(repoId) with { HeadSha = "head-sha-2" }).Id;
+        second.Should().NotBe(first, "a new head is a new run, which is exactly why the cutoff must span them");
+        var firstPostedAt = DateTimeOffset.Parse("2026-07-20T10:00:00Z");
+
+        store.MarkReviewPosted(first, firstPostedAt);
+
+        store.GetLastPostedReviewAt(repoId, "118").Should().Be(
+            firstPostedAt, "the newer run has posted nothing yet, so the older run's delivery is still the cutoff");
+    }
+
+    [Fact]
+    public void The_posted_review_cutoff_is_the_latest_delivery_not_the_last_one_written()
+    {
+        // MAX, not last-write-wins. Runs do not settle in id order under retries and the stranded-run
+        // reconciler, so an older run stamping after a newer one must not drag the cutoff backwards.
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+        var first = store.CreateOrGetReviewRun(SampleRun(repoId)).Id;
+        var second = store.CreateOrGetReviewRun(SampleRun(repoId) with { HeadSha = "head-sha-2" }).Id;
+        var later = DateTimeOffset.Parse("2026-07-25T10:00:00Z");
+
+        store.MarkReviewPosted(second, later);
+        store.MarkReviewPosted(first, DateTimeOffset.Parse("2026-07-20T10:00:00Z"));
+
+        store.GetLastPostedReviewAt(repoId, "118").Should().Be(later);
+    }
+
+    [Fact]
+    public void The_posted_review_cutoff_does_not_leak_between_prs()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+        var reviewed = store.CreateOrGetReviewRun(SampleRun(repoId)).Id;
+        _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { PrId = "119" });
+
+        store.MarkReviewPosted(reviewed, DateTimeOffset.Parse("2026-07-20T10:00:00Z"));
+
+        store.GetLastPostedReviewAt(repoId, "119").Should().BeNull(
+            "a cutoff that leaked across PRs would silence a never-reviewed PR's whole conversation");
+    }
+
+    [Fact]
+    public void A_stored_cutoff_reads_back_as_the_same_instant_from_another_offset()
+    {
+        // The column is text. A stamp written from a non-UTC offset must normalize, or MAX stops being
+        // chronological the first time two rows are written from different offsets.
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+        var runId = store.CreateOrGetReviewRun(SampleRun(repoId)).Id;
+        var offsetInstant = new DateTimeOffset(2026, 7, 20, 15, 30, 0, TimeSpan.FromHours(5));
+
+        store.MarkReviewPosted(runId, offsetInstant);
+
+        store.GetLastPostedReviewAt(repoId, "118").Should().Be(
+            offsetInstant, "DateTimeOffset equality is by instant, and the stored form must preserve it");
+        store.GetLastPostedReviewAt(repoId, "118")!.Value.Offset.Should().Be(
+            TimeSpan.Zero, "everything is normalized to UTC so lexicographic MAX stays chronological");
+    }
+
+    [Fact]
+    public void A_run_starts_with_its_dedup_context_intact()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var runId = SeedRun(store);
+
+        store.WasDedupContextLost(runId).Should().BeFalse(
+            "the default has to be 'not lost', or every row predating the column would stop posting on upgrade");
+    }
+
+    [Fact]
+    public void A_lost_dedup_context_latches_and_is_readable_after_a_reopen()
+    {
+        // Durability is the point: the flag is written at the Reviewed stage and read at the Posted stage, which
+        // after a restart is a different process. An in-memory flag would post blind on exactly that retry.
+        using var db = new TempSqliteDatabase();
+        long runId;
+        using (var store = new ReviewStore(db.ConnectionString))
+        {
+            runId = SeedRun(store);
+            store.MarkDedupContextLost(runId);
+            store.MarkDedupContextLost(runId);
+        }
+
+        using var reopened = new ReviewStore(db.ConnectionString);
+        reopened.WasDedupContextLost(runId).Should().BeTrue();
+    }
+
     // ── shared fixtures ───────────────────────────────────────────────────────────────────────────
 
     private static RepoIdentity SampleRepo() => new()

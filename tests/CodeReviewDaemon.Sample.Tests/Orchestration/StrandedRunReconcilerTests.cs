@@ -529,6 +529,84 @@ public sealed class StrandedRunReconcilerTests
         construct.Should().Throw<ArgumentOutOfRangeException>();
     }
 
+    // ── resolving the configured fast window (#439) ───────────────────────────────────────────────
+    //
+    // The composition root used to restate the constructor's rule inline, so the two could disagree and only
+    // find out at host start. These pin the resolution the host actually calls, and the last one pins that what
+    // it returns is something the constructor above accepts — the join the drift would break.
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void A_zero_or_negative_retry_window_resolves_to_the_fast_path_being_off(double minutes)
+    {
+        // "Off" has to be representable, because it is the documented meaning of 0 and the value that leaves
+        // RetryPending draining on the abandonment window exactly as it did before #429.
+        //
+        // THE NEGATIVE ROW IS THE ONE THAT PROVES ANYTHING — keep it. Zero is refused twice over: the guard
+        // returns early, and without the guard TimeSpan.FromMinutes(0) is Zero and Math.Min(0, positive) is
+        // still 0. So a zero-only theory goes GREEN against "<= 0" rewritten as "< 0", and green against the
+        // guard being deleted outright. Verified by mutation, not assumed. A negative minutes value is what
+        // distinguishes them: deleting the guard resolves -1 to a NEGATIVE window, which the reconciler's
+        // constructor then rejects, turning a knob an operator merely typed a sign into at a boot failure.
+        // Same shape as #431's NaN rows, in the same codebase, for the same reason.
+        StrandedRunReconciler.ResolveRetryPendingGrace(minutes, Grace).Should().Be(TimeSpan.Zero);
+    }
+
+    [Fact]
+    public void A_retry_window_inside_the_abandonment_window_is_taken_exactly_as_configured()
+    {
+        StrandedRunReconciler.ResolveRetryPendingGrace(45, Grace).Should().Be(
+            TimeSpan.FromMinutes(45),
+            "the ordinary case must pass through untouched, or the clamp is silently rewriting good config");
+    }
+
+    [Theory]
+    [InlineData(360)] // exactly the 6-hour abandonment window
+    [InlineData(600)] // beyond it
+    public void A_retry_window_at_or_beyond_the_abandonment_window_is_pulled_just_inside_it(double minutes)
+    {
+        // Strictly inside, not merely "not greater": equal is the case the constructor refuses, and a clamp
+        // that lands ON the boundary would turn a tunable knob into the boot failure it exists to avoid.
+        var resolved = StrandedRunReconciler.ResolveRetryPendingGrace(minutes, Grace);
+
+        resolved.Should().Be(Grace - TimeSpan.FromTicks(1));
+        resolved.Should().BeLessThan(Grace);
+    }
+
+    [Fact]
+    public void A_clamped_retry_window_is_one_the_reconciler_will_actually_accept()
+    {
+        // The join. The clamp is only worth anything if its output satisfies the rule it was clamping toward,
+        // so this drives the resolved value straight into the constructor that refuses a slow "fast" path.
+        var construct = () => new StrandedRunReconciler(
+            listStrandedRuns: (_, _) => [],
+            getPrLifecycleAsync: (_, _) => Task.FromResult(PrLifecycle.Open),
+            resumeAsync: (run, _) => Task.FromResult(run),
+            updateRunState: (_, _, _, _) => { },
+            timeProvider: new FakeTimeProvider(Now),
+            grace: Grace,
+            scanLimit: 50,
+            maxResumesPerPass: 2,
+            logger: new CapturingLogger<StrandedRunReconciler>([]),
+            listRetryPendingRuns: (_, _) => [],
+            retryPendingGrace: StrandedRunReconciler.ResolveRetryPendingGrace(600, Grace));
+
+        construct.Should().NotThrow(
+            "a window the host clamped must be one this constructor takes, or the clamp bought nothing");
+    }
+
+    [Fact]
+    public void A_retry_window_too_large_to_be_a_timespan_is_refused_rather_than_clamped()
+    {
+        // The honest boundary. The clamp handles an in-range overshoot; it is NOT general typo-safety, because
+        // an unrepresentable value throws out of TimeSpan.FromMinutes before any comparison sees it. Pinning
+        // that here keeps the doc-comment from drifting back into claiming a safety the code does not provide.
+        var resolve = () => StrandedRunReconciler.ResolveRetryPendingGrace(double.MaxValue, Grace);
+
+        resolve.Should().Throw<OverflowException>();
+    }
+
     // ── the store query ───────────────────────────────────────────────────────────────────────────
 
     [Fact]

@@ -56,8 +56,24 @@ internal sealed class FakeReviewCommentPublisher : IReviewCommentPublisher
     /// already has prior review comments (the delta-awareness path).</summary>
     public List<ExistingReviewComment> ExistingComments { get; } = [];
 
+    /// <summary>
+    /// When set, <see cref="ListExistingReviewCommentsAsync"/> throws it instead of returning
+    /// <see cref="ExistingComments"/> — the transient provider/auth failure that leaves a review with no dedup
+    /// context (#225 item 2). Without this hook the degraded path has no way to be reached from a test, which
+    /// is why it went unverified.
+    /// </summary>
+    public Exception? ListFailure { get; set; }
+
+    /// <summary>How many times the listing was requested, throwing or not.</summary>
+    public int ListCallCount { get; private set; }
+
     public Task<IReadOnlyList<ExistingReviewComment>> ListExistingReviewCommentsAsync(
         ReviewCommentTarget target,
-        CancellationToken cancellationToken) =>
-        Task.FromResult<IReadOnlyList<ExistingReviewComment>>([.. ExistingComments]);
+        CancellationToken cancellationToken)
+    {
+        ListCallCount++;
+        return ListFailure is { } failure
+            ? Task.FromException<IReadOnlyList<ExistingReviewComment>>(failure)
+            : Task.FromResult<IReadOnlyList<ExistingReviewComment>>([.. ExistingComments]);
+    }
 }

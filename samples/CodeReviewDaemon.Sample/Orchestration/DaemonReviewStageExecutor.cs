@@ -2396,8 +2396,38 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            // Reading existing comments is an enrichment, never a gate: a provider hiccup must not fail the review.
-            _logger.LogWarning(ex, "Run {RunId}: listing existing PR comments failed; proceeding without the dedup list.", run.Id);
+            // Reading existing comments is an enrichment, never a gate: a provider hiccup must not fail the
+            // review, and the run carries on without the dedup list. What it must NOT also carry on with is
+            // permission to POST that review (#225 item 2).
+            //
+            // On the FIRST review of a PR there is nothing on it to duplicate, so a blind post is the right
+            // outcome and stays authorized — degrading here would trade a real review for a hypothetical one.
+            // On a RE-review the same blind post is precisely how the duplicate-review spam this list exists to
+            // stop comes back, and the review text is by then already synthesized without the context, so a
+            // later successful fetch cannot repair it; only declining to deliver this one can.
+            //
+            // The distinction is drawn from the durable posted-at stamp rather than from a count of prior runs,
+            // because what makes a blind post dangerous is a review ALREADY ON the PR — not an earlier run that
+            // reached the Reviewed stage and only ever collected.
+            if (_store.GetLastPostedReviewAt(run.RepoId, run.PrId) is { } lastPosted)
+            {
+                _store.MarkDedupContextLost(run.Id);
+                _logger.LogWarning(
+                    ex,
+                    "Run {RunId}: listing existing PR comments failed on a PR last reviewed at {LastPosted:O}; "
+                        + "continuing WITHOUT the dedup list and declining to post this review.",
+                    run.Id,
+                    lastPosted);
+            }
+            else
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Run {RunId}: listing existing PR comments failed; proceeding without the dedup list. This PR "
+                        + "carries no posted review, so a blind post has nothing to duplicate.",
+                    run.Id);
+            }
+
             return reviewInput;
         }
 
@@ -2406,15 +2436,36 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return reviewInput;
         }
 
-        // Cutoff for "new since the last review": the most recent comment the review bot itself posted. The
-        // DB has no per-run timestamp, and the bot's own findings are stamped when it last reviewed, so anything
-        // posted after them is discussion added since. Null (bot never commented) ⇒ nothing is "new".
-        var cutoff = existing
+        // Cutoff for "new since the last review": the latest moment the bot is known to have spoken on this PR.
+        // Anything after it is discussion added since; null (no evidence the bot ever spoke) ⇒ nothing is "new".
+        //
+        // TWO independent pieces of evidence, and the cutoff is the LATER of them, because each is a lower bound
+        // on the same fact and neither is sufficient alone (#225 item 1):
+        //
+        //  * The durable stamp. Written only where delivery was PROVEN, and read across head shas. This is the
+        //    fix: the body scan below is a formatting convention standing in for a fact, and it fails silently —
+        //    a batched review or summary that ships without the bracketed prefix leaves the cutoff null, and a
+        //    null cutoff files every later human reply under PAST, defeating the new-comment handling this whole
+        //    block feeds. The stamp cannot be defeated by how a comment happens to be worded.
+        //  * The body scan. RETAINED rather than replaced, because it is the only evidence available for a
+        //    comment the AGENT posted inline — that path returns no receipt to the host, so nothing stamps it —
+        //    and for rows written before the stamp column existed.
+        //
+        // Deliberately NOT used: the captured Author login. It is an unverified display name, so it would add a
+        // false-positive class (any human named after the bot drags the cutoff forward, burying real questions)
+        // while buying nothing the stamp does not already provide. Establishing a VERIFIED provider identity is
+        // the alternative the issue raised; it costs a provider round trip and per-provider plumbing to reach
+        // the same formatting-immunity the stamp reaches for free.
+        var stampedCutoff = _store.GetLastPostedReviewAt(run.RepoId, run.PrId);
+        var scannedCutoff = existing
             .Where(IsBotAuthored)
             .Select(c => c.PublishedAt)
             .Where(t => t.HasValue)
             .DefaultIfEmpty(null)
             .Max();
+        var cutoff = stampedCutoff is { } stamped && scannedCutoff is { } scanned
+            ? (stamped > scanned ? stamped : scanned)
+            : stampedCutoff ?? scannedCutoff;
 
         // Group comments into threads (a finding + its replies) so the reviewer reads each full conversation and
         // judges resolution itself; comments with no thread id stay standalone (the index keeps them distinct). A
@@ -2458,7 +2509,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     }
 
     /// <summary>True when a comment was posted by the review bot itself — its body carries a bot prefix such as
-    /// <c>[Revobot (MCQdb)]</c> or a historical <c>[…bot]</c> name (matched loosely so renames still count).</summary>
+    /// <c>[Revobot (MCQdb)]</c> or a historical <c>[…bot]</c> name (matched loosely so renames still count).
+    /// <para>
+    /// A supplement to the durable posted-at stamp, not the cutoff's primary evidence any more (#225 item 1):
+    /// a false negative here — a summary that shipped without the prefix — no longer leaves the cutoff null,
+    /// it only leaves it at whatever the stamp knows. What this still covers on its own is a comment the AGENT
+    /// posted inline, which returns no receipt to the host and so is never stamped.
+    /// </para></summary>
     private bool IsBotAuthored(ExistingReviewComment comment)
     {
         var body = comment.Body?.TrimStart() ?? string.Empty;
@@ -3594,12 +3651,28 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             && !headMoved
             && await PrClosedSinceReviewAsync(run, cancellationToken).ConfigureAwait(false);
 
+        // #225 item 2: whether this run's review was synthesized WITHOUT the list of comments already on the PR.
+        // Read once, here, because two decisions below depend on it and they must not be able to disagree: the
+        // post is suppressed, and the delivery-truthfulness gate has to accept "collected" as the truthful
+        // outcome for exactly the same reason it accepts it when posting is switched off. Read from the store
+        // rather than the in-memory run — the flag is written at the Reviewed stage and consumed here, which
+        // after a restart is a different process, and that retry is the one that most needs the answer.
+        var dedupContextLost = _store.WasDedupContextLost(run.Id);
+        if (dedupContextLost)
+        {
+            _logger.LogWarning(
+                "Run {RunId}: the existing-comment listing failed during synthesis on a PR that already carries a "
+                    + "review, so this review is collected rather than posted. A later run re-fetches the list and "
+                    + "can deliver.",
+                run.Id);
+        }
+
         PostOutcome? postOutcome = null;
         if (wouldPost && !headMoved && !prClosed)
         {
             var deepLink = BuildDeepLink(reviewArtifact.ThreadId);
             postOutcome = await PostReviewCommentHostSideAsync(
-                    run, repo, provider, reviewText, deepLink, cancellationToken)
+                    run, repo, provider, reviewText, deepLink, dedupContextLost, cancellationToken)
                 .ConfigureAwait(false);
         }
 
@@ -3711,9 +3784,24 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // Posted is not a governed stage, so gating on Mode alone would spin that run in an unbounded retry
         // hot-loop over a config change it cannot influence. When the current configuration did not authorize a
         // live post, collecting IS the truthful outcome — the run completes and reports what it actually did.
+        // #225 item 1: the durable half of the NEXT review's "new since my last review" cutoff, stamped on the
+        // same proof the gate below demands so the two can never disagree about whether this review reached the
+        // PR. An attempt is not evidence — see ReviewStore.MarkReviewPosted for why a hopeful stamp is worse
+        // than no stamp at all.
+        if (postOutcome is { } delivered && IsDeliveryProven(delivered))
+        {
+            _store.MarkReviewPosted(run.Id, DateTimeOffset.UtcNow);
+        }
+
+        // The third condition is the #225-item-2 sibling of the second, and it is required for the same reason.
+        // A run whose dedup context was lost is authorized only to collect, so it can never produce delivery
+        // evidence; gating without this term would throw on every attempt and spin the Posted stage — which is
+        // not governed — in the unbounded hot-loop the EnableCommentPosting escape hatch exists to prevent.
+        // Collecting IS the truthful outcome here: the run completes reporting exactly what it did.
         if (postOutcome is { } outcome
             && string.Equals(run.Mode, "post", StringComparison.Ordinal)
             && _options.EnableCommentPosting
+            && !dedupContextLost
             && !IsDeliveryProven(outcome))
         {
             throw new InvalidOperationException(
@@ -3746,9 +3834,16 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// <paramref name="provider"/> to be registered; throws if none matches so a misconfiguration is loud, not a
     /// silent no-post. Returns the <see cref="PostOutcome"/> so the caller can hold the terminal stage open when
     /// a post-mode review demonstrably never reached the PR.
+    /// <para>
+    /// <paramref name="dedupContextLost"/> withdraws live-posting authorization for a review synthesized without
+    /// the PR's existing comments (#225 item 2). It is an input rather than a lookup so this method and the
+    /// caller's delivery-truthfulness gate decide on one read of one fact; splitting them would let the post be
+    /// suppressed while the gate still demanded proof of it.
+    /// </para>
     /// </summary>
     private async Task<PostOutcome> PostReviewCommentHostSideAsync(
         ReviewRun run, RepoIdentity repo, string provider, string reviewText, string? deepLink,
+        bool dedupContextLost,
         CancellationToken cancellationToken)
     {
         var publisher = _publishers.FirstOrDefault(p => string.Equals(p.Provider, provider, StringComparison.Ordinal))
@@ -3771,7 +3866,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             VariantId: run.VariantId);
         var request = new PostReviewRequest(
             run.Id, key, new ReviewCommentTarget(repo, run.PrId), postedBody,
-            LivePostingAuthorized: _options.EnableCommentPosting);
+            LivePostingAuthorized: _options.EnableCommentPosting && !dedupContextLost);
         var outcome = await poster.PostReviewAsync(request, cancellationToken).ConfigureAwait(false);
         _logger.LogInformation(
             "Run {RunId}: host-side {Provider} review post outcome {Outcome} (response {ResponseId}, deepLink={HasDeepLink}).",

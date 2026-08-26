@@ -94,6 +94,28 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// listing is added.
 /// </para>
 /// <para>
+/// <b>The cost of taking fast rows first is that they can starve the slow listing, and the bound on that is
+/// worth stating rather than discovering.</b> Nothing reserves a slot for the abandonment listing: if the fast
+/// listing alone fills the pass's cap, every slow row is deferred. What keeps this from being permanent is that
+/// settling a row WRITES to it — a resume claims the row, a provider failure stamps a backoff, a retirement
+/// completes it — and every one of those writes re-stamps <c>updated_at</c>, so a settled retry-pending run
+/// drops off the fast listing for a full fast window. Only a DEFERRED row stays eligible, which is what makes
+/// the deferral a delay rather than a loss. So starving the slow listing outright takes enough permanently
+/// broken <c>RetryPending</c> runs to keep at least <c>StrandedRunMaxResumesPerSweep</c> of them eligible at
+/// EVERY pass — roughly <c>fastWindow / pollInterval * cap</c>, or about 180 runs at the shipped 45 minutes,
+/// 30 seconds and 2, not the handful it first looks like. Below that the fast listing drains in
+/// <c>backlog / cap</c> passes and the slow listing gets the rest of the window: ten broken runs delay a
+/// genuinely stranded one by about two and a half minutes, once every 45.
+/// </para>
+/// <para>
+/// The residual is accepted deliberately. A starved slow row is deferred, logged by run id, and still holds its
+/// own six-hour abandonment window — it is never dropped, and it is never made LESS eligible by waiting. A
+/// reserved slot would cap the fast path at <c>cap - 1</c> on every pass, including the overwhelming majority
+/// where no slow row is waiting at all, to buy back a delay that is already bounded by the arithmetic above.
+/// The day the fast listing is fed by something that does not re-stamp on settle, that trade flips, and this
+/// paragraph is the place to revisit.
+/// </para>
+/// <para>
 /// <b>Single owner.</b> A takeover here is claimed by stamping the row's <c>updated_at</c>, not by a
 /// compare-and-swap lease, and that is a deliberate limit rather than an oversight. The sweep runs inside
 /// <see cref="PrPollingService"/>'s single sequential maintenance seam, so two passes cannot overlap within a
@@ -161,6 +183,42 @@ internal sealed class StrandedRunReconciler
 
         _listRetryPendingRuns = listRetryPendingRuns;
         _retryPendingGrace = retryPendingGrace;
+    }
+
+    /// <summary>
+    /// Turns the configured <c>StrandedRunRetryPendingGraceMinutes</c> into a window this class's constructor
+    /// will actually accept, given the abandonment window it has to ride beside. Zero or negative means "off"
+    /// and yields <see cref="TimeSpan.Zero"/>; anything at or beyond <paramref name="abandonmentGrace"/> is
+    /// pulled back to one tick inside it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This lives here, next to the rule it satisfies, because the two halves drifting apart is the failure it
+    /// exists to prevent: the constructor REFUSES a fast window that is not strictly faster than the slow one,
+    /// and composition-root code that built the value inline would be free to stop honouring that and only find
+    /// out at host start. Resolving it through the same type keeps one statement of the rule and lets a test
+    /// pin that what this returns is what the constructor takes.
+    /// </para>
+    /// <para>
+    /// <b>It is not general typo-safety, and it must not be described as such.</b> It clamps an IN-RANGE
+    /// overshoot — "600 minutes" beside a 6-hour window becomes 6h minus a tick instead of a construction-time
+    /// refusal. A value large enough to overflow a <see cref="TimeSpan"/>, or a NaN, throws out of
+    /// <see cref="TimeSpan.FromMinutes(double)"/> below, before any comparison can see it, and takes the host
+    /// down at startup. That is the right outcome — an unreadable window is a configuration error an operator
+    /// needs to see, not one to silently round into something plausible — but it is the opposite of a clamp,
+    /// so the boundary is pinned by a test rather than left to a comment.
+    /// </para>
+    /// </remarks>
+    public static TimeSpan ResolveRetryPendingGrace(double minutes, TimeSpan abandonmentGrace)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(abandonmentGrace.Ticks);
+        if (minutes <= 0)
+        {
+            return TimeSpan.Zero;
+        }
+
+        var requested = TimeSpan.FromMinutes(minutes);
+        return TimeSpan.FromTicks(Math.Min(requested.Ticks, abandonmentGrace.Ticks - 1));
     }
 
     /// <summary>
