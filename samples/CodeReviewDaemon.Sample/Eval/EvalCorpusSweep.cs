@@ -156,29 +156,44 @@ internal sealed class EvalCorpusSweep
     }
 
     /// <summary>
-    /// This sweep's read-through cache of <see cref="ReviewArtifactReader"/>, one entry per run.
+    /// This sweep's memo of <see cref="ReviewArtifactReader"/>, holding the <b>last</b> run read and
+    /// nothing else.
     /// <para>
     /// One run yields two candidates over the same input — the primary arm and the collect-only B
-    /// arm — and the grade lookup ran once per candidate against a read that returns the run's
-    /// <b>whole</b> artifact list, <c>review-context</c> diff included. At a window of a thousand
-    /// runs that is thousands of full diffs materialised out of SQLite to find a judge row already
-    /// in hand. Scoped to the sweep and not to the instance: a cached artifact list held across
-    /// sweeps would hide a re-judge recorded between them.
+    /// arm — and the grade lookup ran once per candidate against a read that returns the run's whole
+    /// artifact list. At a window of a thousand runs that was thousands of reads to find judge rows
+    /// already in hand.
+    /// </para>
+    /// <para>
+    /// <b>One entry, not a map.</b> <see cref="DaemonCorpusReader"/> adds both of a run's candidate
+    /// arms inside ONE iteration of its own loop, so a run's candidates are contiguous in the
+    /// snapshot and a single entry gives the identical read count — with memory that does not grow
+    /// with the window. A map keyed by run id would retain one artifact list per run in the window
+    /// for the length of the sweep, duplicating what <see cref="CorpusSnapshot"/> already holds; the
+    /// window is an operator knob whose comment describes a work bound, so a memory bound hiding
+    /// behind it is a bound nobody set. Contiguity is a property of another class, so it is asserted
+    /// from the outside rather than assumed: a snapshot that interleaves two runs re-reads, and a
+    /// test says so.
+    /// </para>
+    /// <para>
+    /// Scoped to the sweep and not to the instance: an artifact list held across sweeps would hide a
+    /// re-judge recorded between them, and the sweep object outlives every one of its passes.
     /// </para>
     /// </summary>
-    private sealed class ArtifactCache(ReviewArtifactReader read)
+    private sealed class ArtifactMemo(ReviewArtifactReader read)
     {
-        private readonly Dictionary<long, IReadOnlyList<ReviewArtifact>> _byRun = [];
+        private long _reviewRunId;
+        private IReadOnlyList<ReviewArtifact>? _artifacts;
 
         public IReadOnlyList<ReviewArtifact> For(long reviewRunId)
         {
-            if (!_byRun.TryGetValue(reviewRunId, out var artifacts))
+            if (_artifacts is null || _reviewRunId != reviewRunId)
             {
-                artifacts = read(reviewRunId);
-                _byRun[reviewRunId] = artifacts;
+                _artifacts = read(reviewRunId);
+                _reviewRunId = reviewRunId;
             }
 
-            return artifacts;
+            return _artifacts;
         }
     }
 
@@ -224,7 +239,7 @@ internal sealed class EvalCorpusSweep
     private EvalSweepReport Summarise(long from, CorpusPage page)
     {
         var candidates = page.Snapshot?.Items ?? [];
-        var artifacts = new ArtifactCache(_readArtifacts);
+        var artifacts = new ArtifactMemo(_readArtifacts);
 
         var findingCount = 0;
         var anchoredFindingCount = 0;
@@ -295,7 +310,7 @@ internal sealed class EvalCorpusSweep
     /// history the corpus covers. Marked here and excluded from the mean, never averaged.
     /// </para>
     /// </summary>
-    private RecordedJudgeGrade? RecordedGrade(Candidate candidate, ArtifactCache artifacts)
+    private RecordedJudgeGrade? RecordedGrade(Candidate candidate, ArtifactMemo artifacts)
     {
         if (
             !candidate.Metadata.TryGetValue(

@@ -1,4 +1,6 @@
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmEval;
+using AchieveAi.LmDotnetTools.LmEval.Corpus;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Eval;
@@ -538,6 +540,126 @@ public sealed class EvalCorpusSweepTests : IDisposable
         // whichever arm was judged last. Both arms keep their own grade.
         report.ScoredCandidates.Should().Be(2);
         report.MeanRecordedScore.Should().Be(6.5, "(9 + 4) / 2 — each arm on its own row");
+    }
+
+    /// <summary>
+    /// The memo remembers exactly ONE run, and this is the test that says so out loud (#455).
+    /// <para>
+    /// A map keyed by run id gives the same read count as a single-entry memo only because
+    /// <see cref="DaemonCorpusReader"/> adds both of a run's candidate arms inside one iteration of
+    /// its own loop, so a run's candidates are contiguous in the snapshot. That contiguity is what
+    /// makes the memo free, and it is a property of a different class — so it is asserted here from
+    /// the outside: hand the sweep a snapshot in which a run's candidates are <b>not</b> contiguous,
+    /// and the memo re-reads. A map would not, and would grow with the window instead: at the default
+    /// window of a thousand runs that is a thousand retained artifact lists, each carrying a
+    /// <c>review-context</c> diff.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task The_artifact_memo_holds_one_run_not_the_whole_window()
+    {
+        var reads = new List<long>();
+
+        var sweep = new EvalCorpusSweep(
+            runId =>
+            {
+                reads.Add(runId);
+                return [];
+            },
+            new InterleavedCorpusReader([(1L, "primary"), (2L, "primary"), (1L, "b")]),
+            new EvalCorpusWatermark(_store)
+        );
+
+        var report = await sweep.SweepOnceAsync(CancellationToken.None);
+
+        report.CandidateCount.Should().Be(3);
+        reads
+            .Should()
+            .Equal(
+                [1L, 2L, 1L],
+                "the memo holds the LAST run only, so a run revisited after another is read again"
+            );
+    }
+
+    /// <summary>
+    /// The memo is scoped to one sweep and not to the sweep object (#455 item 2).
+    /// <para>
+    /// The doc has always said the scoping matters — "a cached artifact list held across sweeps would
+    /// hide a re-judge recorded between them" — and nothing made it true: hoisting the memo to an
+    /// instance field went green on the whole suite. This is that sentence as an input. The window is
+    /// rewound between the two sweeps so the same run is genuinely inside both, which is the only
+    /// arrangement in which a per-instance memo is reachable at all.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_re_judge_recorded_between_two_sweeps_is_read_by_the_second()
+    {
+        var runId = Reviewed("118", "src/Foo.cs:1 is wrong.");
+        AddV2Judge(runId, score: 8);
+
+        var sweep = Sweep();
+
+        (await sweep.SweepOnceAsync(CancellationToken.None))
+            .MeanRecordedScore.Should()
+            .Be(8.0);
+
+        // Re-judged after the first sweep read this run's artifacts.
+        AddV2Judge(runId, score: 3);
+
+        // Rewind the window so the same run is inside the second sweep too. Written through the
+        // watermark rather than by reaching into the sweep, because the window living in the store
+        // is exactly what makes this reachable in production: a redeploy from a restored database
+        // resumes behind rows a long-lived sweep object has already read.
+        new EvalCorpusWatermark(_store).Save(EvalCorpusSweep.CorpusId, 0);
+
+        var second = await sweep.SweepOnceAsync(CancellationToken.None);
+
+        second
+            .MeanRecordedScore.Should()
+            .Be(3.0, "the re-judge supersedes the grade the first sweep read");
+    }
+
+    /// <summary>
+    /// A snapshot whose candidates are deliberately NOT grouped by run — the arrangement the memo's
+    /// single entry is measured against. It reads no store: the run ids are metadata, and the grade
+    /// lookup is what the test is watching.
+    /// </summary>
+    private sealed class InterleavedCorpusReader(IReadOnlyList<(long RunId, string VariantId)> items)
+        : ICorpusReader
+    {
+        public Task<CorpusPage> LoadAsync(
+            string corpusId,
+            long afterCursor,
+            int limit,
+            CancellationToken cancellationToken
+        ) =>
+            Task.FromResult(
+                new CorpusPage
+                {
+                    Snapshot = CorpusSnapshot.Create(
+                        corpusId,
+                        [
+                            .. items.Select(item => new Candidate
+                            {
+                                CandidateId = $"{item.RunId}:{item.VariantId}",
+                                TaskType = DaemonCorpusReader.CodeReviewTaskType,
+                                TaskInput = "a diff",
+                                Content = "a review",
+                                VariantId = item.VariantId,
+                                Metadata = new Dictionary<string, string>(StringComparer.Ordinal)
+                                {
+                                    [DaemonCorpusReader.ReviewRunIdMetadataKey] =
+                                        item.RunId.ToString(
+                                            System.Globalization.CultureInfo.InvariantCulture
+                                        ),
+                                },
+                            }),
+                        ]
+                    ),
+                    NextCursor = afterCursor,
+                    Truncated = false,
+                }
+            );
     }
 
     // ---- the finding-level signal ----------------------------------------------------------------
