@@ -15,13 +15,22 @@ internal sealed class RecordingObserver : IInputAcceptanceObserver
 
     public List<IMultiTurnAgent> AcceptedBy { get; } = [];
 
-    public void OnInputAccepted(string threadId, string inputId, IMultiTurnAgent acceptedBy)
+    /// <summary>
+    /// When set, every report is REFUSED — the shape of an observer whose entry for the conversation
+    /// names a different agent. The report is still recorded, so a test can prove the agent asked
+    /// before it refused rather than never asking at all.
+    /// </summary>
+    public bool RefuseAccepts { get; set; }
+
+    public bool OnInputAccepted(string threadId, string inputId, IMultiTurnAgent acceptedBy)
     {
         lock (_gate)
         {
             Accepted.Add((threadId, inputId));
             AcceptedBy.Add(acceptedBy);
         }
+
+        return !RefuseAccepts;
     }
 
     public void OnInputAcceptanceRescinded(string threadId, string inputId, IMultiTurnAgent acceptedBy)
@@ -49,7 +58,7 @@ internal sealed class RecordingObserver : IInputAcceptanceObserver
 /// <summary>An observer whose every callback throws, for the fail-closed send contract.</summary>
 internal sealed class ThrowingObserver : IInputAcceptanceObserver
 {
-    public void OnInputAccepted(string threadId, string inputId, IMultiTurnAgent acceptedBy) =>
+    public bool OnInputAccepted(string threadId, string inputId, IMultiTurnAgent acceptedBy) =>
         throw new InvalidOperationException("simulated observer failure");
 
     public void OnInputAcceptanceRescinded(string threadId, string inputId, IMultiTurnAgent acceptedBy) =>

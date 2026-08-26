@@ -614,8 +614,18 @@ public class MultiTurnAgentPoolHandoffTests
         };
         stray.Should().NotBeSameAs(pooled);
 
-        // The stray accepts, and reports - for a thread whose entry is a different agent.
-        _ = await stray.SendAsync([new TextMessage { Text = "late", Role = Role.User }]);
+        // The stray reports - for a thread whose entry is a different agent - and is REFUSED (#442).
+        // Ignoring the mismatch was not enough: the stray's own channel is still open, so the enqueue
+        // after an ignored report succeeded and the turn sat in an agent being torn down, in no
+        // ledger, with its sender holding a receipt. The refusal fails the send instead, so the
+        // caller finds out and a retry resolves to the replacement.
+        var act = () => stray.SendAsync([new TextMessage { Text = "late", Role = Role.User }]).AsTask();
+        var thrown = await act.Should().ThrowAsync<InputAcceptanceRefusedException>();
+        thrown.Which.ThreadId.Should().Be("thread-reported-swap");
+
+        stray.QueuedInputCount.Should().Be(0,
+            "the refused turn must not be sitting in the stray's channel - unqueued is the whole "
+                + "difference between a retryable failure and a silently lost turn");
 
         pool.TryGetHandoffState("thread-reported-swap", out var state).Should().BeTrue();
         state.IsBusy.Should().BeFalse("the pooled agent never accepted that input");

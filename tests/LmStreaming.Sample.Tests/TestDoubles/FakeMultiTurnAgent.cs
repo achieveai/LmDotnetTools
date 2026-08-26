@@ -49,6 +49,21 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent, IAcceptanceReportingAgent
     /// write failure (the controller lets this propagate to a 500).</summary>
     public bool ThrowOnTrySend { get; set; }
 
+    /// <summary>
+    /// When true, both send paths throw <see cref="InputAcceptanceRefusedException"/> — the agent was
+    /// replaced while the send was reporting its accept, so the observer refused it and nothing was
+    /// queued (#442).
+    /// </summary>
+    /// <remarks>
+    /// A switch rather than a real desynchronised pool: reproducing the race would mean parking a
+    /// report inside the pool's per-thread lock while a swap runs, which is a window no test can hit
+    /// deterministically. What a host test needs from here is the OUTCOME the race produces, and the
+    /// product's own refusal is pinned where it lives, in
+    /// <c>LmMultiTurn.Tests.InputAcceptanceObserverTests</c> and against the real pool in
+    /// <c>MultiTurnAgentPoolHandoffTests.AReportFromAnAgentTheThreadNoLongerHolds_DoesNotMarkThePooledOne</c>.
+    /// </remarks>
+    public bool RefuseAccepts { get; set; }
+
     /// <summary>How many inputs reached the enqueue path. Lets a test prove a request was refused
     /// BEFORE anything was queued, rather than merely reported as unsuppressed afterwards.</summary>
     public int SendCount { get; private set; }
@@ -75,12 +90,25 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent, IAcceptanceReportingAgent
         _ = parentRunId;
         _ = ct;
 
+        if (RefuseAccepts)
+        {
+            // Ahead of SendCount, because a refused send never took the input: counting it would let a
+            // test claiming "the turn did not reach the agent" pass against one that did.
+            throw new InputAcceptanceRefusedException(ThreadId, inputId ?? "unknown");
+        }
+
         SendCount++;
         var receiptId = inputId ?? Guid.NewGuid().ToString("N");
 
         // Announced BEFORE the input is taken, exactly as MultiTurnAgentBase's mint sites do: a host
         // that learns of the accept only afterwards has the window this ledger exists to close.
-        InputAcceptanceObserver?.OnInputAccepted(ThreadId, receiptId, this);
+        if (InputAcceptanceObserver?.OnInputAccepted(ThreadId, receiptId, this) == false)
+        {
+            // Honoured, not ignored: the product refuses the enqueue when the observer says this
+            // agent is no longer the conversation's, and a double that queued anyway would let a
+            // host test pass over the silent loss (#442).
+            throw new InputAcceptanceRefusedException(ThreadId, receiptId);
+        }
 
         return ValueTask.FromResult(new SendReceipt(receiptId, inputId, DateTimeOffset.UtcNow));
     }

@@ -1094,7 +1094,14 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         // TrySendAsync happens first: reporting afterwards leaves a window in which the input is
         // already in the channel and no host knows it — the hole this closes, only narrower. A
         // throwing observer therefore fails the send with nothing queued (see the property's remarks).
-        InputAcceptanceObserver?.OnInputAccepted(ThreadId, receiptId, this);
+        if (InputAcceptanceObserver?.OnInputAccepted(ThreadId, receiptId, this) == false)
+        {
+            // The observer holds a different agent for this conversation, so it will never see this
+            // turn. Enqueuing anyway is the silent loss the refusal exists to prevent: the input would
+            // sit in a channel belonging to an agent already being replaced. Nothing was queued and
+            // (unlike TrySendAsync) nothing durable was written, so there is nothing to roll back.
+            throw new InputAcceptanceRefusedException(ThreadId, receiptId);
+        }
 
         var queued = new QueuedInput(input, receiptId, queuedAt);
 
@@ -1202,7 +1209,21 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         // input was never accepted by anyone, so there is nothing to announce and nothing to
         // withdraw. Before, because an in-memory host that learns of the accept only once the input
         // is already queued has the same hole this closes.
-        InputAcceptanceObserver?.OnInputAccepted(ThreadId, receiptId, this);
+        if (InputAcceptanceObserver?.OnInputAccepted(ThreadId, receiptId, this) == false)
+        {
+            // Same refusal as SendAsync's, with the durable half rolled back first: the record was
+            // written before the report, and a caller polling by inputId must not find an acceptance
+            // for a turn that was never queued and never will be.
+            if (RunLedgerStore != null)
+            {
+                await RunLedgerStore.RemoveAcceptedInputAsync(ThreadId, receiptId, ct);
+            }
+
+            // Thrown rather than returned as null. Null on this method means "the channel is full,
+            // try this agent again"; a refusal means the opposite — this agent is finished, and the
+            // retry has to be resolved to the conversation's current one.
+            throw new InputAcceptanceRefusedException(ThreadId, receiptId);
+        }
 
         var queued = new QueuedInput(input, receiptId, queuedAt);
 

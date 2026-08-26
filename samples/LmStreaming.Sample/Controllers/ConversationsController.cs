@@ -929,6 +929,26 @@ public class ConversationsController(
                     ct)
                 : await agent.TrySendAsync([userMessage], inputId: admission.InputId, parentRunId: null, ct);
         }
+        catch (InputAcceptanceRefusedException ex)
+        {
+            // The conversation's agent was replaced (a mode or provider switch, or a handoff) while
+            // this send was reporting its accept, so the agent resolved above is no longer the one the
+            // pool holds. Nothing was queued and nothing recorded. Answered as a retryable 503 rather
+            // than the 500 a bare throw would produce: the caller's request was well-formed, the
+            // deployment is healthy, and repeating it resolves a fresh agent and succeeds.
+            logger.LogWarning(
+                ex,
+                "SendMessage for thread {ThreadId} raced an agent replacement; nothing was queued",
+                threadId);
+            if (idempotent)
+            {
+                await ReleaseAdmissionAsync(acceptances!, admission);
+            }
+
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                new { error = "agent_replaced", code = "agent_replaced", threadId });
+        }
         catch
         {
             // The send threw, so nothing is queued. The agent's own rescind withdraws its accept from

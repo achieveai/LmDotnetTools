@@ -1120,6 +1120,49 @@ public class ConversationsControllerTests
     }
 
     [Fact]
+    public async Task SendMessage_Returns503_WhenTheAgentWasReplacedMidSend()
+    {
+        // #442's swap-race residual, from the caller's side. The agent resolved for this request was
+        // replaced while its send was reporting the accept, so the pool refused the accept and nothing
+        // was queued. A bare throw would surface as a 500 - "something broke" - for a request that was
+        // well-formed against a healthy deployment and that succeeds on the very next attempt. It is
+        // answered as a retryable 503 with its own code, so a client can tell it apart from queue_full
+        // (which means "this agent is busy") and retry into a freshly resolved agent.
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var threadId = "thread-send-replaced";
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (FakeMultiTurnAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        agent.RefuseAccepts = true;
+
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty
+                    .SetItem(MultiTurnAgentPool.ModePropertyKey, SystemChatModes.DefaultModeId),
+            });
+
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var result = await controller.SendMessage(
+            threadId,
+            new SendMessageRequest { Text = "hello" },
+            CancellationToken.None);
+
+        var obj = Assert.IsType<ObjectResult>(result);
+        obj.StatusCode.Should().Be(503);
+        var body = JsonSerializer.Serialize(obj.Value);
+        body.Should().Contain("agent_replaced");
+        body.Should().NotContain("queue_full",
+            "the two 503s mean opposite things about whether retrying THIS agent can ever work");
+
+        agent.SendCount.Should().Be(0, "a refused accept never reached the enqueue");
+    }
+
+    [Fact]
     public async Task SendMessage_Throws_WhenDurableWriteFails()
     {
         var store = new InMemoryConversationStore();

@@ -1063,6 +1063,23 @@ public sealed class ChatWebSocketManager
             );
             await SendAgentReleasedAsync(connection, recordWriter: null, ct).ConfigureAwait(false);
         }
+        catch (InputAcceptanceRefusedException ex)
+        {
+            // The third arrival of the same handoff, one step later than the two above. Those two fire
+            // while the agent is being RESOLVED; this one fires when the resolution succeeded and the
+            // replacement landed while the send was reporting its accept. Nothing was queued.
+            //
+            // Answered with the same frame for the same reason the principal conflict is: one
+            // condition must not grow a third name because it was reached from a third direction. The
+            // client reconnects and gets whatever agent the thread now has, and the message it typed
+            // is the message it retries.
+            _logger.LogInformation(
+                ex,
+                "Message for thread {ThreadId} raced an agent replacement; closing so the client reconnects",
+                threadId
+            );
+            await SendAgentReleasedAsync(connection, recordWriter: null, ct).ConfigureAwait(false);
+        }
         catch (JsonException ex)
         {
             _logger.LogWarning(ex, "Invalid JSON from thread {ThreadId}: {Json}", threadId, json);

@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using FluentAssertions;
@@ -247,6 +248,85 @@ public class InputAcceptanceObserverTests
         outcome.Disposition.Should().Be(AgentDeliveryDisposition.Refused);
         observer.Rescinded.Should().ContainSingle(
             "a refused collaboration delivery must withdraw the acceptance it reported");
+    }
+
+    [Fact]
+    public async Task SendAsync_WhenTheObserverRefusesTheAccept_FailsTheSend_AndLeavesNothingQueued()
+    {
+        // The swap-race residual (#442). The report and the enqueue are two steps, and an observer
+        // that serialises its bookkeeping under a per-conversation lock can be PARKED in the report
+        // while that conversation's agent is replaced. When the report finally runs it sees a
+        // different agent and records nothing — but this agent's channel is still open, so the
+        // enqueue that follows used to SUCCEED. The turn then sat in an agent being torn down, in no
+        // ledger, with its sender holding a receipt for it: a lost turn with a 202 in front of it.
+        //
+        // Refusing converts that into a failed send. Nothing queued is the whole point of the
+        // assertion below — an enqueue here is the silent loss itself.
+        var observer = new RecordingObserver { RefuseAccepts = true };
+        await using var agent = new ObservedTestAgent("thread-refused")
+        {
+            InputAcceptanceObserver = observer,
+        };
+
+        var act = () => agent.SendAsync(UserMessages("hello"), inputId: "input-1").AsTask();
+
+        var thrown = await act.Should().ThrowAsync<InputAcceptanceRefusedException>();
+        thrown.Which.ThreadId.Should().Be("thread-refused");
+        thrown.Which.ReceiptId.Should().Be("input-1",
+            "the caller needs the id it was refused, because no run will ever name it");
+
+        agent.QueuedInputCount.Should().Be(0,
+            "queuing after a refusal is exactly the silent loss the refusal exists to prevent");
+        observer.Accepted.Should().ContainSingle(
+            "the agent must ASK before it refuses — a send that never reported would also leave "
+                + "nothing queued and would look identical here");
+    }
+
+    [Fact]
+    public async Task TrySendAsync_WhenTheObserverRefusesTheAccept_RollsBackTheDurableRecord()
+    {
+        // The same refusal on the path that has a durable half. The accepted-input record is written
+        // BEFORE the report, so a refusal has to undo it: a caller polling by inputId must not find
+        // an acceptance for a turn that was never queued and never will be.
+        //
+        // It throws rather than returning null on purpose. Null on this method means "the channel is
+        // full, try this agent again", and retrying this agent is precisely what cannot work — it is
+        // no longer the one the conversation holds.
+        var store = new InMemoryConversationStore();
+        var observer = new RecordingObserver { RefuseAccepts = true };
+        await using var agent = new ObservedTestAgent(
+            "thread-refused-durable",
+            store: store,
+            persistRunLedger: true)
+        {
+            InputAcceptanceObserver = observer,
+        };
+
+        var act = () => agent.TrySendAsync(UserMessages("hello"), inputId: "input-1").AsTask();
+
+        _ = await act.Should().ThrowAsync<InputAcceptanceRefusedException>();
+
+        agent.QueuedInputCount.Should().Be(0);
+        (await store.ListAcceptedInputIdsAsync("thread-refused-durable")).Should().BeEmpty(
+            "the durable record was written before the report, so the refusal has to withdraw it");
+    }
+
+    [Fact]
+    public async Task AnObserverThatHoldsNothingForTheThread_DoesNotRefuse()
+    {
+        // The boundary the refusal must NOT cross. "I have no entry for this conversation" is not
+        // evidence that a different agent holds it, and treating it as a refusal would fail every
+        // send to an agent the observer does not happen to track — including one it has not adopted
+        // yet. Only a held entry naming a DIFFERENT agent is grounds to refuse.
+        var observer = new RecordingObserver();
+        await using var agent = new ObservedTestAgent("thread-untracked")
+        {
+            InputAcceptanceObserver = observer,
+        };
+
+        _ = await agent.SendAsync(UserMessages("hello"), inputId: "input-1");
+
+        agent.QueuedInputCount.Should().Be(1);
     }
 
     #region Doubles

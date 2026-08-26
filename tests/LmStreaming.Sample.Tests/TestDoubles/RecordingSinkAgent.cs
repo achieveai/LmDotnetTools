@@ -129,7 +129,13 @@ internal sealed class RecordingSinkAgent : IMultiTurnAgent, ISubAgentContextSink
         _ = ct;
 
         var receiptId = inputId ?? Guid.NewGuid().ToString("N");
-        InputAcceptanceObserver?.OnInputAccepted(ThreadId, receiptId, this);
+        if (InputAcceptanceObserver?.OnInputAccepted(ThreadId, receiptId, this) == false)
+        {
+            // Honoured, not ignored: the product refuses the enqueue when the observer says this
+            // agent is no longer the conversation's, and a double that queued anyway would let a
+            // host test pass over the silent loss (#442).
+            throw new InputAcceptanceRefusedException(ThreadId, receiptId);
+        }
 
         lock (_lock)
         {
