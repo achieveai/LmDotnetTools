@@ -153,13 +153,27 @@ public sealed class WebSocketConversationGate
     /// on the REST surface.
     /// </para>
     /// <para>
-    /// A child with NO metadata row at all keeps its replay, and that is not a hole left open: it is
-    /// the live case, where the manager has spawned a child that has not persisted anything yet, and
-    /// the handler resolves it through the parent's own <c>SubAgentManager</c>. Any child that has
-    /// persisted has a row - the manager stamps provenance when it writes, and
-    /// <c>ConversationOwnershipRepairHostedService</c> synthesizes a row at startup for message-only
-    /// threads written before that. A row that exists but names a different parent, or names none at
-    /// all, loses the replay.
+    /// A child with NO metadata row loses the replay too, and this is the case that matters most.
+    /// A row is not written when a child starts: <c>MultiTurnAgentBase</c> appends each message as it
+    /// is produced but writes metadata only once the run COMPLETES, so a child that is running now -
+    /// or one that was killed mid-run - has a persisted transcript and no row, permanently in the
+    /// killed case. Nothing repairs that afterwards: both <c>StampUnownedThreadsAsync</c>
+    /// implementations only UPDATE rows that already exist, and neither synthesizes one for a
+    /// message-only thread. Granting the replay on a missing row therefore handed out precisely the
+    /// transcripts whose provenance could not be checked - a caller naming their OWN parent together
+    /// with someone else's <c>agentId</c> got the done sentinel and a held-open socket for a foreign
+    /// child mid-run, where an <c>agentId</c> naming nothing got <c>subagent_unavailable</c> and a
+    /// close. Frame and close behaviour differed, which is the existence oracle this method exists to
+    /// close.
+    /// </para>
+    /// <para>
+    /// Withholding it costs the legitimate case nothing. The replay is a FALLBACK the handler reaches
+    /// only when there is no live stream, and a child the parent's own <c>SubAgentManager</c> is
+    /// running resolves to that live stream without ever consulting this flag. The one case it does
+    /// change is the owner's own child killed mid-run: its partial transcript is no longer replayed
+    /// over the socket. That transcript has no row, so nothing else in an enforced deployment can
+    /// authorize it either - the answer is now consistently "unavailable" rather than "available over
+    /// the one transport that could not check it".
     /// </para>
     /// </remarks>
     /// <param name="context">The handshake request.</param>
@@ -196,7 +210,10 @@ public sealed class WebSocketConversationGate
         var childMetadata = await _store.LoadMetadataAsync(childThreadId, ct).ConfigureAwait(false);
         if (childMetadata is null)
         {
-            return new SubAgentSocketAdmission(true, true);
+            // No row means no provenance to check, NOT "nothing persisted" - a mid-run child has
+            // messages and no row. Admit the handshake (refusing it would be the oracle) and withhold
+            // the replay, so an unverifiable child answers exactly like one that does not exist.
+            return new SubAgentSocketAdmission(true, false);
         }
 
         var stampedParent = SubAgentProvenance.TryProject(childMetadata)?.ParentThreadId;

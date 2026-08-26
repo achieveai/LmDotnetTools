@@ -188,6 +188,15 @@ enforcing?".
 Leaving `AzureAd:ClientId` empty is a second, independent off switch: with no client id, no JWT
 bearer handler is registered at all and no token can be presented.
 
+> **Client precondition — do not flip this flag with the bundled SPA as it ships (#435).** Under
+> enforcement the WebSocket transports refuse a `threadId` that has no metadata row, so a client must
+> provision the conversation through `POST /api/conversations` before opening its socket. The SPA
+> still mints its own `thread-{timestamp}-{random}` id locally and connects straight away, so a
+> **brand-new conversation cannot start** while the flag is on. Existing conversations are unaffected.
+> This is a client change that must ship with the flip, exactly as #342's subprotocol change had to.
+> See "The WebSocket transports did no per-conversation authorization (#419)" below for why the
+> server deliberately does not mint the row for you.
+
 ### Tenants are provisioned explicitly, before anyone signs in
 
 A first sign-in from an unknown Entra directory is a **rejection**, never an implicit new tenant.
@@ -484,16 +493,28 @@ response. CORS is skipped entirely only when `LmStreaming:EnableCors` is set to 
 7. **If a browser on another origin calls this host**, set `LmStreaming:AllowedOrigins` to that
    origin. Refusals are answered before the endpoint runs, so a cross-origin client can only read
    the refusal code if this host is configured to allow its origin.
-8. Set `Identity:Enforce` true. Anonymous `/api` requests now get `401`.
+8. **Ship a client that provisions before it connects (#435), then** set `Identity:Enforce` true.
+   Anonymous `/api` requests now get `401`, and the WebSocket transports refuse any `threadId` with
+   no metadata row. The bundled SPA as it ships mints its thread id locally and connects straight
+   away, so **flipping the flag without that client change stops any brand-new conversation from
+   starting** (existing ones are unaffected). See the client precondition under "`Identity:Enforce`
+   is global" above.
 
-Steps 1 through 7 are reversible and can sit in production for as long as you like. Only step 8
-changes what any caller sees.
+Steps 1 through 7 are reversible and can sit in production for as long as you like. Step 8 is the
+only one that changes what any caller sees — and it changes it in two ways, not one: anonymous `/api`
+requests start getting `401`, and a client that has not been updated to provision first can no longer
+start a conversation over the socket.
 
 ### Known gaps
 
-One thing `Identity:Enforce` still does not do that its name suggests it might, plus three that used
-to be listed here and are now fixed. The list is exhaustive over the REST surface: every other `/api`
-route that names a conversation goes through the authorizer.
+Four gaps that used to be listed here, all now fixed — none of them is still open. The list is
+exhaustive over the REST surface: every other `/api` route that names a conversation goes through the
+authorizer.
+
+Two things `Identity:Enforce` still does not do are recorded inside the #419 section below rather
+than as gaps of their own, because both are consequences of that fix rather than holes left in it:
+the `auth/{providerId}` sign-in **side effect** (the information leak is closed; an anonymous `GET`
+can still start the host operator's own sign-in), and the **client-side provisioning** #435 tracks.
 
 #### Service callers used to be refused (#345, fixed)
 
@@ -668,10 +689,17 @@ creates nothing, touches no pooled entry, and never reaches `AcceptWebSocketAsyn
   is actually that parent's, using the durable link `SubAgentProvenance` stamps. Without the second
   check the first is a formality: a caller passes their own parent id with someone else's `agentId`,
   the parent-scoped live lookups miss, and the handler replays `subagent-{agentId}` out of the store.
-- **A child that is not the named parent's does not refuse the handshake.** It loses the persisted
-  replay and the socket answers `subagent_unavailable` — byte for byte what an `agentId` that names
-  nothing answers. Refusing the handshake instead would make the two tell apart, which is an existence
-  oracle over sub-agent ids.
+- **A child whose provenance does not check out does not refuse the handshake.** It loses the
+  persisted replay and the socket answers `subagent_unavailable` — byte for byte what an `agentId`
+  that names nothing answers. Refusing the handshake instead would make the two tell apart, which is
+  an existence oracle over sub-agent ids. "Does not check out" covers **both** a row stamped with a
+  different parent **and a child with no metadata row at all**: a row is not evidence that nothing was
+  persisted, because the agent appends messages during a run and writes metadata only at completion,
+  so a child running now — or killed mid-run — has a transcript and no row, permanently, and no
+  repair pass synthesizes one (both `StampUnownedThreadsAsync` implementations only `UPDATE` rows that
+  already exist). The cost is that an owner's own child killed mid-run no longer replays its partial
+  transcript over the socket; that transcript has no row, so nothing else under enforcement can
+  authorize it either.
 - **An existence-hiding refusal is a `404` whose body is identical to the REST surface's**
   `unknown_thread`. A never-minted id and another tenant's id answer the same; a refusal that already
   admits the id names something keeps its `403`, and never a `401` (same reasoning as #342).

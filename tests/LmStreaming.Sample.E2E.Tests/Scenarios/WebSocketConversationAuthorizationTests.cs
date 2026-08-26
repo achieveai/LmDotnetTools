@@ -27,9 +27,10 @@ namespace LmStreaming.Sample.E2E.Tests.Scenarios;
 /// <para>
 /// Two refusal shapes, deliberately different from each other. <c>/ws</c> refuses the HANDSHAKE, so
 /// nothing is created and no socket is accepted. <c>/ws/subagent</c> refuses the handshake only when
-/// the PARENT is not the caller's; a child that is not the named parent's loses its persisted replay
-/// while the socket still opens, because refusing that handshake would make "not your child" and
-/// "no such child" tell apart - see <see cref="SubAgentSocketAdmission"/>.
+/// the PARENT is not the caller's; a child whose provenance does not check out - one stamped with a
+/// different parent, and equally one with no metadata row to stamp - loses its persisted replay while
+/// the socket still opens, because refusing that handshake would make "not your child" and "no such
+/// child" tell apart - see <see cref="SubAgentSocketAdmission"/>.
 /// </para>
 /// </remarks>
 public sealed class WebSocketConversationAuthorizationTests : LoggingTestBase
@@ -202,6 +203,87 @@ public sealed class WebSocketConversationAuthorizationTests : LoggingTestBase
         _ = socket.State.Should().Be(
             System.Net.WebSockets.WebSocketState.Open,
             "read-only replay holds the socket open");
+    }
+
+    /// <summary>
+    /// The case a metadata row cannot speak for: a child that is RUNNING, or that was killed mid-run.
+    /// The agent appends each message as it produces it and writes metadata only when the run
+    /// completes, so such a child has a transcript and no row - permanently, once it is killed, since
+    /// no repair pass synthesizes a row for a message-only thread. Admitting the replay whenever the
+    /// row was missing therefore leaked exactly the transcripts whose provenance could not be checked.
+    /// </summary>
+    [Fact]
+    public async Task WithEnforcementOn_AMidRunChildWithNoRow_AnswersExactlyLikeAnAgentIdThatNamesNothing()
+    {
+        LogTestStart();
+        using var factory = NewFactory();
+        const string BobsParent = "thread-bobs-parent";
+        const string AlicesAgentId = "alices-midrun-agent";
+        const string NeverExistedAgentId = "never-existed-agent";
+
+        await ProvisionOwnedThreadAsync(factory, BobsParent, Bob);
+        await SeedMidRunChildAsync(factory, AlicesAgentId);
+
+        // Non-vacuity for the whole comparison: leg A is only interesting if the transcript it must
+        // NOT disclose is genuinely there. A seed that silently wrote nothing would make both legs
+        // "no such child" and the assertion below would compare two identical nothings.
+        var store = factory.Services.GetRequiredService<IConversationStore>();
+        var seeded = await store.LoadMessagesAsync(SubAgentProvenance.ThreadIdPrefix + AlicesAgentId);
+        _ = seeded.Should().NotBeEmpty("the mid-run child must have a transcript for this to be a leak");
+
+        var midRun = await AnswerForAsync(factory, BobsParent, AlicesAgentId);
+        var nothing = await AnswerForAsync(factory, BobsParent, NeverExistedAgentId);
+
+        _ = midRun.Frames.Should().Equal(
+            nothing.Frames,
+            "a foreign child mid-run and an agent id that names nothing must be indistinguishable "
+                + "frame for frame - the done sentinel on one and an error on the other is an "
+                + "existence oracle over sub-agent ids");
+        _ = midRun.StillOpen.Should().Be(
+            nothing.StillOpen,
+            "a held-open socket for one and a closed socket for the other is the same oracle read "
+                + "off the transport instead of off the frames");
+    }
+
+    /// <summary>What one sub-agent handshake answered: its frames, with the caller's own agent id
+    /// normalized out (the server echoes it back, and the caller supplied it), and whether the socket
+    /// was left open.</summary>
+    private sealed record SubAgentAnswer(IReadOnlyList<string> Frames, bool StillOpen);
+
+    private static async Task<SubAgentAnswer> AnswerForAsync(
+        E2EWebAppFactory factory,
+        string parentThreadId,
+        string agentId)
+    {
+        var socket = await factory.ConnectSubAgentWebSocketAsync(
+            parentThreadId,
+            agentId,
+            subProtocols: CredentialFor(Bob));
+        await using var client = new WebSocketTestClient(socket);
+
+        using var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(15));
+
+        var normalized = frames
+            .Select(frame => frame.RootElement.GetRawText().Replace(agentId, "<agent>", StringComparison.Ordinal))
+            .ToList();
+
+        return new SubAgentAnswer(normalized, socket.State == System.Net.WebSockets.WebSocketState.Open);
+    }
+
+    /// <summary>
+    /// Seeds a child that has persisted messages and NO metadata row - what the store holds while a
+    /// run is in flight, and what it keeps holding if that run never completes.
+    /// </summary>
+    private static async Task SeedMidRunChildAsync(E2EWebAppFactory factory, string agentId)
+    {
+        var store = factory.Services.GetRequiredService<IConversationStore>();
+        var childThreadId = SubAgentProvenance.ThreadIdPrefix + agentId;
+
+        var persisted = MessagePersistenceConverter.ToPersistedMessage(
+            new TextMessage { Role = Role.Assistant, Text = "half-written-child-answer" },
+            childThreadId,
+            runId: "run-1");
+        await store.AppendMessagesAsync(childThreadId, [persisted]);
     }
 
     /// <summary>

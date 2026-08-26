@@ -198,22 +198,29 @@ public sealed class WebSocketConversationGateTests
     }
 
     /// <summary>
-    /// A child with no row at all is the LIVE case - the manager has spawned it and it has not
-    /// persisted anything yet - and must keep its replay, or focusing a running sub-agent would break.
+    /// A child with no metadata row LOSES its replay. A row is not proof of "nothing persisted": the
+    /// agent appends messages during a run and writes metadata only at completion, so a child running
+    /// now - or killed mid-run - has a transcript and no row, and no repair pass ever synthesizes one.
+    /// Granting the replay there is the oracle: a foreign mid-run child would answer differently from
+    /// an agent id that names nothing.
     /// </summary>
     [Fact]
-    public async Task AChildWithNoRowAtAll_KeepsItsReplay()
+    public async Task AChildWithNoRowAtAll_LosesItsReplay()
     {
         const string AlicesParent = "thread-alices-parent";
 
         var store = new InMemoryConversationStore();
         await SaveOwnedAsync(store, AlicesParent, TenantA, Alice);
 
+        var context = NewContext();
         var admission = await NewGate(store, AsAlice()).AdmitSubAgentAsync(
-            NewContext(), AlicesParent, "brand-new-child", CancellationToken.None);
+            context, AlicesParent, "brand-new-child", CancellationToken.None);
 
+        // Still admitted: the handshake must not be where the difference shows up.
         _ = admission.Admitted.Should().BeTrue();
-        _ = admission.MayReplayPersistedTranscript.Should().BeTrue();
+        _ = BodyOf(context).Should().BeEmpty();
+        _ = admission.MayReplayPersistedTranscript.Should().BeFalse(
+            "a missing row means the provenance could not be checked, not that nothing was persisted");
     }
 
     [Fact]

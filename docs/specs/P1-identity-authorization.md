@@ -1630,10 +1630,14 @@ the pool.
   `GET /api/conversations/{threadId}/subagents` makes - and then checks the named child against the
   durable parent link `SubAgentProvenance` stamps. Without the second check the first is a formality:
   the caller supplies their own parent id with someone else's `agentId`.
-- A child that is not the named parent's is **admitted** and loses only its persisted replay, so the
-  socket answers `subagent_unavailable` exactly as it does for an `agentId` that names nothing.
+- A child whose provenance does not check out is **admitted** and loses only its persisted replay, so
+  the socket answers `subagent_unavailable` exactly as it does for an `agentId` that names nothing.
   Refusing that handshake would make the two distinguishable, which is §7.4.1's oracle in a second
-  place.
+  place. This covers a row stamped with a different parent **and** a child with no metadata row: the
+  agent appends messages during a run and writes metadata only at completion, so a running or
+  mid-run-killed child has a transcript and no row, and no repair pass ever synthesizes one - both
+  `StampUnownedThreadsAsync` implementations only `UPDATE` existing rows. Granting the replay on a
+  missing row disclosed precisely the transcripts whose provenance could not be checked.
 - The existence-hiding refusal is a `404` whose body is identical to the REST surface's
   `unknown_thread` (§7.4.1). A never-minted id and another tenant's id answer the same. A refusal that
   already admits existence keeps `403`, never `401` - the retry-loop reasoning above.
