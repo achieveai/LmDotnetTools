@@ -1,7 +1,9 @@
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Time.Testing;
 using Xunit;
 
 namespace LmMultiTurn.Tests.Persistence;
@@ -67,14 +69,17 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
     /// produce INDEPENDENT store objects over the SAME durable storage — the stand-in for two processes,
     /// since neither shares any in-process lock with the other.
     /// </summary>
-    private IInputAcceptanceStore CreateStore(StoreKind kind, string backingName = "default")
+    private IInputAcceptanceStore CreateStore(
+        StoreKind kind,
+        string backingName = "default",
+        TimeProvider? clock = null)
     {
         switch (kind)
         {
             case StoreKind.InMemory:
                 return new InMemoryConversationStore();
             case StoreKind.File:
-                return new FileConversationStore(Path.Combine(_root, backingName));
+                return new FileConversationStore(Path.Combine(_root, backingName), clock);
             case StoreKind.Sqlite:
                 var store = new SqliteConversationStore(Path.Combine(_root, backingName + ".db"));
                 _disposables.Add(store);
@@ -247,8 +252,8 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
     /// stops being atomic. <c>File.Move(..., overwrite: false)</c> reads as create-if-absent, but on Unix it
     /// is a <c>stat</c> of the destination followed by a <c>rename</c> that silently REPLACES it, so two
     /// racers both come away owning the input. Only a genuine exclusive create — <c>O_CREAT|O_EXCL</c>, which
-    /// <see cref="FileMode.CreateNew"/> compiles to — arbitrates this, and the losers must then survive
-    /// reading a record whose content the winner has not finished writing.
+    /// <see cref="FileMode.CreateNew"/> compiles to — arbitrates this, and the losers must then survive the
+    /// gap between the winner taking the name and its content being there.
     /// </para>
     /// </summary>
     [Fact]
@@ -280,6 +285,174 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
                     "every loser must be handed the record the winner wrote, in full");
             admissions.Select(a => a.ReservationId)
                 .Should().Contain(stored!.ReservationId, "the record must be one racer's, not a merge");
+        }
+    }
+
+    /// <summary>
+    /// The invariant the whole read side rests on: an admission record that can be OPENED can be READ. The
+    /// store's reader treats an openable-but-empty record as a claim still settling and waits it out, and it
+    /// can only do that for a bounded time before calling it a fault — so every instant in which the record
+    /// is openable and empty is an instant that spends a stranger's budget. On a loaded runner that is
+    /// precisely what failed: the winner created the record and then flushed its content from a thread-pool
+    /// continuation, so the empty record stayed observable across a scheduling point that starvation can
+    /// stretch without limit, and losers were handed <c>IOException</c> for an input that was admitted
+    /// perfectly well.
+    /// <para>
+    /// Proven by observation rather than by timing: a dedicated OS thread spins on the acceptances directory
+    /// for the whole of a contended reserve/retract sweep and opens every record it finds, exactly as the
+    /// store's own reader would. An open that is REFUSED proves nothing and is ignored — that is the claim
+    /// holding the file shut, which is the point. An open that SUCCEEDS must yield a complete record. The
+    /// observer's own open count is asserted so a run in which it never saw anything cannot pass as clean.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task AnAdmissionRecordIsNeverObservableUntilItsContentIsThere()
+    {
+        const string Backing = "visibility";
+        const int Racers = 6;
+        const int ContestedInputs = 40;
+        var acceptancesDir = Path.Combine(_root, Backing, "thread-1", "acceptances");
+        var stores = Enumerable.Range(0, Racers)
+            .Select(_ => CreateStore(StoreKind.File, Backing))
+            .ToArray();
+
+        var observer = new RecordObserver(acceptancesDir);
+        observer.Start();
+
+        try
+        {
+            for (var round = 0; round < ContestedInputs; round++)
+            {
+                var inputId = $"idem:1:visible-{round}";
+                var admissions = stores.Select(_ => Admission(inputId)).ToArray();
+                var results = await Task.WhenAll(
+                    stores.Select((store, i) => Task.Run(() => store.TryReserveAcceptanceAsync(admissions[i]))));
+
+                var winner = Array.FindIndex(results, r => r is null);
+                winner.Should().BeGreaterThanOrEqualTo(0, "exactly one racer owns input {0}", inputId);
+
+                // Retracting keeps the directory to a single live record, so the observer's every pass lands
+                // on the record actually being contended rather than on a growing pile of settled ones.
+                (await stores[winner].TryReleaseAcceptanceAsync(
+                        "thread-1",
+                        inputId,
+                        admissions[winner].ReservationId))
+                    .Should().BeTrue();
+            }
+        }
+        finally
+        {
+            observer.StopAndJoin();
+        }
+
+        observer.Opened.Should().BeGreaterThan(
+            ContestedInputs,
+            "an observer that never got a record open proves nothing about what is observable");
+        observer.Unreadable.Should().Be(
+            0,
+            "a record the store lets anyone open must already carry the content that open is for");
+    }
+
+    /// <summary>
+    /// Opens every admission record it can, as the store's own reader does, and counts the ones that opened
+    /// but held no complete record. Refused opens are the claim holding the file shut and are not sightings.
+    /// Runs on a dedicated OS thread so the thread pool the store's own contenders are queued on cannot
+    /// deschedule the very observation that has to catch them mid-claim.
+    /// </summary>
+    private sealed class RecordObserver
+    {
+        private readonly string _acceptancesDir;
+        private readonly CancellationTokenSource _stop = new();
+        private readonly Thread _thread;
+
+        private int _opened;
+        private int _unreadable;
+
+        internal RecordObserver(string acceptancesDir)
+        {
+            _acceptancesDir = acceptancesDir;
+            _thread = new Thread(Watch)
+            {
+                IsBackground = true,
+                Name = "acceptance-record-observer",
+            };
+        }
+
+        internal int Opened => Volatile.Read(ref _opened);
+
+        internal int Unreadable => Volatile.Read(ref _unreadable);
+
+        internal void Start() => _thread.Start();
+
+        internal void StopAndJoin()
+        {
+            _stop.Cancel();
+            _thread.Join(TimeSpan.FromSeconds(30)).Should().BeTrue("the observer thread must finish");
+            _stop.Dispose();
+        }
+
+        private void Watch()
+        {
+            while (!_stop.IsCancellationRequested)
+            {
+                string[] records;
+                try
+                {
+                    records = Directory.Exists(_acceptancesDir)
+                        ? Directory.GetFiles(_acceptancesDir, "*.json")
+                        : [];
+                }
+                catch (IOException)
+                {
+                    continue;
+                }
+
+                foreach (var record in records)
+                {
+                    Inspect(record);
+                }
+            }
+        }
+
+        private void Inspect(string record)
+        {
+            byte[] content;
+            try
+            {
+                using var stream = new FileStream(
+                    record,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete,
+                    bufferSize: 0,
+                    FileOptions.None);
+                content = new byte[stream.Length];
+                stream.ReadExactly(content);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Refused, delete-pending, or already gone: the record is not claiming to be readable.
+                return;
+            }
+
+            _ = Interlocked.Increment(ref _opened);
+            if (content.Length == 0 || !IsCompleteJson(content))
+            {
+                _ = Interlocked.Increment(ref _unreadable);
+            }
+        }
+
+        private static bool IsCompleteJson(byte[] content)
+        {
+            try
+            {
+                using var parsed = JsonDocument.Parse(content);
+                return true;
+            }
+            catch (JsonException)
+            {
+                return false;
+            }
         }
     }
 
@@ -387,29 +560,34 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
     public async Task AGateFileLeftBehindByADeadHost_DoesNotFreezeTheAdmissionItGuards()
     {
         const string Backing = "stale-gate";
-        var store = CreateStore(StoreKind.File, Backing);
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var store = CreateStore(StoreKind.File, Backing, clock);
         var admission = Admission();
         (await store.TryReserveAcceptanceAsync(admission)).Should().BeNull();
         var gateFile = SoleAcceptanceRecordFile(Backing) + ".mutate";
         await File.WriteAllTextAsync(gateFile, string.Empty);
 
         // A different store object over the same directory — the stand-in for the host that comes after.
-        var later = CreateStore(StoreKind.File, Backing);
+        var later = CreateStore(StoreKind.File, Backing, clock);
         var resolved = admission with { State = InputAcceptanceState.Enforced };
         var completed = await later.TryRecordOutcomeAsync(resolved);
 
         completed.Should().BeTrue("a gate file nobody holds open is not a mutation in flight");
         (await later.GetAcceptanceAsync(admission.ThreadId, admission.InputId)).Should().Be(resolved);
 
-        // And the lock still excludes: while a handle is held the mutation stands down, and it lands as soon
-        // as that handle closes — without the gate file itself ever having to go away.
+        // And the lock still excludes: while a handle is held the mutation stands down once its budget is
+        // spent, and it lands as soon as that handle closes — without the gate file itself ever having to go
+        // away. The stand-down is driven on the injected clock; waiting the budget out in real time would put
+        // a fixed ten-second sleep in the suite.
         using (var held = new FileStream(gateFile, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None))
         {
-            (await later.TryReleaseAcceptanceAsync(
+            var refused = await SettleUnderExpiredBudgetAsync(
+                later.TryReleaseAcceptanceAsync(
                     admission.ThreadId,
                     admission.InputId,
-                    admission.ReservationId))
-                .Should().BeFalse("the held handle is a mutation in flight");
+                    admission.ReservationId),
+                clock);
+            refused.Should().BeFalse("the held handle is a mutation in flight");
         }
 
         (await later.TryReleaseAcceptanceAsync(
@@ -462,30 +640,67 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// An exclusive-creation protocol necessarily has a moment where the record EXISTS but its content has
-    /// not landed yet — that is what makes the creation the arbitration point. A reader that meets that
-    /// moment and answers "never admitted" would let the host queue a second turn for an input another
-    /// caller has already been granted, so the unsettled record must be reported as an error instead. The
-    /// same shape covers a record left half-written by a host that died mid-claim.
+    /// A record left empty or half-written by a host that died mid-claim is still an ADMITTED input: the
+    /// name was taken by an exclusive create that some caller won. Answering "never admitted" there would let
+    /// the host queue a second turn for an input another caller was already granted, so once the settle
+    /// budget is spent on a record that never becomes readable, the store faults rather than guesses. That is
+    /// the one behaviour a widened budget must not quietly turn into a hang, so it is asserted directly.
+    /// <para>
+    /// Driven on an injected clock rather than by waiting the budget out: the budget is deliberately far
+    /// wider than any plausible stall (its whole job is to not be a starvation-class discriminator), and a
+    /// test that spent it in real time would be trading a flake for a ten-second sleep. The pump advances the
+    /// clock until the call settles, with a cap that fails loudly rather than looping forever.
+    /// </para>
     /// </summary>
     [Theory]
     [InlineData("")]
     [InlineData("{\"threadId\":\"thread-1\",\"inputId\":\"idem:1:rev")]
     public async Task AnUnsettledRecord_IsNeverReportedAsAnInputThatWasNeverAdmitted(string onDisk)
     {
-        var store = CreateStore(StoreKind.File, "unsettled-" + onDisk.Length);
+        var backing = "unsettled-" + onDisk.Length;
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var store = CreateStore(StoreKind.File, backing, clock);
         var admission = Admission();
         _ = await store.TryReserveAcceptanceAsync(admission);
-        await File.WriteAllTextAsync(SoleAcceptanceRecordFile("unsettled-" + onDisk.Length), onDisk);
+        await File.WriteAllTextAsync(SoleAcceptanceRecordFile(backing), onDisk);
 
-        var read = async () => await store.GetAcceptanceAsync(admission.ThreadId, admission.InputId);
-        var reserve = async () => await store.TryReserveAcceptanceAsync(Admission());
+        var read = ExpireSettleBudgetAsync(
+            store.GetAcceptanceAsync(admission.ThreadId, admission.InputId),
+            clock);
+        var reserve = ExpireSettleBudgetAsync(store.TryReserveAcceptanceAsync(Admission()), clock);
 
         _ = await read.Should().ThrowAsync<IOException>(
             "an in-progress claim is an admitted input, not an absent one");
         _ = await reserve.Should().ThrowAsync<IOException>(
             "the caller must not be handed ownership of an input someone else is claiming");
     }
+
+    /// <summary>
+    /// Advances <paramref name="clock"/> until <paramref name="inFlight"/> settles, so a test can prove what
+    /// the store does once its settle budget is genuinely spent without spending it in real time. The
+    /// iteration cap is a fail-loud bound, not a timeout: a call that will not settle under an
+    /// arbitrarily-advanced clock is a hang, and must be reported as one rather than passing quietly.
+    /// </summary>
+    private static async Task<T> SettleUnderExpiredBudgetAsync<T>(Task<T> inFlight, FakeTimeProvider clock)
+    {
+        const int MaxAdvances = 2000;
+        for (var i = 0; i < MaxAdvances && !inFlight.IsCompleted; i++)
+        {
+            clock.Advance(TimeSpan.FromMilliseconds(100));
+
+            // Real yield: the store's next poll resumes on the thread pool, and a delay that has not been
+            // registered yet cannot be advanced past.
+            await Task.Delay(1);
+        }
+
+        inFlight.IsCompleted.Should().BeTrue(
+            "the call must settle once its budget is spent, not wait on a clock that no longer moves");
+        return await inFlight;
+    }
+
+    /// <summary>The same pump, shaped for an assertion that the settled call THREW.</summary>
+    private static Func<Task<T>> ExpireSettleBudgetAsync<T>(Task<T> inFlight, FakeTimeProvider clock) =>
+        () => SettleUnderExpiredBudgetAsync(inFlight, clock);
 
     /// <summary>The one admission record under a file-backed store, located without assuming its name.</summary>
     private string SoleAcceptanceRecordFile(string backingName) =>
