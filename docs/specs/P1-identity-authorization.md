@@ -704,6 +704,78 @@ tenant matches their lower-cased `preferred_username` and still has `user_id IS 
 bound to `{tid}:{oid}` and `bound_at` is stamped. That principal then carries role `admin`. Once
 bound, the UPN is never consulted again (8.2).
 
+### 4.5 What sits outside the identity boundary, and why
+
+> **Decision: exactly one `/api` route family is exempt from the identity boundary — the sandbox
+> gateway's deferred-auth webhook — and it is exempt because no front door can produce a
+> `Principal` for it, not because it has an authority of its own.** Everything else under `/api`
+> is guarded, including the lifecycle control plane.
+
+`IdentityMiddleware` partitions `/api` into three sets. `AnonymousApiPaths` are user-facing routes
+that must stay reachable while signed out (the identity config the SPA reads *before* it can sign
+in; the tenant-admin surface, which authenticates with the operator secret; health). Everything not
+named is guarded. `InfrastructureApiPaths` is the third set — routes that sit outside the boundary
+altogether — and this section records what may go in it.
+
+**The admission test is "can any `IRequestPrincipalSource` speak for this caller?", not "does this
+route have some other check?".** A route with its own authority is still guarded; the two layers
+compose, and the identity boundary is what applies *tenant* refusal, which no route-local check
+does. Only a route for which no principal can be constructed at any price belongs here, because
+guarding such a route refuses its only legitimate caller and grants nothing in exchange.
+
+`/api/auth/webhook` passes that test. Its `Authorization` header carries a per-session secret
+minted by the sandbox gateway, not a JWT. The bearer handler cannot parse it, stashes nothing, and
+no front door recognises a session secret — so guarding it would refuse the caller for presenting
+the exact credential its own endpoint requires.
+
+**`/api/lifecycle` was in this set and was removed (#402).** Its entry rested on two claims. The
+first — that the plane is config-gated off by default (`Lifecycle:Delivery:Enabled` and
+`Lifecycle:Approval:Enabled`) — is true, and bounds the exposure, but a bounded exposure is still
+one `Identity:Enforce` does not gate. The second — that the plane is "gated behind its own
+signature check" — is **false**, and it was the load-bearing half.
+`LifecycleApprovalController`'s own remarks state that it *does not authenticate*, that it reads
+`HttpContext.User` established by whatever the host wired in front of it, and that *no
+subscriber-to-host signing convention exists, so nothing a caller sends to this endpoint carries a
+signature for anyone to check*. The plane's only signing is **outbound**, in
+`HttpLifecycleDeliverySender`, which signs deliveries the host sends *to* subscribers.
+
+So the carve-out granted the plane no authority it did not already have, and cost it the one thing
+it did have: with the routes outside the boundary, `IdentityMiddleware` returned at its first line
+and never read the refusal the bearer handler had already stashed. A **suspended** or
+**not-provisioned** tenant's still-valid token therefore reached `LifecycleSubscriptionsController`
+and `LifecycleApprovalController`, whose `AuthenticatedAppId()` reads the raw `ClaimsPrincipal` and
+saw an authenticated caller. `Identity:Enforce` gated the REST front door and silently did not gate
+this one.
+
+**Answering the question the issue posed: no, a refused tenant may not drive the lifecycle plane
+while its REST surface is refused.** A tenant that is suspended or not yet provisioned is refused
+everywhere its identity is knowable, and on this surface it is knowable.
+
+**Why guarding it refuses no legitimate caller.** Unlike the webhook, lifecycle has a front door
+that can speak for it. `ServiceCallerPrincipalSource` (4.2) turns the inbound S2S secret plus an
+`X-Sbx-App-Id` registration into an `AppOnly` principal carrying a tenant — precisely the identity
+a service-to-service control plane wants, and strictly more than the raw `ClaimsPrincipal` the
+controllers were reading. The cost of the change is that a lifecycle caller must now be onboarded
+under `Identity:Apps` when `Identity:Enforce` is on, which is what enforcement already means for
+every other service-to-service route. With enforcement off, nothing changes: the development
+principal is established as before.
+
+**`/api/auth/egress-keys` is deliberately not exempt**, and is named here because it looks like an
+infrastructure route and is not one. It is a SPA management surface the browser calls through
+`apiFetch` with a bearer token, and its controller presents no credential of its own — it is
+loopback-gated only. Carving it out would let a credential-less loopback caller plant, read and
+destroy egress keys under enforcement.
+
+**This partition is asserted, not trusted.** `IdentityBoundaryPipelineTests` enumerates the host's
+real endpoint table and requires every `/api` route to be either guarded or named in the exempt
+list, so a new route cannot silently land outside the boundary; a second test boots the lifecycle
+plane on (both flags) and asks the real predicate about the real published routes, because the
+config gate makes the plane invisible to a default-boot enumeration.
+
+**Out of scope here.** The WebSocket transports at `/ws` sit outside the `/api` prefix entirely and
+are therefore not governed by this partition at all. That is a different mechanism and a different
+route family, tracked as #342; neither issue closes the other.
+
 ---
 
 ## 5. Token validation rules for the OBO JWT

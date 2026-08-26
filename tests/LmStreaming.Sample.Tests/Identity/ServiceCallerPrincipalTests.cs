@@ -163,6 +163,35 @@ public sealed class ServiceCallerPrincipalTests
                 + $":{nameof(PrincipalSource.AppOnly)}");
     }
 
+    [Theory]
+    [InlineData("/api/lifecycle/subscriptions")]
+    [InlineData("/api/lifecycle/approvals/decisions")]
+    public async Task WithEnforcementOn_ALifecycleCallerWithTheDaemonsHeaders_ReachesTheEndpointWithAnAppPrincipal(
+        string path)
+    {
+        // #402's other side. Bringing /api/lifecycle inside the boundary only closes the tenant-refusal
+        // hole if the plane's LEGITIMATE callers still get in - otherwise the fix trades a security
+        // gap for an outage. They do, and by the ordinary door: lifecycle is a service-to-service
+        // surface, ServiceCallerPrincipalSource is the service-to-service front door, and the app
+        // principal it mints is exactly the identity these routes want.
+        //
+        // This is what makes the exemption unnecessary rather than merely unwise, and it is the
+        // assertion that distinguishes this fix from "guard it and hope": the caller reaches the
+        // endpoint AND carries a tenant, so the controllers' own owner resolution has something real
+        // to work from instead of a raw ClaimsPrincipal nobody validated a tenant for.
+        using var server = await StartAsync(
+            enforce: true,
+            s2sSecret: Secret,
+            apps: new Dictionary<string, string>(StringComparer.Ordinal) { [DaemonAppId] = DaemonTenant });
+
+        var response = await server.CreateClient().SendAsync(DaemonRequest(path: path));
+
+        _ = response.StatusCode.Should().Be(HttpStatusCode.OK);
+        _ = (await response.Content.ReadAsStringAsync()).Should().Be(
+            $"{ReachedBody}:{DaemonTenant}:{nameof(PrincipalKind.App)}:{DaemonAppId}"
+                + $":{nameof(PrincipalSource.AppOnly)}");
+    }
+
     [Fact]
     public async Task WithEnforcementOn_AServiceCallerPresentingOnlyTheSecret_UsesTheDefaultRegistration()
     {
@@ -286,14 +315,19 @@ public sealed class ServiceCallerPrincipalTests
 
     [Theory]
     [InlineData("/api/auth/webhook/github")]
-    [InlineData("/api/lifecycle/subscriptions")]
     public async Task WithEnforcementOn_AnInfrastructureCallback_IsNotRefusedByIdentity(string path)
     {
-        // These sit outside the identity boundary by decision, not by omission: they authenticate
-        // with their own per-session secrets and have no user and no tenant to resolve.
+        // This sits outside the identity boundary by decision, not by omission: it authenticates
+        // with its own per-session secret and has no user and no tenant to resolve.
         // egress-keys deliberately does NOT belong here (BE1): it presents no credential of its own,
         // only a loopback gate, so leaving it exempt let a credential-less caller manage keys under
         // enforcement. Its guarded behaviour is pinned in IdentityBoundaryPipelineTests.
+        //
+        // /api/lifecycle was on this list and is not any more (#402). It never had a credential of
+        // its own to present - its controllers read HttpContext.User and its only signing is
+        // OUTBOUND - so the exemption granted nothing and cost tenant refusal. It is now guarded
+        // like every other service-to-service route, and reaches this door with a real credential;
+        // the test below is that pinning.
         using var server = await StartAsync(enforce: true, s2sSecret: Secret);
 
         var request = new HttpRequestMessage(HttpMethod.Get, new Uri(path, UriKind.Relative));
