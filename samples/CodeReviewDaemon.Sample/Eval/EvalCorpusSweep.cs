@@ -394,14 +394,34 @@ internal sealed class EvalCorpusSweep
                 // Ungraded is the honest report. The three-way split below exists precisely so a
                 // missing grade is not read as a bad one, and one unreadable row still costs this
                 // candidate its grade rather than the sweep its window.
-                _logger?.LogWarning(
-                    failure,
-                    "Judge artifact {ArtifactId} for review run {ReviewRunId} did not deserialize; "
-                        + "its candidate counts as ungraded rather than inheriting the grade this "
-                        + "row superseded.",
-                    artifact.Id,
-                    reviewRunId
-                );
+                //
+                // TWO different inputs reach this branch and they are not the same event. A payload
+                // that threw carries a failure and is a row nothing can read; a payload of literal
+                // `null` deserialised perfectly, to nothing — the row was written empty. Reporting
+                // the second as "did not deserialize", with no exception beside it, sends an
+                // operator looking for a parser bug that is not there.
+                if (failure is null)
+                {
+                    _logger?.LogWarning(
+                        "Judge artifact {ArtifactId} for review run {ReviewRunId} holds a literal "
+                            + "JSON null, so it records no grade at all; its candidate counts as "
+                            + "ungraded rather than inheriting the grade this row superseded.",
+                        artifact.Id,
+                        reviewRunId
+                    );
+                }
+                else
+                {
+                    _logger?.LogWarning(
+                        failure,
+                        "Judge artifact {ArtifactId} for review run {ReviewRunId} did not "
+                            + "deserialize; its candidate counts as ungraded rather than inheriting "
+                            + "the grade this row superseded.",
+                        artifact.Id,
+                        reviewRunId
+                    );
+                }
+
                 return null;
             }
 

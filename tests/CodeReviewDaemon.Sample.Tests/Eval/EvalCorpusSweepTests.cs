@@ -482,6 +482,43 @@ public sealed class EvalCorpusSweepTests : IDisposable
     }
 
     /// <summary>
+    /// A judge row whose payload is the literal JSON <c>null</c> reaches the same branch by a
+    /// different route, and says so (#455 item 5).
+    /// <para>
+    /// It deserialised <b>successfully</b>, to nothing — the row was written empty. The behaviour is
+    /// right either way (no grade, and the search stops rather than promoting a superseded one), but
+    /// reporting it as "did not deserialize" with no exception beside it sends an operator looking
+    /// for a parser bug that is not there.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_judge_row_written_as_a_literal_null_is_reported_as_empty_not_as_unreadable()
+    {
+        var runId = Reviewed("118", "src/Foo.cs:1 is wrong.");
+
+        AddV2Judge(runId, score: 8);
+        AddRawArtifact(
+            runId,
+            JudgeAgent.JudgeArtifactSchemaVersion,
+            JudgeAgent.JudgeArtifactKind,
+            "null"
+        );
+
+        var logger = new CapturingLogger<EvalCorpusSweep>();
+        var report = await Sweep(logger: logger).SweepOnceAsync(CancellationToken.None);
+
+        report.UngradedCandidates.Should().Be(1, "the behaviour is unchanged: no grade, and the 8 is not resurrected");
+        logger
+            .WarningCount("literal JSON null")
+            .Should()
+            .Be(1, "the row parsed; what it carries is nothing");
+        logger
+            .WarningCount("did not deserialize")
+            .Should()
+            .Be(0, "there was no parse failure and no exception to name one");
+    }
+
+    /// <summary>
     /// The non-vacuity half: with no corrupt row in the way, the newest readable grade IS reported.
     /// Without this, "always ungraded" satisfies the case above.
     /// </summary>
