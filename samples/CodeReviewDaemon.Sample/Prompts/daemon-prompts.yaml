@@ -59,6 +59,16 @@ review:
     - The ONLY writable location for this run is {{ notes_dir }} (via the scoped Write/Edit/Bash tools) —
       keep your working notes there and nowhere else; everything above stays read-only.
     {{ end ~}}
+    - Build/test tooling: {{ dotnet_sdk_status }}
+    {{ if has_dotnet_sdk ~}}
+      So where building or a focused `dotnet test --filter` would settle a finding, RUN IT before you write
+      that finding, and say in the finding that you did.
+    {{ else ~}}
+      So do NOT spend turns on `dotnet build` or `dotnet test` here — they will not get you an answer.
+      Reason from the code instead, and mark every finding you could not execute as unverified, in the
+      finding itself. A finding you reasoned your way to and one you actually reproduced must not read the
+      same to whoever has to act on them.
+    {{ end ~}}
     {{ if is_rereview ~}}
     This is a RE-REVIEW (round {{ review_round }}) of this PR. It was last reviewed at commit
     {{ prev_commit }}; the current head is {{ new_commit }}. Still assess the FULL PR (every changed file —
@@ -182,6 +192,16 @@ review:
     {{ if has_notes ~}}
     - The ONLY writable location for this run is {{ notes_dir }} (via the scoped Write/Edit/Bash tools) —
       keep your working notes there and nowhere else; everything above stays read-only.
+    {{ end ~}}
+    - Build/test tooling: {{ dotnet_sdk_status }}
+    {{ if has_dotnet_sdk ~}}
+      So where building or a focused `dotnet test --filter` would settle a finding, RUN IT before you write
+      that finding, and say in the finding that you did.
+    {{ else ~}}
+      So do NOT spend turns on `dotnet build` or `dotnet test` here — they will not get you an answer.
+      Reason from the code instead, and mark every finding you could not execute as unverified, in the
+      finding itself. A finding you reasoned your way to and one you actually reproduced must not read the
+      same to whoever has to act on them.
     {{ end ~}}
     {{ if is_rereview ~}}
     This is a RE-REVIEW (round {{ review_round }}) of this PR. It was last reviewed at commit

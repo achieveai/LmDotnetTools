@@ -227,6 +227,23 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private volatile bool _gatewaySkillsVerified;
 
     /// <summary>
+    /// What the review container can do about verifying a finding by building it (#272), established once and
+    /// then stated to the reviewer in its prompt. <see cref="HasSdk"/> is true ONLY on a positive detection, so
+    /// an indeterminate probe reads as "no, you cannot rely on it" for the purpose of choosing instructions,
+    /// while <see cref="Statement"/> still says which of the two it was.
+    /// </summary>
+    private sealed record BuildToolingFacts(bool HasSdk, string Statement);
+
+    /// <summary>
+    /// The cached verdict of <see cref="ProbeBuildToolingAsync"/>. The image is process-lifetime configuration
+    /// of the gateway, exactly like the marketplace catalog behind <see cref="_gatewaySkillsVerified"/>, so one
+    /// probe answers for every review this process runs. Unlike that flag, the INDETERMINATE outcome is cached
+    /// too: it costs nothing to be wrong about (the reviewer is merely told the fact is unknown), and leaving it
+    /// uncached would re-pay a failing gateway round-trip on every single run.
+    /// </summary>
+    private volatile BuildToolingFacts? _buildTooling;
+
+    /// <summary>
     /// The sub-agent completion source the review barrier polls when the review loop is NOT an in-process
     /// one that carries its own <c>SubAgentManager</c> — i.e. the S2S path, where the children live on the
     /// LmStreaming host (registered in Program.cs and auto-injected via <c>ActivatorUtilities.CreateInstance</c>).
@@ -468,6 +485,71 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         }
 
         _gatewaySkillsVerified = true;
+    }
+
+    /// <summary>
+    /// Establishes, once per process, whether the review container has a .NET SDK — and therefore whether the
+    /// reviewer can settle a finding by building or running a focused test rather than by reasoning alone (#272).
+    /// <para>
+    /// The behaviour being fixed is not the missing SDK; it is what the reviewer did about it. Revobot found out
+    /// by running <c>dotnet build</c>, got <c>dotnet: not found</c>, and fell back to reading the code — which is
+    /// the correct fallback, except that it then wrote its findings in the same voice it uses for ones it
+    /// executed. A reader cannot tell the two apart, and an unverified finding stated confidently is precisely
+    /// how a wrong one survives review. So the fact is established up front and the reviewer is told the
+    /// consequence: verify where you can, and label what you could not.
+    /// </para>
+    /// <para>
+    /// <b>Three outcomes, not two.</b> A non-zero exit is direct evidence of absence — the container ran the
+    /// command and had no such binary. An exception is not: the gateway session may be gone, the credential
+    /// stale, the call timed out. Collapsing that into "absent" would tell a reviewer sitting on a container
+    /// that CAN build to stop trying, which loses exactly the verification this change exists to enable. It is
+    /// reported as unknown instead, and the review proceeds either way — a probe that cannot run must never cost
+    /// a review, since every review before this change ran without one.
+    /// </para>
+    /// <para>
+    /// The probe goes through <see cref="_commandRunner"/>, which on both paths is a real gateway session built
+    /// from the same image the reviewer's session is built from. That is the same reasoning the S2S skill probe
+    /// uses: the daemon owns no session inside the hosted conversation, but it can ask the gateway about the
+    /// image both sessions come from.
+    /// </para>
+    /// </summary>
+    private async Task<BuildToolingFacts> ProbeBuildToolingAsync(CancellationToken cancellationToken)
+    {
+        var cached = _buildTooling;
+        if (cached is not null)
+        {
+            return cached;
+        }
+
+        BuildToolingFacts facts;
+        try
+        {
+            var result = await _commandRunner
+                .RunAsync(new SandboxCommand(["dotnet", "--version"]), cancellationToken)
+                .ConfigureAwait(false);
+
+            var version = result.Stdout.Trim();
+            facts = result.Succeeded && version.Length > 0
+                ? new BuildToolingFacts(
+                    true,
+                    $"a .NET SDK is available in this container (dotnet {version}).")
+                : new BuildToolingFacts(
+                    false,
+                    "no .NET SDK is installed in this container.");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not probe the review container for a .NET SDK; the reviewer will be told the fact is "
+                    + "unknown rather than told the SDK is absent.");
+            facts = new BuildToolingFacts(
+                false,
+                "the daemon could not determine whether a .NET SDK is installed in this container.");
+        }
+
+        _buildTooling = facts;
+        return facts;
     }
 
     public Task ExecuteStageAsync(ReviewStage stage, ReviewRun run, CancellationToken cancellationToken)
@@ -1406,7 +1488,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         string headSha,
         string? prevHeadSha,
         int reviewRound,
-        IReadOnlyList<string> priorNotesFiles)
+        IReadOnlyList<string> priorNotesFiles,
+        BuildToolingFacts buildTooling)
     {
         var isRereview = !string.IsNullOrWhiteSpace(prevHeadSha);
         return new Dictionary<string, object>
@@ -1441,6 +1524,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             ["review_round"] = reviewRound.ToString("D2", CultureInfo.InvariantCulture),
             ["has_prior_files"] = priorNotesFiles.Count > 0,
             ["prior_files"] = string.Join('\n', priorNotesFiles),
+            // #272. Two variables rather than one because the prompt needs both halves: the FACT (stated
+            // verbatim, including the "could not determine" case, so the reviewer is never told something
+            // stronger than the daemon actually established) and the CONSEQUENCE, which branches on whether
+            // building is available at all.
+            ["has_dotnet_sdk"] = buildTooling.HasSdk,
+            ["dotnet_sdk_status"] = buildTooling.Statement,
         };
     }
 
@@ -2479,9 +2568,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // to a GitHub/ADO PR — so agent-inline posting is forced off; PostAsync posts host-side for both
         // providers instead (with the deep-link appended).
         var shouldPost = _options.EnableCommentPosting && !_options.UseS2SReviewAgent;
+        var buildTooling = await ProbeBuildToolingAsync(cancellationToken).ConfigureAwait(false);
         var variables = BuildPromptVariables(
             _options.BotName, repo, run.PrId, shouldPost, checkoutRoot, storeRoot,
-            notesDir, run.HeadSha, prevHeadSha, reviewRound, priorNotesFiles);
+            notesDir, run.HeadSha, prevHeadSha, reviewRound, priorNotesFiles, buildTooling);
         var profile = DaemonAgentFactory.CreateReviewProfile(variables);
         // A tool-assisted review must actually CALL Read/Grep/Glob/Skill to ground its findings in the
         // checkout. At the diff-only "low" effort the model shortcuts to a diff-only answer (and even
@@ -3004,9 +3094,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var (prevHeadSha, reviewRound, _) = await ComputeRereviewContextAsync(run, notesDir: null, cancellationToken)
             .ConfigureAwait(false);
         var (repo, _) = ResolveRepo(run);
+        var buildTooling = await ProbeBuildToolingAsync(cancellationToken).ConfigureAwait(false);
         var variables = BuildPromptVariables(
             _options.BotName, repo, run.PrId, false, checkoutRoot, storeRoot,
-            null, run.HeadSha, prevHeadSha, reviewRound, []);
+            null, run.HeadSha, prevHeadSha, reviewRound, [], buildTooling);
         var profile = DaemonAgentFactory.CreateVariantProfile(_comparisonVariant, variables);
         // Same prepared S2S workspace as the primary arm (cached at ReviewAsync entry); null in-process. The
         // comparison arm stays diff-only in its prompt, but on S2S it still provisions against the PR workspace
