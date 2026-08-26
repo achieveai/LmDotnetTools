@@ -229,6 +229,10 @@ internal class SubAgentState
     private const int OwnedProviderDisposeDisposed = 2;
     private int _ownedProviderDisposeState;
 
+    // Latched once this run parks on its own AskUserQuestion; consumed by the first completion that
+    // either settles the caller or is absorbed as a text-free post-answer run. See ParkedOnQuestion.
+    private int _parkedOnQuestion;
+
     /// <summary>
     /// Guards the sub-agent lifecycle bookkeeping — the status transition, the outstanding inject-send
     /// lease count, and the single-flight restart claim — so a continuation's admission decision, a
@@ -611,6 +615,51 @@ internal class SubAgentState
     /// path rebuilds a fresh provider (and retries disposing this one) instead of reusing it.
     /// </summary>
     public void MarkOwnedProviderTerminalDisposeFailed() => _ownedProviderTerminalDisposeFailed = true;
+
+    /// <summary>
+    /// True while this sub-agent is known to have parked on its own <c>AskUserQuestion</c> and no
+    /// completion carrying a real result has settled since.
+    /// </summary>
+    /// <remarks>
+    /// This is the state the monitor's terminal gate needs and the loop's deferred-call registry cannot
+    /// give it (#262). That registry is the LIVE record of unresolved calls, so resolving the question —
+    /// the very event that makes an answer imminent — empties it. Between the resolution and the
+    /// answer-triggered run producing its text, a probe of the registry reports "no question pending" for
+    /// a benign reason (it was answered), which is indistinguishable from the intended one (there never
+    /// was one). Any run completion landing in that window was then read as genuinely terminal and settled
+    /// the caller with the <c>"(no text response)"</c> placeholder; because a <c>TaskCompletionSource</c>
+    /// settles once, the real answer that followed was discarded silently. A latch survives the
+    /// resolution, so the window is closed by construction rather than by timing.
+    ///
+    /// <para>
+    /// Deliberately per-state rather than per-run-generation, unlike most bookkeeping on this type. The
+    /// latch is armed by an observed deferred <c>AskUserQuestion</c> placeholder, and the monitor absorbs
+    /// at most two completions before a decision is reached: the asking run's OWN completion, which keeps
+    /// the latch armed because a resolution always enqueues the follow-on run that carries the answer, and
+    /// then at most one further run that never reached the model, which consumes it. Any other completion
+    /// settles the caller and consumes it. Only one run per parking can arm the latch, so it cannot
+    /// outlive the generation that set it by more than those two completions — exactly the span it is
+    /// meant to cover. Stamping it with a generation would add a second thing to keep in sync (and a
+    /// second way to get it wrong) to buy precision this bound already provides.
+    /// </para>
+    /// </remarks>
+    public bool ParkedOnQuestion => Volatile.Read(ref _parkedOnQuestion) != 0;
+
+    /// <summary>
+    /// Records that this sub-agent parked on its own <c>AskUserQuestion</c>. Idempotent, and
+    /// deliberately NOT cleared when the question is resolved — see <see cref="ParkedOnQuestion"/>.
+    /// </summary>
+    public void LatchParkedOnQuestion() => Volatile.Write(ref _parkedOnQuestion, 1);
+
+    /// <summary>
+    /// Consumes the parked latch. Called from the completion that settles the caller (with text or with
+    /// an error) AND from a text-free post-answer completion the monitor absorbs that did not itself ask
+    /// the question — so the latch spans the interval between parking and the real answer-derived result,
+    /// but can never span more
+    /// than one absorbed run. That bound is what keeps a legitimately text-free final run from wedging
+    /// the caller forever; see the <c>awaitingAnswerText</c> branch in <c>SubAgentManager</c>.
+    /// </summary>
+    public void ClearParkedOnQuestion() => Volatile.Write(ref _parkedOnQuestion, 0);
 
     /// <summary>
     /// True once the live <see cref="Agent"/> loop itself has been disposed while this sub-agent stayed

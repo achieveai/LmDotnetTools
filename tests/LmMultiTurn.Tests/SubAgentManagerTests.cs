@@ -928,6 +928,668 @@ public class SubAgentManagerTests : IAsyncLifetime
         }
     }
 
+    /// <summary>
+    /// The AskUserQuestion call in the shape a STREAMING provider actually emits it (#262): a
+    /// <see cref="ToolsCallUpdateMessage"/> carrying update chunks, never a consolidated
+    /// <c>ToolCallMessage</c>.
+    /// </summary>
+    /// <remarks>
+    /// This distinction is the whole point. The loop's publishing middleware sits UPSTREAM of the joiner
+    /// (Provider -> MessageTransformation -> JsonFragment -> Publishing -> Joiner -> ToolCall), so a
+    /// subscriber — and therefore the sub-agent monitor — sees tool-call UPDATES and never the
+    /// consolidated message the joiner builds downstream. Anthropic and OpenAI chat-completions both emit
+    /// only the streaming shape; only OpenAiResponsesAgent emits the consolidated one. A mock that emitted
+    /// the consolidated shape would exercise a path most deployments never take, which is exactly how an
+    /// earlier version of this test passed against a fix that could not have fired in production.
+    ///
+    /// <para>
+    /// <c>GenerationId</c> is load-bearing twice over, which is why it is echoed from the request's own
+    /// <see cref="GenerateReplyOptions"/> exactly as a real provider echoes it. First,
+    /// <c>MessageTransformationMiddleware</c> returns a message unchanged when its generation id is null
+    /// or empty, and that same pass is what converts a plural <see cref="ToolsCallUpdateMessage"/> into
+    /// the singular updates the joiner folds into a <c>ToolCallMessage</c> — without it the pipeline
+    /// yields a plural <c>ToolsCallMessage</c>, which the loop's turn body does not match, so the tool
+    /// never runs. Second, the deferred entry is stamped with the tool call's generation id, and the run
+    /// loop parks only when that matches the TURN's generation — so a fabricated id lets the tool defer
+    /// and then leaves the loop marching into the next turn, where the deferral precondition rejects it.
+    /// </para>
+    /// </remarks>
+    private static ToolsCallUpdateMessage StreamingAskUserQuestionCall(
+        string toolCallId, string args, string? generationId) =>
+        new()
+        {
+            Role = Role.Assistant,
+            GenerationId = generationId,
+            ToolCallUpdates =
+            [
+                new ToolCallUpdate
+                {
+                    ToolCallId = toolCallId,
+                    Index = 0,
+                    FunctionName = AskUserQuestionToolProvider.ToolName,
+                    FunctionArgs = args,
+                },
+            ],
+        };
+
+    /// <summary>The AskUserQuestion arguments used by the #262 regression tests.</summary>
+    private static string AskColorArgs() =>
+        JsonSerializer.Serialize(new
+        {
+            context = "Need input before continuing.",
+            questions = new[]
+            {
+                new
+                {
+                    prompt = "Which color?",
+                    options = new object[] { new { label = "Red" }, new { label = "Blue" } },
+                },
+            },
+        });
+
+    [Fact]
+    public async Task SpawnAsync_Foreground_WhenPostResolutionRunHasNoText_StillSettlesWithTheRealAnswer()
+    {
+        // Arrange (#262): the sibling test above proves a parked question keeps the foreground caller
+        // blocked, but it lets the answer and the answer's text land in the SAME synthetic run, so it
+        // never enters the window this test is about — the interval that opens the instant the deferred
+        // AskUserQuestion is resolved (which EMPTIES the loop's live deferred-call registry) and closes
+        // only when the answer-triggered work actually produces assistant text. Any run completion
+        // landing inside it reports "no question pending" for a benign reason, so the terminal gate read
+        // it as genuinely finished and settled the one-shot Completion latch with the
+        // "(no text response)" placeholder — permanently discarding the real answer that followed,
+        // because a TaskCompletionSource settles once.
+        //
+        // The provider script below stages exactly that: run 1 parks on the question, run 2 (the one the
+        // answer triggers) yields NOTHING AT ALL — the zero-model-turn shape a resolution-triggered child
+        // run has when it is not the one clearing the last outstanding call (#227), and the shape that
+        // used to settle the caller with the placeholder — and run 3 carries the real answer. Run 1 emits
+        // the STREAMING tool-call shape, so the latch is driven by the deferred placeholder the loop
+        // publishes rather than by a consolidated message most providers never produce; see
+        // StreamingAskUserQuestionCall.
+        var askArgs = AskColorArgs();
+
+        const string RealAnswer = "Final answer: chose Red.";
+        var providerCalls = 0;
+        _subAgentMock
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, opts, _) =>
+            {
+                List<IMessage> reply = Interlocked.Increment(ref providerCalls) switch
+                {
+                    1 => [StreamingAskUserQuestionCall("tc_color", askArgs, opts.GenerationId)],
+
+                    // The answer-triggered run: zero model turns, so nothing for the caller yet.
+                    2 => [],
+
+                    _ => [new TextMessage { Text = RealAnswer, Role = Role.Assistant }],
+                };
+
+                return Task.FromResult(ToAsyncEnumerable(reply));
+            });
+
+        // maxConcurrent: 1 so the permit assertions below are meaningful.
+        _manager = CreateManager(maxConcurrent: 1);
+
+        var foregroundTask = _manager.SpawnAsync(
+            "test-agent", "Pick a color", name: "color-agent", runInBackground: false);
+
+        MultiTurnAgentLoop? loop = null;
+        IReadOnlyList<DeferredToolCallInfo> deferred = [];
+        await Wait.UntilAsync(
+            async () =>
+            {
+                if (_manager!.TryGetAgent("color-agent", out var agent) && agent is MultiTurnAgentLoop l)
+                {
+                    loop = l;
+                    deferred = await l.GetDeferredToolCallsAsync();
+                    return deferred.Any(d => d.ToolCallId == "tc_color");
+                }
+
+                return false;
+            },
+            "the child registered as a MultiTurnAgentLoop and parked tc_color",
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromMilliseconds(50),
+            observed: () => loop is null
+                ? "no MultiTurnAgentLoop registered yet for 'color-agent'"
+                : $"deferred tool calls: [{string.Join(", ", deferred.Select(d => d.ToolCallId))}]");
+
+        var agentId = _manager!.ListAgents().Single(a => a.Name == "color-agent").AgentId;
+
+        // Answering before the monitor has classified the parked run is a DIFFERENT ordering, covered by
+        // its own test below; the descendant-question notification is emitted from inside the parked
+        // branch itself, so its arrival proves that classification already happened here.
+        await Wait.UntilAsync(
+            () =>
+            {
+                try
+                {
+                    _parentMock.Verify(
+                        p => p.SendAsync(
+                            It.Is<List<IMessage>>(msgs =>
+                                msgs.Count == 1
+                                && ContainsDescendantQuestionNotification(msgs[0], agentId, "test-agent")),
+                            It.IsAny<string?>(),
+                            It.IsAny<string?>(),
+                            It.IsAny<CancellationToken>()),
+                        Times.AtLeastOnce);
+                    return true;
+                }
+                catch
+                {
+                    return false;
+                }
+            },
+            "the parent received the descendant-question notification",
+            TimeSpan.FromSeconds(10),
+            observed: () =>
+                $"provider calls: {Volatile.Read(ref providerCalls)}, "
+                + $"parent invocations: {_parentMock.Invocations.Count}, "
+                + $"deferred tool calls: [{string.Join(", ", deferred.Select(d => d.ToolCallId))}]");
+
+        // Watch the child's own message stream on a SECOND subscription — the same public seam the
+        // manager's monitor uses, and independent of it. This is what makes the window deterministic
+        // rather than timed: a RunCompletedMessage is published (with HasPendingMessages already
+        // computed) before any subscriber dequeues it, so once this side has counted run 2's completion,
+        // the monitor is guaranteed to process that exact text-free, no-pending-messages completion —
+        // whatever the test does next.
+        //
+        // The subscription must be REGISTERED before the answer, and registering it from a Task.Run
+        // body would not be: `SubscribeAsync` only reaches its registration when the enumerator is
+        // first advanced, so under the full suite's load the thread pool can leave this side
+        // unregistered until after run 2 has already completed. Replay would not cover for that —
+        // publishing a RunCompletedMessage clears the replay buffer and marks the run inactive, so a
+        // late subscriber sees nothing of it. Advancing the enumerator once HERE closes that: the
+        // method body runs synchronously as far as the registration (there is no await before it), so
+        // by the time MoveNextAsync has returned — completed or not — this subscriber is in the
+        // publish set. The pending advance is then handed to the loop below.
+        using var watchCts = new CancellationTokenSource();
+        var completedRuns = 0;
+        var messages = loop!.SubscribeAsync(watchCts.Token).GetAsyncEnumerator(watchCts.Token);
+        var pendingMove = messages.MoveNextAsync();
+        var watcher = Task.Run(async () =>
+        {
+            try
+            {
+                for (var moved = await pendingMove; moved; moved = await messages.MoveNextAsync())
+                {
+                    if (messages.Current is RunCompletedMessage { HasPendingMessages: false })
+                    {
+                        _ = Interlocked.Increment(ref completedRuns);
+                    }
+                }
+            }
+            finally
+            {
+                await messages.DisposeAsync();
+            }
+        });
+
+        var completedBeforeAnswer = Volatile.Read(ref completedRuns);
+
+        // Act: answer the question exactly as a real client does.
+        var outcome = await loop!.TryResolveToolCallAsync("tc_color", "Red");
+        outcome.Should().Be(ResolveToolCallOutcome.Resolved);
+
+        await Wait.UntilAsync(
+            () => Volatile.Read(ref completedRuns) > completedBeforeAnswer,
+            "the answer-triggered run completed without producing any assistant text",
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromMilliseconds(25),
+            observed: () =>
+                $"completed runs: {Volatile.Read(ref completedRuns)} (before the answer: {completedBeforeAnswer}), "
+                + $"provider calls: {Volatile.Read(ref providerCalls)}");
+
+        // The text-free completion is now guaranteed to reach the monitor. It must NOT have been taken
+        // for a finished run: the child stays Running, holding its loop, provider and permit, so the
+        // work the answer actually set in motion can still produce a result.
+        using (var midPeekDoc = JsonDocument.Parse(_manager.Peek(agentId)))
+        {
+            midPeekDoc.RootElement.GetProperty("status").GetString().Should().Be(
+                "running",
+                "a run that completed with no assistant text after the question was answered has "
+                    + "nothing to hand the caller, so it is not the completion that ends this sub-agent");
+        }
+
+        // Drive the run that carries the real answer.
+        _ = await _manager.SendMessageAsync(agentId, "continue", runInBackground: true);
+
+        // Assert: the foreground caller settles with the REAL answer. Before the fix the placeholder
+        // won the race to the one-shot latch, so this returned "(no text response)" and the answer here
+        // was silently thrown away.
+        var result = await foregroundTask.WaitAsync(TimeSpan.FromSeconds(10));
+        result.Should().Be(
+            RealAnswer,
+            "the caller must receive the answer-derived text, never the '(no text response)' "
+                + "placeholder produced by a completion that landed before the answer's own output");
+
+        await watchCts.CancelAsync();
+        try { await watcher; } catch (OperationCanceledException) { }
+    }
+
+    [Fact]
+    public async Task SendMessageAsync_AfterAnAnsweredQuestionSettled_StillCompletesATextFreeRun()
+    {
+        // Arrange (#262, the latch's other edge): the parked latch makes a text-free completion
+        // non-terminal, which is only safe because it spans a bounded interval — parking until the real
+        // answer-derived result arrives. If it outlived that result, a sub-agent that once asked a
+        // question could never finish a text-free run again: the caller would block forever on a loop
+        // with nothing left to say. This drives exactly that continuation.
+        var askArgs = AskColorArgs();
+
+        var providerCalls = 0;
+        _subAgentMock
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, opts, _) =>
+            {
+                List<IMessage> reply = Interlocked.Increment(ref providerCalls) switch
+                {
+                    1 => [StreamingAskUserQuestionCall("tc_color", askArgs, opts.GenerationId)],
+                    2 => [new TextMessage { Text = "Final answer: chose Red.", Role = Role.Assistant }],
+
+                    // The continuation, deliberately shaped as ZERO model turns rather than a
+                    // thinking-only reply. Thinking-only is rejected by the "did the model speak"
+                    // discriminator no matter what the latch says, so it could not tell a cleared
+                    // latch from a stale one — the sibling test at the dangerous edge covers that
+                    // shape. A run that never reached the model is the one and only case the latch
+                    // itself decides, so it is the case that can prove the latch was released.
+                    _ => [],
+                };
+
+                return Task.FromResult(ToAsyncEnumerable(reply));
+            });
+
+        _manager = CreateManager(maxConcurrent: 1);
+
+        var foregroundTask = _manager.SpawnAsync(
+            "test-agent", "Pick a color", name: "color-agent", runInBackground: false);
+
+        MultiTurnAgentLoop? loop = null;
+        await Wait.UntilAsync(
+            async () =>
+            {
+                if (_manager!.TryGetAgent("color-agent", out var agent) && agent is MultiTurnAgentLoop l)
+                {
+                    loop = l;
+                    return (await l.GetDeferredToolCallsAsync()).Any(d => d.ToolCallId == "tc_color");
+                }
+
+                return false;
+            },
+            "the child parked tc_color",
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromMilliseconds(50));
+
+        var agentId = _manager!.ListAgents().Single(a => a.Name == "color-agent").AgentId;
+
+        (await loop!.TryResolveToolCallAsync("tc_color", "Red"))
+            .Should().Be(ResolveToolCallOutcome.Resolved);
+
+        // The answer's own text settles the caller — and, with it, clears the parked latch.
+        var answer = await foregroundTask.WaitAsync(TimeSpan.FromSeconds(10));
+        answer.Should().Be("Final answer: chose Red.");
+
+        // Act + Assert: the next run produces no assistant text and no question is outstanding, so it is
+        // genuinely terminal and must settle — with the placeholder, which is what that string is
+        // legitimately for. A latch left set by the answered question would instead hold this caller
+        // open until the bound below fired.
+        var continuation = _manager.SendMessageAsync(agentId, "anything else?", runInBackground: false);
+        var continued = await continuation.WaitAsync(TimeSpan.FromSeconds(10));
+        continued.Should().Be(
+            "(no text response)",
+            "the parked latch spans only the wait for an answered question's result; a later run with "
+                + "nothing to say is genuinely terminal and must not leave the caller blocked");
+    }
+
+    [Fact]
+    public async Task SpawnAsync_Foreground_WhenASecondZeroTurnRunFollows_StopsAbsorbingAndSettles()
+    {
+        // Arrange (#262, the latch's bound): absorbing a text-free completion is only safe if the latch
+        // is CONSUMED by the completion that absorbs it. A latch that stayed armed would absorb the next
+        // text-free run too, and the one after that — the caller never settles and the permit never comes
+        // back, for as long as the agent keeps producing nothing. The sibling tests cannot see this: each
+        // has only ONE run for the latch to swallow, so an unconsumed latch and a consumed one behave
+        // identically. This is the shape that separates them: two zero-turn runs in a row, where only the
+        // first may be absorbed.
+        var askArgs = AskColorArgs();
+
+        var providerCalls = 0;
+        _subAgentMock
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, opts, _) =>
+            {
+                List<IMessage> reply = Interlocked.Increment(ref providerCalls) switch
+                {
+                    1 => [StreamingAskUserQuestionCall("tc_color", askArgs, opts.GenerationId)],
+
+                    // Every run after the question is a zero-turn run: the resolution-triggered one the
+                    // latch legitimately absorbs, and then a second one it must not.
+                    _ => [],
+                };
+
+                return Task.FromResult(ToAsyncEnumerable(reply));
+            });
+
+        _manager = CreateManager(maxConcurrent: 1);
+
+        var foregroundTask = _manager.SpawnAsync(
+            "test-agent", "Pick a color", name: "color-agent", runInBackground: false);
+
+        MultiTurnAgentLoop? loop = null;
+        IReadOnlyList<DeferredToolCallInfo> deferred = [];
+        await Wait.UntilAsync(
+            async () =>
+            {
+                if (_manager!.TryGetAgent("color-agent", out var agent) && agent is MultiTurnAgentLoop l)
+                {
+                    loop = l;
+                    deferred = await l.GetDeferredToolCallsAsync();
+                    return deferred.Any(d => d.ToolCallId == "tc_color");
+                }
+
+                return false;
+            },
+            "the child parked tc_color",
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromMilliseconds(50),
+            observed: () => loop is null
+                ? "no MultiTurnAgentLoop registered yet for 'color-agent'"
+                : $"deferred tool calls: [{string.Join(", ", deferred.Select(d => d.ToolCallId))}], "
+                    + $"provider calls: {Volatile.Read(ref providerCalls)}");
+
+        var agentId = _manager!.ListAgents().Single(a => a.Name == "color-agent").AgentId;
+
+        (await loop!.TryResolveToolCallAsync("tc_color", "Red"))
+            .Should().Be(ResolveToolCallOutcome.Resolved);
+
+        // The resolution-triggered run is the one the latch is for. Wait for it to have happened and be
+        // absorbed — the caller still blocked is what "absorbed" looks like from here.
+        await Wait.UntilAsync(
+            () => Volatile.Read(ref providerCalls) >= 2,
+            "the resolution-triggered run reached the provider",
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromMilliseconds(50),
+            observed: () => $"provider calls: {Volatile.Read(ref providerCalls)}");
+
+        // Act: a second run with nothing to say. The latch is spent, so this one is terminal.
+        // Both this caller and the still-outstanding spawn await the same pending completion.
+        var continuation = _manager.SendMessageAsync(agentId, "anything else?", runInBackground: false);
+
+        // Assert: it settles rather than being swallowed like its predecessor.
+        var continued = await continuation.WaitAsync(TimeSpan.FromSeconds(10));
+        continued.Should().Be(
+            "(no text response)",
+            "the latch entitles exactly one text-free completion to be absorbed; leaving it armed makes "
+                + "every later text-free run non-terminal and blocks the caller indefinitely");
+
+        var result = await foregroundTask.WaitAsync(TimeSpan.FromSeconds(10));
+        result.Should().Be("(no text response)", "the original caller settles from that same completion");
+    }
+
+    [Fact]
+    public async Task SpawnAsync_Foreground_WhenTheAnsweredRunOnlyThinks_SettlesAndReleasesThePermit()
+    {
+        // Arrange (#262, the dangerous edge): keeping a post-answer run non-terminal is what closes the
+        // race, but applied to EVERY text-free completion it converts the bug into something worse. If the
+        // answer-triggered run is the sub-agent's last word and it produces only thinking, there is no
+        // later run to settle the caller: the foreground task never completes, the agent never leaves
+        // Running, and its concurrency permit is never released — permanently shrinking
+        // MaxConcurrentSubAgents. That failure is silent, because this branch deliberately raises no
+        // descendant-question notification for anyone to notice.
+        //
+        // The discriminator is whether the run reached the model at all. A thinking-only turn DID, so it
+        // is genuinely finished and must settle. Nothing nudges the agent here — production has no such
+        // nudge either, which is exactly why the sibling test's manual continuation must not be what
+        // rescues this shape.
+        var askArgs = AskColorArgs();
+
+        var providerCalls = 0;
+        _subAgentMock
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, opts, _) =>
+            {
+                List<IMessage> reply = Interlocked.Increment(ref providerCalls) switch
+                {
+                    1 => [StreamingAskUserQuestionCall("tc_color", askArgs, opts.GenerationId)],
+
+                    // The answered run, and the agent's last word: it called the model, which had nothing
+                    // worth returning. Terminal — not something to wait on.
+                    _ => [new TextMessage { Text = "mulling it over", Role = Role.Assistant, IsThinking = true }],
+                };
+
+                return Task.FromResult(ToAsyncEnumerable(reply));
+            });
+
+        // maxConcurrent: 1 so the permit assertion at the end is meaningful — a leaked permit makes the
+        // second spawn impossible, which is the whole cost of getting this wrong.
+        _manager = CreateManager(maxConcurrent: 1);
+
+        var foregroundTask = _manager.SpawnAsync(
+            "test-agent", "Pick a color", name: "color-agent", runInBackground: false);
+
+        MultiTurnAgentLoop? loop = null;
+        IReadOnlyList<DeferredToolCallInfo> deferred = [];
+        await Wait.UntilAsync(
+            async () =>
+            {
+                if (_manager!.TryGetAgent("color-agent", out var agent) && agent is MultiTurnAgentLoop l)
+                {
+                    loop = l;
+                    deferred = await l.GetDeferredToolCallsAsync();
+                    return deferred.Any(d => d.ToolCallId == "tc_color");
+                }
+
+                return false;
+            },
+            "the child registered as a MultiTurnAgentLoop and parked tc_color",
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromMilliseconds(50),
+            observed: () => loop is null
+                ? "no MultiTurnAgentLoop registered yet for 'color-agent'"
+                : $"deferred tool calls: [{string.Join(", ", deferred.Select(d => d.ToolCallId))}], "
+                    + $"provider calls: {Volatile.Read(ref providerCalls)}");
+
+        // Act: answer, then do nothing at all.
+        var outcome = await loop!.TryResolveToolCallAsync("tc_color", "Red");
+        outcome.Should().Be(ResolveToolCallOutcome.Resolved);
+
+        // Assert: the caller settles on its own. Before the bound existed this timed out.
+        var result = await foregroundTask.WaitAsync(TimeSpan.FromSeconds(10));
+        result.Should().Be(
+            "(no text response)",
+            "a run that called the model and produced only thinking is genuinely finished, so it must "
+                + "settle the caller rather than be mistaken for the gap before an answer's real text");
+
+        // And the permit came back: with maxConcurrent 1 a leaked permit would make this spawn hang.
+        var second = await _manager
+            .SpawnAsync("test-agent", "second task", name: "second-agent", runInBackground: false)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+        second.Should().NotBeNull(
+            "the absorbed-run branch holds the concurrency permit, so a completion it wrongly swallowed "
+                + "would starve every later sub-agent");
+    }
+
+    [Fact]
+    public async Task SpawnAsync_Foreground_WhenAnsweredBeforeTheMonitorClassifies_StillSettlesWithTheRealAnswer()
+    {
+        // Arrange (#262, the production ordering): the sibling test waits for the descendant-question
+        // notification before answering, which proves the monitor had already classified the parked run —
+        // the SAFE ordering. The race the issue describes is the other one: the answer lands BEFORE the
+        // monitor classifies the parked run's completion, so the resolution empties the deferred-call
+        // registry before the probe reads it. The probe then reports "no question pending" for a run that
+        // very much did park one, and the latch is the only thing that still knows better.
+        //
+        // This ordering is FORCED, not raced. Resolving as soon as the registry shows the call — the
+        // obvious way to write this — loses the race nearly every time: the registry is populated before
+        // the deferred placeholder is even published, so the monitor is free to classify first and the
+        // test then exercises the safe path while appearing to prove the dangerous one. The seam below
+        // fires inside the exact window the bug lives in, and the assertion at the end fails loudly if it
+        // never fired, so this test cannot silently go vacuous.
+        var askArgs = AskColorArgs();
+
+        const string RealAnswer = "Final answer: chose Blue.";
+        var providerCalls = 0;
+        _subAgentMock
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, opts, _) =>
+            {
+                List<IMessage> reply = Interlocked.Increment(ref providerCalls) switch
+                {
+                    1 => [StreamingAskUserQuestionCall("tc_color", askArgs, opts.GenerationId)],
+                    _ => [new TextMessage { Text = RealAnswer, Role = Role.Assistant }],
+                };
+
+                return Task.FromResult(ToAsyncEnumerable(reply));
+            });
+
+        _manager = CreateManager(maxConcurrent: 1);
+
+        // Resolve the question INSIDE the classification window, exactly once, and only for a completion
+        // that still has the call parked. Recording the outcome rather than asserting on it here keeps the
+        // failure attributable: an exception thrown on the monitor's thread would surface as a timeout
+        // somewhere else entirely.
+        ResolveToolCallOutcome? resolvedInsideWindow = null;
+        var hookFired = 0;
+        _manager.BeforeClassifyingRunCompletionForTest = async (state, _) =>
+        {
+            if (state.Agent is not MultiTurnAgentLoop l
+                || Interlocked.Exchange(ref hookFired, 1) != 0)
+            {
+                return;
+            }
+
+            resolvedInsideWindow = await l.TryResolveToolCallAsync("tc_color", "Blue");
+        };
+
+        var foregroundTask = _manager.SpawnAsync(
+            "test-agent", "Pick a color", name: "color-agent", runInBackground: false);
+
+        // Assert: the caller gets the answer, not the placeholder. Without the `latchedThisRun` arm this
+        // fails here with #262's exact signature — the parked run emitted a tool call, so the "did the
+        // model speak" veto calls its own completion terminal the moment the probe comes back empty.
+        var result = await foregroundTask.WaitAsync(TimeSpan.FromSeconds(10));
+        result.Should().Be(
+            RealAnswer,
+            "the latch survives the resolution, so the monitor still knows the run was parked even when "
+                + "the answer emptied the deferred-call registry before it looked");
+
+        // Non-vacuity: prove the dangerous ordering is what actually ran. A pass with the hook unfired, or
+        // with nothing there to resolve, would mean the safe ordering carried the test instead.
+        Volatile.Read(ref hookFired).Should().Be(
+            1, "the classification seam must have fired, or this test proved nothing about the race");
+        resolvedInsideWindow.Should().Be(
+            ResolveToolCallOutcome.Resolved,
+            "the answer must have been applied INSIDE the classification window — that is the whole "
+                + "ordering under test; anything else means the call was already gone and the monitor "
+                + "had classified the parked run first");
+    }
+
+    [Fact]
+    public async Task SpawnAsync_Foreground_WhenTheForcedRaceIsFollowedByAZeroTurnRun_KeepsAbsorbing()
+    {
+        // Arrange (#262, the two absorptions together): the asking run's own completion is absorbed and
+        // must LEAVE THE LATCH ARMED, because the run the resolution triggers can itself be a zero-turn
+        // sibling (#227) that still needs absorbing. Consuming the latch on the asking run instead would
+        // strand that second run with no protection: it would be read as terminal and settle the caller
+        // with the placeholder, which is the original bug wearing one more turn of delay.
+        //
+        // Neither sibling test can see this. The forced-race test answers straight into a run that has
+        // real text, so the latch's survival never matters; the two-zero-turn test never enters the
+        // dangerous ordering at all. Only both halves at once — a forced race THEN a zero-turn run —
+        // distinguishes "keep armed" from "consume".
+        var askArgs = AskColorArgs();
+
+        const string RealAnswer = "Final answer: chose Green.";
+        var providerCalls = 0;
+        _subAgentMock
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, opts, _) =>
+            {
+                List<IMessage> reply = Interlocked.Increment(ref providerCalls) switch
+                {
+                    1 => [StreamingAskUserQuestionCall("tc_color", askArgs, opts.GenerationId)],
+
+                    // The resolution-triggered run, taking no model turn at all.
+                    2 => [],
+
+                    _ => [new TextMessage { Text = RealAnswer, Role = Role.Assistant }],
+                };
+
+                return Task.FromResult(ToAsyncEnumerable(reply));
+            });
+
+        _manager = CreateManager(maxConcurrent: 1);
+
+        ResolveToolCallOutcome? resolvedInsideWindow = null;
+        var hookFired = 0;
+        _manager.BeforeClassifyingRunCompletionForTest = async (state, _) =>
+        {
+            if (state.Agent is not MultiTurnAgentLoop l
+                || Interlocked.Exchange(ref hookFired, 1) != 0)
+            {
+                return;
+            }
+
+            resolvedInsideWindow = await l.TryResolveToolCallAsync("tc_color", "Green");
+        };
+
+        var foregroundTask = _manager.SpawnAsync(
+            "test-agent", "Pick a color", name: "color-agent", runInBackground: false);
+
+        await Wait.UntilAsync(
+            () => _manager!.ListAgents().Any(a => a.Name == "color-agent"),
+            "the child registered",
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromMilliseconds(25));
+
+        var agentId = _manager!.ListAgents().Single(a => a.Name == "color-agent").AgentId;
+
+        // Let the zero-turn run land, so the nudge below cannot be what the second absorption applies to.
+        await Wait.UntilAsync(
+            () => Volatile.Read(ref providerCalls) >= 2,
+            "the resolution triggered its zero-turn child run",
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromMilliseconds(25),
+            observed: () => $"provider calls: {Volatile.Read(ref providerCalls)}");
+
+        // Act: only now drive the run that actually carries the answer.
+        _ = await _manager!.SendMessageAsync(agentId, "continue", runInBackground: true);
+
+        // Assert: the caller settles with the real answer. If the asking run had consumed the latch, the
+        // zero-turn run above would already have settled it with the placeholder.
+        var result = await foregroundTask.WaitAsync(TimeSpan.FromSeconds(10));
+        result.Should().Be(
+            RealAnswer,
+            "absorbing the asking run must leave the latch armed, because the run its resolution "
+                + "triggers can be a zero-turn sibling that needs absorbing too");
+
+        Volatile.Read(ref hookFired).Should().Be(
+            1, "the classification seam must have fired, or this test proved nothing about the race");
+        resolvedInsideWindow.Should().Be(
+            ResolveToolCallOutcome.Resolved,
+            "the answer must have been applied INSIDE the classification window — otherwise the monitor "
+                + "classified the parked run first and this is the safe ordering, not the one under test");
+    }
+
     [Fact]
     public async Task DisposeAsync_StopsAllAgents()
     {

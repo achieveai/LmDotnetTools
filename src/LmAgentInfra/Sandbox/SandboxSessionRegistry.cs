@@ -189,6 +189,29 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     private static readonly TimeSpan SessionLivenessProbeTimeout = TimeSpan.FromSeconds(5);
 
     /// <summary>
+    /// How long a session stays trusted after the gateway last confirmed it alive, before the next
+    /// acquisition probes again.
+    /// </summary>
+    /// <remarks>
+    /// The probe is a synchronous gateway round-trip on EVERY workspace-agent session acquisition — once
+    /// per turn, and under a sync-over-async call site it parks a thread-pool thread for the whole trip
+    /// (issue #93). What it is looking for is idle eviction, which takes the gateway minutes; a session
+    /// that answered seconds ago has not been evicted since. So within this window the answer is already
+    /// known and the round-trip buys nothing. Deliberately far shorter than any plausible gateway idle
+    /// timeout, so the worst case a stale window can cost is one extra recreate on the next acquisition —
+    /// the same thing that happens today when a session is evicted between two probes.
+    ///
+    /// <para>
+    /// The tradeoff this accepts: if the GATEWAY restarts inside the window, an acquisition can hand back
+    /// a session the gateway no longer knows, and the caller sees the failure at first use instead of as a
+    /// clean recreate here. That is bounded by this constant and is not a new failure mode — a gateway
+    /// that dies immediately after a probe does the same thing today. Recovery is the pool's lifecycle
+    /// refresh, not this registry: nothing here re-probes a session on a schedule, and deliberately so.
+    /// </para>
+    /// </remarks>
+    private static readonly TimeSpan SessionLivenessFreshness = TimeSpan.FromSeconds(30);
+
+    /// <summary>
     /// Per-credential control-plane clients (issue #191): one <see cref="SandboxClient"/> per
     /// distinct app credential, resolved and cached by <see cref="ClientFor"/>. Each client is
     /// KEYLESS — it stamps only the app id — because a per-caller app KEY is an opaque, gateway-
@@ -302,6 +325,12 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     private readonly Func<string, CancellationToken, Task<WorkspaceRef?>>? _reloadWorkspaceRef;
 
     /// <summary>
+    /// Clock behind the liveness freshness window (<see cref="SessionLivenessFreshness"/>). Injected so a
+    /// test drives the expiry rather than sleeping through it.
+    /// </summary>
+    private readonly TimeProvider _timeProvider;
+
+    /// <summary>
     /// TEST-ONLY seam, fired inside <c>CreateSessionAsync</c> after the gateway has created the remote
     /// session but BEFORE its secret is persisted. Null in production, and the only cost on that path
     /// is a null check.
@@ -324,6 +353,27 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// and cleared wherever <see cref="_sessionsById"/> is cleared.
     /// </summary>
     private readonly ConcurrentDictionary<string, SandboxCredential> _sessionCredentials =
+        new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// When each live session was last confirmed alive by a gateway probe, as UTC ticks. Read by
+    /// <see cref="IsRecentlyVerified"/> to skip the per-acquisition liveness probe inside
+    /// <see cref="SessionLivenessFreshness"/>; written only by <see cref="MarkSessionVerified"/>. Entries
+    /// are removed per-session by <c>EvictSessionStateAsync</c> and en masse by <c>DisposeAsync</c>, which
+    /// together are every path that drops a session — a per-session-id map left growing across a
+    /// long-lived process is a leak, and a stale entry for a REUSED id would suppress a probe that ought
+    /// to run. Neither is currently reachable (ids are gateway-allocated and never reissued), so this is
+    /// upheld as a contract rather than as a fix for an observed bug.
+    /// </summary>
+    /// <remarks>
+    /// A side map rather than a field on <see cref="SandboxSession"/> or a wrapper around the cached
+    /// <see cref="Lazy{T}"/>: four call sites do reference-identity surgery on the
+    /// <see cref="_sessions"/> values, and this is bookkeeping about a probe, not part of the session's
+    /// identity. Only a genuine gateway confirmation stamps it — the probe's "assume alive" degradation
+    /// on a transient failure deliberately does not, so a flaky gateway can never be mistaken for a
+    /// verified one and buy itself a full freshness window.
+    /// </remarks>
+    private readonly ConcurrentDictionary<string, long> _sessionVerifiedAtUtcTicks =
         new(StringComparer.Ordinal);
 
     /// <summary>
@@ -405,6 +455,9 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// user's later edit look discarded. Returning <see langword="null"/> (workspace deleted) and
     /// passing no hook at all both fall back to the caller's ref, which is the pre-existing
     /// behaviour every other construction site keeps.</param>
+    /// <param name="timeProvider">Clock behind the liveness freshness window (<see cref="SessionLivenessFreshness"/>).
+    /// Defaults to <see cref="TimeProvider.System"/>; a test injects one so it can expire the window
+    /// without sleeping.</param>
     public SandboxSessionRegistry(
         SandboxGatewayLifetime gateway,
         SandboxGatewayOptions options,
@@ -414,9 +467,11 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         SessionSecretStore sessionSecretStore,
         PredefinedKeyRegistry? predefinedKeys = null,
         MultiTurnLifecycleServices? lifecycle = null,
-        Func<string, CancellationToken, Task<WorkspaceRef?>>? reloadWorkspaceRef = null
+        Func<string, CancellationToken, Task<WorkspaceRef?>>? reloadWorkspaceRef = null,
+        TimeProvider? timeProvider = null
     )
     {
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _gateway = gateway ?? throw new ArgumentNullException(nameof(gateway));
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -997,7 +1052,13 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         var effectiveCredential = credential ?? _defaultCredential;
 
         var session = await GetOrCreateSessionAsync(effectiveRef, ct, effectiveCredential).ConfigureAwait(false);
-        if (await IsSessionAliveAsync(session.SessionId, ct).ConfigureAwait(false))
+
+        // Short-circuit deliberately BEFORE the probe, not inside it: the point of the freshness window
+        // is that back-to-back turns cost no gateway round-trip at all (#93). Everything past this point
+        // — including what a failed probe does — is unchanged, because the window only ever suppresses a
+        // probe whose answer is already known, never one that could have said "evicted".
+        if (IsRecentlyVerified(session.SessionId)
+            || await IsSessionAliveAsync(session.SessionId, ct).ConfigureAwait(false))
         {
             return session;
         }
@@ -1087,6 +1148,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             _ = await ClientFor(CredentialFor(sessionId))
                 .GetAsync(sessionId, probeCts.Token)
                 .ConfigureAwait(false);
+            // The gateway just confirmed this session, so the next acquisitions within the freshness
+            // window can skip the round-trip. Only this branch stamps: the catch-all below reports
+            // "alive" without having heard from the gateway at all.
+            MarkSessionVerified(sessionId);
             return true;
         }
         catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.NotFound)
@@ -1122,6 +1187,33 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             return true;
         }
     }
+
+    /// <summary>
+    /// True when <paramref name="sessionId"/> was confirmed alive by the gateway less than
+    /// <see cref="SessionLivenessFreshness"/> ago, so the acquisition can skip its liveness probe (#93).
+    /// </summary>
+    /// <remarks>
+    /// Unknown sessions and non-positive ages both report stale, so the probe still runs. The latter
+    /// matters because the stamp is a wall-clock reading: were the clock to step backwards, treating a
+    /// negative age as "very fresh" would suppress probes until it caught up again.
+    /// </remarks>
+    private bool IsRecentlyVerified(string sessionId)
+    {
+        if (!_sessionVerifiedAtUtcTicks.TryGetValue(sessionId, out var verifiedAtUtcTicks))
+        {
+            return false;
+        }
+
+        var age = _timeProvider.GetUtcNow() - new DateTimeOffset(verifiedAtUtcTicks, TimeSpan.Zero);
+        return age >= TimeSpan.Zero && age < SessionLivenessFreshness;
+    }
+
+    /// <summary>
+    /// Records that the gateway confirmed <paramref name="sessionId"/> just now, opening a fresh
+    /// <see cref="SessionLivenessFreshness"/> window.
+    /// </summary>
+    private void MarkSessionVerified(string sessionId) =>
+        _sessionVerifiedAtUtcTicks[sessionId] = _timeProvider.GetUtcNow().UtcTicks;
 
     /// <summary>
     /// Drops a dead session from both caches so the next request recreates it. Removes the
@@ -1168,7 +1260,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
 
     /// <summary>
     /// Evicts EVERY per-session-id-indexed collection for <paramref name="session"/>: the reverse
-    /// session map, sub-agent bindings, thread routing, discovery dedup ledger, the creating credential
+    /// session map, sub-agent bindings, thread routing, discovery dedup ledger, the liveness freshness
+    /// stamp, the creating credential
     /// (releasing its per-credential client refcount), and the persisted webhook secret. Both the
     /// liveness-eviction path (<see cref="InvalidateSessionAsync"/>) and the explicit-teardown path
     /// (<see cref="DestroyWorkspaceSessionAsync"/>) funnel through here so a new per-session collection
@@ -1197,6 +1290,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         _ = _subAgentBindings.TryRemove(session.SessionId, out _);
         _ = _sessionThreads.TryRemove(session.SessionId, out _);
         _ = _discoverySeen.TryRemove(session.SessionId, out _);
+        // Unreachable rather than wrong once the session is gone - ids are gateway-allocated and never
+        // reissued, so nothing can consult this entry again. It is removed because the funnel contract
+        // above requires it: a per-session-id map left growing across a long-lived process is a leak.
+        _ = _sessionVerifiedAtUtcTicks.TryRemove(session.SessionId, out _);
         // Drop the session's credential and release its client refcount (evicting+disposing the per-
         // credential client when this was its last session). Guarded on the TryRemove so an already-
         // invalidated session never double-decrements.
@@ -1440,6 +1537,11 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 // destroy, discovery) resolve the SAME credential via CredentialFor, not the process
                 // default (relevant once M2 lets callers create under a per-caller credential).
                 _sessionCredentials[session.SessionId] = effectiveCredential;
+                // Deliberately NOT stamped as verified here (#93). A successful create says the gateway
+                // minted the session; it does not say a GET for that id under this credential will find
+                // it — the scoping/ownership drift the probe's 404 branch logs is exactly a case where
+                // those two answers differ. So the first acquisition still probes, and only the probe's
+                // own confirmation opens a freshness window.
                 // Test-only: lets a test land a cancellation in the create→persist window, which is
                 // otherwise unreachable from outside. No-op (one null check) in production.
                 if (AfterGatewayCreateBeforeSecretPersistForTest is { } afterCreateHook)
@@ -1619,6 +1721,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             _sessions.Clear();
             _subAgentBindings.Clear();
             _sessionsById.Clear();
+            _sessionVerifiedAtUtcTicks.Clear();
             _sessionThreads.Clear();
             _discoverySeen.Clear();
             _sessionCredentials.Clear();

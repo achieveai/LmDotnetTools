@@ -95,6 +95,22 @@ public sealed class SubAgentManager : IAsyncDisposable
     private readonly Func<NotifyMessage, CancellationToken, ValueTask> _descendantQuestionSink;
 
     /// <summary>
+    /// TEST-ONLY seam, fired in the run monitor immediately before a <see cref="RunCompletedMessage"/>
+    /// is classified — that is, before <see cref="HasPendingAskUserQuestionAsync"/> is awaited. Null in
+    /// production, where the only cost is a null check per completion.
+    /// </summary>
+    /// <remarks>
+    /// The #262 race is defined entirely by what happens INSIDE this window: an answer that lands here
+    /// empties the loop's deferred-call registry before the probe reads it, so the probe reports "no
+    /// question pending" for a run that very much did park one. A test cannot reach that ordering from
+    /// outside — resolving as soon as the call is visible loses the race almost every time, because the
+    /// registry is populated before the deferred placeholder is even published, leaving the monitor free
+    /// to classify first. Such a test passes for the wrong reason and proves nothing about the bug it
+    /// names. Answering inside this hook makes the dangerous ordering the only one that can occur.
+    /// </remarks>
+    internal Func<SubAgentState, RunCompletedMessage, Task>? BeforeClassifyingRunCompletionForTest;
+
+    /// <summary>
     /// Ceiling for awaiting a background task this manager no longer wants to wait on unboundedly
     /// (#373, widened in the #396 review pass): <see cref="DisposeAsync"/>'s per-agent teardown loop
     /// (RunTask/MonitorTask, and the spawn pump itself), and <see cref="CleanupFailedSpawnAsync"/>'s
@@ -3068,6 +3084,25 @@ public sealed class SubAgentManager : IAsyncDisposable
         var textBuilder = new StringBuilder();
         string? textGenerationId = null;
 
+        // Whether the model actually spoke during the current run — any assistant output at all, thinking
+        // included, or a tool call. This is what separates the two kinds of text-free completion (#262):
+        // a run that called the model and had nothing worth returning is genuinely finished, whereas a
+        // run that produced NOTHING never reached the model. The latter is what a resolution-triggered
+        // child run looks like when it is not the one clearing the last outstanding tool call — it
+        // completes with zero model turns by design (#227) — and it is the completion that used to settle
+        // the caller with the placeholder while the real answer was still on its way. Reset per run,
+        // alongside the text accumulator.
+        var sawModelOutput = false;
+
+        // Whether the parked-question latch was ARMED by this very run — i.e. this is the run that asked
+        // the question. It is the second of the two shapes that must not settle the caller, and it is
+        // provably NOT the same shape as the one above: a run that asks a question necessarily emitted a
+        // tool call, so `sawModelOutput` is always true for it. Distinguishing the two is what keeps the
+        // "did the model speak" veto from re-opening #262 on the very ordering the issue describes — the
+        // parked run's OWN completion, dequeued after the answer already emptied the deferred registry.
+        // Reset per run, alongside the accumulators above.
+        var latchedThisRun = false;
+
         try
         {
             await foreach (var msg in state.Agent.SubscribeAsync(ct))
@@ -3146,6 +3181,60 @@ public sealed class SubAgentManager : IAsyncDisposable
                     lastTextContent = tm.Text;
                 }
 
+                // Deliberately broader than the text accumulator above: thinking counts, and so does a
+                // tool call. The question this answers is "did the model run this turn", not "did it
+                // produce a result".
+                //
+                // The reasoning family is listed for the same reason the streaming tool-call shapes are:
+                // a reasoning-only turn is exactly the "model ran and had nothing to return" case, and on
+                // several providers it is ALL that is emitted. Missing it would be the same mock-shape
+                // trap as gating on the consolidated tool call — the code would look right against a mock
+                // that speaks in TextUpdateMessage and be wrong against OpenAI Responses, Codex, Copilot,
+                // Anthropic, and the Claude Agent SDK, which emit ReasoningUpdateMessage instead.
+                // UsageMessage is included as the provider-independent backstop: every construction site
+                // for all three sits downstream of an actual provider turn, so none can appear for the
+                // zero-model-turn run this flag exists to identify.
+                if (msg is TextMessage { Role: Role.Assistant }
+                    or TextUpdateMessage { Role: Role.Assistant }
+                    or ToolCallMessage
+                    or ToolCallUpdateMessage
+                    or ToolsCallMessage
+                    or ToolsCallUpdateMessage
+                    or ReasoningMessage
+                    or ReasoningUpdateMessage
+                    or UsageMessage)
+                {
+                    sawModelOutput = true;
+                }
+
+                // Latch the parking from the ORDERED message stream, ahead of the run completion it
+                // belongs to (#262), off the DEFERRED PLACEHOLDER rather than the tool call itself.
+                //
+                // The tool call is not observable here. MessagePublishingMiddleware sits UPSTREAM of the
+                // joiner (this loop's pipeline is Provider -> MessageTransformation -> JsonFragment ->
+                // Publishing -> Joiner -> ToolCall), so a subscriber sees a streaming provider's
+                // ToolCallUpdateMessage chunks and never the consolidated ToolCallMessage the joiner
+                // builds downstream. Only an agent that emits the consolidated shape itself would arm
+                // such a gate, which is why Anthropic and OpenAI chat-completions — the majority of
+                // deployments — would not have armed one at all.
+                //
+                // The placeholder has no such gap: MultiTurnAgentLoop publishes it from its OWN tool
+                // execution, below the joiner, identically for every provider, and AskUserQuestion
+                // returns Deferred for every well-formed call. It is also strictly better evidence — it
+                // says the run DID park, not that it was about to — so a malformed call that fails
+                // argument validation and returns an inline error never arms it. And unlike the loop's
+                // live deferred-call registry, a delivered message cannot be erased by the answer
+                // arriving: that erasure is precisely the race this whole fix exists to close.
+                if (msg is ToolCallResultMessage { IsDeferred: true } deferredAsk
+                    && string.Equals(
+                        deferredAsk.ToolName,
+                        AskUserQuestionToolProvider.ToolName,
+                        StringComparison.Ordinal))
+                {
+                    state.LatchParkedOnQuestion();
+                    latchedThisRun = true;
+                }
+
                 if (msg is RunCompletedMessage rcm)
                 {
                     state.LastResult = lastTextContent;
@@ -3156,9 +3245,47 @@ public sealed class SubAgentManager : IAsyncDisposable
                     // loop (state.Agent) still holds the deferred call live in its own registry. Compute
                     // that HERE, before deciding whether to release the concurrency slot, so the decision
                     // and HandleRunCompletionAsync's own terminal/non-terminal branching never disagree.
+                    if (BeforeClassifyingRunCompletionForTest is { } beforeClassify)
+                    {
+                        await beforeClassify(state, rcm);
+                    }
+
                     var awaitingQuestion = !rcm.HasPendingMessages
                         && !rcm.IsError
                         && await HasPendingAskUserQuestionAsync(state);
+
+                    // The window this closes (#262) opens the instant the question is resolved and closes
+                    // when the answer-triggered work produces its text: awaitingQuestion is already false
+                    // (the registry was emptied by the resolution), yet this run has nothing to hand back,
+                    // so the terminal branch would settle the caller with "(no text response)" and discard
+                    // the real answer that follows.
+                    //
+                    // TWO different runs can land here, and they are non-terminal for DIFFERENT reasons, so
+                    // they are gated separately. Collapsing them into one test is what re-opens #262:
+                    //
+                    //   A. `latchedThisRun` — the parked run's OWN completion, dequeued after the answer
+                    //      already emptied the deferred registry. This is the precise ordering the issue
+                    //      describes. Such a run necessarily emitted the AskUserQuestion tool call, so
+                    //      `sawModelOutput` is ALWAYS true for it and the veto below would wrongly call it
+                    //      terminal. It cannot be a disguised deadlock: reaching here means the question
+                    //      was resolved (awaitingQuestion false while ParkedOnQuestion is true), and a
+                    //      resolution always enqueues the follow-on run that carries the answer.
+                    //
+                    //   B. `!sawModelOutput` — a run that never reached the model at all: the
+                    //      zero-model-turn shape a resolution-triggered child run has when it is not the
+                    //      one clearing the last outstanding call (#227). Here the veto is what keeps the
+                    //      branch narrow, because a run that DID call the model and merely produced no
+                    //      returnable text (a thinking-only turn) is genuinely finished and must settle —
+                    //      absorbing that one would hang the caller whenever it was the agent's last word.
+                    //
+                    // Bounded to at most one A plus one B per parking: only one run can arm the latch, and
+                    // B consumes it (see HandleRunCompletionAsync).
+                    var awaitingAnswerText = !awaitingQuestion
+                        && !rcm.HasPendingMessages
+                        && !rcm.IsError
+                        && lastTextContent is null
+                        && state.ParkedOnQuestion
+                        && (latchedThisRun || !sawModelOutput);
 
                     // Release the slot BEFORE the (possibly slow/backpressured) parent relay in
                     // HandleRunCompletionAsync — but ONLY for a genuinely TERMINAL completion. A
@@ -3169,14 +3296,18 @@ public sealed class SubAgentManager : IAsyncDisposable
                     // MaxConcurrentSubAgents. The permit is held until the run truly ends: the terminal
                     // completion here, or the monitor's finally if the stream ends first. Idempotent, so
                     // that fallback release is a safe no-op afterward.
-                    if (!rcm.HasPendingMessages && !awaitingQuestion)
+                    if (!rcm.HasPendingMessages && !awaitingQuestion && !awaitingAnswerText)
                     {
                         gateGuard.ReleaseOnce(_concurrencyGate);
                     }
 
-                    await HandleRunCompletionAsync(state, rcm, lastTextContent, awaitingQuestion, ct);
+                    await HandleRunCompletionAsync(
+                        state, rcm, lastTextContent, awaitingQuestion, awaitingAnswerText,
+                        latchedThisRun, ct);
                     lastTextContent = null;
                     textGenerationId = null;
+                    sawModelOutput = false;
+                    latchedThisRun = false;
                     _ = textBuilder.Clear();
                 }
             }
@@ -3246,12 +3377,25 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// call, so the concurrency-gate release decision and this method's terminal/non-terminal branching
     /// always agree on the same answer for the same <see cref="RunCompletedMessage"/>.
     /// </param>
+    /// <param name="awaitingAnswerText">
+    /// Also precomputed by the monitor loop: true for a completion that lands after this sub-agent's
+    /// parked question was resolved and carries nothing for the caller (#262) — either the parked run's
+    /// own completion or a later run that never reached the model. Non-terminal for the same reason
+    /// <paramref name="awaitingQuestion"/> is — the caller's real result has not arrived yet — but
+    /// silent, because the human has already answered. Bounded per parking; see the branch body.
+    /// </param>
+    /// <param name="latchedThisRun">
+    /// Whether the completing run is the one that ASKED the question. Distinguishes the two absorbed
+    /// shapes, which have different justifications and therefore different bounds: see the branch body.
+    /// </param>
     /// <param name="ct">Cancellation token for this run's lifetime.</param>
     private async Task HandleRunCompletionAsync(
         SubAgentState state,
         RunCompletedMessage rcm,
         string? lastTextContent,
         bool awaitingQuestion,
+        bool awaitingAnswerText,
+        bool latchedThisRun,
         CancellationToken ct)
     {
         // A run that still has queued messages is NOT terminal: another run will follow and reuse the
@@ -3305,6 +3449,52 @@ public sealed class SubAgentManager : IAsyncDisposable
 
             return;
         }
+
+        if (awaitingAnswerText)
+        {
+            // The question has been answered — the loop is already running (or about to run) the turn
+            // that carries the answer — but THIS completion has nothing to hand the caller. Settling it
+            // here would resolve the one-shot latch with the "(no text response)" placeholder and
+            // permanently discard the real answer (#262). Stay non-terminal in exactly the way the parked
+            // branch above does: leave the latch unresolved, the status Running, the loop and owned
+            // provider alive, and the concurrency permit held — but send NO descendant-question
+            // notification, since nothing is pending for the human.
+            //
+            // The two absorbed shapes are bounded differently, because their guarantees differ:
+            //
+            //   A. `latchedThisRun` — the asking run's own completion. A follow-on run is GUARANTEED:
+            //      the loop parks the run BEFORE publishing its completion (MultiTurnAgentLoop marks and
+            //      decides together inside the delayed-call coordinator), so any resolution that lands
+            //      from here on mints a child run — and landing here at all means one did, since the
+            //      registry is empty while the latch says it was parked. Keep the latch armed, because
+            //      that follow-on run may itself be a zero-turn sibling (#227) that still needs
+            //      absorbing. Self-bounding: only one run per parking can arm the latch.
+            //
+            //   B. otherwise — a zero-model-turn run. Nothing guarantees a further run here, so CONSUME
+            //      the latch: a second text-free run must be allowed to settle the caller rather than be
+            //      swallowed too.
+            //
+            // The bound matters because the failure it prevents is silent. A caller that never settles
+            // also never leaves Running and never releases its permit, permanently shrinking
+            // MaxConcurrentSubAgents — and unlike the parked branch, this one deliberately raises no
+            // descendant-question notification for anyone to notice.
+            if (!latchedThisRun)
+            {
+                state.ClearParkedOnQuestion();
+            }
+
+            _logger.LogDebug(
+                "Sub-agent {AgentId} completed a run with no assistant text while awaiting the output of "
+                    + "its answered question; keeping it non-terminal so the real answer can settle it.",
+                state.AgentId);
+            return;
+        }
+
+        // This completion is the one that settles the caller, so the parked latch has done its job.
+        // Clearing it here (rather than at resolution) is what makes the latch span exactly the interval
+        // between parking and the arrival of a real answer-derived result — a background sub-agent
+        // continued in place can park again later and get the same protection.
+        state.ClearParkedOnQuestion();
 
         // Transition out of Running BEFORE disposing the owned provider, atomically against a
         // concurrent SendMessageAsync (see SubAgentState.BeginContinuation). This blocks new inject
@@ -3376,8 +3566,13 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
         else
         {
-            // Genuinely terminal at this point: awaitingQuestion (precomputed by the caller) already
-            // returned early above when true, so a run reaching here truly has nothing more to do.
+            // Genuinely terminal at this point: a run still parked on a question, and the first
+            // zero-model-turn run after that question's resolution, both returned early above. The
+            // placeholder is therefore still reached by a run that never parked, by a run that called the
+            // model and had nothing to say, and by a second consecutive zero-turn run — never by the one
+            // completion that sits between a resolution and the answer's own text (#262). Both of those
+            // narrowings are deliberate: absorbing every text-free run, or absorbing them without limit,
+            // would trade this bug for a silent deadlock.
             var result = lastTextContent ?? "(no text response)";
 
             var resultText =
