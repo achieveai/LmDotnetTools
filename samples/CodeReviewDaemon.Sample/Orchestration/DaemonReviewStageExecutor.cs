@@ -560,6 +560,23 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                     BuildToolingState.Absent,
                     "no .NET SDK is installed in this container.");
         }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            // A cancellation NOBODY ASKED FOR is a timeout, and a timeout is a failed read like any other.
+            // Classifying by exception TYPE would let this one past — the production adapter converts its own
+            // timeout into TimeoutException (CommandTimedOut), but that is a property of one
+            // ISandboxCommandRunner, not of the port, and a runner built on Task.WaitAsync or HttpClient
+            // raises TaskCanceledException here instead. Same disposition as the catch below; logged apart so
+            // an operator can tell a slow gateway from a broken one.
+            _logger.LogWarning(
+                ex,
+                "The .NET SDK probe timed out while the daemon was not shutting down; the reviewer will be "
+                    + "told the fact is unknown rather than told the SDK is absent, and the next review "
+                    + "re-probes.");
+            return new BuildToolingFacts(
+                BuildToolingState.Indeterminate,
+                "the daemon could not determine whether a .NET SDK is installed in this container.");
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(
@@ -3097,6 +3114,21 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return await prProvider
                 .GetCurrentHeadShaAsync(repo, run.PrId, cancellationToken)
                 .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            // A slow host, not a shutdown. Both real providers reach the PR host through HttpClient, which
+            // raises TaskCanceledException — an OperationCanceledException subclass — on its own Timeout with
+            // the caller's token still uncancelled. Classifying by exception TYPE rather than by caller-token
+            // state let that one propagate and abandoned the review, which is exactly the outcome this method
+            // exists to prevent. Same disposition as the catch below; logged apart so an operator can tell a
+            // slow host from an unreachable one.
+            _logger.LogWarning(
+                ex, "Run {RunId}: reading PR {PrId} current head from {Provider} timed out while the daemon "
+                    + "was not shutting down; proceeding on the recorded head {HeadSha} rather than treating "
+                    + "a slow host as a moved one.",
+                run.Id, run.PrId, provider, run.HeadSha);
+            return null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

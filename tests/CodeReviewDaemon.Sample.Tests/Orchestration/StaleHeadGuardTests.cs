@@ -153,6 +153,46 @@ public sealed class StaleHeadGuardTests
         provider.HeadShaCalls.Should().BeGreaterThan(0, "the injected provider must be the one consulted");
     }
 
+    [Fact]
+    public async Task AnUncancelledTimeoutReadingTheHead_IsIndeterminate_NotAFaultedReview()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var provider = new TimingOutPrProvider("github");
+        var executor = BuildExecutor(store, new FakeReviewAgentLoopFactory(), [provider]);
+        var run = SeedRunWithContext(store, prId: "325", headSha: "head-325");
+
+        await executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        // A slow host is an unreachable host, not a moved head. Classifying by EXCEPTION TYPE instead of by
+        // caller-token state sends this TaskCanceledException straight past the catch, and the review the
+        // guard promises to continue is discarded over a transport blip.
+        provider.HeadShaCalls.Should().Be(1, "the site under test is only reached if the host is consulted");
+        store.GetArtifacts(run.Id)
+            .Should().Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+    }
+
+    [Fact]
+    public async Task CallerRequestedCancellationDuringTheHeadRead_Propagates_RatherThanReadingAsAnOutage()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        using var cts = new CancellationTokenSource();
+        var provider = new CancellingPrProvider("github", cts);
+        var executor = BuildExecutor(store, new FakeReviewAgentLoopFactory(), [provider]);
+        var run = SeedRunWithContext(store, prId: "325", headSha: "head-325");
+
+        var act = () => executor.ExecuteStageAsync(ReviewStage.Reviewed, run, cts.Token);
+
+        // The other half of the same rule: shutdown must not be swallowed as "no head" and allowed to run a
+        // whole review during a cancel.
+        _ = await act.Should().ThrowAsync<OperationCanceledException>();
+        provider.HeadShaCalls.Should()
+            .Be(1, "a pre-cancelled token is refused before the read, which would pass this test vacuously");
+        store.GetArtifacts(run.Id)
+            .Should().NotContain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+    }
+
     private static OpaqueCursor Cursor() => new()
     {
         Provider = "github",
@@ -230,5 +270,65 @@ public sealed class StaleHeadGuardTests
         public Task<string?> GetCurrentHeadShaAsync(
             RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
             throw new HttpRequestException("simulated provider outage");
+    }
+
+    /// <summary>
+    /// A host that is merely SLOW. Both real providers reach it through <c>HttpClient</c>, which raises a
+    /// <see cref="TaskCanceledException"/> — a subclass of <see cref="OperationCanceledException"/> — on its
+    /// own <c>Timeout</c> while the caller's token is still uncancelled. Nobody asked for a cancel, so this
+    /// is an outage wearing a cancellation's clothes.
+    /// </summary>
+    private sealed class TimingOutPrProvider(string provider) : IPrProvider
+    {
+        public string Provider { get; } = provider;
+
+        public int HeadShaCalls { get; private set; }
+
+        public Task<PullRequestPage> ListOpenPullRequestsAsync(
+            PrPollRequest request, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("not part of this test");
+
+        public Task<PrLifecycle> GetPrStateAsync(
+            RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
+            Task.FromResult(PrLifecycle.Open);
+
+        public Task<string?> GetCurrentHeadShaAsync(
+            RepoIdentity repo, string prId, CancellationToken cancellationToken)
+        {
+            HeadShaCalls++;
+            throw new TaskCanceledException(
+                "The request was canceled due to the configured HttpClient.Timeout elapsing.",
+                new TimeoutException());
+        }
+    }
+
+    /// <summary>
+    /// A host read that is interrupted by the CALLER — daemon shutdown, not a slow API. The cancel is raised
+    /// from inside the read rather than before the stage, because
+    /// <c>ValidateReviewStillCurrentAsync</c> opens with <c>ThrowIfCancellationRequested</c>: a pre-cancelled
+    /// token never reaches the catch these tests exist to pin.
+    /// </summary>
+    private sealed class CancellingPrProvider(string provider, CancellationTokenSource cts) : IPrProvider
+    {
+        public string Provider { get; } = provider;
+
+        public int HeadShaCalls { get; private set; }
+
+        public Task<PullRequestPage> ListOpenPullRequestsAsync(
+            PrPollRequest request, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("not part of this test");
+
+        public Task<PrLifecycle> GetPrStateAsync(
+            RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
+            Task.FromResult(PrLifecycle.Open);
+
+        public Task<string?> GetCurrentHeadShaAsync(
+            RepoIdentity repo, string prId, CancellationToken cancellationToken)
+        {
+            HeadShaCalls++;
+            cts.Cancel();
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult<string?>(null);
+        }
     }
 }
