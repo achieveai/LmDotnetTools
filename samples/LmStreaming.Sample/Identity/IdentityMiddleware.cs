@@ -86,10 +86,22 @@ public sealed class IdentityMiddleware
     /// <para>
     /// Unlike the webhook, lifecycle HAS a front door that can speak for it:
     /// <c>ServiceCallerPrincipalSource</c> turns the inbound S2S secret plus an
-    /// <c>X-Sbx-App-Id</c> registration into an <c>AppOnly</c> principal — exactly the identity these
-    /// service-to-service routes want. Guarding them therefore refuses no legitimate caller that is
-    /// onboarded under <c>Identity:Apps</c>; it only requires that they be onboarded, which is what
-    /// enforcement means everywhere else. Recorded in <c>docs/specs/P1-identity-authorization.md</c> §4.5.
+    /// <c>X-Sbx-App-Id</c> registration into a tenant-bearing <c>AppOnly</c> principal. Guarding these
+    /// routes therefore refuses no caller that is onboarded under <c>Identity:Apps</c>; it only requires
+    /// that they be onboarded, which is what enforcement means everywhere else.
+    /// </para>
+    /// <para>
+    /// <b>What that does NOT yet buy, stated so nobody reads more into it.</b> Admitting the caller at
+    /// the boundary is not the same as the plane authorizing it. The principal is stashed in
+    /// <c>HttpContext.Items</c> (<see cref="IdentityHttpItems.PrincipalKey"/>); both lifecycle
+    /// controllers' <c>AuthenticatedAppId()</c> reads <c>HttpContext.User</c>, and nothing in this
+    /// repository bridges the two — the only registered scheme is JWT bearer, which the S2S headers do
+    /// not trigger. A caller presenting only those headers is thus still refused by the controllers,
+    /// precisely as it was before #402, when these routes were exempt and <c>HttpContext.User</c> was
+    /// equally unauthenticated behind them. Guarding regressed no working caller; making the plane
+    /// reachable for an S2S-only caller is a separate change (an <c>Items</c>-to-<c>User</c> bridge, or
+    /// controllers that read the principal accessor) and is not claimed here.
+    /// Recorded in <c>docs/specs/P1-identity-authorization.md</c> §4.5.
     /// </para>
     /// <para>
     /// <c>/api/auth/egress-keys</c> is deliberately NOT here. It looks like an infrastructure route

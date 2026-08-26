@@ -166,19 +166,29 @@ public sealed class ServiceCallerPrincipalTests
     [Theory]
     [InlineData("/api/lifecycle/subscriptions")]
     [InlineData("/api/lifecycle/approvals/decisions")]
-    public async Task WithEnforcementOn_ALifecycleCallerWithTheDaemonsHeaders_ReachesTheEndpointWithAnAppPrincipal(
+    public async Task WithEnforcementOn_ALifecycleCallerWithTheDaemonsHeaders_PassesTheBoundaryWithAnAppPrincipal(
         string path)
     {
         // #402's other side. Bringing /api/lifecycle inside the boundary only closes the tenant-refusal
-        // hole if the plane's LEGITIMATE callers still get in - otherwise the fix trades a security
-        // gap for an outage. They do, and by the ordinary door: lifecycle is a service-to-service
+        // hole if the plane's LEGITIMATE callers are not newly refused BY THE BOUNDARY - otherwise the
+        // fix trades a security gap for an outage. They are not: lifecycle is a service-to-service
         // surface, ServiceCallerPrincipalSource is the service-to-service front door, and the app
-        // principal it mints is exactly the identity these routes want.
+        // principal it mints carries the tenant that enforcement needs to refuse a suspended one.
         //
-        // This is what makes the exemption unnecessary rather than merely unwise, and it is the
-        // assertion that distinguishes this fix from "guard it and hope": the caller reaches the
-        // endpoint AND carries a tenant, so the controllers' own owner resolution has something real
-        // to work from instead of a raw ClaimsPrincipal nobody validated a tenant for.
+        // Scope, deliberately narrow. The host here terminates in this fixture's own endpoint, not in
+        // LifecycleApprovalController/LifecycleSubscriptionsController. So this asserts what the
+        // BOUNDARY does - admits the caller, with a tenant-bearing AppOnly principal - and nothing
+        // about what those controllers then do with it.
+        //
+        // What it must NOT be read as saying: that this caller shape is AUTHORIZED by the plane. The
+        // principal lands in HttpContext.Items (IdentityHttpItems.PrincipalKey); both controllers'
+        // AuthenticatedAppId() reads HttpContext.User, and nothing in the repo copies one to the
+        // other - the sole registered scheme is JWT bearer, which these headers do not trigger. A
+        // caller presenting only the S2S headers is therefore still refused by the controllers
+        // themselves, exactly as it was BEFORE #402 (the routes were exempt, so User was unauthenticated
+        // there too). Guarding regressed nothing; it also did not, on its own, make the plane reachable
+        // for an S2S-only caller. Closing that gap needs a real Items -> User bridge and a test driving
+        // the real controllers, which is separate work from this PR.
         using var server = await StartAsync(
             enforce: true,
             s2sSecret: Secret,

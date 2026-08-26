@@ -210,4 +210,93 @@ public class SandboxSessionRegistryResolverTests
         var actB = () => registry.ResolveThreadWorkspaceSessionAsync("thread-b", "default", requestCredential: null);
         await actB.Should().ThrowAsync<InvalidOperationException>();
     }
+
+    // ------------------------------------------------ #253: the background resolver, on the REAL registry
+
+    /// <summary>
+    /// The distinction #253 turns on, pinned where it is actually made rather than in a double. The
+    /// background seam skips the provenance comparison because a drain loop has no caller to compare — so
+    /// an S2S-OWNED binding, which a null-provenance request is refused against
+    /// (<see cref="NullCallerCredential_AgainstNonDefaultOwner_ReturnsCredentialConflict"/>), passes the
+    /// gate here and proceeds to the gateway.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The two calls are made against the SAME binding on purpose. That is what makes this a test of the
+    /// seam rather than of a fixture: one and the same state yields <c>CredentialConflict</c> through the
+    /// request path and a passed gate through the background path, so nothing but the method under test
+    /// can account for the difference.
+    /// </para>
+    /// <para>
+    /// Every test double in the suite models this distinction by simply answering differently, which
+    /// cannot detect the production argument being flipped to <c>compareProvenance: true</c> — the flip
+    /// would restore silent, permanent transcript loss for every S2S-created conversation while the whole
+    /// suite stayed green. This test is the one that goes red.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task BackgroundResolver_AgainstAnS2SOwnedBinding_SkipsProvenance_AndProceedsToResolveLiveSession()
+    {
+        await using var registry = CreateRegistry();
+        var owner = new SandboxCredential("review-daemon", "owner-key");
+        registry.PublishEstablishedBinding(
+            "thread-background",
+            new SandboxEstablishedBinding(new WorkspaceRef("default"), owner, owner)
+        );
+
+        // The request path refuses this exact binding for want of a matching caller...
+        var viaRequest = await registry.ResolveThreadWorkspaceSessionAsync(
+            "thread-background",
+            "default",
+            requestCredential: null
+        );
+        viaRequest.Outcome.Should().Be(SandboxSessionResolutionOutcome.CredentialConflict);
+
+        // ...and the background path passes the gate on the same binding, tripping the throwing stub.
+        var act = () => registry.ResolveThreadWorkspaceSessionForBackgroundAsync("thread-background", "default");
+
+        _ = await act.Should().ThrowAsync<InvalidOperationException>(
+            "a drain loop has no caller, so there is no provenance to compare - and comparing anyway "
+                + "denies every flush of an S2S-created conversation, forever and silently");
+    }
+
+    /// <summary>
+    /// Skipping provenance is the ONLY thing the background seam skips. A thread with no binding resolves
+    /// to <see cref="SandboxSessionResolutionOutcome.NoSession"/> here exactly as it does on the request
+    /// path, without touching the gateway.
+    /// </summary>
+    [Fact]
+    public async Task BackgroundResolver_WithNoBinding_StillReturnsNoSession_WithoutCallingGateway()
+    {
+        await using var registry = CreateRegistry();
+
+        var result = await registry.ResolveThreadWorkspaceSessionForBackgroundAsync("thread-none", "default");
+
+        result.Outcome.Should().Be(SandboxSessionResolutionOutcome.NoSession);
+        result.Session.Should().BeNull();
+    }
+
+    /// <summary>
+    /// The other gate the background seam keeps: the persisted conversation workspace stays authoritative,
+    /// so a binding left over from before a workspace switch is still refused. Without this the background
+    /// path would write a thread's transcript into a workspace the conversation no longer belongs to.
+    /// </summary>
+    [Fact]
+    public async Task BackgroundResolver_WithABindingForAnotherWorkspace_StillReturnsNoSession()
+    {
+        await using var registry = CreateRegistry();
+        var owner = new SandboxCredential("review-daemon", "owner-key");
+        registry.PublishEstablishedBinding(
+            "thread-background-ws",
+            new SandboxEstablishedBinding(new WorkspaceRef("default"), owner, owner)
+        );
+
+        var result = await registry.ResolveThreadWorkspaceSessionForBackgroundAsync(
+            "thread-background-ws",
+            "some-other-workspace"
+        );
+
+        result.Outcome.Should().Be(SandboxSessionResolutionOutcome.NoSession);
+        result.Session.Should().BeNull();
+    }
 }

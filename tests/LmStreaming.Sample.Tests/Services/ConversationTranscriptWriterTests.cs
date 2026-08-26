@@ -2273,6 +2273,47 @@ public sealed class ConversationTranscriptWriterTests
     }
 
     /// <summary>
+    /// Both spellings reach this writer, so both must externalise. The aggregate message and the
+    /// single-call one are separate types with separate names, and the gate matches NAMES rather than
+    /// types — so the second entry in the set is load-bearing and nothing else in the suite would notice
+    /// it being dropped: every other sidecar test drives the plural spelling.
+    /// </summary>
+    /// <remarks>
+    /// <c>nameof</c> rather than a string literal on purpose: the production set spells the names out as
+    /// literals precisely to avoid a type dependency, so a test that also used a literal could not notice
+    /// the two drifting apart. Here the compiler checks that this name is still a real type's name.
+    /// </remarks>
+    [Fact]
+    public async Task ASingleCallToolResult_IsExternalisedToo_NotOnlyTheAggregateSpelling()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        var big = Msg(
+            "m1",
+            1,
+            role: "Tool",
+            messageType: nameof(ToolCallResultMessage),
+            messageJson: "\"" + new string('x', ConversationTranscriptWriter.ToolResultSidecarThresholdBytes + 100) + "\"");
+        await store.AppendMessagesAsync(ThreadId, [big]);
+
+        // The premise: this is the OTHER name, not the one every other test in this section uses.
+        _ = nameof(ToolCallResultMessage).Should().NotBe(nameof(ToolsCallResultMessage));
+
+        var browser = new FakeFileBrowser();
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var expectedRef = $"{WorkspaceTranscriptLine.MainFileLeaf(Title, ShortThreadId)}"
+            + $"{ConversationTranscriptWriter.BlobsDirectorySuffix}"
+            + $"/{WorkspaceTranscriptLine.DeriveUid(big.Id)}.json";
+
+        var payload = Written(browser, 0);
+        _ = Field(payload, 0, "message_json_ref").Should().Be(expectedRef);
+        _ = Field(payload, 0, "message_json").Should().BeNull();
+        _ = browser.Writes.Select(w => w.Path).Should()
+            .Contain($"{ConversationTranscriptWriter.TranscriptDirectory}/{expectedRef}");
+    }
+
+    /// <summary>
     /// The symlink invariant, extended to the surface this feature added. A sidecar PUT carries no shell,
     /// so an in-script check would run after the bytes were already through — it is guarded by
     /// <c>IsPathSafeAsync</c> immediately before the write, exactly like the staged payload and the

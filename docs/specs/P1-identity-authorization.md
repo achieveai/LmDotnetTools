@@ -753,12 +753,28 @@ everywhere its identity is knowable, and on this surface it is knowable.
 
 **Why guarding it refuses no legitimate caller.** Unlike the webhook, lifecycle has a front door
 that can speak for it. `ServiceCallerPrincipalSource` (4.2) turns the inbound S2S secret plus an
-`X-Sbx-App-Id` registration into an `AppOnly` principal carrying a tenant — precisely the identity
-a service-to-service control plane wants, and strictly more than the raw `ClaimsPrincipal` the
-controllers were reading. The cost of the change is that a lifecycle caller must now be onboarded
-under `Identity:Apps` when `Identity:Enforce` is on, which is what enforcement already means for
-every other service-to-service route. With enforcement off, nothing changes: the development
-principal is established as before.
+`X-Sbx-App-Id` registration into an `AppOnly` principal carrying a tenant. The cost of the change is
+that a lifecycle caller must now be onboarded under `Identity:Apps` when `Identity:Enforce` is on,
+which is what enforcement already means for every other service-to-service route. With enforcement
+off, nothing changes: the development principal is established as before.
+
+**Known gap: the front door admits the caller, it does not yet authorize the plane.** The paragraph
+above is a statement about the *boundary*, and must not be read as saying an S2S-only caller can now
+drive lifecycle. It cannot. The principal this front door mints is stashed in `HttpContext.Items`,
+while `AuthenticatedAppId()` in both controllers reads `HttpContext.User` (as this section already
+notes two paragraphs up) — and nothing in the repository copies one into the other. The single
+registered authentication scheme is JWT bearer, which the S2S headers do not trigger. So a caller
+presenting only `X-S2S-Auth` + `X-Sbx-App-Id` passes the boundary and is then refused *by the
+controllers*, with `403`.
+
+This is a pre-existing gap, not a regression from #402: before the change these routes were exempt,
+so `IdentityMiddleware` returned at its first line and `HttpContext.User` behind them was equally
+unauthenticated. Bringing them inside the boundary took nothing away from any caller that worked.
+Closing the gap requires a deliberate bridge — an `IClaimsTransformation`, an authentication handler
+for the S2S scheme, or controllers that read `IPrincipalAccessor` instead of `HttpContext.User` —
+together with a test that drives the *real* controllers and asserts a non-`403`. Note that
+`ServiceCallerPrincipalTests` proves the boundary half only: its host terminates in the fixture's own
+endpoint and wires no controllers.
 
 **`/api/auth/egress-keys` is deliberately not exempt**, and is named here because it looks like an
 infrastructure route and is not one. It is a SPA management surface the browser calls through
