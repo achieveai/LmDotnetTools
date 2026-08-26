@@ -389,6 +389,50 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
     }
 
     /// <summary>
+    /// The consequence of #399 that the pool-level assertion cannot show: once a socket-created entry
+    /// is OWNED, a second human's handshake on the same thread hits the pool's principal guard during
+    /// connection setup. That has to reach the client as a structured refusal - the same shape the
+    /// app-id conflict beside it already uses - rather than as an unhandled exception that aborts the
+    /// socket and tells the UI nothing.
+    /// </summary>
+    [Fact]
+    public async Task WithEnforcementOn_ASecondUsersSocket_IsRefusedTheOwnersLiveAgent()
+    {
+        LogTestStart();
+        using var factory = NewFactory(EnforcingSettings(), WithTestPrincipalSource);
+        const string ThreadId = "thread-two-humans-one-thread";
+
+        using var alicesSocket = await factory.ConnectWebSocketAsync(
+            ThreadId,
+            subProtocols: CredentialFor("dir-a:alice"));
+
+        var pool = factory.Services.GetRequiredService<MultiTurnAgentPool>();
+        await Wait.UntilAsync(
+            () => pool.TryGet(ThreadId, out _),
+            because: "the first connection creates the thread's pooled agent",
+            timeout: TimeSpan.FromSeconds(20));
+
+        var bobsSocket = await factory.ConnectWebSocketAsync(
+            ThreadId,
+            subProtocols: CredentialFor("dir-b:bob"));
+        await using var bob = new WebSocketTestClient(bobsSocket);
+
+        using var refusal = await bob.WaitForFrameAsync(
+            frame =>
+                frame.RootElement.TryGetProperty("code", out var code)
+                && string.Equals(code.GetString(), "principal_conflict", StringComparison.Ordinal),
+            TimeSpan.FromSeconds(20));
+
+        // The refusal is not the whole claim: the owner's agent must still be hers afterwards.
+        _ = pool.GetAgentOwnerUserId(ThreadId).Should().Be("dir-a:alice");
+
+        await alicesSocket.CloseAsync(
+            System.Net.WebSockets.WebSocketCloseStatus.NormalClosure,
+            "done",
+            CancellationToken.None);
+    }
+
+    /// <summary>
     /// Asks the real predicate rather than restating the rule, so an edit to the exemption list
     /// cannot agree with a copy of itself.
     /// </summary>
@@ -442,9 +486,12 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
     /// The subprotocol list a signed-in browser offers: the credential, then the application
     /// subprotocol the server is allowed to echo back.
     /// </summary>
-    private static string[] AliceCredential() =>
+    private static string[] AliceCredential() => CredentialFor("dir-a:alice");
+
+    /// <summary>The same list for any user id, so a test can play a second human.</summary>
+    private static string[] CredentialFor(string userId) =>
         [
-            IdentityMiddleware.WebSocketCredentialSubProtocolPrefix + "dir-a:alice",
+            IdentityMiddleware.WebSocketCredentialSubProtocolPrefix + userId,
             IdentityMiddleware.WebSocketSubProtocol,
         ];
 

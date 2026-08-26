@@ -233,6 +233,29 @@ public sealed class ChatWebSocketManager
                 await SendCredentialConflictErrorAsync(connection, ex, recordWriter, cancellationToken);
                 return;
             }
+            catch (PrincipalConflictException ex)
+            {
+                // The people-shaped sibling of the conflict above, reachable only since this
+                // connection started owning the entries it creates (#399): the thread's live agent
+                // belongs to a different USER. Refuse it here rather than letting the exception abort
+                // the socket - an aborted handshake tells the UI nothing, and the REST surface answers
+                // the same exception with 409 principal_conflict.
+                //
+                // This transport does NOT release the other user's agent the way the REST routes do
+                // for an authorized grantee (#376): it performs no per-conversation authorization at
+                // all, so there is no verdict here that could justify taking someone's agent away.
+                // Refusing is the conservative half of that gap, and it is recorded in
+                // docs/deployment/AUTH_ENFORCE.md.
+                _logger.LogWarning(
+                    ex,
+                    "Principal conflict for thread {ThreadId}: bound to user '{ExistingUserId}', requested '{RequestedUserId}'",
+                    threadId,
+                    ex.ExistingUserId,
+                    ex.RequestedUserId);
+
+                await SendPrincipalConflictErrorAsync(connection, ex, recordWriter, cancellationToken);
+                return;
+            }
 
             // Create linked cancellation for connection lifetime
             using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -1473,6 +1496,44 @@ public sealed class ChatWebSocketManager
         await connection.TryCloseAsync(
             WebSocketCloseStatus.NormalClosure,
             "Sandbox unavailable",
+            CancellationToken.None);
+    }
+
+    private async Task SendPrincipalConflictErrorAsync(
+        RegisteredWebSocketConnection connection,
+        PrincipalConflictException ex,
+        StreamWriter? recordWriter,
+        CancellationToken ct)
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["$type"] = "error",
+
+            // Same code the REST 409 carries, so a client needs one branch rather than two names for
+            // one condition.
+            ["code"] = "principal_conflict",
+
+            // Deliberately does NOT relay ex.Message: that names the OTHER user's id, and this
+            // connection has not been authorized to learn who else uses this conversation.
+            ["message"] =
+                "This conversation's agent is in use by a different user and cannot be continued here.",
+        };
+        var json = JsonSerializer.Serialize(payload, _jsonOptions);
+
+        if (!await connection.TrySendTextAsync(json, ct))
+        {
+            return;
+        }
+
+        if (recordWriter != null)
+        {
+            await recordWriter.WriteLineAsync(json);
+            await recordWriter.FlushAsync();
+        }
+
+        await connection.TryCloseAsync(
+            WebSocketCloseStatus.NormalClosure,
+            "Principal conflict",
             CancellationToken.None);
     }
 
