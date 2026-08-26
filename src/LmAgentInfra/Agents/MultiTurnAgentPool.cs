@@ -1060,13 +1060,18 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
                 return new AgentRefreshResult(current.Agent, AgentRefreshStatus.RefreshRequired);
             }
 
+            // Both the credential and the principal are frozen-at-creation facts, so both are read
+            // off the entry being replaced. Deliberately NOT `?? ownerUserId`: this is a refresh,
+            // not a swap, and adopting the caller's principal onto a previously unowned entry would
+            // let whoever happens to trigger the refresh claim the thread (#398).
             var replacement = CreateAgentEntry(
                 threadId,
                 current.Mode,
                 current.ProviderId,
                 current.RequestResponseDumpFileName,
                 current.WorkspaceId,
-                current.CallerCredential
+                current.CallerCredential,
+                current.OwnerUserId
             );
             _agents[threadId] = replacement;
             PublishBindingIfStaged(threadId, replacement);

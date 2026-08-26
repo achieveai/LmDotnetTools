@@ -1,4 +1,5 @@
 using System.Net;
+using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using FluentAssertions;
@@ -83,6 +84,49 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         // has to defeat this assertion too, not just quietly extend a prefix.
         _ = guarded.Should().Contain("api/auth/egress-keys");
         _ = guarded.Should().Contain("api/auth/egress-keys/{id}");
+    }
+
+    [Fact]
+    public void EveryRouteFamilyThisHostPublishes_IsAccountedFor_NotJustTheApiOnes()
+    {
+        LogTestStart();
+        using var factory = NewFactory();
+
+        // The partition test above answers "is every /api route guarded?" and CANNOT answer "is
+        // every route guarded?". #342 is precisely the second question: /ws sits outside the /api
+        // prefix, so a boundary asserted over that prefix alone said nothing about it and the
+        // transport stayed open while enforcement was on. Nothing enumerated the routes that are
+        // NOT under /api, which is the only place a defect of that shape can hide.
+        var nonApiRoutes = AllRoutes(factory)
+            .Where(route => !route.StartsWith("api/", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        LogData("nonApiRoutes", nonApiRoutes);
+
+        _ = nonApiRoutes.Should().BeEquivalentTo(
+            [
+                "auth/m365/callback",
+                "auth/{providerId}",
+                "ws",
+                "ws/subagent",
+                "{*path:nonfile}",
+            ],
+            "a route family outside /api joins this list by an author editing it, never by nobody "
+                + "looking - #342 is what the absence of this enumeration cost");
+
+        // The transports are inside the boundary now, asked of the real predicate.
+        _ = IdentityMiddleware.IsGuardedPath(new PathString("/ws")).Should().BeTrue();
+        _ = IdentityMiddleware.IsGuardedPath(new PathString("/ws/subagent")).Should().BeTrue();
+
+        // The rest stay outside, each for a reason that survives being written down:
+        //  - the SPA fallback serves the very screen that explains a refusal, so gating it would
+        //    hide the explanation behind the thing it explains;
+        //  - the two OAuth pages are reached by a redirect FROM an identity provider, which carries
+        //    no bearer token by construction, so guarding them refuses every legitimate arrival.
+        //    They render sign-in state for a provider, never conversation content.
+        _ = IdentityMiddleware.IsGuardedPath(new PathString("/")).Should().BeFalse();
+        _ = IdentityMiddleware.IsGuardedPath(new PathString("/dist/index.html")).Should().BeFalse();
+        _ = IdentityMiddleware.IsGuardedPath(new PathString("/auth/github")).Should().BeFalse();
+        _ = IdentityMiddleware.IsGuardedPath(new PathString("/auth/m365/callback")).Should().BeFalse();
     }
 
     [Fact]
@@ -232,12 +276,100 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
             .Which.Should().Be("authentication_required");
     }
 
+    [Fact]
+    public async Task WithEnforcementOn_AnUnauthenticatedWebSocketHandshake_IsRefused_AndNotWith401()
+    {
+        LogTestStart();
+        using var factory = NewFactory(EnforcingSettings());
+        using var client = factory.CreateClient();
+
+        // The transport half of #342. /ws sits OUTSIDE the /api prefix, so before the fix flipping
+        // Identity:Enforce gated the REST surface and left a fully functional unauthenticated
+        // channel open beside it.
+        Func<Task> handshake = () => factory.ConnectWebSocketAsync("thread-anon");
+
+        _ = await handshake.Should().ThrowAsync<InvalidOperationException>(
+            "an unauthenticated /ws handshake must not complete under Identity:Enforce");
+
+        // And the refusal's shape, read off the same request without the handshake machinery in the
+        // way. 401 is the one status a browser answers by re-authenticating, which cannot conjure a
+        // WebSocket credential and therefore loops (#341's finding).
+        var response = await client.GetAsync(new Uri("/ws?threadId=thread-anon", UriKind.Relative));
+
+        _ = response.StatusCode.Should().NotBe(
+            HttpStatusCode.Unauthorized,
+            "a 401 on the WebSocket transport restarts sign-in, and sign-in does not fix a missing "
+                + "handshake credential");
+        _ = response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        _ = response.Headers.GetValues(IdentityMiddleware.RefusalCodeHeader).Should().ContainSingle()
+            .Which.Should().Be(IdentityMiddleware.WebSocketRefusalCode);
+    }
+
+    [Fact]
+    public async Task WithEnforcementOn_TheFocusedSubAgentSocket_IsRefusedToo()
+    {
+        LogTestStart();
+        using var factory = NewFactory(EnforcingSettings());
+
+        // /ws/subagent is a SECOND transport on the same prefix, and a boundary that covered only
+        // the route someone happened to name would leave it open. It relays a live child agent's
+        // transcript, so it discloses exactly the conversation content the REST surface refuses.
+        Func<Task> handshake = () => factory.ConnectSubAgentWebSocketAsync("thread-anon", "agent-1");
+
+        _ = await handshake.Should().ThrowAsync<InvalidOperationException>();
+    }
+
+    [Fact]
+    public async Task WithEnforcementOn_ACredentialInTheHandshakeSubprotocol_AdmitsTheSocket()
+    {
+        LogTestStart();
+        using var factory = NewFactory(EnforcingSettings(), WithTestPrincipalSource);
+
+        // The decision recorded for #342: the browser WebSocket API admits no custom headers, but it
+        // DOES choose the Sec-WebSocket-Protocol list, so the credential travels there and is
+        // promoted into Authorization before UseAuthentication - which is what makes /ws resolve its
+        // principal through the SAME front doors as REST rather than a second, parallel one.
+        using var socket = await factory.ConnectWebSocketAsync(
+            "thread-authenticated",
+            subProtocols:
+            [
+                IdentityMiddleware.WebSocketCredentialSubProtocolPrefix + "dir-a:alice",
+                IdentityMiddleware.WebSocketSubProtocol,
+            ]);
+
+        _ = socket.State.Should().Be(System.Net.WebSockets.WebSocketState.Open);
+
+        // The server echoes the APPLICATION subprotocol, never the credential one - echoing the
+        // credential would hand it back to anything reading the response headers.
+        _ = socket.SubProtocol.Should().Be(IdentityMiddleware.WebSocketSubProtocol);
+
+        await socket.CloseAsync(
+            System.Net.WebSockets.WebSocketCloseStatus.NormalClosure,
+            "done",
+            CancellationToken.None);
+    }
+
     /// <summary>
     /// Asks the real predicate rather than restating the rule, so an edit to the exemption list
     /// cannot agree with a copy of itself.
     /// </summary>
     private static bool IsGuarded(string route) =>
         IdentityMiddleware.IsGuardedApiPath(new PathString("/" + route));
+
+    /// <summary>
+    /// Every route the host publishes, normalised the same way <see cref="ApiRoutes"/> normalises
+    /// its own - including the WebSocket transports, which <c>app.Map(pattern, Delegate)</c>
+    /// publishes as ordinary minimal-API endpoints.
+    /// </summary>
+    private static IReadOnlyList<string> AllRoutes(E2EWebAppFactory factory) =>
+        [..
+            factory
+                .Services.GetRequiredService<EndpointDataSource>()
+                .Endpoints.OfType<RouteEndpoint>()
+                .Select(endpoint => (endpoint.RoutePattern.RawText ?? string.Empty).TrimStart('/'))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(route => route, StringComparer.Ordinal),
+        ];
 
     private static IReadOnlyList<string> ApiRoutes(E2EWebAppFactory factory) =>
         [..
@@ -267,7 +399,46 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
             ["LmStreaming:AllowedOrigins:0"] = ClientOrigin,
         };
 
-    private static E2EWebAppFactory NewFactory(IDictionary<string, string?>? settings = null)
+    /// <summary>
+    /// Registers a front door that turns <c>Authorization: Bearer &lt;userId&gt;</c> into an end-user
+    /// principal. Deliberately the REAL extension point <see cref="IdentityMiddleware"/> consults
+    /// (<see cref="IRequestPrincipalSource"/>) rather than a hand-placed stash, so a test credential
+    /// travels the same path a token does: header -> front door -> principal.
+    /// </summary>
+    private static void WithTestPrincipalSource(IServiceCollection services) =>
+        services.AddSingleton<IRequestPrincipalSource, BearerUserPrincipalSource>();
+
+    private sealed class BearerUserPrincipalSource : IRequestPrincipalSource
+    {
+        public ValueTask<PrincipalResolution?> ResolveAsync(HttpContext context, CancellationToken ct)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+
+            var header = context.Request.Headers.Authorization.ToString();
+            if (!header.StartsWith("Bearer ", StringComparison.Ordinal))
+            {
+                return ValueTask.FromResult<PrincipalResolution?>(null);
+            }
+
+            var userId = header["Bearer ".Length..].Trim();
+            if (userId.Length == 0)
+            {
+                return ValueTask.FromResult<PrincipalResolution?>(null);
+            }
+
+            return ValueTask.FromResult<PrincipalResolution?>(PrincipalResolution.Success(
+                new Principal
+                {
+                    TenantId = DaemonTenant,
+                    Actor = new PrincipalRef(PrincipalKind.EndUser, userId),
+                    Source = PrincipalSource.Interactive,
+                }));
+        }
+    }
+
+    private static E2EWebAppFactory NewFactory(
+        IDictionary<string, string?>? settings = null,
+        Action<IServiceCollection>? configureServices = null)
     {
         // Any scripted handler works - nothing here creates an agent.
         var responder = ScriptedSseResponder
@@ -276,6 +447,10 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
             .Turn(t => t.Text("ok"))
             .Build();
 
-        return new E2EWebAppFactory("test", new ScriptedBuilder(responder.AsAnthropicHandler()), settings);
+        return new E2EWebAppFactory(
+            "test",
+            new ScriptedBuilder(responder.AsAnthropicHandler()),
+            settings,
+            configureServices);
     }
 }

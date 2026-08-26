@@ -22,11 +22,13 @@ public sealed class E2EWebAppFactory : WebApplicationFactory<Program>
     private readonly string _providerMode;
     private readonly ITestAgentBuilder _builder;
     private readonly IDictionary<string, string?>? _settings;
+    private readonly Action<IServiceCollection>? _configureServices;
 
     public E2EWebAppFactory(
         string providerMode,
         ITestAgentBuilder builder,
-        IDictionary<string, string?>? settings = null)
+        IDictionary<string, string?>? settings = null,
+        Action<IServiceCollection>? configureServices = null)
     {
         if (!string.Equals(providerMode, "test", StringComparison.OrdinalIgnoreCase)
             && !string.Equals(providerMode, "test-anthropic", StringComparison.OrdinalIgnoreCase))
@@ -39,6 +41,7 @@ public sealed class E2EWebAppFactory : WebApplicationFactory<Program>
         _providerMode = providerMode;
         _builder = builder ?? throw new ArgumentNullException(nameof(builder));
         _settings = settings;
+        _configureServices = configureServices;
 
         // LmStreaming.Sample reads LM_PROVIDER_MODE at the top of Program.cs — well before any
         // host-builder callback fires. Set it here (in the factory ctor, before Server is
@@ -69,6 +72,7 @@ public sealed class E2EWebAppFactory : WebApplicationFactory<Program>
         {
             services.RemoveAll<ITestAgentBuilder>();
             services.AddSingleton(_builder);
+            _configureServices?.Invoke(services);
         });
     }
 
@@ -100,9 +104,11 @@ public sealed class E2EWebAppFactory : WebApplicationFactory<Program>
     public async Task<System.Net.WebSockets.WebSocket> ConnectWebSocketAsync(
         string threadId,
         string? modeId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        IEnumerable<string>? subProtocols = null)
     {
         var wsClient = Server.CreateWebSocketClient();
+        AddSubProtocols(wsClient, subProtocols);
 
         var query = $"threadId={Uri.EscapeDataString(threadId)}";
         if (!string.IsNullOrEmpty(modeId))
@@ -130,9 +136,11 @@ public sealed class E2EWebAppFactory : WebApplicationFactory<Program>
     public async Task<System.Net.WebSockets.WebSocket> ConnectSubAgentWebSocketAsync(
         string parentThreadId,
         string agentId,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        IEnumerable<string>? subProtocols = null)
     {
         var wsClient = Server.CreateWebSocketClient();
+        AddSubProtocols(wsClient, subProtocols);
 
         var query =
             $"parentThreadId={Uri.EscapeDataString(parentThreadId)}&agentId={Uri.EscapeDataString(agentId)}";
@@ -147,4 +155,21 @@ public sealed class E2EWebAppFactory : WebApplicationFactory<Program>
         return await wsClient.ConnectAsync(uri, ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Offers <paramref name="subProtocols"/> on the handshake. This is how a browser presents a
+    /// credential to a WebSocket endpoint - the WebSocket API admits no custom headers, so the
+    /// <c>Sec-WebSocket-Protocol</c> list is the only header a page can influence.
+    /// </summary>
+    private static void AddSubProtocols(WebSocketClient client, IEnumerable<string>? subProtocols)
+    {
+        if (subProtocols is null)
+        {
+            return;
+        }
+
+        foreach (var subProtocol in subProtocols)
+        {
+            client.SubProtocols.Add(subProtocol);
+        }
+    }
 }

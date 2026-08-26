@@ -1,6 +1,7 @@
 import type { Message, AuthEvent } from '@/types';
 import { isAuthEventPayload } from '@/types';
 import type { ChatRequest } from './chatClient';
+import { getAccessToken } from '@/api/http';
 import { logger } from '@/utils';
 
 const log = logger.forComponent('WebSocketClient');
@@ -212,6 +213,41 @@ function buildChatWebSocketUrl(
 }
 
 /**
+ * Prefix of the `Sec-WebSocket-Protocol` token that carries the signed-in user's bearer credential.
+ *
+ * Must match `IdentityMiddleware.WebSocketCredentialSubProtocolPrefix` on the server, which strips it
+ * and lifts the remainder into `Authorization` before authentication runs.
+ */
+export const WS_CREDENTIAL_SUBPROTOCOL_PREFIX = 'lm.bearer.';
+
+/**
+ * The application subprotocol, offered alongside the credential and the only one the server echoes.
+ *
+ * Must match `IdentityMiddleware.WebSocketSubProtocol`. RFC 6455 lets the server select at most one
+ * of the subprotocols the client listed, so there has to be a non-credential candidate to select —
+ * selecting the credential token would write this user's own token back into a response header.
+ */
+export const WS_APPLICATION_SUBPROTOCOL = 'lm.chat.v1';
+
+/**
+ * The subprotocol list to open a socket with, or `undefined` when there is nothing to present.
+ *
+ * `undefined` — not an empty array — because the caller passes the result through to the
+ * `WebSocket` constructor by ARITY. A signed-out connection must be byte-identical to the
+ * one-argument call it replaced: that is the state every deployment with `Identity:Enforce` off runs
+ * in, and offering an empty subprotocol list is not the same handshake.
+ *
+ * The token rides here rather than in the query string for the reason `apiFetch` keeps it in a
+ * header: a URL reaches proxy logs, browser history and `Referer`, and a bearer token must not.
+ */
+export function webSocketSubProtocols(): string[] | undefined {
+  const token = getAccessToken();
+  return token === null
+    ? undefined
+    : [`${WS_CREDENTIAL_SUBPROTOCOL_PREFIX}${token}`, WS_APPLICATION_SUBPROTOCOL];
+}
+
+/**
  * Summarize a WebSocket payload that FAILED to parse into content-free diagnostics. This handler is
  * SHARED by the parent chat and the focused sub-agent transcript stream, so the raw payload may carry
  * prompts / reasoning / tool content (EUII). We must therefore log ONLY metadata — never `event.data`
@@ -272,7 +308,9 @@ export function openWebSocketConnection(
   return new Promise((resolve, reject) => {
     log.info('Connecting to WebSocket', { url: wsUrl, connectionId, threadId: effectiveThreadId });
 
-    const socket = new WebSocket(wsUrl);
+    // Arity matters: see webSocketSubProtocols.
+    const protocols = webSocketSubProtocols();
+    const socket = protocols === undefined ? new WebSocket(wsUrl) : new WebSocket(wsUrl, protocols);
 
     socket.onopen = () => {
       log.info('WebSocket connected', { connectionId, threadId: effectiveThreadId });

@@ -2197,7 +2197,7 @@ subAgentFactory,
                 );
             }
 
-            var webSocket = await context.WebSockets.AcceptWebSocketAsync();
+            var webSocket = await AcceptNegotiatedWebSocketAsync(context);
             wsLogger.LogInformation(
                 "WebSocket connection established for thread {ThreadId} with mode {ModeId}",
                 threadId,
@@ -2269,7 +2269,7 @@ subAgentFactory,
                 return;
             }
 
-            var webSocket = await context.WebSockets.AcceptWebSocketAsync();
+            var webSocket = await AcceptNegotiatedWebSocketAsync(context);
             wsLogger.LogInformation(
                 "Sub-agent WebSocket connection established for agent {AgentId} on parent {ParentThreadId}",
                 agentId,
@@ -3475,6 +3475,21 @@ public partial class Program
                 string.Equals(recordValue, "1", StringComparison.Ordinal)
                 || string.Equals(recordValue, "true", StringComparison.OrdinalIgnoreCase)
             );
+    }
+
+    /// <summary>
+    ///     Completes a WebSocket handshake, echoing the application subprotocol when the client
+    ///     offered it (#342). RFC 6455 lets the server select at most one of the subprotocols the
+    ///     client listed, and the credential token is never a candidate:
+    ///     <see cref="IdentityMiddleware.PromoteWebSocketCredential" /> has already consumed and
+    ///     removed it by the time this runs, so only application subprotocols remain.
+    /// </summary>
+    private static Task<System.Net.WebSockets.WebSocket> AcceptNegotiatedWebSocketAsync(HttpContext context)
+    {
+        var subProtocol = IdentityMiddleware.NegotiateWebSocketSubProtocol(context.Request);
+        return subProtocol is null
+            ? context.WebSockets.AcceptWebSocketAsync()
+            : context.WebSockets.AcceptWebSocketAsync(subProtocol);
     }
 
     private static ClaudeAgentLoop CreateClaudeAgentLoop(

@@ -19,16 +19,70 @@ namespace LmStreaming.Sample.Identity;
 /// infinite loop. This middleware reads the stashed outcome and writes the <c>403</c> directly.
 /// </para>
 /// <para>
-/// It runs for <c>/api</c> routes only. Static files, the SPA's own index and the health endpoint
-/// have no principal to establish and must stay reachable while signed out - in particular the
-/// rejection screen itself is served by the SPA, so locking the SPA behind the principal would hide
-/// the very page that explains the refusal.
+/// It runs for <c>/api</c> routes and for the WebSocket transports at <c>/ws</c> (#342). Static
+/// files, the SPA's own index and the health endpoint have no principal to establish and must
+/// stay reachable while signed out - in particular the rejection screen itself is served by the
+/// SPA, so locking the SPA behind the principal would hide the very page that explains the
+/// refusal.
+/// </para>
+/// <para>
+/// The WebSocket transports are inside the boundary even though they sit outside the <c>/api</c>
+/// prefix. Gating only the prefix left a fully functional unauthenticated channel open beside the
+/// gated REST surface, which is what #342 reported. They reach it because
+/// <c>UseSampleIdentity</c> is registered ahead of the <c>/ws</c> endpoints in
+/// <c>Program.cs</c>, so a middleware guard genuinely covers them.
 /// </para>
 /// </remarks>
 public sealed class IdentityMiddleware
 {
     /// <summary>Routes below this prefix are the ones that carry a principal.</summary>
     public const string ApiPathPrefix = "/api";
+
+    /// <summary>
+    /// The WebSocket transports (<c>/ws</c> and <c>/ws/subagent</c>), which sit OUTSIDE
+    /// <see cref="ApiPathPrefix"/> and are inside the identity boundary all the same (#342).
+    /// </summary>
+    public const string WebSocketPathPrefix = "/ws";
+
+    /// <summary>
+    /// Prefix of the <c>Sec-WebSocket-Protocol</c> token that carries the caller's bearer
+    /// credential, e.g. <c>lm.bearer.eyJhbGci...</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The browser WebSocket API admits no custom headers, so the bearer token <c>apiFetch</c>
+    /// attaches to every <c>/api</c> call cannot be attached to the <c>/ws</c> handshake. The
+    /// subprotocol list is the one request header a page DOES choose, so the credential travels
+    /// there. Deliberately not the query string: a URL is written to proxy logs, to browser history
+    /// and into <c>Referer</c>, and a token is exactly the kind of value that must never sit in one.
+    /// </para>
+    /// <para>
+    /// The token is lifted into <c>Authorization</c> before <c>UseAuthentication</c> runs
+    /// (<see cref="PromoteWebSocketCredential"/>), so <c>/ws</c> resolves its principal through the
+    /// SAME front doors as the REST surface - the JWT bearer handler and the
+    /// <see cref="IRequestPrincipalSource"/> chain - rather than through a second, parallel
+    /// validator that could drift from the first.
+    /// </para>
+    /// </remarks>
+    public const string WebSocketCredentialSubProtocolPrefix = "lm.bearer.";
+
+    /// <summary>
+    /// The application subprotocol a client offers alongside its credential, and the only one this
+    /// host ever echoes. RFC 6455 requires the selected subprotocol to be one the client offered;
+    /// selecting the credential token instead would write the caller's own bearer token back out in
+    /// a response header.
+    /// </summary>
+    public const string WebSocketSubProtocol = "lm.chat.v1";
+
+    /// <summary>
+    /// Refusal code for a WebSocket handshake that establishes no principal.
+    /// </summary>
+    /// <remarks>
+    /// Answered with <c>403</c>, never <c>401</c>. A <c>401</c> is the one status a browser answers
+    /// by re-authenticating, and re-authenticating cannot attach a credential to a handshake that
+    /// carried none - so the client would loop (#341).
+    /// </remarks>
+    public const string WebSocketRefusalCode = "websocket_authentication_required";
 
     /// <summary>
     /// Response header carrying the same stable refusal code as the body, so a client can classify
@@ -138,7 +192,7 @@ public sealed class IdentityMiddleware
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        if (!IsGuardedApiPath(context.Request.Path))
+        if (!IsGuardedPath(context.Request.Path))
         {
             await _next(context).ConfigureAwait(false);
             return;
@@ -176,18 +230,24 @@ public sealed class IdentityMiddleware
             if (!_options.Value.Enforce)
             {
                 // Unreachable in practice - with enforcement off ResolvePrincipal always yields the
-                // development principal. Answering 401 rather than continuing means a future change
-                // that breaks that invariant fails closed instead of running an /api route with no
+                // development principal. Refusing rather than continuing means a future change that
+                // breaks that invariant fails closed instead of running a guarded route with no
                 // principal at all.
                 _logger.LogError(
                     "No principal could be established for {Path} even though Identity:Enforce is false.",
                     context.Request.Path.Value);
             }
 
+            // A WebSocket handshake is refused with 403, not 401 (#342). 401 is the one status a
+            // browser answers by re-authenticating, and re-authenticating cannot attach a credential
+            // to a handshake that carried none, so a 401 here is an infinite loop rather than a
+            // refusal. The REST surface keeps its 401 because there re-authenticating IS the fix.
+            var isWebSocket = IsGuardedWebSocketPath(context.Request.Path);
+
             await WriteRefusalAsync(
                 context,
-                StatusCodes.Status401Unauthorized,
-                "authentication_required").ConfigureAwait(false);
+                isWebSocket ? StatusCodes.Status403Forbidden : StatusCodes.Status401Unauthorized,
+                isWebSocket ? WebSocketRefusalCode : "authentication_required").ConfigureAwait(false);
             return;
         }
 
@@ -289,6 +349,127 @@ public sealed class IdentityMiddleware
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="path"/> is one of the WebSocket transports (#342).
+    /// </summary>
+    /// <remarks>
+    /// Segment-based, so it matches <c>/ws</c> and <c>/ws/subagent</c> and does not match a route
+    /// that merely starts with the same letters. Public for the same reason
+    /// <see cref="IsGuardedApiPath"/> is: a route-coverage test asks the real predicate rather than
+    /// restating it.
+    /// </remarks>
+    /// <param name="path">Request path.</param>
+    public static bool IsGuardedWebSocketPath(PathString path) =>
+        path.StartsWithSegments(WebSocketPathPrefix, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Whether <paramref name="path"/> is inside the identity boundary at all - the <c>/api</c>
+    /// surface, or the WebSocket transports beside it.
+    /// </summary>
+    /// <param name="path">Request path.</param>
+    public static bool IsGuardedPath(PathString path) =>
+        IsGuardedApiPath(path) || IsGuardedWebSocketPath(path);
+
+    /// <summary>
+    /// Lifts a handshake credential out of <c>Sec-WebSocket-Protocol</c> into <c>Authorization</c>
+    /// and drops it from the offered list, so it is never echoed back and never reaches a log.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Must run BEFORE <c>UseAuthentication</c>, which is where it is wired
+    /// (<c>IdentityServiceCollectionExtensions.UseSampleIdentity</c>). Everything downstream then
+    /// sees an ordinary bearer request and needs no WebSocket-specific knowledge at all.
+    /// </para>
+    /// <para>
+    /// An <c>Authorization</c> header already on the request WINS. A caller that can set headers has
+    /// presented its credential the ordinary way, and letting a subprotocol token displace it would
+    /// let the most client-controllable field on the handshake overwrite the one the caller actually
+    /// authenticated with.
+    /// </para>
+    /// </remarks>
+    /// <param name="request">The inbound request.</param>
+    /// <returns>True when a credential was promoted.</returns>
+    public static bool PromoteWebSocketCredential(HttpRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (!IsGuardedWebSocketPath(request.Path)
+            || request.Headers.ContainsKey(HeaderNames.Authorization))
+        {
+            return false;
+        }
+
+        string? credential = null;
+        var kept = new List<string>();
+        foreach (var value in request.Headers[HeaderNames.SecWebSocketProtocol])
+        {
+            foreach (var token in (value ?? string.Empty).Split(','))
+            {
+                var candidate = token.Trim();
+                if (candidate.Length == 0)
+                {
+                    continue;
+                }
+
+                if (credential is null
+                    && candidate.Length > WebSocketCredentialSubProtocolPrefix.Length
+                    && candidate.StartsWith(
+                        WebSocketCredentialSubProtocolPrefix,
+                        StringComparison.Ordinal))
+                {
+                    credential = candidate[WebSocketCredentialSubProtocolPrefix.Length..];
+                    continue;
+                }
+
+                kept.Add(candidate);
+            }
+        }
+
+        if (credential is null)
+        {
+            return false;
+        }
+
+        request.Headers.Authorization = $"Bearer {credential}";
+
+        if (kept.Count == 0)
+        {
+            _ = request.Headers.Remove(HeaderNames.SecWebSocketProtocol);
+        }
+        else
+        {
+            request.Headers[HeaderNames.SecWebSocketProtocol] = string.Join(", ", kept);
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// The subprotocol to echo when accepting the handshake, or null when the client offered none of
+    /// ours - in which case the accept must select nothing.
+    /// </summary>
+    /// <param name="request">
+    /// The inbound request, read AFTER <see cref="PromoteWebSocketCredential"/> has removed the
+    /// credential token.
+    /// </param>
+    public static string? NegotiateWebSocketSubProtocol(HttpRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        foreach (var value in request.Headers[HeaderNames.SecWebSocketProtocol])
+        {
+            foreach (var token in (value ?? string.Empty).Split(','))
+            {
+                if (string.Equals(token.Trim(), WebSocketSubProtocol, StringComparison.Ordinal))
+                {
+                    return WebSocketSubProtocol;
+                }
+            }
+        }
+
+        return null;
     }
 
     /// <summary>

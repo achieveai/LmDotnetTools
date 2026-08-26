@@ -247,6 +247,125 @@ public sealed class IdentityMiddlewareTests
     }
 
     [Fact]
+    public async Task AWebSocketHandshakeWithNoCredential_IsRefusedWithForbidden_NotUnauthorized()
+    {
+        using var server = await StartAsync(enforce: true);
+
+        var response = await server.CreateClient().GetAsync(new Uri("/ws?threadId=t", UriKind.Relative));
+
+        // 401 is the one status a browser answers by re-authenticating, and re-authenticating cannot
+        // attach a credential to a handshake that carried none - so a 401 here loops (#342/#341).
+        _ = ((int)response.StatusCode).Should().Be(StatusCodes.Status403Forbidden);
+        _ = response.Headers.WwwAuthenticate.Should().BeEmpty();
+        _ = (await ReadCodeAsync(response)).Should().Be(IdentityMiddleware.WebSocketRefusalCode);
+    }
+
+    [Fact]
+    public async Task TheRestSurfaceKeepsIts401_WhileTheWebSocketTransportDoesNot()
+    {
+        using var server = await StartAsync(enforce: true);
+        using var client = server.CreateClient();
+
+        var rest = await client.GetAsync(new Uri("/api/conversations", UriKind.Relative));
+        var socket = await client.GetAsync(new Uri("/ws?threadId=t", UriKind.Relative));
+
+        // The pair, in one test, because the value of each answer is that it DIFFERS from the other.
+        // On REST, re-authenticating is exactly the fix, so 401 is right there and wrong on /ws.
+        _ = ((int)rest.StatusCode).Should().Be(StatusCodes.Status401Unauthorized);
+        _ = ((int)socket.StatusCode).Should().Be(StatusCodes.Status403Forbidden);
+    }
+
+    [Fact]
+    public void ASubprotocolCredential_IsPromotedIntoAuthorizationAndRemovedFromTheOfferedList()
+    {
+        var request = WebSocketRequest(
+            "/ws",
+            $"{IdentityMiddleware.WebSocketCredentialSubProtocolPrefix}token-abc, "
+                + IdentityMiddleware.WebSocketSubProtocol);
+
+        _ = IdentityMiddleware.PromoteWebSocketCredential(request).Should().BeTrue();
+
+        _ = request.Headers.Authorization.ToString().Should().Be("Bearer token-abc");
+
+        // Removed, not merely ignored: a token left in a request header travels into every request
+        // log and diagnostic dump downstream, and the accept must never echo it back either.
+        _ = request.Headers["Sec-WebSocket-Protocol"].ToString()
+            .Should().Be(IdentityMiddleware.WebSocketSubProtocol);
+        _ = IdentityMiddleware.NegotiateWebSocketSubProtocol(request)
+            .Should().Be(IdentityMiddleware.WebSocketSubProtocol);
+    }
+
+    [Fact]
+    public void AnAuthorizationHeaderAlreadyOnTheRequest_IsNeverOverwrittenByASubprotocol()
+    {
+        var request = WebSocketRequest(
+            "/ws",
+            $"{IdentityMiddleware.WebSocketCredentialSubProtocolPrefix}attacker-token");
+        request.Headers.Authorization = "Bearer real-token";
+
+        _ = IdentityMiddleware.PromoteWebSocketCredential(request).Should().BeFalse();
+        _ = request.Headers.Authorization.ToString().Should().Be("Bearer real-token");
+    }
+
+    [Fact]
+    public void ASubprotocolCredential_IsIgnoredOutsideTheWebSocketTransports()
+    {
+        var request = WebSocketRequest(
+            "/api/conversations",
+            $"{IdentityMiddleware.WebSocketCredentialSubProtocolPrefix}token-abc");
+
+        // The promotion exists because a browser cannot set a header on a handshake. Everywhere else
+        // it can, so honouring the subprotocol would add a second, weaker way to present a credential
+        // to routes that already have a strong one.
+        _ = IdentityMiddleware.PromoteWebSocketCredential(request).Should().BeFalse();
+        _ = request.Headers.Authorization.ToString().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void AHandshakeOfferingOnlyApplicationSubprotocols_PromotesNothingAndKeepsThemAll()
+    {
+        var request = WebSocketRequest("/ws", IdentityMiddleware.WebSocketSubProtocol);
+
+        _ = IdentityMiddleware.PromoteWebSocketCredential(request).Should().BeFalse();
+        _ = request.Headers.Authorization.ToString().Should().BeEmpty();
+        _ = request.Headers["Sec-WebSocket-Protocol"].ToString()
+            .Should().Be(IdentityMiddleware.WebSocketSubProtocol);
+    }
+
+    [Fact]
+    public void AHandshakeOfferingOnlyTheCredential_LeavesNothingForTheAcceptToSelect()
+    {
+        var request = WebSocketRequest(
+            "/ws",
+            $"{IdentityMiddleware.WebSocketCredentialSubProtocolPrefix}token-abc");
+
+        _ = IdentityMiddleware.PromoteWebSocketCredential(request).Should().BeTrue();
+
+        // RFC 6455 lets the server select at most one subprotocol the client offered. With the
+        // credential consumed there is no candidate left, and the accept must select none rather
+        // than echo the credential.
+        _ = IdentityMiddleware.NegotiateWebSocketSubProtocol(request).Should().BeNull();
+        _ = request.Headers.ContainsKey("Sec-WebSocket-Protocol").Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("/ws", true)]
+    [InlineData("/ws/subagent", true)]
+    [InlineData("/wsx", false)]
+    [InlineData("/api/conversations", false)]
+    public void TheWebSocketPredicate_MatchesBySegment(string path, bool expected) =>
+        IdentityMiddleware.IsGuardedWebSocketPath(new PathString(path)).Should().Be(expected);
+
+    /// <summary>Builds a request on <paramref name="path"/> offering <paramref name="offered"/>.</summary>
+    private static HttpRequest WebSocketRequest(string path, string offered)
+    {
+        var context = new DefaultHttpContext();
+        context.Request.Path = new PathString(path);
+        context.Request.Headers["Sec-WebSocket-Protocol"] = offered;
+        return context.Request;
+    }
+
+    [Fact]
     public async Task AResolvedPrincipal_IsPublishedForTheRequestToRead()
     {
         var resolution = PrincipalResolution.Success(new Principal

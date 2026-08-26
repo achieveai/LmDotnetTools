@@ -81,13 +81,27 @@ public static class IdentityServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Inserts authentication, authorization and the principal middleware into the pipeline. Must
-    /// run before endpoint execution and after routing.
+    /// Inserts the WebSocket credential promotion, authentication, authorization and the principal
+    /// middleware into the pipeline. Must run before endpoint execution and after routing - and, for
+    /// the WebSocket transports to be inside the identity boundary at all, before the <c>/ws</c>
+    /// endpoints are mapped.
     /// </summary>
     /// <param name="app">The application pipeline.</param>
     public static IApplicationBuilder UseSampleIdentity(this IApplicationBuilder app)
     {
         ArgumentNullException.ThrowIfNull(app);
+
+        // Before authentication, and that ordering is the whole point (#342). A browser cannot put a
+        // header on a WebSocket handshake, so the credential arrives in Sec-WebSocket-Protocol;
+        // lifting it into Authorization HERE means the bearer handler and every
+        // IRequestPrincipalSource below validate a /ws credential with the same code that validates
+        // a REST one, and neither of them needs to know a WebSocket exists.
+        _ = app.Use(
+            static async (context, next) =>
+            {
+                _ = IdentityMiddleware.PromoteWebSocketCredential(context.Request);
+                await next(context).ConfigureAwait(false);
+            });
 
         _ = app.UseAuthentication();
         _ = app.UseAuthorization();
