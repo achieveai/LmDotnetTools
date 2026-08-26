@@ -124,7 +124,19 @@ internal sealed class EvalCorpusWatermark
                 return false;
             }
 
-            afterReviewRunId = parsed.AfterReviewRunId;
+            // An ABSENT field is not a zero. The property is nullable precisely so that this
+            // reads as unparseable rather than as "start from the beginning": a positional record
+            // with a non-nullable long binds `{}` to default(long) without throwing, so a payload
+            // that lost its only field would deserialize cleanly to cursor 0 and restart the sweep
+            // over the whole history — silently, which is the one outcome the warning below exists
+            // to prevent. `{"AfterReviewRunId":null}` lands here too, where it used to arrive as a
+            // JsonException; both are the same fact and now take the same path.
+            if (parsed.AfterReviewRunId is not { } value)
+            {
+                return false;
+            }
+
+            afterReviewRunId = value;
             return true;
         }
         catch (JsonException)
@@ -134,6 +146,13 @@ internal sealed class EvalCorpusWatermark
     }
 
     /// <summary>The cursor payload's shape. Named fields rather than a bare number so a future
-    /// window dimension is additive.</summary>
-    private sealed record EvalCursorPayload(long AfterReviewRunId);
+    /// window dimension is additive.
+    /// <para>
+    /// The id is <b>nullable on the way in</b> even though a written cursor always carries one:
+    /// that is what lets the reader tell an absent field from a recorded zero. A non-nullable
+    /// <c>long</c> here would let <c>{}</c> bind to 0 and read as a legitimate "start from the
+    /// beginning".
+    /// </para>
+    /// </summary>
+    private sealed record EvalCursorPayload(long? AfterReviewRunId);
 }

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Eval;
 using CodeReviewDaemon.Sample.Orchestration;
@@ -432,13 +433,110 @@ public sealed class EvalCorpusSweepTests : IDisposable
         );
         _ = Reviewed("119", "Looks good to me.");
 
+        // The citation that separates the two counts. The anchor pattern accepts it — it is a
+        // citation, and counted as one — but the line number overflows an int, so it resolves to
+        // nothing. Without a row like this every finding in the window is anchored, the two totals
+        // are equal by accident, and reading either one for the other passes every assertion.
+        _ = Reviewed("120", "[Major] src/Hallucinated.cs:99999999999999999999 is wrong.");
+
         var report = await SweepAsync();
 
-        report.CandidateCount.Should().Be(2);
-        report.FindingCount.Should().Be(2);
-        report.AnchoredFindingCount.Should().Be(2);
+        report.CandidateCount.Should().Be(3);
+        report.FindingCount.Should().Be(3);
+        report
+            .AnchoredFindingCount.Should()
+            .Be(
+                2,
+                "the overflowing line number is cited but not resolvable, which is a different "
+                    + "review defect from citing nothing and must not be counted as an anchor"
+            );
+        report
+            .AnchoredFindingCount.Should()
+            .BeLessThan(
+                report.FindingCount,
+                "the two totals must be able to disagree, or neither measures anything"
+            );
         report
             .CandidatesCitingNothing.Should()
             .Be(1, "a review citing no file is the finding-level signal's own worst case");
+    }
+
+    // ---- the cursor payload says what it knows ---------------------------------------------------
+
+    /// <summary>Writes a raw payload into this reader's cursor row, behind the watermark's back.</summary>
+    private void WriteRawCursor(string payload) =>
+        _store.SaveCursor(
+            new OpaqueCursor
+            {
+                Provider = EvalCorpusWatermark.CursorProvider,
+                Scope = EvalCorpusSweep.CorpusId,
+                CursorVersion = EvalCorpusWatermark.CursorVersion,
+                CursorPayload = payload,
+                HighWaterMark = null,
+            }
+        );
+
+    /// <summary>
+    /// An <b>absent</b> id is not a recorded zero. A positional record with a non-nullable
+    /// <c>long</c> binds <c>{}</c> to <c>default(long)</c> without throwing, so a payload that lost
+    /// its only field deserialises cleanly to cursor 0 — and the sweep restarts over the whole
+    /// history looking exactly like a cursor that never advanced, which is the one outcome the
+    /// warning exists to prevent. Zero is still returned, because a corrupt cursor must not wedge
+    /// the daemon; the difference the test pins is that it is now said out loud.
+    /// </summary>
+    [Theory]
+    [InlineData("{}", "an absent field")]
+    [InlineData("{\"AfterReviewRunId\":null}", "an explicit null")]
+    [InlineData("not json at all", "unparseable text")]
+    public void A_cursor_payload_that_carries_no_id_is_unreadable_rather_than_a_restart(
+        string payload,
+        string because
+    )
+    {
+        WriteRawCursor(payload);
+
+        var logger = new CapturingLogger<EvalCorpusWatermark>();
+        var read = new EvalCorpusWatermark(_store, logger).Read(EvalCorpusSweep.CorpusId);
+
+        read.Should().Be(0, "a cursor that cannot be read restarts from the beginning");
+        logger
+            .WarningCount("unreadable payload")
+            .Should()
+            .Be(1, $"{because} is a real event, and a silent reset is indistinguishable from one");
+    }
+
+    /// <summary>
+    /// The non-vacuity half: a payload this reader actually wrote is read back silently. Without
+    /// this, "warn on everything" satisfies the case above and the warning stops carrying
+    /// information.
+    /// </summary>
+    [Fact]
+    public void A_cursor_payload_this_reader_wrote_is_read_back_without_a_warning()
+    {
+        var logger = new CapturingLogger<EvalCorpusWatermark>();
+        var watermark = new EvalCorpusWatermark(_store, logger);
+
+        watermark.Save(EvalCorpusSweep.CorpusId, 42);
+
+        watermark.Read(EvalCorpusSweep.CorpusId).Should().Be(42);
+        logger.WarningCount("unreadable payload").Should().Be(0);
+    }
+
+    /// <summary>
+    /// A recorded <c>0</c> is a legitimate value — the edge of a history nothing has advanced past
+    /// yet — and it reaches the caller as a value rather than as the unreadable case. It is the
+    /// same number either way, which is exactly why the warning is the only thing that can tell
+    /// them apart.
+    /// </summary>
+    [Fact]
+    public void A_recorded_zero_is_a_value_and_not_the_unreadable_case()
+    {
+        WriteRawCursor("{\"AfterReviewRunId\":0}");
+
+        var logger = new CapturingLogger<EvalCorpusWatermark>();
+        var read = new EvalCorpusWatermark(_store, logger).Read(EvalCorpusSweep.CorpusId);
+
+        read.Should().Be(0);
+        logger.WarningCount("unreadable payload").Should().Be(0);
     }
 }
