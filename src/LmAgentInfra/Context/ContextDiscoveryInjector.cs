@@ -180,17 +180,27 @@ public sealed class ContextDiscoveryInjector
 
             try
             {
-                // A minted id rather than null, because the ledger below is retired by the agent
-                // echoing this id back on the run assignment that picks the input up. With a null id
-                // the accept could only ever retire on the grace backstop.
+                // A minted id rather than null, because the ledger is retired by the agent echoing
+                // this id back on the run assignment that picks the input up. With a null id the
+                // record could only ever retire on the grace backstop.
+                //
+                // One of the paths that sends straight to a pooled agent rather than through a
+                // transport (#418). Leaving it unrecorded left a hole the size of every
+                // context-discovery injection: a concurrent grantee handoff read the entry as idle and
+                // disposed the agent with this turn queued on it. Recorded before the send, and
+                // withdrawn below if the send did not take.
                 var inputId = ContextDiscoveryInputIdPrefix + Guid.NewGuid().ToString("N");
-                _ = await agent.SendAsync([message], inputId, parentRunId: null, ct).ConfigureAwait(false);
+                _pool.AddOutstandingInput(threadId, inputId, agent);
+                try
+                {
+                    _ = await agent.SendAsync([message], inputId, parentRunId: null, ct).ConfigureAwait(false);
+                }
+                catch
+                {
+                    _pool.RemoveOutstandingInput(threadId, inputId, agent);
+                    throw;
+                }
 
-                // The third live accept path (#418). REST and WebSocket both record what they hand to a
-                // pooled agent; this one sends straight to the same entry, so leaving it out left a hole
-                // the size of every context-discovery injection: a concurrent grantee handoff read the
-                // entry as idle and disposed the agent with this turn queued on it.
-                _pool.NoteInputAccepted(threadId, inputId, agent);
                 injected++;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)

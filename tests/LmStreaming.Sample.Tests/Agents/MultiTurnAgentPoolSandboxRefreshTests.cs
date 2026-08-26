@@ -163,7 +163,7 @@ public class MultiTurnAgentPoolSandboxRefreshTests
         // Exactly the state the sender is owed an answer in: accepted, no run id, not running.
         original.CurrentRunId = null;
         original.IsRunning = false;
-        pool.NoteInputAccepted("thread-queued-refresh", "input-queued", original);
+        pool.AddOutstandingInput("thread-queued-refresh", "input-queued", original);
 
         sessionId = "sess-2";
         var whileQueued = await pool.EnsureCurrentAgentAsync("thread-queued-refresh", credential);

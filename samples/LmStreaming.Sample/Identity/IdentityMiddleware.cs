@@ -307,7 +307,11 @@ public sealed class IdentityMiddleware
     /// <b>An already-authenticated request is never overwritten.</b> When the JWT bearer handler
     /// validated a token it has already populated <c>User</c> with the token's own claims; replacing
     /// them with a reconstruction would narrow a real identity to the three claims this bridge knows
-    /// about, and would do it silently.
+    /// about, and would do it silently. This guard is defensive rather than reachable today:
+    /// <see cref="ResolveAsync"/> returns the stashed interactive resolution before any other front
+    /// door runs, and every interactive principal carries <c>AppId = null</c>
+    /// (see <see cref="PrincipalFactory.ToClaimsPrincipalOrNull"/>), so no live request arrives here
+    /// already authenticated by a principal that also has an app id to displace.
     /// </para>
     /// <para>
     /// What is bridged is decided in one place -

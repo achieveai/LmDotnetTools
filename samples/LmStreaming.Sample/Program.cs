@@ -1801,24 +1801,21 @@ subAgentFactory,
                                 var conversation = agent;
                                 if (conversation is not null)
                                 {
-                                    // The fourth path that can hand a pooled agent an input (#418), and the
-                                    // one least likely to be looked for: a workflow that finishes long after
-                                    // the turn that started it. Without the ledger write the entry reads idle
-                                    // between the send and the run picking it up, and a grantee handoff or a
-                                    // sandbox-session refresh arriving in that window disposes the agent with
-                                    // the completion notice still queued — the workflow's result is then
-                                    // silently never delivered. The id is minted here because the ledger
-                                    // retires on the agent echoing it back on the run assignment.
-                                    var notifyInputId = "workflow-notify-" + Guid.NewGuid().ToString("N");
-                                    _ = await conversation.SendAsync([notify], notifyInputId, ct: notifyCt);
-
-                                    // Resolved lazily rather than captured: this delegate is built INSIDE the
-                                    // pool's own agent factory, so a direct dependency would close a DI
-                                    // construction cycle (same reason, and same shape, as the transcript
-                                    // mirror's pool lookup above). It only ever runs once a workflow has
-                                    // completed, long after both singletons exist.
-                                    sp.GetRequiredService<MultiTurnAgentPool>()
-                                        .NoteInputAccepted(threadId, notifyInputId, conversation);
+                                    // The delivery itself lives in WorkflowCompletionNotifier rather than
+                                    // here (#418). It is the accept path least likely to be looked for — a
+                                    // workflow finishing long after the turn that started it, onto an idle
+                                    // conversation — and a lambda in the composition root is a path no test
+                                    // can reach. The pool is resolved lazily rather than captured: this
+                                    // delegate is built INSIDE the pool's own agent factory, so a direct
+                                    // dependency would close a DI construction cycle (same reason, and same
+                                    // shape, as the transcript mirror's pool lookup above). It only runs once
+                                    // a workflow has completed, long after both singletons exist.
+                                    await WorkflowCompletionNotifier.DeliverAsync(
+                                        sp.GetRequiredService<MultiTurnAgentPool>(),
+                                        threadId,
+                                        conversation,
+                                        notify,
+                                        notifyCt);
                                 }
                             },
                             maxConcurrentWorkflows: maxConcurrentWorkflows,

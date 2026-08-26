@@ -550,22 +550,39 @@ work in hand finishes.
 
 "Work in hand" is deliberately wider than "a run is streaming". An input that has been **accepted and
 not yet started** has no run id and is not running, so an in-progress check alone reads it as idle —
-and the turn was discarded with the agent after its sender had already been handed a receipt. There
-are **four** live paths that can hand an agent an input: the REST send
+and the turn was discarded with the agent after its sender had already been handed a receipt. **Four**
+live paths hand an agent an input and record it in this ledger: the REST send
 (`ConversationsController.SendMessage`), the WebSocket send (`ChatWebSocketManager`), the
 context-discovery fan-out (`ContextDiscoveryInjector.FanOutToSessionAsync`), and the workflow
 completion notifier wired in `Program.cs` — the last three all call `SendAsync` directly on a pooled
 agent rather than going through a transport. The pool keeps a per-thread ledger of **outstanding
 input ids**, not a single flag, so any of the four paths can add an entry without clobbering what
-another already recorded. The ledger retires ids on **authoritative evidence**, not inference: the
+another already recorded.
+
+That is not a closed list of every way an input can reach a pooled agent — it is the list of paths
+this ledger actually sees. One further family reaches a pooled agent and is **not** ledgered:
+collaboration onto the pooled root conversation. `Program.cs` (~line 1570) builds a root collaboration
+handle for every conversation, on by default for `WorkspaceAgentModeId`
+(`CollaborationDefaultsOnForMode`). `MultiTurnAgentLoop` self-registers an `AgentLoopWriteEndpoint` for
+that handle (`MultiTurnAgentLoop.cs`, ~lines 409-417), and `AgentCollaborationMessenger` delivers a
+collaboration message by calling `TrySendAsync` directly on the pooled agent through that endpoint
+(`AgentCollaborationMessenger.cs`, ~line 167) — with no write to this ledger, while the sender is told
+the message was `Delivered`. That site, plus the two sub-agent relay calls at
+`SubAgentManager.cs:442` and `SubAgentManager.cs:3548` (both call `SendAsync` on the parent agent with
+the same no-ledger result), are a known, tracked gap: **#434**. They are not fixed here because
+`AgentCollaborationMessenger` and `MultiTurnAgentLoop` live in `src/LmMultiTurn`, which the pool's own
+assembly (`LmAgentInfra`) depends on — reaching back into the pool from there would close a circular
+assembly dependency.
+
+The ledger retires ids on **authoritative evidence**, not inference, for the four paths it covers: the
 pool subscribes to the agent's own message stream, and each `RunAssignmentMessage` names the input
 ids that assignment consumed (`RunAssignment.InputIds`) — the pool retires exactly those. That is a
 fact the agent states about its own input channel, not something inferred from the mere appearance of
 a new run id, and it needs no arithmetic: an id accepted after the message was published is simply
 not named by it, so the accept that lands between the agent's read and the pool's cannot be retired
-by mistake. From the moment an id is retired, the **run** is what makes the entry busy, so there is
-no window in which neither says so. An entry with any outstanding input id reads as busy, so a
-concurrent handoff refuses rather than disposing an agent that still owes someone an answer.
+by mistake. An id is retired only once a run has actually taken it, so the accepted turn is never
+lost. An entry with any outstanding input id reads as busy, so a concurrent handoff refuses rather
+than disposing an agent that still owes someone an answer.
 
 Two bounds on that guarantee, both deliberate:
 

@@ -61,7 +61,7 @@ public class MultiTurnAgentPoolHandoffTests
         agent.CurrentRunId = null;
         agent.IsRunning = false;
 
-        pool.NoteInputAccepted("thread-queued", "input-1", agent);
+        pool.AddOutstandingInput("thread-queued", "input-1", agent);
 
         pool.TryGetHandoffState("thread-queued", out var state).Should().BeTrue();
         state.IsBusy.Should().BeTrue("an accepted input the agent has not started is still work in hand");
@@ -83,7 +83,7 @@ public class MultiTurnAgentPoolHandoffTests
         var agent = CreateOwnedAgent(pool, "thread-behind", Alice);
         agent.StartRun("run_1", "input-0");
 
-        pool.NoteInputAccepted("thread-behind", "input-1", agent);
+        pool.AddOutstandingInput("thread-behind", "input-1", agent);
 
         agent.CompleteRun();
         agent.IsRunning = false;
@@ -111,7 +111,7 @@ public class MultiTurnAgentPoolHandoffTests
         agent.CurrentRunId = null;
         agent.IsRunning = false;
 
-        pool.NoteInputAccepted("thread-drained", "input-1", agent);
+        pool.AddOutstandingInput("thread-drained", "input-1", agent);
         pool.TryGetHandoffState("thread-drained", out var queued).Should().BeTrue();
         queued.IsBusy.Should().BeTrue("nothing has picked the input up yet");
 
@@ -147,8 +147,8 @@ public class MultiTurnAgentPoolHandoffTests
         agent.CurrentRunId = null;
         agent.IsRunning = false;
 
-        pool.NoteInputAccepted("thread-two", "input-1", agent);
-        pool.NoteInputAccepted("thread-two", "input-2", agent);
+        pool.AddOutstandingInput("thread-two", "input-1", agent);
+        pool.AddOutstandingInput("thread-two", "input-2", agent);
 
         agent.StartRun("run_1", "input-1");
         agent.CompleteRun();
@@ -180,7 +180,7 @@ public class MultiTurnAgentPoolHandoffTests
         agent.CurrentRunId = null;
         agent.IsRunning = false;
 
-        pool.NoteInputAccepted("thread-wedged", "input-1", agent);
+        pool.AddOutstandingInput("thread-wedged", "input-1", agent);
 
         // First look starts the idle clock; still busy.
         pool.TryGetHandoffState("thread-wedged", out var first).Should().BeTrue();
@@ -211,7 +211,7 @@ public class MultiTurnAgentPoolHandoffTests
         agent.CurrentRunId = "run_1";
         agent.IsRunning = false;
 
-        pool.NoteInputAccepted("thread-resumed", "input-1", agent);
+        pool.AddOutstandingInput("thread-resumed", "input-1", agent);
 
         // Observed idle: the grace clock starts here.
         pool.TryGetHandoffState("thread-resumed", out var whileIdle).Should().BeTrue();
@@ -253,16 +253,53 @@ public class MultiTurnAgentPoolHandoffTests
         second.Should().NotBeSameAs(first);
 
         // The late write, carrying the agent that took the input.
-        pool.NoteInputAccepted("thread-swapped", "input-1", first);
+        pool.AddOutstandingInput("thread-swapped", "input-1", first);
 
         pool.TryGetHandoffState("thread-swapped", out var state).Should().BeTrue();
         state.IsBusy.Should().BeFalse("the pooled agent never accepted that input");
 
         // Non-vacuity: the same call against the agent that IS pooled does mark it, so what the
         // assertion above caught is the reference check and not a ledger that stopped working.
-        pool.NoteInputAccepted("thread-swapped", "input-2", second);
+        pool.AddOutstandingInput("thread-swapped", "input-2", second);
         pool.TryGetHandoffState("thread-swapped", out var marked).Should().BeTrue();
         marked.IsBusy.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task SwitchingMode_DiscardsAQueuedTurn_AndDoesNotCarryItToTheReplacement()
+    {
+        // The THIRD place "does this entry have work in hand?" could be asked. The grantee handoff
+        // and the sandbox session refresh both ask it and both refuse; a mode switch does not ask at
+        // all - it builds the replacement, swaps it in and disposes the old entry, taking that
+        // agent's input channel with it.
+        //
+        // That is the decided behaviour, not an oversight, and this test is what makes it a decision:
+        // a switch is the conversation's OWN explicit request and already discards a streaming run
+        // without asking, so refusing only for a turn that has not started yet would make the pool
+        // stricter about queued work than about work actively producing tokens.
+        await using var pool = CreatePool();
+        var original = CreateOwnedAgent(pool, "thread-switch", Alice);
+        original.CurrentRunId = null;
+        original.IsRunning = false;
+
+        pool.AddOutstandingInput("thread-switch", "input-1", original);
+        pool.TryGetHandoffState("thread-switch", out var queued).Should().BeTrue();
+        queued.IsBusy.Should().BeTrue("the precondition: there really is a turn in hand to lose");
+
+        var replacement = await pool.RecreateAgentWithModeAsync(
+            "thread-switch",
+            SystemChatModes.GetById(SystemChatModes.DefaultModeId)!,
+            ownerUserId: Alice);
+
+        replacement.Should().NotBeSameAs(original, "the switch replaced the agent");
+
+        // The ledger does NOT travel. Carrying the id would be a lie: the replacement's input channel
+        // never received that input, so no run of its could ever name it, and the entry would read
+        // busy for the whole grace and then clear - with the turn just as lost and thirty seconds of
+        // refused handoffs added on top.
+        pool.TryGetHandoffState("thread-switch", out var after).Should().BeTrue();
+        after.IsBusy.Should().BeFalse(
+            "the replacement holds no work, and pretending otherwise would not bring the turn back");
     }
 
     [Fact]

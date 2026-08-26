@@ -603,12 +603,7 @@ public class ConversationsController(
         var result = await _hierarchy.ReadTranscriptAsync(threadId, agentId, viewer, ct);
         return result.Outcome switch
         {
-            AgentTranscriptOutcome.UnknownThread =>
-                NotFound(new
-                {
-                    error = $"Conversation '{threadId}' not found.",
-                    code = AgentTranscriptReasons.UnknownThread,
-                }),
+            AgentTranscriptOutcome.UnknownThread => UnknownThread(threadId),
             AgentTranscriptOutcome.CollaborationUnavailable =>
                 NotFound(new
                 {
@@ -915,6 +910,13 @@ public class ConversationsController(
         // propagate to a 500, per the REST contract (no inputId returned either way). Either way the
         // admission taken above has to go back, or the id stays claimed by work that never ran and every
         // later retry of it reconciles to a turn that does not exist.
+        // Recorded BEFORE the hand-over, not after. Between the agent taking the input and this
+        // ledger learning about it, the entry has no run id and is not running - exactly what a
+        // concurrent grantee handoff or session refresh reads as "idle", and the turn goes with the
+        // disposed entry (#418). Recording afterwards leaves that window open, only narrower. Every
+        // exit below that does NOT leave an input queued withdraws it again.
+        agentPool.AddOutstandingInput(threadId, admission.InputId, agent);
+
         SendReceipt? receipt;
         try
         {
@@ -928,14 +930,25 @@ public class ConversationsController(
                     ct)
                 : await agent.TrySendAsync([userMessage], inputId: admission.InputId, parentRunId: null, ct);
         }
-        catch when (idempotent)
+        catch
         {
-            await ReleaseAdmissionAsync(acceptances!, admission);
+            // The send threw, so nothing is queued: withdraw the id or it sits in the ledger with no
+            // run that can ever name it, and every handoff for this thread answers 409 until the
+            // grace expires. Outside the `when (idempotent)` filter on purpose - the ledger write was
+            // unconditional, so its rollback has to be too.
+            agentPool.RemoveOutstandingInput(threadId, admission.InputId, agent);
+            if (idempotent)
+            {
+                await ReleaseAdmissionAsync(acceptances!, admission);
+            }
+
             throw;
         }
 
         if (receipt == null)
         {
+            // Queue full: the input was refused, so the ledger write above has to come back out.
+            agentPool.RemoveOutstandingInput(threadId, admission.InputId, agent);
             logger.LogWarning("SendMessage for thread {ThreadId} rejected: input queue full", threadId);
             if (idempotent)
             {
@@ -946,12 +959,6 @@ public class ConversationsController(
                 StatusCodes.Status503ServiceUnavailable,
                 new { error = "queue_full", code = "queue_full", threadId });
         }
-
-        // A receipt exists, so this caller is owed an answer. Until the agent picks the input up it has
-        // no run id and is not running, which is exactly what a concurrent grantee handoff reads as
-        // "idle" - and the entry, with this turn still on it, was disposed (#418). Recorded on the
-        // success path only: a queue-full return and a thrown write failure both leave nothing queued.
-        agentPool.NoteInputAccepted(threadId, admission.InputId, agent);
 
         // The capability check got the request this far; the RECEIPT is what says this particular input will
         // actually be enforced. An agent that claims the capability but does not stamp the receipt cannot
