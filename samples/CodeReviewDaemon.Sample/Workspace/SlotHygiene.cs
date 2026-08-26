@@ -355,9 +355,9 @@ internal static class SlotHygiene
     /// <b>Skipping is the settled decision, not a deferral</b> (issue #279): condemning here would re-clone on
     /// precisely the deinitialized state <see cref="GitFailureClassifier"/> subtracts from its corruption markers
     /// in order to tolerate, and it would do so on EVERY lease that meets that state — a change to the tolerance
-    /// policy, not a repair of this walk, and the more expensive failure of the two. It is chosen over condemning
-    /// because a gate failure is the tolerated deinit shape far more often than it is an accumulating store, and
-    /// the log below makes the rare accumulating case observable rather than silent. Revisit only on evidence
+    /// policy, not a repair of this walk, and the more expensive failure of the two. How often a gate failure is
+    /// the tolerated deinit shape versus an accumulating store is the question #279 left UNMEASURED — skipping
+    /// assumes the former dominates, and the log below exists to test that assumption. Revisit only on evidence
     /// from that log — a gate failure recurring on the SAME slot with untracked content under the skipped path —
     /// which is the one measurement that would flip the balance toward condemning; absent it, skipping stands.
     /// What was NEVER in question is the silence — every skipped path is logged at warning with the gate's own
