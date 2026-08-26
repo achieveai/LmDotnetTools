@@ -1106,7 +1106,29 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
 
             async Task<SendReceipt> WriteWithBackpressureAsync()
             {
-                await _inputChannel.Writer.WriteAsync(queued, ct);
+                try
+                {
+                    await _inputChannel.Writer.WriteAsync(queued, ct);
+                }
+                catch
+                {
+                    // The mirror of TrySendAsync's refused-enqueue rollback, for the exit this path
+                    // has and that one does not. A full channel does not refuse here, it parks — and
+                    // that await can still fail (a cancelled token, or a channel completed by
+                    // disposal underneath the waiter). The accept was announced before the TryWrite,
+                    // so leaving the report standing here leaves an id nothing can ever retire: no
+                    // run will name an input the agent never received, and the conversation reads
+                    // busy until the host's grace expires.
+                    //
+                    // Unlike TrySendAsync there is no durable accepted-input write on this path
+                    // (SendAsync does not touch RunLedgerStore), so this withdrawal IS the whole
+                    // rollback rather than half of it. A throwing observer surfaces here in place of
+                    // the write failure; both are failures of the same send with nothing queued, so
+                    // what the caller must do about it is the same.
+                    InputAcceptanceObserver?.OnInputAcceptanceRescinded(ThreadId, receiptId, this);
+                    throw;
+                }
+
                 return new SendReceipt(receiptId, inputId, queuedAt, SpawningSuppressed: suppressed);
             }
         }

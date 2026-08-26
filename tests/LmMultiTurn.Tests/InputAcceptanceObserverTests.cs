@@ -111,6 +111,47 @@ public class InputAcceptanceObserverTests
     }
 
     [Fact]
+    public async Task SendAsync_WhenTheBackpressuredWriteFails_RescindsTheAcceptItReported()
+    {
+        // SendAsync's OTHER exit, and the one TrySendAsync does not have. A full channel does not
+        // refuse here — it parks on WriteAsync — and that await can still fail: a cancelled token, or
+        // a channel completed by disposal underneath the waiter. The accept was announced before the
+        // TryWrite, so a failure there leaves a reported id with nothing queued behind it, and no run
+        // will ever name an input the agent did not receive. Same shape as
+        // TrySendAsync_WhenTheChannelIsFull_RescindsTheAcceptItReported; the only difference is that
+        // this exit throws rather than returning null.
+        //
+        // There is no durable accepted-input write on this path (SendAsync does not touch
+        // RunLedgerStore), so the withdrawal IS the whole rollback rather than half of it.
+        var observer = new RecordingObserver();
+        await using var agent = new ObservedTestAgent("thread-backpressure", inputChannelCapacity: 1)
+        {
+            InputAcceptanceObserver = observer,
+        };
+
+        // Fill the channel so the next send takes the backpressure branch. Nothing drains it — the
+        // loop is never started.
+        (await agent.TrySendAsync(UserMessages("filler"), inputId: "filler-1")).Should().NotBeNull();
+
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        var act = () => agent.SendAsync(UserMessages("blocked"), inputId: "blocked-1", ct: cts.Token).AsTask();
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+
+        // Non-vacuity: the accept really was reported, so the withdrawal below is a withdrawal of
+        // something rather than a match against an id that never existed.
+        observer.Accepted.Select(a => a.InputId).Should().Contain("blocked-1");
+        observer.Rescinded.Should().ContainSingle().Which
+            .Should().Be(("thread-backpressure", "blocked-1"));
+
+        agent.QueuedInputCount.Should().Be(1,
+            "only the filler is queued — the send that failed left nothing behind, which is why its "
+                + "report must not be left standing either");
+    }
+
+    [Fact]
     public async Task TrySendAsync_WhenTheDurableWriteFails_ReportsNothingAtAll()
     {
         // Ordering. The durable accepted-input write runs first and a failure there means the input
