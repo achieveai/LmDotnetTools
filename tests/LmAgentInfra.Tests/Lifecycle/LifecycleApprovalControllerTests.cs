@@ -180,6 +180,31 @@ public sealed class LifecycleApprovalControllerTests
     }
 
     [Fact]
+    public async Task A_signed_in_human_may_not_settle_an_apps_approval()
+    {
+        // #433. `sub` maps to ClaimTypes.NameIdentifier under an ordinary bearer handler, so while
+        // this action read the name identifier every signed-in user was an "app" here and could
+        // settle any app's pending approvals under their own subject id. The refusal must survive
+        // the caller ALSO carrying a display name: Identity.Name was the second half of the old
+        // fallback, so a test forging only a name identifier would go green on half a fix.
+        var harness = new Harness();
+        using var ticket = harness.Register(AppA);
+        var decision = Decision(ticket, WireOutcomes.Allowed);
+
+        var result = await harness.AsSignedInHuman("dir-a:alice").Decide(decision);
+
+        ShouldRespond(result, StatusCodes.Status403Forbidden);
+        harness.Resolver.Asked.Should().BeEmpty("a human principal never reaches owner resolution");
+        harness.Store.PendingCount.Should().Be(1, "the request is untouched and still awaiting its owner");
+
+        // Non-vacuity: the same request settles for the app that actually owns it, so the 403 above
+        // is about who asked and not about the request being undecidable.
+        ShouldRespond(await harness.As(AppA).Decide(decision), StatusCodes.Status200OK)
+            .Outcome.Should()
+            .Be(WireOutcomes.Allowed);
+    }
+
+    [Fact]
     public async Task An_authenticated_caller_the_host_cannot_place_is_refused()
     {
         var harness = new Harness();
@@ -547,7 +572,18 @@ public sealed class LifecycleApprovalControllerTests
 
         /// <summary>A controller reached by a caller the host authenticated as <paramref name="appId"/>.</summary>
         public LifecycleApprovalController As(string appId) =>
-            WithPrincipal(new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, appId)], "test")));
+            WithPrincipal(new ClaimsPrincipal(new ClaimsIdentity(
+                [new Claim(LifecycleAppIdentity.AppIdClaimType, appId)], "test")));
+
+        /// <summary>
+        /// A controller reached by a signed-in <em>human</em>: authenticated by a bearer scheme, with
+        /// the token's <c>sub</c> mapped onto <see cref="ClaimTypes.NameIdentifier"/> and a display
+        /// name, and no app-id claim anywhere. This is the shape #433 was about.
+        /// </summary>
+        public LifecycleApprovalController AsSignedInHuman(string subject) =>
+            WithPrincipal(new ClaimsPrincipal(new ClaimsIdentity(
+                [new Claim(ClaimTypes.NameIdentifier, subject), new Claim(ClaimTypes.Name, subject)],
+                "Bearer")));
 
         /// <summary>A controller reached with a principal no scheme authenticated — the default host.</summary>
         public LifecycleApprovalController AsAnonymous() =>

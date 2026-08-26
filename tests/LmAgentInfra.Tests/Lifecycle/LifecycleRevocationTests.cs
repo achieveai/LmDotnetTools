@@ -287,7 +287,10 @@ public sealed class LifecycleRevocationTests
                     HttpContext = new DefaultHttpContext
                     {
                         User = new ClaimsPrincipal(
-                            new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, appId)], "test")
+                            new ClaimsIdentity(
+                                [new Claim(LifecycleAppIdentity.AppIdClaimType, appId)],
+                                "test"
+                            )
                         ),
                     },
                 },

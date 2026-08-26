@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **LmAgentInfra (security; new public API) — the lifecycle control plane no longer accepts a signed-in human as an app.** `LifecycleSubscriptionsController` and `LifecycleApprovalController` derived the caller's app id from `ClaimTypes.NameIdentifier`, falling back to `Identity.Name`. A JWT bearer handler with inbound claim mapping on puts a human token's `sub` on exactly that claim, so **any signed-in user could register a lifecycle callback and be handed a signing secret**, filed as an owner under their own subject id — and could settle another app's pending approvals. Both now read the new `LifecycleAppIdentity.AppIdClaimType` claim (`lm_lifecycle_app_id`) and **nothing else**: no fallback, so "the request is authenticated" is no longer the operative rule at those endpoints; "the principal carries the app-id claim" is. The claim is in no inbound claim map and is minted by no authentication handler, so a token cannot carry it in — a host bridges it onto `HttpContext.User` only after it has established the caller is an app (in this repository, `PrincipalFactory.ToClaimsPrincipalOrNull`). **A host that populates `HttpContext.User` itself must stamp this claim or its app callers will be refused.** (#433)
 - Copilot CLI: route MCP servers via `--additional-mcp-config` file instead of inline args (#61)
 - Copilot CLI: trim disabled MCP server names in `BuildCliArguments`
 

@@ -1,5 +1,7 @@
 using System.Net;
+using System.Security.Claims;
 using System.Text;
+using System.Text.Encodings.Web;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmTestUtils;
@@ -8,9 +10,12 @@ using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using FluentAssertions;
 using LmStreaming.Sample.E2E.Tests.Infrastructure;
 using LmStreaming.Sample.Identity;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Xunit.Abstractions;
 
 namespace LmStreaming.Sample.E2E.Tests.Scenarios;
@@ -43,6 +48,7 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
     private const string ClientOrigin = "https://client.example";
     private const string GuardedRoute = "/api/conversations";
     private const string CallbackHost = "callbacks.example.com";
+    private const string HumanSubject = "dir-a:alice";
 
     public IdentityBoundaryPipelineTests(ITestOutputHelper output)
         : base(output) { }
@@ -293,6 +299,73 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         // proves it ran as an owner rather than reaching some shared, ownerless path.
         _ = body.Should().Contain("subscription_id");
         _ = body.Should().Contain("signing_secret");
+    }
+
+    [Fact]
+    public async Task WithEnforcementOn_ASignedInHuman_NeverReachesTheLifecycleControlPlane()
+    {
+        LogTestStart();
+
+        // #433, and the reason it is an E2E test rather than a controller one. Every piece here is
+        // real: a bearer scheme authenticates the caller and puts the token's `sub` on
+        // ClaimTypes.NameIdentifier exactly as MapInboundClaims does, the identity boundary admits
+        // the resulting interactive principal, and IdentityMiddleware's bridge deliberately does NOT
+        // overwrite a principal another scheme established. So the human's own ClaimsPrincipal — not
+        // any projection of an app — is what arrived at Register(), and while the action read the
+        // name identifier that made any signed-in user an app: register a callback, take a signing
+        // secret, and be filed as an owner under their own subject id.
+        using var factory = NewFactory(LifecycleEnforcingSettings(), WithSignedInHumanBearerScheme);
+        using var client = factory.CreateClient();
+
+        var registration = RegistrationRequest(daemonHeaders: false);
+        registration.Headers.TryAddWithoutValidation("Authorization", $"Bearer {HumanSubject}");
+        var registrationResponse = await client.SendAsync(registration);
+        var registrationBody = await registrationResponse.Content.ReadAsStringAsync();
+        LogData("humanRegistrationBody", registrationBody);
+
+        _ = registrationResponse.StatusCode.Should().Be(
+            HttpStatusCode.Forbidden,
+            "a signed-in person is not an app, and the lifecycle plane's entire authorization model "
+                + "is that the caller names one");
+        _ = registrationBody.Should().NotContain(
+            "signing_secret",
+            "a refused caller must not be handed signing material");
+
+        // The sibling endpoint, pinned independently. Both controllers derived the app id the same
+        // way and each carries its own copy of the derivation, so one of them fixed is not the fix.
+        var decision = new HttpRequestMessage(
+            HttpMethod.Post,
+            new Uri("/api/lifecycle/approvals/decisions", UriKind.Relative))
+        {
+            // Every required field present. Model validation runs before the action, so a malformed
+            // body is answered 400 and never reaches the identity check this test is about — which
+            // would make the assertion below pass for the wrong reason.
+            Content = new StringContent(
+                /*lang=json,strict*/ """
+                {
+                  "request_id": "req-1",
+                  "subscription_id": "sub-1",
+                  "decision": "allowed",
+                  "arguments_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+                }
+                """,
+                Encoding.UTF8,
+                "application/json"),
+        };
+        decision.Headers.TryAddWithoutValidation("Authorization", $"Bearer {HumanSubject}");
+
+        var decisionResponse = await client.SendAsync(decision);
+        var decisionBody = await decisionResponse.Content.ReadAsStringAsync();
+        LogData("humanDecisionBody", decisionBody);
+
+        _ = decisionResponse.StatusCode.Should().Be(
+            HttpStatusCode.Forbidden,
+            "the approval endpoint reads the caller's app identity the same way and must refuse the "
+                + "same caller");
+        _ = decisionBody.Should().Contain(
+            "not authenticated",
+            "the refusal must be the identity one, not a validation or not-found answer that would "
+                + "make this assertion pass without the fix");
     }
 
     [Fact]
@@ -646,6 +719,69 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
     /// </summary>
     private static void WithTestPrincipalSource(IServiceCollection services) =>
         services.AddSingleton<IRequestPrincipalSource, BearerUserPrincipalSource>();
+
+    /// <summary>
+    /// Wires BOTH halves of what a real signed-in person looks like to the host: an authentication
+    /// scheme that populates <c>HttpContext.User</c> before <c>IdentityMiddleware</c> runs (what a
+    /// JWT bearer handler does), and the front door that turns the same credential into an
+    /// interactive <see cref="Principal"/> (what <c>OnTokenValidated</c> does). Only both together
+    /// reproduce #433: with the principal alone the bridge would run and the caller would carry no
+    /// name identifier; with the scheme alone the identity boundary would refuse before any
+    /// controller ran.
+    /// </summary>
+    /// <remarks>
+    /// The scheme is registered under the bearer name because the sample creates that scheme but
+    /// registers no handler for it unless an Entra client id is configured, which no test sets.
+    /// </remarks>
+    private static void WithSignedInHumanBearerScheme(IServiceCollection services)
+    {
+        WithTestPrincipalSource(services);
+        _ = services
+            .AddAuthentication()
+            .AddScheme<AuthenticationSchemeOptions, SignedInHumanHandler>(
+                JwtBearerDefaults.AuthenticationScheme,
+                _ => { });
+    }
+
+    /// <summary>
+    /// Authenticates <c>Authorization: Bearer &lt;subject&gt;</c> into the claims an Entra access token
+    /// produces once inbound claim mapping has run: <c>sub</c> on
+    /// <see cref="ClaimTypes.NameIdentifier"/>, plus a display name. Deliberately no app-id claim —
+    /// a token cannot carry one, which is the whole point of the fix.
+    /// </summary>
+    private sealed class SignedInHumanHandler(
+        IOptionsMonitor<AuthenticationSchemeOptions> options,
+        ILoggerFactory logger,
+        UrlEncoder encoder)
+        : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
+    {
+        protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+        {
+            var header = Request.Headers.Authorization.ToString();
+            if (!header.StartsWith("Bearer ", StringComparison.Ordinal))
+            {
+                return Task.FromResult(AuthenticateResult.NoResult());
+            }
+
+            var subject = header["Bearer ".Length..].Trim();
+            if (subject.Length == 0)
+            {
+                return Task.FromResult(AuthenticateResult.NoResult());
+            }
+
+            var identity = new ClaimsIdentity(
+                [
+                    new Claim(ClaimTypes.NameIdentifier, subject),
+                    new Claim(ClaimTypes.Name, subject),
+                ],
+                JwtBearerDefaults.AuthenticationScheme);
+
+            return Task.FromResult(AuthenticateResult.Success(
+                new AuthenticationTicket(
+                    new ClaimsPrincipal(identity),
+                    JwtBearerDefaults.AuthenticationScheme)));
+        }
+    }
 
     private sealed class BearerUserPrincipalSource : IRequestPrincipalSource
     {

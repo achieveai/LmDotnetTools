@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Security.Claims;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Lifecycle;
 using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using LmStreaming.Sample.Identity;
@@ -608,4 +609,37 @@ public sealed class PrincipalFactoryTests : IAsyncLifetime
         _ = record.Reason.Should().Be("identity_unavailable");
     }
 
+    [Fact]
+    public void TheBridgedProjection_StampsTheClaimTheLifecyclePlaneReads()
+    {
+        // #433. This is the only place the lifecycle app-id claim is minted, and the lifecycle
+        // controllers read nothing else — so this assertion and those two controller bodies are the
+        // two ends of one wire. Asserting on ClaimTypes.NameIdentifier instead would have passed
+        // before the fix and after it, because a human's token populates that claim too.
+        var principal = PrincipalFactory.ToClaimsPrincipalOrNull(new Principal
+        {
+            TenantId = InternalTenant,
+            Actor = new PrincipalRef(PrincipalKind.App, "review-daemon"),
+            AppId = "review-daemon",
+            Source = PrincipalSource.AppOnly,
+        });
+
+        _ = principal.Should().NotBeNull();
+        _ = principal!.FindFirstValue(LifecycleAppIdentity.AppIdClaimType).Should().Be("review-daemon");
+    }
+
+    [Fact]
+    public void TheDevelopmentPrincipal_IsNotBridged_SoItCarriesNoAppIdClaim()
+    {
+        // The narrowness pin for the claim, at the source rather than at the reader. With
+        // Identity:Enforce off every anonymous request resolves to this principal; if the projection
+        // ever started stamping an app-id claim for an app-less principal, the dedicated claim would
+        // authenticate every anonymous caller to the lifecycle plane and the fix would be worse than
+        // the defect.
+        var factory = CreateFactory(_store, new IdentityOptions { Enforce = false });
+
+        var projection = PrincipalFactory.ToClaimsPrincipalOrNull(factory.CreateDevelopmentPrincipal());
+
+        _ = projection.Should().BeNull();
+    }
 }

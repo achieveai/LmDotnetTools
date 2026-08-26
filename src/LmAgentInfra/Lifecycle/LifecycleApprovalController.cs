@@ -250,6 +250,13 @@ public sealed class LifecycleApprovalController(
     /// <c>X-Sbx-App-Id</c> is not used here: this controller cannot tell whether such a header was
     /// verified by anything upstream, and trusting an unverified one would let any caller name any
     /// owner — precisely what <see cref="ILifecycleOwnerResolver.ResolveCallerAsync"/> warns against.
+    /// <para>
+    /// <see cref="LifecycleAppIdentity.AppIdClaimType"/> is the EXCLUSIVE source, with no fallback to
+    /// <c>ClaimTypes.NameIdentifier</c> or <c>Identity.Name</c>. A bearer handler maps a human token's
+    /// <c>sub</c> onto the name identifier, so reading it let any signed-in user settle another app's
+    /// approvals as if they owned them (#433). "Authenticated" is therefore no longer the operative
+    /// rule at this endpoint; "carries the app-id claim" is.
+    /// </para>
     /// </remarks>
     private string? AuthenticatedAppId()
     {
@@ -258,7 +265,7 @@ public sealed class LifecycleApprovalController(
             return null;
         }
 
-        var appId = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.Identity.Name;
+        var appId = User.FindFirstValue(LifecycleAppIdentity.AppIdClaimType);
         return string.IsNullOrWhiteSpace(appId) ? null : appId;
     }
 
