@@ -566,6 +566,13 @@ public sealed class IdentityMiddlewareTests
         // the three claims the projection knows about - and would do it silently, since the
         // replacement is also a well-formed authenticated principal. The bridge is a fill-in, and a
         // fill-in that overwrites is not one.
+        //
+        // The stashed resolution below is AppOnly, not Interactive - a shape the real interactive
+        // front door never stashes (PrincipalFactory.ResolveInteractiveAsync only ever produces
+        // Source=Interactive, AppId=null). It is used here to drive BridgeToHttpUser through its
+        // would-bridge branch directly, so this test can pin the overwrite guard in isolation. Do
+        // not read it as evidence that an app-shaped principal reaches the interactive stash in
+        // production - it does not.
         var bearerIdentity = new ClaimsIdentity(
             [
                 new Claim(ClaimTypes.NameIdentifier, "entra-object-id"),

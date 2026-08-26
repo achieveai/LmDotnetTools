@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using LmStreaming.Sample.Tests.TestDoubles;
 using Microsoft.Extensions.Time.Testing;
 
@@ -60,7 +61,7 @@ public class MultiTurnAgentPoolHandoffTests
         agent.CurrentRunId = null;
         agent.IsRunning = false;
 
-        pool.NoteInputAccepted("thread-queued");
+        pool.NoteInputAccepted("thread-queued", "input-1", agent);
 
         pool.TryGetHandoffState("thread-queued", out var state).Should().BeTrue();
         state.IsBusy.Should().BeTrue("an accepted input the agent has not started is still work in hand");
@@ -80,11 +81,11 @@ public class MultiTurnAgentPoolHandoffTests
         // that is the moment a handoff arrives.
         await using var pool = CreatePool();
         var agent = CreateOwnedAgent(pool, "thread-behind", Alice);
-        agent.CurrentRunId = "run_1";
-        agent.IsRunning = true;
+        agent.StartRun("run_1", "input-0");
 
-        pool.NoteInputAccepted("thread-behind");
+        pool.NoteInputAccepted("thread-behind", "input-1", agent);
 
+        agent.CompleteRun();
         agent.IsRunning = false;
 
         pool.TryGetHandoffState("thread-behind", out var state).Should().BeTrue();
@@ -94,26 +95,71 @@ public class MultiTurnAgentPoolHandoffTests
     }
 
     [Fact]
-    public async Task TheAcceptedInputMarker_ClearsOnceANewRunHasDrainedIt()
+    public async Task TheAcceptedInputMarker_ClearsWhenTheAgentReportsARunTookThatInput()
     {
-        // The partner that keeps the marker from being a one-way latch. A run id the agent did not
-        // have at accept time can only mean the input channel was drained, so the marker retires on
-        // that evidence rather than on a timer.
+        // The partner that keeps the ledger from being a one-way latch, run through the sequence a
+        // real agent actually produces: accepted while idle, picked up by a run that names the id it
+        // took, then completed - and completing a run puts CurrentRunId back to null, exactly as
+        // MultiTurnAgentBase does. The id retires on that echo, not on a timer and not on an
+        // inference from whichever run id happens to be current at the moment somebody looks.
         await using var pool = CreatePool();
         var agent = CreateOwnedAgent(pool, "thread-drained", Alice);
-        agent.CurrentRunId = "run_1";
-        agent.IsRunning = true;
-
-        pool.NoteInputAccepted("thread-drained");
-
-        // run_2 is the queued turn starting, then finishing.
-        agent.CurrentRunId = "run_2";
+        agent.CurrentRunId = null;
         agent.IsRunning = false;
 
+        pool.NoteInputAccepted("thread-drained", "input-1", agent);
+        pool.TryGetHandoffState("thread-drained", out var queued).Should().BeTrue();
+        queued.IsBusy.Should().BeTrue("nothing has picked the input up yet");
+
+        agent.StartRun("run_1", "input-1");
+        agent.CompleteRun();
+        agent.IsRunning = false;
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await Wait.UntilAsync(
+            () => pool.TryGetHandoffState("thread-drained", out var s) && !s.IsBusy,
+            "the run assignment naming input-1 retires it from the ledger",
+            cancellationToken: cts.Token);
+
+        // Well inside the grace, so what cleared the ledger is the evidence and not the backstop.
         pool.TryGetHandoffState("thread-drained", out var state).Should().BeTrue();
-        state.IsBusy.Should().BeFalse();
         (await pool.TryReleaseIdleAgentAsync("thread-drained", state))
             .Should().Be(MultiTurnAgentPool.AgentReleaseOutcome.Released);
+    }
+
+    [Fact]
+    public async Task ASecondAcceptedTurn_SurvivesTheFirstOnesRunEnding()
+    {
+        // Two accepts before anything starts, which a single accepted-input FLAG cannot represent:
+        // the flag says "an input is outstanding", so the first run to pick one up clears it and the
+        // second turn - still queued, still owed an answer - is left unprotected. The entry then
+        // reads idle in the gap between run_1 ending and run_2 starting, and a handoff arriving in
+        // that gap disposes the agent with the second turn on it.
+        //
+        // Recording the IDS makes the two distinguishable: run_1's assignment names input-1, so
+        // input-2 is untouched by it.
+        await using var pool = CreatePool();
+        var agent = CreateOwnedAgent(pool, "thread-two", Alice);
+        agent.CurrentRunId = null;
+        agent.IsRunning = false;
+
+        pool.NoteInputAccepted("thread-two", "input-1", agent);
+        pool.NoteInputAccepted("thread-two", "input-2", agent);
+
+        agent.StartRun("run_1", "input-1");
+        agent.CompleteRun();
+        agent.IsRunning = false;
+
+        // What this test does NOT claim: that the watcher has already retired input-1 by now. It
+        // cannot - the ledger is not observable from outside, and both "input-1 and input-2 still
+        // outstanding" and "only input-2 outstanding" read as Busy. Retirement is pinned by
+        // TheAcceptedInputMarker_ClearsWhenTheAgentReportsARunTookThatInput; what is pinned HERE is
+        // that run_1 ending does not take the second turn with it, which a flag-shaped ledger fails
+        // at whatever the timing.
+        pool.TryGetHandoffState("thread-two", out var state).Should().BeTrue();
+        state.IsBusy.Should().BeTrue("input-2 was never named by any run assignment");
+        (await pool.TryReleaseIdleAgentAsync("thread-two", state))
+            .Should().Be(MultiTurnAgentPool.AgentReleaseOutcome.Busy);
     }
 
     [Fact]
@@ -130,7 +176,7 @@ public class MultiTurnAgentPoolHandoffTests
         agent.CurrentRunId = null;
         agent.IsRunning = false;
 
-        pool.NoteInputAccepted("thread-wedged");
+        pool.NoteInputAccepted("thread-wedged", "input-1", agent);
 
         // First look starts the idle clock; still busy.
         pool.TryGetHandoffState("thread-wedged", out var first).Should().BeTrue();
@@ -149,10 +195,9 @@ public class MultiTurnAgentPoolHandoffTests
     {
         // The clause the grace's own remarks claim, pinned by the one sequence that can distinguish
         // it. A run that has a run id but is not running is a state this pool already names (see
-        // GetRunStateInfo's IsStale), and a run that resumes under the SAME id does not retire the
-        // marker - a new id is the only evidence the input channel drained. So an entry can be
-        // observed idle, then observed busy again, with the accepted input still queued behind that
-        // same run the whole time.
+        // GetRunStateInfo's IsStale), and no run assignment ever names the accepted id here, so
+        // nothing retires it. So an entry can be observed idle, then observed busy again, with the
+        // accepted input still queued behind that same run the whole time.
         //
         // If the clock were left running across the busy stretch, the marker would expire while the
         // agent was demonstrably working and the queued turn would be released out from under it.
@@ -162,7 +207,7 @@ public class MultiTurnAgentPoolHandoffTests
         agent.CurrentRunId = "run_1";
         agent.IsRunning = false;
 
-        pool.NoteInputAccepted("thread-resumed");
+        pool.NoteInputAccepted("thread-resumed", "input-1", agent);
 
         // Observed idle: the grace clock starts here.
         pool.TryGetHandoffState("thread-resumed", out var whileIdle).Should().BeTrue();
@@ -309,7 +354,10 @@ public class MultiTurnAgentPoolHandoffTests
 
     private static MultiTurnAgentPool CreatePool(TimeProvider? timeProvider = null) =>
         new(
-            (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(threadId)),
+            // KeepSubscriptionOpen: the pool subscribes to every agent it creates and retires accepted
+            // inputs on the run assignment that names them, so the stand-in has to keep that stream up.
+            (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(
+                new FakeMultiTurnAgent(threadId) { KeepSubscriptionOpen = true }),
             NullLogger<MultiTurnAgentPool>.Instance)
         {
             TimeProvider = timeProvider ?? TimeProvider.System,

@@ -95,19 +95,28 @@ not this S2S service secret.
 ## Cross-actor resume (per-conversation identity binding)
 
 A conversation is bound to the caller identity (`X-Sbx-App-Id`) that first created it, for its
-lifetime:
+lifetime. That freeze lives entirely in the pool
+(`MultiTurnAgentPool.EnsureCallerMatches`, `src/LmAgentInfra/Agents/MultiTurnAgentPool.cs`) and is a
+**separate** boundary from `Identity:Enforce`'s end-user authorization (#301, "A third boundary"
+below). With `Identity:Enforce=false` nothing runs ahead of the pool, so its own comparison is the
+only thing a cross-actor resume ever reaches. With `Identity:Enforce=true`, every conversation route
+first resolves the request through `ResourceAccessPolicy.AuthorizeAsync`
+(`src/LmCore/Identity/ResourceAccessPolicy.cs`) via `ConversationAuthorizer`, and a genuinely
+cross-actor resume is denied and existence-hidden there — `404`, not `409` — before the pool's freeze
+comparison is ever reached. The rationale for hiding rather than conflicting is in
+`docs/specs/P1-identity-authorization.md` §8.3.
 
-| Creator | Continuer | Behavior |
-|---|---|---|
-| S2S caller A | S2S caller A | Continues under A |
-| S2S caller A | S2S caller B | **409 Conflict** |
-| S2S caller A | Plain UI (no credential) | **409 Conflict** |
-| Plain UI (no credential) | S2S caller A | **409 Conflict** |
-| Plain UI (no credential) | Plain UI (no credential) | Continues under the sample's own default identity |
+| Creator | Continuer | `Identity:Enforce=false` | `Identity:Enforce=true` |
+|---|---|---|---|
+| S2S caller A | S2S caller A | Continues under A | Continues under A — same app owns the resource (`ResourceAccessPolicy.cs:201-208`) |
+| S2S caller A | S2S caller B | **409 Conflict** (pool freeze) | **404** — `app_only_no_owner` if A and B share a tenant (`ResourceAccessPolicy.cs:201-208`), or `cross_tenant` if they don't (`ResourceAccessPolicy.cs:188-191`); either reason is existence-hidden by `ConversationAuthorizer.ExistenceHidingReasons` (`ConversationAuthorizer.cs:55-61`) before the pool is ever asked |
+| S2S caller A | Plain UI (no credential) | **409 Conflict** (pool freeze) | **404** — `no_relationship` (`ResourceAccessPolicy.cs:259-262`): the signed-in user owns nothing, holds no grant, and is not an admin of a resource an app-only caller created |
+| Plain UI (no credential) | S2S caller A | **409 Conflict** (pool freeze) | **404** — `app_only_no_owner` (`ResourceAccessPolicy.cs:201-208`): a plain-UI-created conversation has no `owner_app_id`, so no app-only principal owns it |
+| Plain UI (no credential) | Plain UI (no credential) | Continues under the sample's own default identity | Continues, subject to the same owner/grant/admin check every other route applies |
 
-`ConversationsController.SendMessage` maps the pool's `SandboxCredentialConflictException` to a
-`409` whose body names **neither** app id — `detail` is a fixed sentence, and the `/ws` frame carrying
-the same `code` matches it word for word:
+The unenforced column is what `ConversationsController.SendMessage` maps the pool's
+`SandboxCredentialConflictException` to: a `409` whose body names **neither** app id — `detail` is a
+fixed sentence, and the `/ws` frame carrying the same `code` matches it word for word:
 `{ "error": "caller_credential_conflict", "code": "caller_credential_conflict", "detail": "...", "threadId": "..." }`.
 For the ids, read the structured log line the refusal writes (`ExistingAppId` / `RequestedAppId`); app
 keys appear in neither place. The body used to carry both ids, on a diagnosability argument that did
@@ -541,18 +550,33 @@ work in hand finishes.
 
 "Work in hand" is deliberately wider than "a run is streaming". An input that has been **accepted and
 not yet started** has no run id and is not running, so an in-progress check alone reads it as idle —
-and the turn was discarded with the agent after its sender had already been handed a receipt. Both
-transports that can accept a turn (the REST send and the WebSocket send) record the accept, and the
-record retires on the first evidence the queue moved: a run id the agent did not have when the input
-was accepted, which can only mean the input channel was drained.
+and the turn was discarded with the agent after its sender had already been handed a receipt. There
+are **four** live paths that can hand an agent an input: the REST send
+(`ConversationsController.SendMessage`), the WebSocket send (`ChatWebSocketManager`), the
+context-discovery fan-out (`ContextDiscoveryInjector.FanOutToSessionAsync`), and the workflow
+completion notifier wired in `Program.cs` — the last three all call `SendAsync` directly on a pooled
+agent rather than going through a transport. The pool keeps a per-thread ledger of **outstanding
+input ids**, not a single flag, so any of the four paths can add an entry without clobbering what
+another already recorded. The ledger retires ids on **authoritative evidence**, not inference: the
+pool subscribes to the agent's own message stream, and each `RunAssignmentMessage` names the input
+ids that assignment consumed (`RunAssignment.InputIds`) — the pool retires exactly those. That is a
+fact the agent states about its own input channel, not something inferred from the mere appearance of
+a new run id, and it needs no arithmetic: an id accepted after the message was published is simply
+not named by it, so the accept that lands between the agent's read and the pool's cannot be retired
+by mistake. From the moment an id is retired, the **run** is what makes the entry busy, so there is
+no window in which neither says so. An entry with any outstanding input id reads as busy, so a
+concurrent handoff refuses rather than disposing an agent that still owes someone an answer.
 
 Two bounds on that guarantee, both deliberate:
 
-- **A wedged agent does not pin the conversation forever.** An accepted input that never starts a run
-  stops counting as work in hand after a bounded grace (`MultiTurnAgentPool.AcceptedInputGrace`,
-  30 seconds of *continuous* observed idleness — a turn queued behind a long run is never timed out by
-  it). Refusing every future handoff for that thread indefinitely is a worse failure than the one
-  being prevented.
+- **A wedged agent does not pin the conversation forever.** Evidence-based retirement depends on the
+  pool's subscription to the agent's message stream actually delivering a `RunAssignmentMessage` — an
+  agent that wedges, or a subscription that ended or was dropped, never produces that evidence. For
+  exactly that case, an accepted input stops counting as work in hand after a bounded grace
+  (`MultiTurnAgentPool.AcceptedInputGrace`, 30 seconds of *continuous* observed idleness — a turn
+  queued behind a long run is never timed out by it). The grace is a **backstop** for missing
+  evidence, not the mechanism that normally retires an id. Refusing every future handoff for that
+  thread indefinitely is a worse failure than the one being prevented.
 - **A replaced entry is preserved, not released.** If the entry the caller reasoned about was swapped
   out in between — a session refresh, a mode switch, a second caller's create — the release reports
   `Replaced` and leaves the new entry alone, where the previous unconditional removal destroyed a live

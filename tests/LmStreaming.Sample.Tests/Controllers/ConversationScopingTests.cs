@@ -488,8 +488,9 @@ public sealed class ConversationScopingTests
         _ = stamped!.OwnerAppId.Should().Be("app-a");
         _ = stamped.OwnerUserId.Should().BeNull();
 
-        // Non-vacuity: the in-memory freeze has nothing to freeze, so it cannot be what refuses below.
-        _ = pool.GetAgentCallerAppId(threadId).Should().BeNull();
+        // Non-vacuity: no agent entry was ever pooled for this thread, so the in-memory freeze has
+        // nothing to freeze and cannot be what refuses below.
+        _ = pool.TryGetHandoffState(threadId, out _).Should().BeFalse();
 
         var intruder = CreateController(AppOnly("app-b"), pool);
         var refused = await intruder.SendMessage(
@@ -512,8 +513,9 @@ public sealed class ConversationScopingTests
                 "a refused caller must not be able to tell a real conversation from an imaginary one");
 
         // Refused BEFORE the pool, not after: a refusal that still minted an agent would leave the
-        // conversation frozen to the intruder for the owner's own first message.
-        _ = pool.GetAgentCallerAppId(threadId).Should().BeNull();
+        // conversation frozen to the intruder for the owner's own first message. No agent entry is
+        // pooled for this thread at all.
+        _ = pool.TryGetHandoffState(threadId, out _).Should().BeFalse();
     }
 
     /// <summary>

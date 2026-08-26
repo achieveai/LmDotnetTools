@@ -84,9 +84,10 @@ public sealed class ChatWebSocketManagerPrincipalHandoffTests
 
         var socket = new FakeWebSocket();
         var handlerTask = Connect(pool, socket, ThreadId, Alice, cts.Token);
-        await socket.WaitUntilAsync(
+        await Wait.UntilAsync(
             () => string.Equals(pool.GetAgentOwnerUserId(ThreadId), Alice, StringComparison.Ordinal),
-            cts.Token);
+            "the connection's agent entry is owned by the connecting user",
+            cancellationToken: cts.Token);
 
         // Non-vacuity: before the message the entry is releasable, so the assertion below is about
         // the send and not about the entry's resting state.

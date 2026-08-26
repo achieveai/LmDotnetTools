@@ -23,6 +23,7 @@ public sealed class LegacyAdoptionTests
     private const string Root = "thread-root";
     private const string Child = "subagent-child";
     private const string GrandChild = "subagent-grandchild";
+    private const string Cousin = "subagent-cousin";
     private const string Unrelated = "thread-unrelated";
     private const string Acme = "tnt_acme";
     private const string AcmeDirectory = "11111111-1111-1111-1111-111111111111";
@@ -562,6 +563,37 @@ public sealed class LegacyAdoptionTests
 
         _ = Assert.IsType<AdoptLegacyResponse>(ok.Value).AffectedCount
             .Should().Be(TenantsController.AdoptionScanMaxThreads + 2);
+    }
+
+    /// <summary>
+    /// Adopting a grandchild pulls in a cousin reached only by climbing to the shared root and then
+    /// descending back down a different branch.
+    /// </summary>
+    /// <remarks>
+    /// The walk is bidirectional: from the seed it climbs to the parent, and that parent has to be
+    /// re-enqueued so its OTHER children are then picked up on the way back down. A walk that climbed
+    /// to an ancestor once and never continued outward from it would reach only the seed's own line
+    /// of ancestors, silently leaving a sibling branch of the same quarantined tree behind - which is
+    /// the same #405 split, just not caught by any test that only climbs or only descends.
+    /// </remarks>
+    [Fact]
+    public async Task AdoptingAGrandchild_PullsInACousinReachedOnlyByClimbingThenDescending()
+    {
+        SeedTenant();
+        await SeedThreadAsync(Root, Quarantine);
+        await SeedThreadAsync(Child, Quarantine, subAgentOf: Root);
+        await SeedThreadAsync(Cousin, Quarantine, subAgentOf: Root);
+        await SeedThreadAsync(GrandChild, Quarantine, subAgentOf: Child);
+
+        var ok = Assert.IsType<OkObjectResult>(await CreateController().AdoptLegacyAsync(
+            Acme,
+            Request(resourceIds: [GrandChild]),
+            CancellationToken.None));
+
+        _ = Assert.IsType<AdoptLegacyResponse>(ok.Value).AffectedCount.Should().Be(4);
+        _ = (await TenantOfAsync(Cousin)).Should().Be(
+            Acme,
+            "the walk must re-enqueue the shared root to descend into a branch reached only by climbing");
     }
 
     /// <summary>A resource type the route does not implement is refused, never read as a thread.</summary>

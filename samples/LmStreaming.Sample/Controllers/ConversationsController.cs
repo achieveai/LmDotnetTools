@@ -567,7 +567,7 @@ public class ConversationsController(
         var (rows, isKnown, _) = await _hierarchy.BuildAsync(threadId, viewer, ct);
         return isKnown
             ? Ok(rows.ToArray())
-            : NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
+            : UnknownThread(threadId);
     }
 
     /// <summary>
@@ -655,7 +655,7 @@ public class ConversationsController(
             agentPool.TryGet(rootThreadId, out var agent);
             if (!await IsKnownThreadAsync(rootThreadId, agent, ct))
             {
-                return NotFound(new { error = $"Conversation '{rootThreadId}' not found.", code = "unknown_thread" });
+                return UnknownThread(rootThreadId);
             }
         }
 
@@ -730,7 +730,7 @@ public class ConversationsController(
         // Reachable only with enforcement OFF (an allowed decision over null metadata): still unknown.
         if (metadata == null)
         {
-            return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
+            return UnknownThread(threadId);
         }
 
         var persistedModeId =
@@ -951,7 +951,7 @@ public class ConversationsController(
         // no run id and is not running, which is exactly what a concurrent grantee handoff reads as
         // "idle" - and the entry, with this turn still on it, was disposed (#418). Recorded on the
         // success path only: a queue-full return and a thrown write failure both leave nothing queued.
-        agentPool.NoteInputAccepted(threadId);
+        agentPool.NoteInputAccepted(threadId, admission.InputId, agent);
 
         // The capability check got the request this far; the RECEIPT is what says this particular input will
         // actually be enforced. An agent that claims the capability but does not stamp the receipt cannot
@@ -1269,7 +1269,7 @@ public class ConversationsController(
         // Reachable only with enforcement OFF (an allowed decision over null metadata): still unknown.
         if (metadata == null)
         {
-            return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
+            return UnknownThread(threadId);
         }
 
         var result = runId != null
@@ -1699,6 +1699,18 @@ public class ConversationsController(
     }
 
     /// <summary>
+    /// The byte-identical 404 every route in this controller returns for a thread id it will not
+    /// admit exists - a never-minted id, a refused cross-tenant read, an authorized-but-missing row,
+    /// all of it. This is the existence-hiding convention (see <see cref="Refuse"/>'s remarks), not
+    /// "row missing": the body, code, and phrasing must stay identical across every call site so none
+    /// of them becomes distinguishable from the others and reopens the oracle the 404 exists to close.
+    /// Do not vary the body per call site.
+    /// </summary>
+    /// <param name="threadId">The conversation id to report as not found.</param>
+    private ObjectResult UnknownThread(string threadId) =>
+        NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
+
+    /// <summary>
     /// Turns one access decision into the response that carries it, or null when it allowed.
     /// </summary>
     /// <remarks>
@@ -1722,7 +1734,7 @@ public class ConversationsController(
                 "Conversation {ThreadId} refused as unknown for the current principal: {Reason}",
                 threadId,
                 result.Reason);
-            return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
+            return UnknownThread(threadId);
         }
 
         if (string.Equals(result.Reason, ConversationAuthorizer.UnauthenticatedReason, StringComparison.Ordinal))

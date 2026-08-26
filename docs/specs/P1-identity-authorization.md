@@ -778,10 +778,16 @@ properties bound that bridge, and both are asserted rather than described:
   put anything else there would still authenticate, and would file every app's subscriptions under
   one owner.
 - **It projects nothing for a principal that names no app, and never displaces an existing one.**
-  The development principal (enforcement off) and every end-user principal name no app, so `User`
-  behind them stays anonymous exactly as before — without which a feature flag would have become an
-  open subscription endpoint. And where `UseAuthentication` has already established a principal, the
-  bridge leaves it alone rather than narrowing a real identity to three claims.
+  The development principal names no app and reaches this check live (enforcement off): without it, a
+  feature flag would have become an open subscription endpoint. An end-user principal also names no
+  app, but the check is defensive there rather than reachable — `IdentityMiddleware.ResolveAsync`
+  returns the stashed interactive resolution before any other front door runs, and every interactive
+  principal is built with `AppId = null` (`PrincipalFactory.cs` around line 381), so no live request
+  ever exercises this exclusion for a human. It stays as defence-in-depth against a future resolver
+  that returns an app-shaped principal on an interactive path — exactly the change that would
+  otherwise bridge an app identity onto `HttpContext.User`. And where `UseAuthentication` has already
+  established a principal, the bridge leaves it alone rather than narrowing a real identity to three
+  claims.
 
 The proof that the *real* controllers answer this caller shape lives in
 `IdentityBoundaryPipelineTests` (`WithEnforcementOn_ARegisteredServiceCaller_ReachesTheLifecycleControlPlane`),
@@ -1859,6 +1865,23 @@ in their JSON document (8.6) with all three.
 This also closes [#162](https://github.com/achieveai/LmDotnetTools/issues/162) (bind S2S ownership
 at `Provision` rather than at first `SendMessage`), because `POST /api/conversations`
 (`ConversationsController.cs:221`) can now write ownership at provision time.
+
+**Why a cross-app resume answers `404`, not the pool's `409`.** The pool's own freeze
+(`MultiTurnAgentPool.EnsureCallerMatches`) predates this slice and answers every cross-app resume
+with `409 caller_credential_conflict`, unconditionally - correct with `Identity:Enforce=false`, where
+nothing runs ahead of it. With enforcement on, that is no longer the whole story: `AuthorizeAsync`
+(7.4.1) runs first, on every route, and decides existence-hiding before the pool's freeze is ever
+consulted. A continuer who owns nothing, holds no grant, and administers no relationship to the
+resource - the shape of a genuinely cross-app resume - is denied `app_only_no_owner`, `cross_tenant`,
+or `no_relationship` (`ResourceAccessPolicy.cs`, roughly lines 188-262), and
+`ConversationAuthorizer.ExistenceHidingReasons` (`ConversationAuthorizer.cs:55-61`) turns each of
+those into a `404` identical to a never-minted id. A `409` would tell that continuer the id names
+something real, which is exactly the busy-signal existence oracle the `404` convention above exists
+to close - an actor who may not even know the conversation exists must not learn that it does from a
+conflict response any more than from a `403`. The pool's `409` is not removed; it simply moves
+downstream of authorization, so it can only ever fire for a continuer the policy has already let
+through onto the resource (two credentials that both legitimately reach an owned conversation - the
+scenario #153 was written for), never for one it was going to turn away regardless.
 
 Corresponding fields are added to `ThreadMetadata`
 (`src/LmMultiTurn/Persistence/ThreadMetadata.cs`) as first-class properties - **not** into

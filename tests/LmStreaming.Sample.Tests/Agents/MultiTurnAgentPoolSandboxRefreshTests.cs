@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using LmStreaming.Sample.Tests.TestDoubles;
 
 namespace LmStreaming.Sample.Tests.Agents;
@@ -123,6 +124,65 @@ public class MultiTurnAgentPoolSandboxRefreshTests
 
         onceIdle.Status.Should().Be(MultiTurnAgentPool.AgentRefreshStatus.Replaced);
         onceIdle.Agent.Should().NotBeSameAs(original);
+        created.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task EnsureCurrentAgentAsync_DefersTheRefresh_WhileAnAcceptedInputHasNotStarted()
+    {
+        // The sibling of the handoff hole (#418), on the path nobody checked. A session refresh asks
+        // the same question a grantee handoff asks - "does this entry have work in hand?" - and used
+        // to answer it with IsEntryInProgress, which reads an accepted-but-unstarted input as idle
+        // because it has no run id and is not running. The refresh then replaced _agents[threadId]
+        // and disposed the old entry, taking the queued turn with it: the same lost turn, reached
+        // through a different door.
+        var credential = new SandboxCredential("owner", "key");
+        var sessionId = "sess-1";
+        var created = new List<FakeMultiTurnAgent>();
+
+        await using var pool = CreatePool(
+            credential,
+            () => sessionId,
+            (_, _) => Task.FromResult(new SandboxSession("workspace-1", "sess-2", "workspace", "/workspace")),
+            created);
+
+        var original = (FakeMultiTurnAgent)pool.GetOrCreateAgent(
+            "thread-queued-refresh",
+            Mode,
+            requestedProviderId: null,
+            requestResponseDumpFileName: null,
+            requestedWorkspaceId: "workspace-1",
+            callerCredential: credential);
+
+        // Exactly the state the sender is owed an answer in: accepted, no run id, not running.
+        original.CurrentRunId = null;
+        original.IsRunning = false;
+        pool.NoteInputAccepted("thread-queued-refresh", "input-queued", original);
+
+        sessionId = "sess-2";
+        var whileQueued = await pool.EnsureCurrentAgentAsync("thread-queued-refresh", credential);
+
+        whileQueued.Status.Should().Be(
+            MultiTurnAgentPool.AgentRefreshStatus.RefreshDeferred,
+            "an accepted input the agent has not started is work in hand, so the refresh must wait");
+        whileQueued.Agent.Should().BeSameAs(original);
+        created.Should().ContainSingle("the entry holding the queued turn must not have been replaced");
+
+        // Non-vacuity: the SAME pool, session change and caller do replace the agent once the entry
+        // genuinely has nothing in hand, so the deferral above is the ledger and not a stuck refresh.
+        // The run assignment echoes the accepted id, which is what retires it; the run then ends.
+        original.StartRun("run-1", "input-queued");
+        original.CompleteRun();
+        original.IsRunning = false;
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await Wait.UntilAsync(
+            () => pool.TryGetHandoffState("thread-queued-refresh", out var state) && !state.IsBusy,
+            "the assignment echoing the accepted input retires it from the ledger",
+            cancellationToken: cts.Token);
+
+        var onceDrained = await pool.EnsureCurrentAgentAsync("thread-queued-refresh", credential);
+        onceDrained.Status.Should().Be(MultiTurnAgentPool.AgentRefreshStatus.Replaced);
         created.Should().HaveCount(2);
     }
 
@@ -372,7 +432,9 @@ public class MultiTurnAgentPoolSandboxRefreshTests
         return new MultiTurnAgentPool(
             context =>
             {
-                var agent = new FakeMultiTurnAgent(context.ThreadId);
+                // The pool subscribes to each agent it creates to retire accepted inputs on the run
+                // assignment that picks them up, so the stand-in has to keep that stream open.
+                var agent = new FakeMultiTurnAgent(context.ThreadId) { KeepSubscriptionOpen = true };
                 created.Add(agent);
                 return new MultiTurnAgentPool.AgentCreationResult(agent)
                 {

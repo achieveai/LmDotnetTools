@@ -989,15 +989,17 @@ public sealed class ChatWebSocketManager
             };
 
             // Send to agent (non-blocking - queues the message)
+            var inputId = Guid.NewGuid().ToString();
             var receipt = await agent.SendAsync(
                 [userMessage],
-                inputId: Guid.NewGuid().ToString(),
+                inputId: inputId,
                 ct: ct);
 
-            // The sibling of the REST send's own call (#418). This transport accepts turns on exactly
-            // the same pooled entry, so a ledger kept only on the REST path would leave the hole open
-            // for every message typed into the UI - which is most of them.
-            _agentPool.NoteInputAccepted(threadId);
+            // The sibling of the REST send's own call (#418). This path accepts turns on exactly the
+            // same pooled entry, so a ledger kept only on the REST path would leave the hole open for
+            // every message typed into the UI - which is most of them. The id is the one just sent, so
+            // the assignment that picks it up is what retires it.
+            _agentPool.NoteInputAccepted(threadId, inputId, agent);
 
             _logger.LogDebug(
                 "Message queued for thread {ThreadId}, receipt: {InputId}",

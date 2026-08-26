@@ -316,6 +316,17 @@ public sealed class IdentityMiddleware
     /// <c>Identity:Enforce</c> off nothing here changes what an anonymous request looks like to a
     /// controller reading <c>User</c>.
     /// </para>
+    /// <para>
+    /// <b>Endpoint-visible only, not policy-visible.</b> <c>UseSampleIdentity</c>
+    /// (<c>IdentityServiceCollectionExtensions.cs</c>) calls <c>UseAuthorization</c> - and the
+    /// auto-inserted <c>UseRouting</c> ahead of it - before <c>UseMiddleware&lt;IdentityMiddleware&gt;</c>,
+    /// so this bridge runs strictly AFTER authorization policy evaluation for the current request, not
+    /// before it. A controller action that reads <c>HttpContext.User</c> itself sees the bridged
+    /// principal; the authorization middleware that decided whether the action could run at all never
+    /// does. Adding <c>[Authorize]</c> or a <c>FallbackPolicy</c> anywhere on this surface would 401 a
+    /// legitimate service-to-service caller this bridge exists to authenticate, because the bridge has
+    /// not run yet at the point the policy is evaluated.
+    /// </para>
     /// </remarks>
     private static void BridgeToHttpUser(HttpContext context, Principal principal)
     {

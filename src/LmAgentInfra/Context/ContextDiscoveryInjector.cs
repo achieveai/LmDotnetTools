@@ -45,6 +45,12 @@ public sealed class ContextDiscoveryInjector
     /// </summary>
     public const string MetadataKey = "context_discovery";
 
+    /// <summary>
+    /// Prefix on the input ids this injector mints, so an id in the pool's accepted-input ledger or in
+    /// a log line is attributable to a context-discovery injection rather than to a caller's send.
+    /// </summary>
+    internal const string ContextDiscoveryInputIdPrefix = "ctxdisc-";
+
     private readonly SandboxSessionRegistry _registry;
     private readonly MultiTurnAgentPool _pool;
     private readonly ContextDiscoveryFormatter _formatter;
@@ -174,7 +180,17 @@ public sealed class ContextDiscoveryInjector
 
             try
             {
-                _ = await agent.SendAsync([message], inputId: null, parentRunId: null, ct).ConfigureAwait(false);
+                // A minted id rather than null, because the ledger below is retired by the agent
+                // echoing this id back on the run assignment that picks the input up. With a null id
+                // the accept could only ever retire on the grace backstop.
+                var inputId = ContextDiscoveryInputIdPrefix + Guid.NewGuid().ToString("N");
+                _ = await agent.SendAsync([message], inputId, parentRunId: null, ct).ConfigureAwait(false);
+
+                // The third live accept path (#418). REST and WebSocket both record what they hand to a
+                // pooled agent; this one sends straight to the same entry, so leaving it out left a hole
+                // the size of every context-discovery injection: a concurrent grantee handoff read the
+                // entry as idle and disposed the agent with this turn queued on it.
+                _pool.NoteInputAccepted(threadId, inputId, agent);
                 injected++;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)

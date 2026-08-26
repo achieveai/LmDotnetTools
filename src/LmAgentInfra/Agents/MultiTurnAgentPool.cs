@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 
@@ -215,17 +216,28 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         public SandboxEstablishedBinding? EstablishedBinding { get; init; }
 
         /// <summary>
-        /// The accepted-input ledger (#418). MUTABLE, and every read and write of these three fields
-        /// happens under the entry's per-thread lock - unlike everything above them, which is frozen
-        /// at creation. They exist because "is this entry idle?" cannot be answered from
+        /// The accepted-input ledger (#418): the ids of inputs this entry's agent has accepted and
+        /// that no run has picked up yet. MUTABLE, and every read and write of it and of
+        /// <see cref="IdleSinceUtc"/> happens under the entry's per-thread lock - unlike everything
+        /// above them, which is frozen at creation.
+        /// </summary>
+        /// <remarks>
+        /// It exists because "is this entry idle?" cannot be answered from
         /// <see cref="IMultiTurnAgent"/> alone: an input that has been accepted and not yet started
         /// leaves <see cref="IMultiTurnAgent.CurrentRunId"/> null and <c>IsRunning</c> false, which is
-        /// indistinguishable from having nothing to do.
-        /// </summary>
-        public bool HasAcceptedInput;
+        /// indistinguishable from having nothing to do. It is a SET of ids rather than a flag because
+        /// a flag cannot represent two accepts: the first run to start would clear the flag while the
+        /// second input was still queued, and the entry would read idle with a turn still owed.
+        /// </remarks>
+        public readonly HashSet<string> OutstandingInputIds = new(StringComparer.Ordinal);
 
-        /// <summary>The run id the agent was on when the input was accepted, or null if it was idle.</summary>
-        public string? RunIdAtAccept;
+        /// <summary>
+        /// The pool's subscription to this agent's own message stream, which is what retires ids from
+        /// <see cref="OutstandingInputIds"/>. Never awaited: it is ended by cancelling
+        /// <see cref="Cts"/> during disposal, and awaiting it from a caller that may hold the
+        /// per-thread lock would deadlock against the lock the watcher itself takes.
+        /// </summary>
+        public Task? DrainWatcher;
 
         /// <summary>
         /// When this entry was first OBSERVED not-in-progress while holding an accepted input, or null
@@ -1150,12 +1162,20 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
                 return new AgentRefreshResult(current.Agent, AgentRefreshStatus.Current);
             }
 
-            if (IsEntryInProgress(current))
+            // The deferral asks "does this entry have work in hand?", not "is a run executing?" — and
+            // those differ for exactly the window #418 is about. An input accepted and not yet picked
+            // up leaves CurrentRunId null and IsRunning false, so IsEntryInProgress reads it as idle;
+            // the refresh below then replaces _agents[threadId] and disposes the old entry, taking the
+            // queued turn with it. Same read the handoff path uses, so a turn is never idle to one
+            // caller and busy to the other.
+            if (IsBusyUnderLock(current))
             {
                 _logger.LogInformation(
-                    "Deferring sandbox session refresh for thread {ThreadId} while run {RunId} is active",
+                    "Deferring sandbox session refresh for thread {ThreadId} while it has work in hand "
+                        + "(run {RunId}, {OutstandingInputs} accepted input(s) not yet started)",
                     threadId,
-                    current.Agent.CurrentRunId
+                    current.Agent.CurrentRunId,
+                    current.OutstandingInputIds.Count
                 );
                 return new AgentRefreshResult(current.Agent, AgentRefreshStatus.RefreshDeferred);
             }
@@ -1313,13 +1333,15 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// How long an accepted-but-unstarted input keeps an otherwise idle entry from being released.
     /// </summary>
     /// <remarks>
-    /// A backstop, not the mechanism. The marker normally retires on evidence - a run id the agent
-    /// did not have when the input was accepted, which can only mean the input channel was drained.
-    /// This covers the one case that evidence never arrives for: an agent that accepted an input and
-    /// then wedged. Without it that conversation's every future handoff answers <c>409</c> forever,
-    /// which trades a lost turn for a permanently unusable thread. The clock runs only while the
-    /// entry is observed NOT in progress (see <see cref="IsBusyUnderLock"/>), so a turn queued behind
-    /// a long-running one is never timed out by it however long that run takes.
+    /// A backstop, not the mechanism. An id normally retires on the agent's OWN evidence: the
+    /// <see cref="RunAssignmentMessage"/> that echoes it in <see cref="RunAssignment.InputIds"/> when
+    /// a run picks it up (see <see cref="WatchDrainsAsync"/>). This covers the two cases that evidence
+    /// never arrives for: an agent that accepted an input and then wedged, and a drain watcher that
+    /// ended or was dropped for a slow read. Without it, either of those makes that conversation's
+    /// every future handoff answer <c>409</c> forever, which trades a lost turn for a permanently
+    /// unusable thread. The clock runs only while the entry is observed NOT in progress (see
+    /// <see cref="IsBusyUnderLock"/>), so a turn queued behind a long-running one is never timed out
+    /// by it however long that run takes.
     /// </remarks>
     internal static readonly TimeSpan AcceptedInputGrace = TimeSpan.FromSeconds(30);
 
@@ -1328,18 +1350,35 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// so a concurrent handoff does not read the entry as idle and discard the turn (#418).
     /// </summary>
     /// <param name="threadId">The conversation whose agent took the input.</param>
+    /// <param name="inputId">
+    /// The id of the accepted input - the same id handed to <c>SendAsync</c>/<c>TrySendAsync</c>.
+    /// </param>
+    /// <param name="acceptedBy">The agent instance that actually accepted it.</param>
     /// <remarks>
     /// <para>
     /// Call this AFTER the send has been accepted - once the sender is owed an answer - and from
-    /// every transport that can accept one. There are two: the REST send and the WebSocket send. A
-    /// ledger maintained on one of them is a ledger with a hole in it exactly the size of the other.
+    /// every path that can accept one. There are THREE: the REST send, the WebSocket send, and the
+    /// context-discovery fan-out, which sends straight to a pooled agent. A ledger maintained on some
+    /// of them is a ledger with a hole in it exactly the size of the rest.
     /// </para>
     /// <para>
     /// The pool has to keep this itself because the fact it needs is not on
     /// <see cref="IMultiTurnAgent"/>: an agent exposes <see cref="IMultiTurnAgent.CurrentRunId"/>,
     /// which is null precisely while an input sits queued, and its pending-input count is not part of
-    /// the interface. So the pool records the accept and retires the record on the first evidence the
-    /// queue moved.
+    /// the interface. So the pool records the accepted id and retires it when the agent itself says a
+    /// run picked that id up (<see cref="WatchDrainsAsync"/>).
+    /// </para>
+    /// <para>
+    /// Recording the ID, not a flag, is what makes two accepts representable. With a flag, the first
+    /// run to start clears it while the second input is still queued and the entry reads idle with a
+    /// turn still owed - a handoff then disposes the agent and that turn is lost.
+    /// </para>
+    /// <para>
+    /// <paramref name="acceptedBy"/> is compared by reference against the pooled agent, and a
+    /// mismatch is a no-op. Without it this marks whatever entry happens to be pooled NOW, which
+    /// after a concurrent refresh or mode swap is a DIFFERENT agent that never saw the input: the
+    /// replacement would be held busy for work it does not have, and the entry that actually holds
+    /// the turn would not be held at all.
     /// </para>
     /// <para>
     /// A no-op for a thread with no pooled entry: there is nothing to protect and nothing to
@@ -1347,9 +1386,9 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// accepted by an agent that has since been replaced is not work the replacement holds.
     /// </para>
     /// </remarks>
-    public void NoteInputAccepted(string threadId)
+    public void NoteInputAccepted(string threadId, string inputId, IMultiTurnAgent acceptedBy)
     {
-        if (string.IsNullOrEmpty(threadId))
+        if (string.IsNullOrEmpty(threadId) || string.IsNullOrEmpty(inputId) || acceptedBy is null)
         {
             return;
         }
@@ -1362,9 +1401,103 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
                 return;
             }
 
-            entry.HasAcceptedInput = true;
-            entry.RunIdAtAccept = entry.Agent.CurrentRunId;
+            if (!ReferenceEquals(entry.Agent, acceptedBy))
+            {
+                _logger.LogDebug(
+                    "Ignoring accepted input {InputId} for thread {ThreadId}: the accepting agent is no "
+                        + "longer the pooled one",
+                    inputId,
+                    threadId
+                );
+                return;
+            }
+
+            entry.OutstandingInputIds.Add(inputId);
             entry.IdleSinceUtc = null;
+        }
+    }
+
+    /// <summary>
+    /// Retires accepted-input ids for <paramref name="threadId"/> once the agent reports a run has
+    /// picked them up. Runs for the life of one entry; ends when that entry's token is cancelled.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The evidence is the agent's own <see cref="RunAssignmentMessage"/>, which echoes the ids the
+    /// assignment consumed. That is exact and needs no arithmetic: an id that appears there has left
+    /// the input channel, and from that moment the RUN is what makes the entry busy
+    /// (<see cref="IsEntryInProgress"/>), so there is no window in which neither says so. An id
+    /// accepted after the message was published is simply not in it and is therefore never retired by
+    /// it - the reason this is a set of ids rather than a count reconciled against a pending total,
+    /// which would race the accept that lands between the agent's count and this read.
+    /// </para>
+    /// <para>
+    /// Subscribing cannot backpressure the agent: <c>PublishToAllAsync</c> writes to each subscriber
+    /// non-blocking and DROPS one whose channel is full. A dropped or ended watcher therefore costs
+    /// retirement-by-evidence, not liveness, and <see cref="AcceptedInputGrace"/> is the backstop for
+    /// exactly that.
+    /// </para>
+    /// </remarks>
+    private async Task WatchDrainsAsync(string threadId, IMultiTurnAgent agent, CancellationToken ct)
+    {
+        try
+        {
+            await foreach (var message in agent.SubscribeAsync(ct).ConfigureAwait(false))
+            {
+                if (message is not RunAssignmentMessage assignment)
+                {
+                    continue;
+                }
+
+                var assignedIds = assignment.Assignment.InputIds;
+                if (assignedIds is not { Count: > 0 })
+                {
+                    continue;
+                }
+
+                var lockObj = _creationLocks.GetOrAdd(threadId, static _ => new object());
+                lock (lockObj)
+                {
+                    // Same reference check NoteInputAccepted makes, and for the same reason: this
+                    // watcher outlives nothing, but the entry it was started for can be replaced
+                    // while a message is in flight, and retiring ids off the replacement would clear
+                    // a turn that agent never accepted.
+                    if (
+                        !_agents.TryGetValue(threadId, out var entry)
+                        || !ReferenceEquals(entry.Agent, agent)
+                        || entry.OutstandingInputIds.Count == 0
+                    )
+                    {
+                        continue;
+                    }
+
+                    foreach (var assignedId in assignedIds)
+                    {
+                        entry.OutstandingInputIds.Remove(assignedId);
+                    }
+
+                    if (entry.OutstandingInputIds.Count == 0)
+                    {
+                        entry.IdleSinceUtc = null;
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // The entry was disposed or the pool shut down.
+        }
+        catch (Exception ex)
+        {
+            // Losing the watcher costs retirement-by-evidence for this entry, not correctness: the
+            // grace backstop still releases it. Logged rather than swallowed so a conversation whose
+            // handoffs start answering 409 for 30s has an explanation.
+            _logger.LogWarning(
+                ex,
+                "Accepted-input drain watcher for thread {ThreadId} ended; falling back to the {Grace} grace",
+                threadId,
+                AcceptedInputGrace
+            );
         }
     }
 
@@ -1508,8 +1641,6 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// </summary>
     private bool IsBusyUnderLock(AgentEntry entry)
     {
-        RetireAcceptedInputIfDrained(entry);
-
         if (IsEntryInProgress(entry))
         {
             // The grace clock measures continuous idleness, so an observation that finds a run
@@ -1519,7 +1650,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             return true;
         }
 
-        if (!entry.HasAcceptedInput)
+        if (entry.OutstandingInputIds.Count == 0)
         {
             return false;
         }
@@ -1532,45 +1663,19 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         }
 
         _logger.LogWarning(
-            "Thread {ThreadId} accepted an input that never started a run within {Grace}; releasing the "
-                + "entry rather than refusing every future handoff for it",
+            "Thread {ThreadId} has {OutstandingInputs} accepted input(s) that never started a run within "
+                + "{Grace}; releasing the entry rather than refusing every future handoff for it",
             entry.Agent.ThreadId,
+            entry.OutstandingInputIds.Count,
             AcceptedInputGrace
         );
         ClearAcceptedInput(entry);
         return false;
     }
 
-    /// <summary>
-    /// Retires the accepted-input marker once a run the agent was NOT on at accept time exists.
-    /// </summary>
-    /// <remarks>
-    /// A different run id is the evidence, and it is sound in both directions. The agent consumes its
-    /// input channel in order, so a run that started after the accept necessarily took the accepted
-    /// input off it; and while the accepted input is still queued the agent is either idle (null) or
-    /// still on the run it was on at accept time, so no such id can appear early.
-    /// </remarks>
-    private static void RetireAcceptedInputIfDrained(AgentEntry entry)
-    {
-        if (!entry.HasAcceptedInput)
-        {
-            return;
-        }
-
-        var currentRunId = entry.Agent.CurrentRunId;
-        if (
-            !string.IsNullOrWhiteSpace(currentRunId)
-            && !string.Equals(currentRunId, entry.RunIdAtAccept, StringComparison.Ordinal)
-        )
-        {
-            ClearAcceptedInput(entry);
-        }
-    }
-
     private static void ClearAcceptedInput(AgentEntry entry)
     {
-        entry.HasAcceptedInput = false;
-        entry.RunIdAtAccept = null;
+        entry.OutstandingInputIds.Clear();
         entry.IdleSinceUtc = null;
     }
 
@@ -1936,7 +2041,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             cts.Token
         );
 
-        return new AgentEntry
+        var entry = new AgentEntry
         {
             Agent = agent,
             RunTask = runTask,
@@ -1950,6 +2055,13 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             OwnerUserId = ownerUserId,
             EstablishedBinding = result.StagedBinding,
         };
+
+        // Started here rather than lazily on the first accept so the subscription is in place BEFORE
+        // any input can be accepted: a watcher attached after the fact could miss the assignment that
+        // retires the very id that started it, and the ledger would then sit on the grace backstop.
+        entry.DrainWatcher = WatchDrainsAsync(threadId, agent, cts.Token);
+
+        return entry;
     }
 
     /// <inheritdoc />
