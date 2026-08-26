@@ -113,6 +113,11 @@ public sealed class ChatWebSocketManager
     /// Optional workspace id requested by the client for this connection. Honored only when the
     /// thread has no persisted workspace yet; otherwise the persisted value wins.
     /// </param>
+    /// <param name="ownerUserId">
+    /// The connecting user's <c>Principal.EffectiveUserId</c>, resolved by the identity middleware
+    /// from the handshake credential (#342). Passed to every pool call this connection makes so a
+    /// thread the UI opened a socket on is owned exactly as a REST-created one is (#399).
+    /// </param>
     public async Task HandleConnectionAsync(
         System.Net.WebSockets.WebSocket webSocket,
         string threadId,
@@ -121,7 +126,8 @@ public sealed class ChatWebSocketManager
         string? requestResponseDumpFileName,
         StreamWriter? recordWriter,
         CancellationToken cancellationToken,
-        string? workspaceId = null)
+        string? workspaceId = null,
+        string? ownerUserId = null)
     {
         ArgumentNullException.ThrowIfNull(webSocket);
         var codexSessionId = !string.IsNullOrWhiteSpace(requestResponseDumpFileName)
@@ -167,14 +173,20 @@ public sealed class ChatWebSocketManager
             IMultiTurnAgent agent;
             try
             {
+                // ownerUserId on BOTH calls, matching ConversationsController. Whichever surface
+                // touches a thread first decides whether the principal guard exists at all, because
+                // AgentEntry.OwnerUserId is frozen at creation and EnsurePrincipalMatches returns
+                // early when either side is null - and in the browser the first toucher is this
+                // socket, opened on load before any REST turn (#399).
                 _ = _agentPool.GetOrCreateAgent(
                     threadId,
                     resolvedMode,
                     providerId,
                     requestResponseDumpFileName,
-                    workspaceId);
+                    workspaceId,
+                    ownerUserId: ownerUserId);
                 agent = (await _agentPool
-                    .EnsureCurrentAgentAsync(threadId, ct: cancellationToken)
+                    .EnsureCurrentAgentAsync(threadId, ct: cancellationToken, ownerUserId: ownerUserId)
                     .ConfigureAwait(false)).Agent;
             }
             catch (ProviderUnavailableException ex)
@@ -221,6 +233,47 @@ public sealed class ChatWebSocketManager
                 await SendCredentialConflictErrorAsync(connection, ex, recordWriter, cancellationToken);
                 return;
             }
+            catch (PrincipalConflictException ex)
+            {
+                // The people-shaped sibling of the conflict above, reachable only since this
+                // connection started owning the entries it creates (#399): the thread's live agent
+                // belongs to a different USER. Refuse it here rather than letting the exception abort
+                // the socket - an aborted handshake tells the UI nothing, and the REST surface answers
+                // the same exception with 409 principal_conflict.
+                //
+                // This transport does NOT release the other user's agent the way the REST routes do
+                // for an authorized grantee (#376): it performs no per-conversation authorization at
+                // all, so there is no verdict here that could justify taking someone's agent away.
+                // Refusing is the conservative half of that gap, and it is recorded in
+                // docs/deployment/AUTH_ENFORCE.md.
+                _logger.LogWarning(
+                    ex,
+                    "Principal conflict for thread {ThreadId}: bound to user '{ExistingUserId}', requested '{RequestedUserId}'",
+                    threadId,
+                    ex.ExistingUserId,
+                    ex.RequestedUserId);
+
+                await SendPrincipalConflictErrorAsync(connection, ex, recordWriter, cancellationToken);
+                return;
+            }
+
+            catch (AgentNotPooledException ex)
+            {
+                // Setup calls GetOrCreateAgent and then EnsureCurrentAgentAsync, and a grantee handoff
+                // removing the entry between those two lines - or inside the refresh's own await on the
+                // live-session resolver - leaves the second call with nothing to refresh. The
+                // per-message path already answers this; without the same catch here a connect landing
+                // in that window aborts frameless, which is the failure #399 set out to remove. Same
+                // answer as the message path: tell the client its agent is gone and close cleanly, so
+                // it reconnects instead of guessing.
+                _logger.LogInformation(
+                    ex,
+                    "Connection setup for thread {ThreadId} met a released agent; closing so the client reconnects",
+                    threadId);
+
+                await SendAgentReleasedAsync(connection, recordWriter, cancellationToken);
+                return;
+            }
 
             // Create linked cancellation for connection lifetime
             using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -234,7 +287,8 @@ public sealed class ChatWebSocketManager
                 connection,
                 agent,
                 threadId,
-                connectionCts.Token);
+                connectionCts.Token,
+                ownerUserId);
 
             try
             {
@@ -641,11 +695,13 @@ public sealed class ChatWebSocketManager
         RegisteredWebSocketConnection connection,
         IMultiTurnAgent agent,
         string threadId,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? ownerUserId)
         => ReceiveTextMessagesAsync(
             webSocket,
             $"thread {threadId}",
-            (message, token) => ProcessClientMessageAsync(connection, agent, threadId, message, token),
+            (message, token) =>
+                ProcessClientMessageAsync(connection, agent, threadId, message, token, ownerUserId),
             ct);
 
     /// <summary>
@@ -871,7 +927,8 @@ public sealed class ChatWebSocketManager
         IMultiTurnAgent agent,
         string threadId,
         string json,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? ownerUserId)
     {
         if (TryPeekFrameType(json, out var frameType) && frameType == ClientToolResultFrameType)
         {
@@ -894,7 +951,7 @@ public sealed class ChatWebSocketManager
                 request.Message);
 
             var refresh = await _agentPool
-                .EnsureCurrentAgentAsync(threadId, ct: ct, replace: false)
+                .EnsureCurrentAgentAsync(threadId, ct: ct, replace: false, ownerUserId: ownerUserId)
                 .ConfigureAwait(false);
             var agentChanged = !ReferenceEquals(refresh.Agent, agent);
             if (
@@ -951,6 +1008,41 @@ public sealed class ChatWebSocketManager
                 ex.StatusCode
             );
             await SendSandboxUnavailableErrorAsync(connection, ex, recordWriter: null, ct);
+        }
+        catch (PrincipalConflictException ex)
+        {
+            // The per-message refresh above began asserting this connection's user (#399), which made
+            // the pool's principal guard reachable HERE and not only during connection setup. It fires
+            // on an already-open socket when the thread's agent changed hands underneath it: an
+            // authorized editor grantee releases the owner's pooled entry and the pool recreates it
+            // owned by them (#376), and the owner's next typed message then addresses an entry that is
+            // no longer hers. Unhandled, that escapes the receive pump into the host and the socket is
+            // aborted with no frame - the same silent disconnect the handshake refusal was added to
+            // remove, arriving one layer later.
+            //
+            // Answered with the SAME frame the handshake path sends, deliberately: one condition must
+            // not grow a second name because it was reached from a different direction, and the frame
+            // omits the other user's id for the same reason it does there.
+            _logger.LogWarning(
+                ex,
+                "Principal conflict on an open socket for thread {ThreadId}: the agent is now bound to a different user",
+                threadId
+            );
+            await SendPrincipalConflictErrorAsync(connection, ex, recordWriter: null, ct);
+        }
+        catch (AgentNotPooledException ex)
+        {
+            // The other half of the same handoff, and the reason catching only the conflict above would
+            // leave a hole: releasing and recreating are two steps, and a message arriving BETWEEN them
+            // finds no entry at all. Same client outcome as a refreshed sandbox session - the socket is
+            // closed normally so the UI reconnects and gets whatever agent the thread now has - rather
+            // than an abort that tells it nothing.
+            _logger.LogInformation(
+                ex,
+                "Message for thread {ThreadId} arrived while its pooled agent was being handed off; closing so the client reconnects",
+                threadId
+            );
+            await SendAgentReleasedAsync(connection, recordWriter: null, ct).ConfigureAwait(false);
         }
         catch (JsonException ex)
         {
@@ -1460,6 +1552,77 @@ public sealed class ChatWebSocketManager
             CancellationToken.None);
     }
 
+    /// <summary>
+    /// Tells a client its pooled agent is gone and closes the socket normally, so it reconnects onto
+    /// whatever agent the thread now has.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately the SAME frame a replaced sandbox session sends: from the client's side the two are
+    /// one situation - "the thing you were talking to is no longer there, reconnect" - and giving it a
+    /// second name would buy a second branch that behaves identically. What it must never be is silence:
+    /// an unhandled release aborts the socket, and an abort is indistinguishable from the network
+    /// dropping.
+    /// </remarks>
+    private static async Task SendAgentReleasedAsync(
+        RegisteredWebSocketConnection connection,
+        StreamWriter? recordWriter,
+        CancellationToken ct)
+    {
+        var json = JsonSerializer.Serialize(new Dictionary<string, string>
+        {
+            ["$type"] = "sandbox_session_refresh",
+        });
+
+        if (await connection.TrySendTextAsync(json, ct).ConfigureAwait(false) && recordWriter != null)
+        {
+            await recordWriter.WriteLineAsync(json);
+            await recordWriter.FlushAsync();
+        }
+
+        await connection.TryCloseAsync(
+            WebSocketCloseStatus.NormalClosure,
+            "Agent released",
+            ct).ConfigureAwait(false);
+    }
+
+    private async Task SendPrincipalConflictErrorAsync(
+        RegisteredWebSocketConnection connection,
+        PrincipalConflictException ex,
+        StreamWriter? recordWriter,
+        CancellationToken ct)
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["$type"] = "error",
+
+            // Same code the REST 409 carries, so a client needs one branch rather than two names for
+            // one condition.
+            ["code"] = "principal_conflict",
+
+            // Deliberately does NOT relay ex.Message: that names the OTHER user's id, and this
+            // connection has not been authorized to learn who else uses this conversation.
+            ["message"] =
+                "This conversation's agent is in use by a different user and cannot be continued here.",
+        };
+        var json = JsonSerializer.Serialize(payload, _jsonOptions);
+
+        if (!await connection.TrySendTextAsync(json, ct))
+        {
+            return;
+        }
+
+        if (recordWriter != null)
+        {
+            await recordWriter.WriteLineAsync(json);
+            await recordWriter.FlushAsync();
+        }
+
+        await connection.TryCloseAsync(
+            WebSocketCloseStatus.NormalClosure,
+            "Principal conflict",
+            CancellationToken.None);
+    }
+
     private async Task SendCredentialConflictErrorAsync(
         RegisteredWebSocketConnection connection,
         SandboxCredentialConflictException ex,
@@ -1470,10 +1633,15 @@ public sealed class ChatWebSocketManager
         {
             ["$type"] = "error",
             ["code"] = "caller_credential_conflict",
-            // App ids only — the exception message never contains the app key.
+
+            // Deliberately does NOT relay ex.Message, for the same reason as its principal sibling
+            // below: the message interpolates BOTH app ids, and this connection has not been
+            // authorized to learn which service the conversation is frozen to. It used to be appended
+            // on the grounds that app ids are not app keys - true, and beside the point once the REST
+            // body stopped carrying them. Two transports answering one condition must agree on what
+            // the refused caller may learn. The ids remain on the log line above.
             ["message"] =
-                "This conversation belongs to a different caller identity and cannot be continued here. "
-                + ex.Message,
+                "This conversation belongs to a different caller identity and cannot be continued here.",
         };
         var json = JsonSerializer.Serialize(payload, _jsonOptions);
 

@@ -291,6 +291,198 @@ public sealed class IdentityMiddlewareTests
     }
 
     [Fact]
+    public async Task AWebSocketHandshakeWithNoCredential_IsRefusedWithForbidden_NotUnauthorized()
+    {
+        using var server = await StartAsync(enforce: true);
+
+        var response = await server.CreateClient().GetAsync(new Uri("/ws?threadId=t", UriKind.Relative));
+
+        // 401 is the one status a browser answers by re-authenticating, and re-authenticating cannot
+        // attach a credential to a handshake that carried none - so a 401 here loops (#342/#341).
+        _ = ((int)response.StatusCode).Should().Be(StatusCodes.Status403Forbidden);
+        _ = response.Headers.WwwAuthenticate.Should().BeEmpty();
+        _ = (await ReadCodeAsync(response)).Should().Be(IdentityMiddleware.WebSocketRefusalCode);
+    }
+
+    [Fact]
+    public async Task TheRestSurfaceKeepsIts401_WhileTheWebSocketTransportDoesNot()
+    {
+        using var server = await StartAsync(enforce: true);
+        using var client = server.CreateClient();
+
+        var rest = await client.GetAsync(new Uri("/api/conversations", UriKind.Relative));
+        var socket = await client.GetAsync(new Uri("/ws?threadId=t", UriKind.Relative));
+
+        // The pair, in one test, because the value of each answer is that it DIFFERS from the other.
+        // On REST, re-authenticating is exactly the fix, so 401 is right there and wrong on /ws.
+        _ = ((int)rest.StatusCode).Should().Be(StatusCodes.Status401Unauthorized);
+        _ = ((int)socket.StatusCode).Should().Be(StatusCodes.Status403Forbidden);
+    }
+
+    [Fact]
+    public void ASubprotocolCredential_IsPromotedIntoAuthorizationAndRemovedFromTheOfferedList()
+    {
+        var request = WebSocketRequest(
+            "/ws",
+            $"{IdentityMiddleware.WebSocketCredentialSubProtocolPrefix}token-abc, "
+                + IdentityMiddleware.WebSocketSubProtocol);
+
+        _ = IdentityMiddleware.PromoteWebSocketCredential(request).Should().BeTrue();
+
+        _ = request.Headers.Authorization.ToString().Should().Be("Bearer token-abc");
+
+        // Removed, not merely ignored: a token left in a request header travels into every request
+        // log and diagnostic dump downstream, and the accept must never echo it back either.
+        _ = request.Headers["Sec-WebSocket-Protocol"].ToString()
+            .Should().Be(IdentityMiddleware.WebSocketSubProtocol);
+        _ = IdentityMiddleware.NegotiateWebSocketSubProtocol(request)
+            .Should().Be(IdentityMiddleware.WebSocketSubProtocol);
+    }
+
+    /// <summary>
+    /// Precedence and stripping are two separate promises, and the header check used to answer both
+    /// with one early return: a request that already carried <c>Authorization</c> kept its
+    /// <c>Authorization</c> - correct - and ALSO kept the offered <c>lm.bearer.&lt;token&gt;</c> in
+    /// <c>Sec-WebSocket-Protocol</c> for the rest of the pipeline, which the method's own remark says
+    /// never happens. Stripping is unconditional; only the promotion defers.
+    /// </summary>
+    [Fact]
+    public void AnAuthorizationHeaderAlreadyOnTheRequest_IsNeverOverwrittenByASubprotocol_AndTheTokenIsStillStripped()
+    {
+        var request = WebSocketRequest(
+            "/ws",
+            $"{IdentityMiddleware.WebSocketCredentialSubProtocolPrefix}attacker-token, "
+                + IdentityMiddleware.WebSocketSubProtocol);
+        request.Headers.Authorization = "Bearer real-token";
+
+        _ = IdentityMiddleware.PromoteWebSocketCredential(request).Should().BeFalse();
+        _ = request.Headers.Authorization.ToString().Should().Be("Bearer real-token");
+
+        // The credential is gone from the offered list even though it was not promoted. Whether a
+        // token is honoured and whether it travels onward into logs, diagnostics and the accept's
+        // echo are unrelated questions, and the second answer must not depend on the first.
+        _ = request.Headers["Sec-WebSocket-Protocol"].ToString()
+            .Should().Be(IdentityMiddleware.WebSocketSubProtocol);
+        _ = request.Headers["Sec-WebSocket-Protocol"].ToString()
+            .Should().NotContain("attacker-token");
+    }
+
+    /// <summary>
+    /// A handshake may offer more than one <c>lm.bearer.*</c> entry, and every one of them must leave
+    /// the request. The strip decision used to be fused to the promotion decision - the first match
+    /// became the credential and every LATER match fell through to the keep list - so a client that
+    /// offered two tokens got the second one written straight back into
+    /// <c>Sec-WebSocket-Protocol</c>, which is the exact leak the strip exists to prevent.
+    /// </summary>
+    /// <remarks>
+    /// The promotion half is unchanged and asserted alongside: at most one credential is honoured, and
+    /// it is the first offered. Only the stripping is unconditional.
+    /// </remarks>
+    [Fact]
+    public void EveryCredentialSubprotocolIsStripped_NotJustTheOneThatGetsPromoted()
+    {
+        var request = WebSocketRequest(
+            "/ws",
+            $"{IdentityMiddleware.WebSocketCredentialSubProtocolPrefix}first-token, "
+                + $"{IdentityMiddleware.WebSocketCredentialSubProtocolPrefix}second-token, "
+                + IdentityMiddleware.WebSocketSubProtocol);
+
+        _ = IdentityMiddleware.PromoteWebSocketCredential(request).Should().BeTrue();
+        _ = request.Headers.Authorization.ToString().Should().Be("Bearer first-token");
+
+        var offered = request.Headers["Sec-WebSocket-Protocol"].ToString();
+        _ = offered.Should().Be(IdentityMiddleware.WebSocketSubProtocol);
+        _ = offered.Should().NotContain("second-token");
+        _ = offered.Should().NotContain(IdentityMiddleware.WebSocketCredentialSubProtocolPrefix);
+    }
+
+    /// <summary>
+    /// A bare <c>lm.bearer.</c> with no token behind it leaves the request too. It carries nothing to
+    /// promote, which is exactly why it used to survive: the method returned early on "no credential
+    /// found" BEFORE writing the filtered list back, so the original header - prefix and all - stayed
+    /// on the request untouched.
+    /// </summary>
+    /// <remarks>
+    /// Nothing secret leaks in this case; the point is that the stripping promise is unconditional, and
+    /// a promise with a silent exception in it is not one a reader can rely on. It is also the cheapest
+    /// possible check that the write-back happens on the no-credential path at all.
+    /// </remarks>
+    [Fact]
+    public void ABareCredentialPrefixWithNoTokenIsStripped_EvenThoughNothingIsPromoted()
+    {
+        var request = WebSocketRequest(
+            "/ws",
+            $"{IdentityMiddleware.WebSocketCredentialSubProtocolPrefix}, "
+                + IdentityMiddleware.WebSocketSubProtocol);
+
+        // Nothing to promote, so the return value is false - and the header is still cleaned.
+        _ = IdentityMiddleware.PromoteWebSocketCredential(request).Should().BeFalse();
+        _ = request.Headers.Authorization.ToString().Should().BeEmpty();
+
+        var offered = request.Headers["Sec-WebSocket-Protocol"].ToString();
+        _ = offered.Should().Be(IdentityMiddleware.WebSocketSubProtocol);
+        _ = offered.Should().NotContain(IdentityMiddleware.WebSocketCredentialSubProtocolPrefix);
+    }
+
+    [Fact]
+    public void ASubprotocolCredential_IsIgnoredOutsideTheWebSocketTransports()
+    {
+        var request = WebSocketRequest(
+            "/api/conversations",
+            $"{IdentityMiddleware.WebSocketCredentialSubProtocolPrefix}token-abc");
+
+        // The promotion exists because a browser cannot set a header on a handshake. Everywhere else
+        // it can, so honouring the subprotocol would add a second, weaker way to present a credential
+        // to routes that already have a strong one.
+        _ = IdentityMiddleware.PromoteWebSocketCredential(request).Should().BeFalse();
+        _ = request.Headers.Authorization.ToString().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void AHandshakeOfferingOnlyApplicationSubprotocols_PromotesNothingAndKeepsThemAll()
+    {
+        var request = WebSocketRequest("/ws", IdentityMiddleware.WebSocketSubProtocol);
+
+        _ = IdentityMiddleware.PromoteWebSocketCredential(request).Should().BeFalse();
+        _ = request.Headers.Authorization.ToString().Should().BeEmpty();
+        _ = request.Headers["Sec-WebSocket-Protocol"].ToString()
+            .Should().Be(IdentityMiddleware.WebSocketSubProtocol);
+    }
+
+    [Fact]
+    public void AHandshakeOfferingOnlyTheCredential_LeavesNothingForTheAcceptToSelect()
+    {
+        var request = WebSocketRequest(
+            "/ws",
+            $"{IdentityMiddleware.WebSocketCredentialSubProtocolPrefix}token-abc");
+
+        _ = IdentityMiddleware.PromoteWebSocketCredential(request).Should().BeTrue();
+
+        // RFC 6455 lets the server select at most one subprotocol the client offered. With the
+        // credential consumed there is no candidate left, and the accept must select none rather
+        // than echo the credential.
+        _ = IdentityMiddleware.NegotiateWebSocketSubProtocol(request).Should().BeNull();
+        _ = request.Headers.ContainsKey("Sec-WebSocket-Protocol").Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("/ws", true)]
+    [InlineData("/ws/subagent", true)]
+    [InlineData("/wsx", false)]
+    [InlineData("/api/conversations", false)]
+    public void TheWebSocketPredicate_MatchesBySegment(string path, bool expected) =>
+        IdentityMiddleware.IsGuardedWebSocketPath(new PathString(path)).Should().Be(expected);
+
+    /// <summary>Builds a request on <paramref name="path"/> offering <paramref name="offered"/>.</summary>
+    private static HttpRequest WebSocketRequest(string path, string offered)
+    {
+        var context = new DefaultHttpContext();
+        context.Request.Path = new PathString(path);
+        context.Request.Headers["Sec-WebSocket-Protocol"] = offered;
+        return context.Request;
+    }
+
+    [Fact]
     public async Task AResolvedPrincipal_IsPublishedForTheRequestToRead()
     {
         var resolution = PrincipalResolution.Success(new Principal

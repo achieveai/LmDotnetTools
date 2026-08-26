@@ -7,6 +7,11 @@ import {
   sendClientToolResult,
   type WebSocketConnection,
 } from '@/api/wsClient';
+import {
+  WS_APPLICATION_SUBPROTOCOL,
+  WS_CREDENTIAL_SUBPROTOCOL_PREFIX,
+} from '@/api/wsClient';
+import { setAccessToken } from '@/api/http';
 import { logger } from '@/utils';
 
 // BLOCKER 3: tool-call wire JSON uses snake_case identity fields (e.g. `generation_id`). The merge
@@ -88,6 +93,59 @@ describe('closeWebSocketConnection (FINDING D)', () => {
   });
 });
 
+// #342: the browser WebSocket API admits no custom headers, so the bearer token apiFetch attaches to
+// every /api call cannot ride the /ws handshake as one. It travels in the Sec-WebSocket-Protocol list
+// instead — the one request header a page chooses — and the server lifts it into Authorization before
+// authentication runs. Without this the socket is refused (403) under Identity:Enforce.
+describe('WebSocket handshake credential (#342)', () => {
+  afterEach(() => {
+    setAccessToken(null);
+    vi.unstubAllGlobals();
+    MockWebSocket.instances = [];
+  });
+
+  it('offers the bearer credential and the application subprotocol when signed in', async () => {
+    setAccessToken('token-abc');
+    vi.stubGlobal('WebSocket', MockWebSocket as unknown as typeof WebSocket);
+
+    const promise = openWebSocketConnection('ws://x/ws', 'thread-1', 'conn-1', {
+      onMessage: () => {},
+      onDone: () => {},
+      onError: () => {},
+    });
+    const socket = MockWebSocket.instances[MockWebSocket.instances.length - 1];
+    socket.readyState = MockWebSocket.OPEN;
+    socket.onopen?.();
+    await promise;
+
+    expect(socket.protocols).toEqual([
+      `${WS_CREDENTIAL_SUBPROTOCOL_PREFIX}token-abc`,
+      WS_APPLICATION_SUBPROTOCOL,
+    ]);
+  });
+
+  it('passes no subprotocol argument at all when signed out', async () => {
+    setAccessToken(null);
+    vi.stubGlobal('WebSocket', MockWebSocket as unknown as typeof WebSocket);
+
+    const promise = openWebSocketConnection('ws://x/ws', 'thread-1', 'conn-1', {
+      onMessage: () => {},
+      onDone: () => {},
+      onError: () => {},
+    });
+    const socket = MockWebSocket.instances[MockWebSocket.instances.length - 1];
+    socket.readyState = MockWebSocket.OPEN;
+    socket.onopen?.();
+    await promise;
+
+    // Arity, not just value. A signed-out connection must be byte-identical to the one-argument call
+    // it replaced: offering an empty or undefined subprotocol list makes some servers refuse the
+    // handshake, and every deployment with Identity:Enforce off is signed out.
+    expect(socket.argCount).toBe(1);
+    expect(socket.protocols).toBeUndefined();
+  });
+});
+
 // A minimal driveable WebSocket so we can exercise openWebSocketConnection's onmessage/onerror/onclose
 // handlers deterministically. happy-dom's real WebSocket would attempt a live connection.
 class MockWebSocket {
@@ -103,7 +161,12 @@ class MockWebSocket {
   onerror: ((ev?: unknown) => void) | null = null;
   onclose: ((ev: { wasClean: boolean; code: number; reason: string }) => void) | null = null;
 
-  constructor(public url: string) {
+  readonly protocols: string | string[] | undefined;
+  readonly argCount: number;
+
+  constructor(public url: string, ...rest: (string | string[])[]) {
+    this.protocols = rest[0];
+    this.argCount = rest.length + 1;
     MockWebSocket.instances.push(this);
   }
   close(): void {

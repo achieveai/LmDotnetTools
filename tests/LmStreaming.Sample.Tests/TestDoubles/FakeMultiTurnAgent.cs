@@ -101,10 +101,28 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent
         yield break;
     }
 
+    /// <summary>
+    /// When true, <see cref="SubscribeAsync"/> parks on its cancellation token instead of completing
+    /// immediately - a live agent whose stream stays open, which is what the default (an instantly
+    /// finished stream) cannot model.
+    /// </summary>
+    /// <remarks>
+    /// It exists for the interleave a socket-level test otherwise cannot reach. A connection races two
+    /// tasks - the outbound subscription pump and the inbound receive pump - and completing EITHER
+    /// tears the connection down. With a stream that ends the moment the agent is disposed, the only
+    /// interleave a test can produce is "teardown first", so the inbound path's behaviour when a
+    /// message arrives DURING a handoff is untestable. Parking the stream pins the other interleave.
+    /// </remarks>
+    public bool KeepSubscriptionOpen { get; set; }
+
     public async IAsyncEnumerable<IMessage> SubscribeAsync(
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
-        _ = ct;
+        if (KeepSubscriptionOpen)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+        }
+
         yield break;
     }
 #pragma warning restore CS1998, IDE0391

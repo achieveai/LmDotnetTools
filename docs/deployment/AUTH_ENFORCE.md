@@ -106,8 +106,12 @@ lifetime:
 | Plain UI (no credential) | Plain UI (no credential) | Continues under the sample's own default identity |
 
 `ConversationsController.SendMessage` maps the pool's `SandboxCredentialConflictException` to a
-`409` with a body naming only the conflicting app ids (never app keys):
+`409` whose body names **neither** app id — `detail` is a fixed sentence, and the `/ws` frame carrying
+the same `code` matches it word for word:
 `{ "error": "caller_credential_conflict", "code": "caller_credential_conflict", "detail": "...", "threadId": "..." }`.
+For the ids, read the structured log line the refusal writes (`ExistingAppId` / `RequestedAppId`); app
+keys appear in neither place. The body used to carry both ids, on a diagnosability argument that did
+not survive #376 putting an ordinary editor grantee on this path.
 This binding is in-memory only; a process restart clears it, but the gateway's own per-app session
 scoping is the durable backstop (a foreign `AppId` addressing a known session id still 404s at the
 gateway).
@@ -241,7 +245,8 @@ Read this before turning it on anywhere real.
 
 With `Identity:Enforce` true:
 
-- Every `/api` request must carry a valid token from a **provisioned** tenant (slice 1).
+- Every `/api` request must carry a valid token from a **provisioned** tenant (slice 1). So must a
+  `/ws` or `/ws/subagent` handshake, which carries its token as an offered subprotocol (#342, below).
 - Every conversation **REST** route resolves the caller against the conversation's owner columns
   before answering (slice 2, #302) — both `ConversationsController` and the workspace file browser at
   `/api/conversations/{threadId}/files`, which addresses the same conversations by the same ids.
@@ -452,8 +457,8 @@ changes what any caller sees.
 
 ### Known gaps
 
-Two things `Identity:Enforce` still does not do that its name suggests it might, plus one that used
-to be listed here and is now fixed. The list is exhaustive over the REST surface: every other `/api`
+One thing `Identity:Enforce` still does not do that its name suggests it might, plus three that used
+to be listed here and are now fixed. The list is exhaustive over the REST surface: every other `/api`
 route that names a conversation goes through the authorizer.
 
 #### Service callers used to be refused (#345, fixed)
@@ -465,17 +470,124 @@ correctly by another mechanism. `InboundS2SAuthAttribute` is an `IAsyncActionFil
 endpoint execution — long after the middleware had already written the `401`. A correct S2S request
 never reached its own guard. See "Service callers" below for how they authenticate now.
 
-#### An editor grantee can collide with a live agent (#302 follow-up)
+#### An editor grantee used to collide with a live agent (#376, fixed)
 
-The agent pool binds a conversation's live agent to the user who started it, and refuses a second
-user's turn on the same thread with `409 principal_conflict`. That guard predates named sharing and
-does not know about grants, so an **editor** grantee writing to a conversation whose agent is
-currently bound to the owner gets a `409` rather than their turn. Read paths are unaffected, and the
-conflict clears once the agent is evicted.
+The agent pool binds a conversation's live agent to the user who started it and refuses a second
+user's turn on the same thread with `409 principal_conflict`. That guard predates named sharing, so
+an **editor** grantee whose write the policy had already allowed was refused by the cache rather
+than by a decision — intermittently, because the conflict cleared whenever the agent was evicted.
 
-#### The WebSocket transports carry no token
+The three routes that mutate through the pool — send, mode switch, provider switch — now **release**
+an agent bound to a different user, after the authorization allows and before they touch the pool.
+The pool's guard itself is unchanged: a caller with no grant never reaches the release and is still
+refused as unknown, so the release cannot be turned into a way to evict a stranger's agent by id.
 
-The two WebSocket transports (`/ws` and `/ws/subagent`) carry no token: the browser WebSocket API
-admits no custom headers, and `/ws` sits outside the `/api` prefix the identity middleware guards.
-They remain unauthenticated even with `Identity:Enforce` true. Closing that needs a query-string or
-first-frame scheme and is tracked on issue #301.
+> **Read this before you grant anyone editor access: sharing a conversation today also shares its
+> filesystem.** An editor grantee who takes over the pooled agent lands in the **same sandbox
+> session** the owner was using — same workspace, same working directory, same files, whatever the
+> owner left in it. Revoking the grant does not take back what they saw or wrote. If a conversation's
+> sandbox holds anything the grantee should not have, do not share that conversation.
+
+That is the current behaviour, and it is the opposite of what this section used to claim. The
+mechanism, so it can be checked rather than believed: the release removes the conversation's **pool
+entry** and nothing more, and clearing a pool entry never destroys the gateway session behind it. The
+recreate then resolves the same workspace id back out of the conversation's persisted metadata, and
+the session cache is keyed on `(workspaceId, appId)`, where `appId` comes from
+`credential ?? _defaultCredential` — so an interactive UI caller, who presents no credential of their
+own, keys on the host's **configured default app id**, identical for everyone signed in. (Not null:
+`SandboxSessionRegistry` never keys on a null app id. `MultiTurnAgentPool.GetAgentCallerAppId` does
+return null for a UI caller, and that is a DIFFERENT value on a different object — the two were
+conflated in an earlier draft of this paragraph.) Both users therefore key the same cache entry and get the same live `SandboxSession`: same
+session id, same host path, stamped into the grantee's system prompt like any other. A handoff
+accordingly costs **zero** sandbox provisions — it is a cache hit — not the one this section used to
+quote. What it does cost is the pooled agent's in-memory-only state, discarded and rebuilt from the
+durable transcript on each change of hands.
+
+Whether that sharing is the RIGHT behaviour is an open product question, tracked in **#417**: either
+grantees get their own session key, or the sharing stays and is documented as intentional. This
+runbook states what ships today.
+
+A run **in progress** is left alone on a **best-effort** basis: the release checks for an active run
+and skips if it finds one, and the second caller still gets `409 principal_conflict`. Treat it as
+best-effort literally — the check and the removal are not one atomic step, and a turn that is queued
+but has not started reads as "not in progress", so it can be dropped by a handoff that arrives in
+that window (**#418**). Evicting a genuinely streaming turn would abort the answer of whoever is mid-answer —
+the wrong party to punish for someone else's handoff — which is why the check exists at all. Retry
+once the run ends.
+
+Same caveat, same issue, one layer down: the release reads the thread's owning user and then its
+frozen app id as two separate unlocked lookups. An entry that disappears between them makes the app id
+read as absent, which can refuse a caller who should have been allowed or allow one who should have
+been refused. Neither is a privilege escalation — the authorization decision has already been made
+above, and both outcomes land inside it — but it is why the whole helper is documented as best-effort
+rather than as a guard.
+
+The app-id freeze (`caller_credential_conflict`) is **not** released alongside it. That is the
+boundary between services rather than between people: an app-only S2S caller has no
+`EffectiveUserId` to hold a grant with, so there is no authorization verdict that could stand in for
+one, and the cross-actor resume matrix (#153) pins that refusal on purpose.
+
+Preserving it takes explicit work, and originally did not happen. Releasing removes the whole pool
+entry, including the caller credential the app-id comparison reads, so the recreate found nothing to
+compare against and silently re-froze the conversation to the app id of whoever took it over. The
+#153 matrix never saw it, because an app-only caller carries no user id and returns from the release
+before it can remove anything; reaching the hole takes a caller with **both** a user id and a
+different app id — a grantee signing in through the UI to a conversation an S2S app minted. The
+release now reads the frozen app id **before** the removal makes it unreadable and refuses a
+mismatch with the same `409 caller_credential_conflict` the pool would have raised.
+
+#### The WebSocket transports used to carry no token (#342, fixed)
+
+`/ws` and `/ws/subagent` sat outside the `/api` prefix the identity middleware guarded, and the
+browser WebSocket API admits no custom headers — so under `Identity:Enforce=true` every REST route
+demanded a principal while the transport that actually carries the conversation demanded nothing.
+
+The handshake now carries the credential in the **`Sec-WebSocket-Protocol`** header, as an offered
+subprotocol `lm.bearer.<token>` alongside the application subprotocol `lm.chat.v1`. It is a header,
+so the token never reaches a URL, a proxy log, a `Referer`, or browser history — which is what rules
+out the query-string scheme this gap used to propose. Before authentication runs, the middleware
+promotes that token into `Authorization: Bearer <token>` and strips it from the offered list, so the
+socket converges on the **same front doors as REST** (the JWT bearer handler and the
+`IRequestPrincipalSource` chain) and the two cannot drift apart. An `Authorization` header already on
+the request is never overwritten: a caller able to set headers has already presented its credential
+the stronger way.
+
+An unauthenticated handshake is refused with **`403`, not `401`** — `websocket_authentication_required`.
+A `401` tells a browser to re-authenticate, and a browser that re-authenticates and reconnects into
+the same refusal loops. REST keeps its `401`; only the WebSocket transports answer `403`.
+
+**Operational consequence when you flip `Identity:Enforce` on:** a cached older SPA build offers no
+subprotocol and its socket is refused. Ship the client change with the flip, or expect chat to fail
+to connect for anyone holding a stale bundle. With enforcement **off** nothing changes: no token is
+offered, the handshake is admitted exactly as before, and the development principal is used.
+
+#### The WebSocket transports do no per-conversation authorization
+
+Still open, and it is a **login wall, not an authorization check**. `/ws` and `/ws/subagent` now
+establish **who** the caller is (#342, #399), and the pooled agent `/ws` creates is owned by that
+user — so a second user cannot resume someone else's live agent over the socket. What neither
+transport does is ask `ConversationAuthorizer` whether this user may open *this* conversation: the
+REST routes' grant and tenant checks have no equivalent here. What #342 changed is who may try: it
+went from anyone to any signed-in principal in the deployment. Do not read it as closed.
+
+State the consequences plainly, because the paragraph that used to sit here understated them:
+
+- **Sub-agent transcripts are readable by any signed-in principal.** `/ws/subagent` threads no
+  principal into its handler at all — the endpoint gates on "is this a WebSocket request" plus two
+  non-empty query strings, and nothing else. On a cache miss it reads the persisted content for
+  `subagent-{agentId}` straight out of the store, so a caller who knows (or guesses) an `agentId`
+  reads another user's sub-agent output.
+- **Socket rehydration hands out ownership of primed history.** A caller who names a `threadId` with
+  no live pooled entry does not get an empty agent: the socket creates one, primed on that
+  conversation's durable transcript, and freezes it to the caller as its owner. Knowing the id is
+  enough to become the owner of an agent seeded with the victim's conversation.
+- **`auth/{providerId}` answers unauthenticated GETs.** The route is outside the boundary by design
+  (a provider redirect carries no bearer token), but an unauthenticated request to it starts a
+  sign-in, and for a request that IS signed in the page renders the account and its scopes.
+
+The reason per-conversation authorization is not simply added is that the client mints a `threadId`
+and opens the socket before any metadata row exists, so an authorizer call at handshake time would
+refuse every brand-new conversation as unknown. Closing it needs the socket to distinguish "not
+yours" from "not yet minted" — which is a design change, not a missing call. Until then, treat the
+socket surface as authenticated-but-unauthorized, and do not deploy a multi-tenant host on the
+assumption that REST's grant checks cover it. Tracked in **#419**.

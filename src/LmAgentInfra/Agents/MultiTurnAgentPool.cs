@@ -986,6 +986,43 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     }
 
     /// <summary>
+    /// The user this thread's live agent is frozen to, or null when no agent is pooled for it or the
+    /// entry was created without a principal.
+    /// </summary>
+    /// <remarks>
+    /// A READ of the freeze, never an enforcement of it - <see cref="EnsurePrincipalMatches"/> stays
+    /// the only thing that refuses. It exists so a caller that has ALREADY authorized this request
+    /// can ask whose agent is in the way before it is thrown at, which is what lets a legitimate
+    /// grantee be handed their own agent instead of a <c>409</c> (#376). Answering that question by
+    /// catching the conflict instead would mean the pool decides an authorization outcome it has no
+    /// way to evaluate.
+    /// </remarks>
+    /// <param name="threadId">The thread identifier.</param>
+    public string? GetAgentOwnerUserId(string threadId)
+    {
+        return _agents.TryGetValue(threadId, out var entry) ? entry.OwnerUserId : null;
+    }
+
+    /// <summary>
+    /// The app id this thread's live agent is frozen to, or null when no agent is pooled for it or the
+    /// entry was created by a caller with no sandbox credential (every interactive UI caller).
+    /// </summary>
+    /// <remarks>
+    /// The app-id sibling of <see cref="GetAgentOwnerUserId"/>, and a READ of the freeze for the same
+    /// reason: <see cref="EnsureCallerMatches"/> stays the only thing that refuses. It exists because
+    /// releasing a pooled entry for an authorized grantee (#376) removes the entry - and with it the
+    /// <see cref="AgentEntry.CallerCredential"/> the app-id compare reads - so a caller that intends to
+    /// release must be able to ask what the thread is frozen to BEFORE the removal makes the answer
+    /// unavailable. Reading it afterwards would always answer null, which is indistinguishable from
+    /// "never frozen" and is precisely how the freeze got dropped (#153).
+    /// </remarks>
+    /// <param name="threadId">The thread identifier.</param>
+    public string? GetAgentCallerAppId(string threadId)
+    {
+        return _agents.TryGetValue(threadId, out var entry) ? entry.CallerCredential?.AppId : null;
+    }
+
+    /// <summary>
     /// Ensures a sandbox-backed pooled agent still targets the registry's live session before a new
     /// message is dispatched. A replaced session rebuilds an idle entry transactionally; an active run
     /// is never interrupted and will be checked again before the next message.
@@ -1007,7 +1044,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         {
             if (!_agents.TryGetValue(threadId, out observed!))
             {
-                throw new InvalidOperationException($"No pooled agent exists for thread '{threadId}'.");
+                throw new AgentNotPooledException(threadId);
             }
 
             EnsureCallerMatches(threadId, observed, callerCredential);
@@ -1034,7 +1071,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         {
             if (!_agents.TryGetValue(threadId, out current!))
             {
-                throw new InvalidOperationException($"No pooled agent exists for thread '{threadId}'.");
+                throw new AgentNotPooledException(threadId);
             }
 
             EnsureCallerMatches(threadId, current, callerCredential);
@@ -1060,13 +1097,18 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
                 return new AgentRefreshResult(current.Agent, AgentRefreshStatus.RefreshRequired);
             }
 
+            // Both the credential and the principal are frozen-at-creation facts, so both are read
+            // off the entry being replaced. Deliberately NOT `?? ownerUserId`: this is a refresh,
+            // not a swap, and adopting the caller's principal onto a previously unowned entry would
+            // let whoever happens to trigger the refresh claim the thread (#398).
             var replacement = CreateAgentEntry(
                 threadId,
                 current.Mode,
                 current.ProviderId,
                 current.RequestResponseDumpFileName,
                 current.WorkspaceId,
-                current.CallerCredential
+                current.CallerCredential,
+                current.OwnerUserId
             );
             _agents[threadId] = replacement;
             PublishBindingIfStaged(threadId, replacement);

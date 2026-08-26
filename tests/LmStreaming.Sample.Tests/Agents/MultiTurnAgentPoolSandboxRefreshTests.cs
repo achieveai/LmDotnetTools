@@ -232,6 +232,137 @@ public class MultiTurnAgentPoolSandboxRefreshTests
         created.Should().ContainSingle();
     }
 
+    /// <summary>
+    /// #398: the sandbox-session refresh rebuilds the entry and must carry the FROZEN principal onto
+    /// the replacement, exactly as it already carries the frozen credential. Asserted from the far
+    /// side of the refresh - a pre-refresh conflict proves nothing here, because the entry the guard
+    /// reads after a refresh is a different object from the one creation froze.
+    /// </summary>
+    [Fact]
+    public async Task EnsureCurrentAgentAsync_KeepsTheFrozenPrincipalOnTheReplacementEntry()
+    {
+        var owner = new SandboxCredential("owner", "key");
+        var sessionId = "sess-1";
+        var created = new List<FakeMultiTurnAgent>();
+
+        await using var pool = new MultiTurnAgentPool(
+            context =>
+            {
+                var agent = new FakeMultiTurnAgent(context.ThreadId);
+                created.Add(agent);
+                return new MultiTurnAgentPool.AgentCreationResult(agent)
+                {
+                    StagedBinding = new SandboxEstablishedBinding(
+                        new WorkspaceRef("workspace-1"),
+                        owner,
+                        owner,
+                        sessionId),
+                };
+            },
+            providerRegistry: null,
+            conversationStore: null,
+            NullLogger<MultiTurnAgentPool>.Instance,
+            bindingSink: new RecordingBindingSink(),
+            liveSessionResolver: (_, _) =>
+                Task.FromResult(new SandboxSession("workspace-1", "sess-2", "workspace", "/workspace"))
+        );
+
+        _ = pool.GetOrCreateAgent(
+            "thread-frozen",
+            Mode,
+            requestedProviderId: null,
+            requestResponseDumpFileName: null,
+            requestedWorkspaceId: "workspace-1",
+            callerCredential: owner,
+            ownerUserId: "dir-a:alice");
+        sessionId = "sess-2";
+
+        var refreshed = await pool.EnsureCurrentAgentAsync("thread-frozen", owner, ownerUserId: "dir-a:alice");
+
+        refreshed.Status.Should().Be(
+            MultiTurnAgentPool.AgentRefreshStatus.Replaced,
+            "the assertions below are about the REPLACEMENT entry, not the original");
+        created.Should().HaveCount(2);
+
+        Func<Task> bobsTurn = () => pool.EnsureCurrentAgentAsync(
+            "thread-frozen",
+            owner,
+            ownerUserId: "dir-b:bob");
+
+        var conflict = await bobsTurn.Should().ThrowAsync<PrincipalConflictException>();
+        conflict.Which.ExistingUserId.Should().Be("dir-a:alice");
+        conflict.Which.RequestedUserId.Should().Be("dir-b:bob");
+
+        // Companion assertion: fixing the principal must not quietly drop the credential the same
+        // call already carried correctly.
+        Func<Task> foreignCaller = () => pool.EnsureCurrentAgentAsync(
+            "thread-frozen",
+            new SandboxCredential("intruder", "key"),
+            ownerUserId: "dir-a:alice");
+
+        _ = await foreignCaller.Should().ThrowAsync<SandboxCredentialConflictException>();
+    }
+
+    /// <summary>
+    /// #398, the other half: the refresh carries the frozen principal FORWARD and never adopts the
+    /// refreshing caller's. An unowned entry stays unowned, so triggering a sandbox-session refresh
+    /// is not a way to claim a thread nobody has claimed.
+    /// </summary>
+    [Fact]
+    public async Task EnsureCurrentAgentAsync_DoesNotLetTheRefreshingCallerClaimAnUnownedEntry()
+    {
+        var owner = new SandboxCredential("owner", "key");
+        var sessionId = "sess-1";
+        var created = new List<FakeMultiTurnAgent>();
+
+        await using var pool = new MultiTurnAgentPool(
+            context =>
+            {
+                var agent = new FakeMultiTurnAgent(context.ThreadId);
+                created.Add(agent);
+                return new MultiTurnAgentPool.AgentCreationResult(agent)
+                {
+                    StagedBinding = new SandboxEstablishedBinding(
+                        new WorkspaceRef("workspace-1"),
+                        owner,
+                        owner,
+                        sessionId),
+                };
+            },
+            providerRegistry: null,
+            conversationStore: null,
+            NullLogger<MultiTurnAgentPool>.Instance,
+            bindingSink: new RecordingBindingSink(),
+            liveSessionResolver: (_, _) =>
+                Task.FromResult(new SandboxSession("workspace-1", "sess-2", "workspace", "/workspace"))
+        );
+
+        _ = pool.GetOrCreateAgent(
+            "thread-unowned",
+            Mode,
+            requestedProviderId: null,
+            requestResponseDumpFileName: null,
+            requestedWorkspaceId: "workspace-1",
+            callerCredential: owner,
+            ownerUserId: null);
+        sessionId = "sess-2";
+
+        var refreshed = await pool.EnsureCurrentAgentAsync(
+            "thread-unowned",
+            owner,
+            ownerUserId: "dir-b:bob");
+
+        refreshed.Status.Should().Be(MultiTurnAgentPool.AgentRefreshStatus.Replaced);
+
+        Func<Task> carolsTurn = () => pool.EnsureCurrentAgentAsync(
+            "thread-unowned",
+            owner,
+            ownerUserId: "dir-c:carol");
+
+        await carolsTurn.Should().NotThrowAsync(
+            "the refresh must carry the entry's own (absent) principal forward, not adopt Bob's");
+    }
+
     private static MultiTurnAgentPool CreatePool(
         SandboxCredential credential,
         Func<string> sessionId,

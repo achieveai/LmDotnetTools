@@ -47,6 +47,23 @@ public sealed class ConversationScopingTests
             Source = PrincipalSource.Interactive,
         };
 
+    /// <summary>
+    /// Resolves any real system mode id, so a route that has to resolve a mode before it reaches the
+    /// agent pool gets there instead of answering 500. Every refusal in this file is decided before
+    /// mode resolution, so this changes nothing for them.
+    /// </summary>
+    private static IChatModeStore ModeStoreResolvingSystemModes()
+    {
+        var modeStore = new Mock<IChatModeStore>();
+        _ = modeStore
+            .Setup(m => m.GetModeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string modeId, CancellationToken _) => SystemChatModes.GetById(modeId));
+        return modeStore.Object;
+    }
+
+    /// <summary>The mode a conversation gets when nothing pinned one - what these threads run under.</summary>
+    private static AgentProfile DefaultMode() => SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+
     private static MultiTurnAgentPool CreatePool() =>
         new(
             (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(threadId)),
@@ -60,7 +77,7 @@ public sealed class ConversationScopingTests
         new(
             _store,
             pool,
-            Mock.Of<IChatModeStore>(),
+            ModeStoreResolvingSystemModes(),
             Mock.Of<IWorkspaceStore>(),
             new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal(),
             new ConversationStatusResolver(_store, _store),
@@ -470,6 +487,245 @@ public sealed class ConversationScopingTests
         _ = objectResult.StatusCode.Should().Be(403);
         _ = System.Text.Json.JsonSerializer.Serialize(objectResult.Value)
             .Should().Contain("grant_does_not_confer_action", Exactly.Once());
+    }
+
+    /// <summary>
+    /// The policy allowed the write; the agent pool refused it (#376). One agent is cached per thread
+    /// and its owning user is frozen on the entry, so an editor grantee writing to a conversation whose
+    /// agent is currently the owner's used to be answered <c>409 principal_conflict</c> - a refusal
+    /// produced by a cache, not by a decision.
+    /// </summary>
+    /// <remarks>
+    /// The second assertion is the one that matters, and it is deliberately stronger than "not 409":
+    /// the turn must run on an agent of the GRANTEE's, not on the owner's. What that buys is the
+    /// agent, NOT isolation - this remark used to claim the grantee does not inherit the owner's
+    /// sandbox, and that was false. Releasing clears the pool entry only; the recreate resolves the
+    /// same workspace id and the session registry keys <c>(workspaceId, appId)</c> off the SAME
+    /// configured default app id for both interactive callers, so both land on one live session. The
+    /// open product decision is tracked in #417. A fix that let the grantee through by relaxing the
+    /// guard would satisfy the status assertion while leaving the owner's agent - and her in-flight
+    /// state - underneath both of them.
+    /// </remarks>
+    [Fact]
+    public async Task EditorGrantee_MayTakeATurn_WhileTheAgentIsStillBoundToTheOwner()
+    {
+        await using var pool = CreatePool();
+        await SeedAsync("alice-thread", TenantA, Alice);
+
+        var owner = CreateController(Signed(TenantA, Alice), pool);
+        _ = await owner.AddShare(
+            "alice-thread",
+            new ConversationShareRequest { SubjectId = Bob, Role = "editor" },
+            CancellationToken.None);
+
+        // The owner has a live agent - the state her own turn leaves behind, and the state that made
+        // this conflict intermittent: it clears whenever the entry is evicted.
+        _ = pool.GetOrCreateAgent("alice-thread", DefaultMode(), null, null, ownerUserId: Alice);
+        _ = pool.GetAgentOwnerUserId("alice-thread").Should().Be(Alice);
+
+        var grantee = CreateController(Signed(TenantA, Bob), pool);
+        var accepted = await grantee.SendMessage(
+            "alice-thread",
+            new SendMessageRequest { Text = "my turn" },
+            CancellationToken.None);
+
+        _ = Assert.IsType<AcceptedResult>(accepted).StatusCode.Should().Be(202);
+        _ = pool.GetAgentOwnerUserId("alice-thread").Should().Be(
+            Bob,
+            "the grantee's turn must run on an agent of their own, not on the owner's");
+
+        // A release happens on a HANDOFF, not on every turn. Without this, a fix that released
+        // whenever the entry is owned at all would pass everything above while throwing away - and
+        // reprovisioning - the caller's own agent on each message they send.
+        _ = pool.TryGet("alice-thread", out var afterHandoff);
+        _ = await grantee.SendMessage(
+            "alice-thread",
+            new SendMessageRequest { Text = "and another" },
+            CancellationToken.None);
+        _ = pool.TryGet("alice-thread", out var afterSecondTurn);
+        _ = afterSecondTurn.Should().BeSameAs(
+            afterHandoff,
+            "a caller writing to an agent that is already theirs must keep it");
+    }
+
+    /// <summary>
+    /// The other half of #376: releasing the owner's agent for an AUTHORIZED caller must not become a
+    /// way for an unauthorized one to evict it. A tenant mate with no grant is refused as unknown -
+    /// byte-identical to a thread that was never minted - and the owner's agent is still there.
+    /// </summary>
+    /// <remarks>
+    /// Without the last assertion this test passes with the release moved above the authorization
+    /// check, which would turn a 404 into a remote eviction any tenant member could trigger by id
+    /// alone: the caller learns nothing from the response, but the owner loses their live agent and
+    /// its sandbox. The refusal has to cost the owner nothing.
+    /// </remarks>
+    [Fact]
+    public async Task TenantMateWithoutAGrant_IsRefusedAWrite_AndTheOwnersLiveAgentSurvivesIt()
+    {
+        await using var pool = CreatePool();
+        await SeedAsync("alice-thread", TenantA, Alice);
+
+        _ = pool.GetOrCreateAgent("alice-thread", DefaultMode(), null, null, ownerUserId: Alice);
+
+        var stranger = CreateController(Signed(TenantA, Bob), pool);
+        var refused = await stranger.SendMessage(
+            "alice-thread",
+            new SendMessageRequest { Text = "let me in" },
+            CancellationToken.None);
+        var neverExisted = await stranger.SendMessage(
+            "no-such-thread",
+            new SendMessageRequest { Text = "let me in" },
+            CancellationToken.None);
+
+        var hidden = Assert.IsType<NotFoundObjectResult>(refused);
+        var missing = Assert.IsType<NotFoundObjectResult>(neverExisted);
+        _ = hidden.StatusCode.Should().Be(404);
+        _ = System.Text.Json.JsonSerializer.Serialize(hidden.Value)
+            .Should().Be(
+                System.Text.Json.JsonSerializer.Serialize(missing.Value)
+                    .Replace("no-such-thread", "alice-thread", StringComparison.Ordinal));
+
+        _ = pool.GetAgentOwnerUserId("alice-thread").Should().Be(
+            Alice,
+            "a refused caller must not be able to evict the owner's live agent");
+    }
+
+    /// <summary>
+    /// The app-id freeze (#153) must survive the grantee release (#376). The release removes the whole
+    /// pooled entry - including the <c>CallerCredential</c> the thread was frozen to - so the recreate
+    /// that follows finds no entry, skips the app-id compare entirely, and re-freezes the conversation
+    /// to whatever app the NEW caller presents. The freeze is not "deliberately not released": it is
+    /// released, silently, by the same removal.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The #153 cross-actor matrix stayed green because an app-only caller carries no
+    /// <c>EffectiveUserId</c> and returns from the release before it can remove anything. The hole
+    /// needs a caller who has BOTH a user id (so the release runs) and a different app id from the one
+    /// the thread is frozen to - which is exactly an editor grantee signing in through the UI to a
+    /// conversation an S2S app minted.
+    /// </para>
+    /// <para>
+    /// The second assertion is the one that cannot be satisfied by accident: refusing with the right
+    /// status while still having torn the entry down would leave the conversation unfrozen for the
+    /// next caller, so the freeze has to be READ before the removal, not after it.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task EditorGranteeOfAnotherApp_IsRefused_AndTheThreadStaysFrozenToTheAppThatMintedIt()
+    {
+        await using var pool = CreatePool();
+        await SeedAsync("alice-thread", TenantA, Alice);
+
+        var owner = CreateController(Signed(TenantA, Alice), pool);
+        _ = await owner.AddShare(
+            "alice-thread",
+            new ConversationShareRequest { SubjectId = Bob, Role = "editor" },
+            CancellationToken.None);
+
+        // Alice's live agent was minted by an S2S app, so the thread is frozen to that app id.
+        var daemon = new SandboxCredential("review-daemon", "0123456789abcdef0123456789abcdef");
+        _ = pool.GetOrCreateAgent(
+            "alice-thread",
+            DefaultMode(),
+            null,
+            null,
+            callerCredential: daemon,
+            ownerUserId: Alice);
+        _ = pool.GetAgentCallerAppId("alice-thread").Should().Be("review-daemon");
+
+        // Bob is an authorized editor, but he arrives through the UI: no sandbox credential, so a null
+        // app id against a frozen "review-daemon". #153 says that is a refusal.
+        var grantee = CreateController(Signed(TenantA, Bob), pool);
+        var refused = await grantee.SendMessage(
+            "alice-thread",
+            new SendMessageRequest { Text = "my turn" },
+            CancellationToken.None);
+
+        var conflict = Assert.IsType<ConflictObjectResult>(refused);
+        _ = conflict.StatusCode.Should().Be(409);
+        _ = System.Text.Json.JsonSerializer.Serialize(conflict.Value)
+            .Should().Contain("\"code\":\"caller_credential_conflict\"");
+
+        _ = pool.GetAgentCallerAppId("alice-thread").Should().Be(
+            "review-daemon",
+            "a refused handoff must leave the thread frozen to the app that minted it, not unfrozen");
+        _ = pool.GetAgentOwnerUserId("alice-thread").Should().Be(
+            Alice,
+            "the refusal costs the owner nothing - her agent is still hers");
+
+        // The refusal must not double as a directory lookup. Bob is an authorized editor of this
+        // conversation; he is NOT authorized to learn which service minted it. The WebSocket sibling
+        // of this refusal suppresses the same id - it did NOT originally, and was corrected alongside
+        // this, so the two transports cannot be played against each other.
+        _ = System.Text.Json.JsonSerializer.Serialize(conflict.Value)
+            .Should().NotContain(
+                "review-daemon",
+                "a 409 must not name the app identity the thread is frozen to");
+    }
+
+    /// <summary>
+    /// The <c>409 principal_conflict</c> body must not name EITHER end user. The exception message
+    /// interpolates both stable ids so the LOG line is diagnosable; relaying that message to the
+    /// caller as <c>detail</c> hands one user the other's stable id over HTTP.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The WebSocket sibling of this refusal
+    /// (<c>ChatWebSocketManager.SendPrincipalConflictErrorAsync</c>) already suppresses exactly this,
+    /// with the reason written down: the connection has not been authorized to learn who else uses
+    /// the conversation. REST answering the same condition with the ids spelled out made the
+    /// suppression decorative - an attacker just uses the other transport.
+    /// </para>
+    /// <para>
+    /// Reaching the conflict at all takes a run in progress. The #376 release hands an authorized
+    /// grantee an agent of their own, so the pool's principal guard is only reachable on the
+    /// best-effort branch where a run is streaming and the release declines to evict it. That is why
+    /// this pool's agents report a live run.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task PrincipalConflict_NamesNeitherPartysUserId()
+    {
+        const string Owner = "dir-a:euii-owner-9f2c";
+        const string Grantee = "dir-a:euii-grantee-71ab";
+
+        // A live run is what makes the guard reachable: the release below declines to evict a
+        // streaming turn, so the recreate meets an entry still frozen to the owner.
+        await using var pool = new MultiTurnAgentPool(
+            (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(
+                new FakeMultiTurnAgent(threadId) { CurrentRunId = "run-in-flight" }),
+            NullLogger<MultiTurnAgentPool>.Instance);
+
+        await SeedAsync("shared-thread", TenantA, Owner);
+
+        var owner = CreateController(Signed(TenantA, Owner), pool);
+        _ = await owner.AddShare(
+            "shared-thread",
+            new ConversationShareRequest { SubjectId = Grantee, Role = "editor" },
+            CancellationToken.None);
+
+        _ = pool.GetOrCreateAgent("shared-thread", DefaultMode(), null, null, ownerUserId: Owner);
+        _ = pool.IsRunInProgress("shared-thread").Should().BeTrue(
+            "the guard is only reachable while the owner's turn is streaming");
+
+        var grantee = CreateController(Signed(TenantA, Grantee), pool);
+        var refused = await grantee.SendMessage(
+            "shared-thread",
+            new SendMessageRequest { Text = "my turn" },
+            CancellationToken.None);
+
+        var conflict = Assert.IsType<ConflictObjectResult>(refused);
+        _ = conflict.StatusCode.Should().Be(409);
+
+        var payload = System.Text.Json.JsonSerializer.Serialize(conflict.Value);
+        _ = payload.Should().Contain("\"code\":\"principal_conflict\"");
+        _ = payload.Should().NotContain(
+            Owner,
+            "the refused caller must not learn the owner's stable user id");
+        _ = payload.Should().NotContain(
+            Grantee,
+            "a refusal has no reason to echo the caller's own stable id back into a body");
     }
 
     /// <summary>
