@@ -343,8 +343,21 @@ public class ConversationsControllerS2SAuthTests
         capturedContext!.CallerCredential.Should().BeNull();
     }
 
+    /// <summary>
+    /// The cross-actor refusal (#153) answers <c>409 caller_credential_conflict</c> and names NEITHER
+    /// app id in the body.
+    /// </summary>
+    /// <remarks>
+    /// This used to assert the opposite - that both ids appear - on a diagnosability argument. The
+    /// argument does not survive the caller list widening: the #376 handoff put an ordinary editor
+    /// grantee on this path, and telling a person which service minted a conversation they were merely
+    /// shared into is a fact about another actor, not about their own request. The ids did not
+    /// disappear; they moved to the structured log line, where the reader already has the tenant. The
+    /// key assertions below are unchanged and still the sharpest ones - a secret must never reach a
+    /// body no matter how the identity question is settled.
+    /// </remarks>
     [Fact]
-    public async Task SendMessage_Returns409_OnCrossActorCredentialConflict_WithoutLeakingAppKeys()
+    public async Task SendMessage_Returns409_OnCrossActorCredentialConflict_WithoutLeakingAppIdsOrKeys()
     {
         var store = new InMemoryConversationStore();
         const string threadId = "thread-s2s-conflict";
@@ -378,10 +391,10 @@ public class ConversationsControllerS2SAuthTests
         conflict.StatusCode.Should().Be(409);
 
         var payload = JsonSerializer.Serialize(conflict.Value);
-        payload.Should().Contain("caller_credential_conflict");
+        payload.Should().Contain("\"code\":\"caller_credential_conflict\"");
         payload.Should().Contain(threadId);
-        payload.Should().Contain("app-a");
-        payload.Should().Contain("app-b");
+        payload.Should().NotContain("app-a");
+        payload.Should().NotContain("app-b");
         payload.Should().NotContain("a-secret-key-value");
         payload.Should().NotContain("b-secret-key-value");
     }

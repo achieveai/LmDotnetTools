@@ -828,16 +828,7 @@ public class ConversationsController(
         }
         catch (SandboxCredentialConflictException ex)
         {
-            // Cross-actor mismatch (Cross-Actor Resume Matrix, issue #153): the thread is bound to a
-            // different caller identity than the one on this request. The exception message carries
-            // only app ids, never app keys, so it's safe to surface via ex.Message.
-            logger.LogWarning(
-                "SendMessage for thread {ThreadId} rejected: caller credential conflict (existing app id {ExistingAppId}, requested app id {RequestedAppId})",
-                threadId,
-                ex.ExistingAppId ?? "(none)",
-                ex.RequestedAppId ?? "(none)");
-            return Conflict(
-                new { error = "caller_credential_conflict", code = "caller_credential_conflict", detail = ex.Message, threadId });
+            return CallerCredentialConflict(threadId, "SendMessage", ex);
         }
         catch (PrincipalConflictException ex)
         {
@@ -1482,16 +1473,7 @@ public class ConversationsController(
         }
         catch (SandboxCredentialConflictException ex)
         {
-            // Same cross-actor rejection SendMessage enforces (issue #153): a caller may not switch
-            // the mode of a conversation bound to a different app identity. Message carries only app
-            // ids, never keys.
-            logger.LogWarning(
-                "Mode switch for thread {ThreadId} rejected: caller credential conflict (existing app id {ExistingAppId}, requested app id {RequestedAppId})",
-                threadId,
-                ex.ExistingAppId ?? "(none)",
-                ex.RequestedAppId ?? "(none)");
-            return Conflict(
-                new { error = "caller_credential_conflict", code = "caller_credential_conflict", detail = ex.Message, threadId });
+            return CallerCredentialConflict(threadId, "Mode switch", ex);
         }
         catch (PrincipalConflictException ex)
         {
@@ -1640,16 +1622,7 @@ public class ConversationsController(
         }
         catch (SandboxCredentialConflictException ex)
         {
-            // Same cross-actor rejection SendMessage enforces (issue #153): a caller may not switch
-            // the provider of a conversation bound to a different app identity. Message carries only
-            // app ids, never keys.
-            logger.LogWarning(
-                "Provider switch for thread {ThreadId} rejected: caller credential conflict (existing app id {ExistingAppId}, requested app id {RequestedAppId})",
-                threadId,
-                ex.ExistingAppId ?? "(none)",
-                ex.RequestedAppId ?? "(none)");
-            return Conflict(
-                new { error = "caller_credential_conflict", code = "caller_credential_conflict", detail = ex.Message, threadId });
+            return CallerCredentialConflict(threadId, "Provider switch", ex);
         }
         catch (PrincipalConflictException ex)
         {
@@ -1764,6 +1737,42 @@ public class ConversationsController(
     }
 
     /// <summary>
+    /// The app-id half of the pool's freeze (Cross-Actor Resume Matrix, #153), answered on every
+    /// route that can hit it so the three of them cannot drift apart.
+    /// </summary>
+    /// <remarks>
+    /// The body names no identity at all. <c>ex.Message</c> interpolates the app id the thread is
+    /// frozen to, which the refused caller is not entitled to: an editor grantee reaching this
+    /// through the UI would learn which service minted the conversation, and that is a fact about
+    /// another actor, not about their own request. Both ids stay in the structured log line, and the
+    /// WebSocket sibling suppresses the same field. The message itself is unchanged - it still
+    /// carries app ids and never an app key - because logs read it and clients no longer do.
+    /// </remarks>
+    /// <param name="threadId">The conversation being addressed.</param>
+    /// <param name="operation">Which route hit the conflict, for the log line.</param>
+    /// <param name="ex">The conflict.</param>
+    private ConflictObjectResult CallerCredentialConflict(
+        string threadId,
+        string operation,
+        SandboxCredentialConflictException ex)
+    {
+        logger.LogWarning(
+            "{Operation} for thread {ThreadId} rejected: caller credential conflict (existing app id {ExistingAppId}, requested app id {RequestedAppId})",
+            operation,
+            threadId,
+            ex.ExistingAppId ?? "(none)",
+            ex.RequestedAppId ?? "(none)");
+
+        return Conflict(new
+        {
+            error = "caller_credential_conflict",
+            code = "caller_credential_conflict",
+            detail = "This conversation belongs to a different caller identity and cannot be continued here.",
+            threadId,
+        });
+    }
+
+    /// <summary>
     /// The principal half of the pool's freeze, answered exactly like its app-id sibling: a
     /// <c>409</c> naming what conflicted, never a <c>403</c>. The caller may well be authorized -
     /// what it cannot have is this conversation's LIVE agent, which is bound to another person.
@@ -1787,7 +1796,14 @@ public class ConversationsController(
         {
             error = "principal_conflict",
             code = "principal_conflict",
-            detail = ex.Message,
+
+            // Word for word what the WebSocket sibling sends, and for the same reason: ex.Message
+            // interpolates BOTH stable user ids, and this caller has not been authorized to learn who
+            // else uses the conversation. The ids stay in the structured log line above, where the
+            // operator reading them already has the tenant. Two transports answering one condition
+            // must not disagree about that - suppressing on one and disclosing on the other only
+            // tells an attacker which door to use.
+            detail = "This conversation's agent is in use by a different user and cannot be continued here.",
             threadId,
         });
     }
@@ -1810,17 +1826,23 @@ public class ConversationsController(
     /// the owner's sandbox, and this remark previously claimed the opposite. Releasing clears the pool
     /// entry only, which never destroys the gateway session behind it; the recreate resolves the same
     /// workspace id back out of persisted metadata, and the session cache is keyed
-    /// <c>(workspaceId, appId)</c> with a null app id for every interactive UI caller. Both users
-    /// therefore key the same entry and get the same live session - same id, same host path. So this
+    /// <c>(workspaceId, appId)</c>, and an interactive UI caller presents no credential of their own,
+    /// so the registry resolves <c>credential ?? _defaultCredential</c> and keys on the CONFIGURED
+    /// DEFAULT app id - the same one for everyone signed in, and never null. Both users therefore key
+    /// the same entry and get the same live session - same id, same host path. So this
     /// costs ZERO sandbox provisions (it is a cache hit) plus the pooled agent's in-memory-only state,
     /// and sharing a conversation today shares its filesystem. Whether that should be so is an open
     /// product decision tracked in #417; this releases the agent, never the sandbox.
     /// </para>
     /// <para>
-    /// A run in progress is left alone on a BEST-EFFORT basis: this returns without releasing, the
-    /// pool's guard raises its conflict as before, and the caller gets the same <c>409</c>. Best-effort
-    /// literally - the check and the removal are not one atomic step, and a turn that is queued but not
-    /// yet started reads as not-in-progress, so it can be dropped by a handoff arriving in that window (#418).
+    /// Every read below is BEST-EFFORT and none of them is atomic with the removal that follows. Two
+    /// consequences, both tracked in #418. First, a run in progress is left alone: this returns without
+    /// releasing, the pool's guard raises its conflict as before, and the caller gets the same
+    /// <c>409</c> - but the check and the removal are not one step, and a turn that is queued and not
+    /// yet started reads as not-in-progress, so a handoff arriving in that window can drop it. Second,
+    /// the owner read and the app-id read are two separate unlocked lookups: an entry that disappears
+    /// between them makes the app id read as null, which either refuses a caller who should have been
+    /// let through or lets one through who should have been refused.
     /// Evicting a genuinely streaming turn would abort the answer of whoever is mid-answer - the wrong
     /// party to punish for a handoff, and a race any second caller could trigger at will.
     /// </para>
