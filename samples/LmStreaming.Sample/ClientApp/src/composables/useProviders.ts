@@ -3,6 +3,14 @@ import type { ProviderDescriptor } from '@/types/providers';
 import { listProviders, switchConversationProvider } from '@/api/providersApi';
 
 /**
+ * How many times {@link useProviders.settleCatalog} follows the chain of superseding loads before
+ * giving up. Mirrors the bound in `useWorkspaces` for the same reason: the loop only iterates when a
+ * load is superseded WHILE being awaited, so it converges as soon as one load finishes as the
+ * newest, and the bound keeps a caller that keeps starting loads from hanging whoever is waiting.
+ */
+const MAX_CATALOG_SETTLE_WAITS = 5;
+
+/**
  * Composable that loads the provider catalog from the backend and exposes the
  * user's currently-selected provider.
  *
@@ -12,14 +20,6 @@ import { listProviders, switchConversationProvider } from '@/api/providersApi';
  * (POST .../provider), which recreates the agent on the backend. While a run streams
  * the selector is locked (the backend answers 409).
  */
-/**
- * How many times {@link useProviders.settleCatalog} follows the chain of superseding loads before
- * giving up. Mirrors the bound in `useWorkspaces` for the same reason: the loop only iterates when a
- * load is superseded WHILE being awaited, so it converges as soon as one load finishes as the
- * newest, and the bound keeps a caller that keeps starting loads from hanging whoever is waiting.
- */
-const MAX_CATALOG_SETTLE_WAITS = 5;
-
 export function useProviders() {
   const providers = ref<ProviderDescriptor[]>([]);
   const defaultProviderId = ref<string | null>(null);

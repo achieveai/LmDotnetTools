@@ -45,6 +45,10 @@ const sharedMocks = vi.hoisted(() => ({
   // resolves by hand.
   providerCatalogLoad: Promise.resolve() as Promise<void>,
   providerSelectionRef: null as Ref<string | null> | null,
+  // The same, for `/api/workspaces`. Its selection starts at 'default' rather than null, so a test
+  // that only holds the PROVIDER catalog open cannot tell whether the workspace half is awaited.
+  workspaceCatalogLoad: Promise.resolve() as Promise<void>,
+  workspaceSelectionRef: null as Ref<string | null> | null,
   // The options object ChatLayout handed to useChat, so a test can drive the provisioning hook the
   // real composable calls on the first send.
   chatOptions: null as { provisionThreadId?: () => Promise<string> } | null,
@@ -233,19 +237,26 @@ vi.mock('@/composables/useWorkspaces', async () => {
     // Most tests here only care that ChatLayout calls the right function, so they get a flat stub.
     // The conflict-visibility test needs the REAL composable — its `isLoading` flip during the
     // post-409 reload is the whole mechanism under test, and a stub cannot reproduce it honestly.
-    useWorkspaces: () =>
-      sharedMocks.useRealWorkspaces
-        ? actual.useWorkspaces()
-        : {
-            workspaces: ref([]),
-            selectedWorkspaceId: ref<string | null>(sharedMocks.selectedWorkspaceId),
-            isLoading: ref(false),
-            loadWorkspaces: vi.fn(async () => {}),
-            settleCatalog: vi.fn(async () => true),
-            selectWorkspace: sharedMocks.selectWorkspace,
-            createWorkspace: sharedMocks.createWorkspace,
-            updateWorkspace: sharedMocks.updateWorkspace,
-          },
+    useWorkspaces: () => {
+      if (sharedMocks.useRealWorkspaces) {
+        return actual.useWorkspaces();
+      }
+      const selectedWorkspaceId = ref<string | null>(sharedMocks.selectedWorkspaceId);
+      sharedMocks.workspaceSelectionRef = selectedWorkspaceId;
+      return {
+        workspaces: ref([]),
+        selectedWorkspaceId,
+        isLoading: ref(false),
+        loadWorkspaces: vi.fn(() => sharedMocks.workspaceCatalogLoad),
+        settleCatalog: vi.fn(async () => {
+          await sharedMocks.workspaceCatalogLoad;
+          return true;
+        }),
+        selectWorkspace: sharedMocks.selectWorkspace,
+        createWorkspace: sharedMocks.createWorkspace,
+        updateWorkspace: sharedMocks.updateWorkspace,
+      };
+    },
   };
 });
 
@@ -1484,6 +1495,7 @@ describe('ChatLayout new-chat provisioning (#435)', () => {
     sharedMocks.selectedProviderId = null;
     sharedMocks.selectedWorkspaceId = 'default';
     sharedMocks.providerCatalogLoad = Promise.resolve();
+    sharedMocks.workspaceCatalogLoad = Promise.resolve();
   });
 
   it('provisions with the current workspace/provider/mode and adopts the server-minted id', async () => {
@@ -1570,6 +1582,44 @@ describe('ChatLayout new-chat provisioning (#435)', () => {
       modeId: 'default',
     });
     expect(refusal).toBeNull();
+    expect(provisioned).toBe('thread-provisioned');
+  });
+
+  // The workspace catalog needs the same wait for a different reason. Its selection is seeded with
+  // 'default' rather than null, so it never LOOKS missing — but the load reconciles that guess
+  // against what the host actually has, dropping it when no such workspace exists or when the one
+  // that does is incompatible with the gateway. Provisioning on the un-reconciled guess sends the
+  // server a binding the load was about to reject.
+  it('sends the workspace the catalog reconciled to, not the seeded guess', async () => {
+    let landCatalog!: () => void;
+    sharedMocks.workspaceCatalogLoad = new Promise<void>((resolve) => {
+      landCatalog = () => {
+        if (sharedMocks.workspaceSelectionRef) {
+          sharedMocks.workspaceSelectionRef.value = 'ws-reconciled';
+        }
+        resolve();
+      };
+    });
+
+    mountLayout();
+    await flushPromises();
+
+    let provisioned: string | null = null;
+    const sending = sharedMocks.chatOptions!.provisionThreadId!().then((id) => {
+      provisioned = id;
+    });
+
+    await flushPromises();
+    expect(sharedMocks.createNewConversation).not.toHaveBeenCalled();
+
+    landCatalog();
+    await sending;
+
+    expect(sharedMocks.createNewConversation).toHaveBeenCalledWith({
+      workspaceId: 'ws-reconciled',
+      providerId: 'anthropic',
+      modeId: 'default',
+    });
     expect(provisioned).toBe('thread-provisioned');
   });
 });

@@ -110,6 +110,11 @@ describe('useProviders.settleCatalog', () => {
     landFirst({ providers: [{ id: 'test', displayName: 'Test', available: true }], default: 'test' });
 
     await expect(p.settleCatalog()).resolves.toBe(true);
+    // The catalog itself is what the stale response would clobber. The SELECTION alone cannot show
+    // this: the newer load already filled it, so the "only pick when null" branch would decline to
+    // overwrite it either way — an assertion on the selection passes with or without the guard.
+    expect(p.providers.value.map((provider) => provider.id)).toEqual(['anthropic']);
+    expect(p.defaultProviderId.value).toBe('anthropic');
     expect(p.selectedProviderId.value).toBe('anthropic');
   });
 });
