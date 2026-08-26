@@ -431,6 +431,21 @@ internal sealed class KnowledgeAgent
         if (!string.IsNullOrWhiteSpace(parsed.Updates))
         {
             var updatesRel = NormalizeUpdatesRelPath(parsed.Updates);
+            if (updatesRel is not null)
+            {
+                // Reconcile CASE before anything looks the path up, and before the refusals below run. The
+                // extraction agent is an LLM that cases a scope (and a slug) inconsistently across runs, so an
+                // explicit "update this entry" naming a real file in the wrong case used to miss it on a
+                // case-sensitive store and fall through to a fresh SCOPE+TITLE create — abandoning the merge
+                // the model asked for and leaving a near-duplicate beside the real entry (issue #218 item 8).
+                //
+                // Doing it FIRST also means every refusal below judges the path that would actually be
+                // written, not the model's spelling of it: a re-cased bookkeeping name now reconciles onto the
+                // real bookkeeping file and is caught, where before it slipped past an ordinal comparison.
+                updatesRel = await ReconcileUpdatesCaseAsync(knowledgeBaseDir, updatesRel, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
             if (updatesRel is null)
             {
                 _logger.LogWarning(
@@ -862,6 +877,72 @@ internal sealed class KnowledgeAgent
     {
         var slash = relPath.IndexOf('/', StringComparison.Ordinal);
         return slash > 0 ? relPath[..slash] : null;
+    }
+
+    /// <summary>
+    /// Returns <paramref name="updatesRel"/> re-cased onto the entry that already exists, matching each
+    /// segment case-insensitively against what is actually on disk: the scope directory under
+    /// <paramref name="knowledgeBaseDir"/>, then the entry file under that directory. Segments with no
+    /// case-insensitive match are left exactly as the model wrote them, so a genuinely NEW target still
+    /// resolves to itself and is never bent onto an unrelated entry.
+    /// <para>
+    /// This only ever substitutes a name the listing returned, so the result cannot introduce a segment the
+    /// model did not already name modulo case — and it stays subject to every validation the caller applies
+    /// afterwards. A listing failure never blocks the write: it falls back to the model's spelling.
+    /// </para>
+    /// </summary>
+    private async Task<string> ReconcileUpdatesCaseAsync(
+        string knowledgeBaseDir, string updatesRel, CancellationToken cancellationToken)
+    {
+        var scope = ScopeSegment(updatesRel);
+        if (scope is null)
+        {
+            // Legacy flat "<slug>.md": one segment, matched directly against the Knowledge Base root.
+            return await ReconcileChildCaseAsync(knowledgeBaseDir, updatesRel, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        var reconciledScope = await ReconcileScopeCaseAsync(knowledgeBaseDir, scope, cancellationToken)
+            .ConfigureAwait(false);
+        var reconciledLeaf = await ReconcileChildCaseAsync(
+                JoinPath(knowledgeBaseDir, reconciledScope), LeafName(updatesRel), cancellationToken)
+            .ConfigureAwait(false);
+        return $"{reconciledScope}/{reconciledLeaf}";
+    }
+
+    /// <summary>
+    /// Returns the entry directly under <paramref name="directory"/> whose name matches
+    /// <paramref name="name"/> case-insensitively, or <paramref name="name"/> unchanged when there is no
+    /// such entry (or the directory cannot be listed).
+    /// </summary>
+    private async Task<string> ReconcileChildCaseAsync(
+        string directory, string name, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<string> children;
+        try
+        {
+            children = await _fileSystem.ListFilesAsync(directory, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex, "Listing '{Directory}' to reconcile '{Name}' case failed; using it as-is.", directory, name);
+            return name;
+        }
+
+        var existing = children.FirstOrDefault(
+            child => string.Equals(child, name, StringComparison.OrdinalIgnoreCase));
+        if (existing is not null && !string.Equals(existing, name, StringComparison.Ordinal))
+        {
+            _logger.LogInformation(
+                "Reconciling Knowledge Base '## UPDATES' target '{Name}' to the existing entry '{Existing}' "
+                    + "so the update merges instead of creating a case-variant duplicate.",
+                name,
+                existing);
+            return existing;
+        }
+
+        return name;
     }
 
     /// <summary>

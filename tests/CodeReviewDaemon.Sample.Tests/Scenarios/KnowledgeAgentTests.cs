@@ -256,6 +256,82 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
             .Should().ContainSingle();
     }
 
+    /// <summary>
+    /// Issue #218 item 8 — the scope-case reconciliation used to run only on the SCOPE fallback, AFTER the
+    /// UPDATES path had already been looked up verbatim. The extraction agent is an LLM that cases a scope
+    /// inconsistently across runs, so an explicit "update this entry" naming the same file in a different
+    /// case missed it on a case-sensitive store and fell through to a fresh SCOPE+TITLE create — silently
+    /// abandoning the merge the model asked for and leaving a near-duplicate beside the real entry.
+    /// </summary>
+    [Fact]
+    public async Task TryExtractAsync_updates_the_existing_entry_when_the_UPDATES_path_differs_only_in_case()
+    {
+        var fs = new FakeSandboxFileSystem();
+        // The entry's file name is NOT Slugify(TITLE) — the model titled it differently on the run that
+        // created it. That is what makes this case distinguishing: the SCOPE+TITLE fallback resolves to
+        // "mcqdbdev/x-invariant.md", so only an UPDATES lookup that survives the case mismatch can reach
+        // the real entry. A fixture whose slug happened to match would pass either way.
+        fs.Files[KbDir + "/mcqdbdev/legacy-slug.md"] =
+            "---\n"
+            + "title: X Invariant\n"
+            + "tags: [alpha]\n"
+            + "scope: mcqdbdev\n"
+            + "sourcePrs: [\"old\"]\n"
+            + "updated: 2026-07-01\n"
+            + "---\n\n# X Invariant\noriginal body";
+        // Both segments re-cased by the model: the scope directory AND the entry's file name.
+        var agent = AgentReturning(
+            "## SCOPE: MCQdbDEV\n"
+            + "## TITLE: X Invariant\n"
+            + "## TAGS: alpha\n"
+            + "## UPDATES: MCQdbDEV/Legacy-Slug.md\n\n"
+            + "refined body with more detail");
+
+        var result = await Knowledge(agent, fs).TryExtractAsync(
+            RepoRoot, "distill these notes", "github/o-r/99", Today, CancellationToken.None);
+
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
+        result.EntryFileName.Should().Be("mcqdbdev/legacy-slug.md");
+
+        // The merge actually happened: ONE entry file, carrying both source PRs and the refined body — no
+        // near-duplicate "mcqdbdev/x-invariant.md" created beside it.
+        fs.Files.Keys
+            .Where(key => key.EndsWith(".md", StringComparison.Ordinal)
+                && key.StartsWith(KbDir + "/", StringComparison.Ordinal)
+                && !key.EndsWith("/_toc.md", StringComparison.Ordinal))
+            .Should().ContainSingle().Which.Should().Be(KbDir + "/mcqdbdev/legacy-slug.md");
+
+        var meta = KnowledgeIndex.ParseFrontmatter(
+            "mcqdbdev/legacy-slug.md", fs.Files[KbDir + "/mcqdbdev/legacy-slug.md"]);
+        meta!.SourcePrs.Should().Equal(
+            ["old", "github/o-r/99"], "an explicit UPDATES must merge, not start a second entry");
+        fs.Files[KbDir + "/mcqdbdev/legacy-slug.md"].Should().Contain("refined body with more detail");
+    }
+
+    /// <summary>
+    /// The reconciliation reuses an EXISTING name; it must never invent one. A genuinely new entry named by
+    /// UPDATES still falls through to the SCOPE+TITLE create rather than being bent onto an unrelated file.
+    /// </summary>
+    [Fact]
+    public async Task TryExtractAsync_still_creates_when_no_existing_entry_matches_the_UPDATES_path()
+    {
+        var fs = new FakeSandboxFileSystem();
+        fs.Files[KbDir + "/system/x.md"] =
+            "---\ntitle: X\nscope: system\nsourcePrs: [\"old\"]\nupdated: 2026-07-01\n---\n\n# X\nbody";
+        var agent = AgentReturning(
+            "## SCOPE: system\n"
+            + "## TITLE: Brand New\n"
+            + "## UPDATES: system/brand-new.md\n\n"
+            + "new body");
+
+        var result = await Knowledge(agent, fs).TryExtractAsync(
+            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
+        result.EntryFileName.Should().Be("system/brand-new.md");
+        fs.Files[KbDir + "/system/x.md"].Should().Contain("# X", "an unrelated entry must not be rewritten");
+    }
+
     // ---- Fix 1: path-traversal hardening on SCOPE / UPDATES -----------------------------------------
 
     [Fact]
