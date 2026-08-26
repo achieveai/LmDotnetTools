@@ -1421,6 +1421,67 @@ to `409` with `code = "principal_conflict"` alongside the existing `caller_crede
 This is what makes the guard mean something in the UI, where today both sides are `null` and
 therefore always match (2.2).
 
+**Which is only true if the transport the UI actually uses supplies the principal.** In the browser
+the first thing to touch a thread is the WebSocket connection, opened on conversation load before any
+REST turn - and `OwnerUserId` is frozen at creation, so an entry created over an unowned socket holds
+`null` for its whole life and this guard short-circuits on it forever. The `/ws` path therefore
+passes `EffectiveUserId` to `GetOrCreateAgent` and to every `EnsureCurrentAgentAsync` it makes,
+exactly as `ConversationsController` does (#399). A refresh reads the principal off the entry being
+replaced and never adopts the refreshing caller's, or whoever happens to trigger a sandbox-session
+refresh would inherit the thread (#398).
+
+The guard refuses on "different user", which after named sharing (7.4.1) is no longer the same thing
+as "not allowed". A caller the policy has already ALLOWED and who is not the bound user gets the
+bound agent **released** first, so their turn runs on an agent of their own; the guard itself is not
+widened, and an unauthorized caller never reaches the release (#376). A grantee does not inherit the
+owner's sandbox: sharing grants the conversation, whose history is durable and rehydrates, not the
+filesystem the owner's agent was provisioned. A run in progress is never evicted and still answers
+`409`.
+
+### 7.6.1 The WebSocket transports
+
+> **Decision: the handshake carries the credential as an offered `Sec-WebSocket-Protocol`
+> subprotocol, which the identity middleware promotes into `Authorization` before authentication
+> runs. `/ws` and `/ws/subagent` are inside the identity boundary, and an unauthenticated handshake
+> is refused with `403`, not `401`.**
+
+Everything above this section describes `/api`. The two WebSocket transports were outside it: `/ws`
+does not start with the `/api` prefix the middleware guarded, so under `Identity:Enforce=true` every
+REST route demanded a principal while the transport that actually carries the conversation demanded
+nothing (#342).
+
+**Why a subprotocol and not the alternatives.** The browser `WebSocket` API admits no custom headers,
+so `Authorization` cannot simply be set - which is what has made this look harder than it is. It does
+choose the subprotocol list, and that list travels in a *header*. So the token never reaches a URL, a
+proxy access log, a `Referer`, or browser history, which rules out the query-string scheme. A ticket
+or nonce endpoint would need a new store, a new route, and TTL bookkeeping, all of which can drift
+from the REST rules; first-frame authentication accepts the socket before deciding, which means the
+refusal happens after the connection exists and every handler downstream must be written to expect an
+unauthenticated socket.
+
+**Why promotion rather than a second front door.** The middleware rewrites `lm.bearer.<token>` into
+`Authorization: Bearer <token>` and strips it from the offered list *before* `UseAuthentication()`.
+The socket then resolves its principal through the SAME JWT bearer handler and the same
+`IRequestPrincipalSource` chain as REST. A parallel validator for the socket would be a second place
+for the rules to live, and the two would drift. An `Authorization` header already present is never
+overwritten - a caller that can set headers has presented its credential the stronger way - and the
+consumed token is removed from the offered list so it is never echoed back in the response headers.
+
+**Why `403` and not `401`.** A `401` instructs a browser to re-authenticate; a browser that
+re-authenticates and reconnects into the same refusal loops. The WebSocket transports answer `403`
+with `code = "websocket_authentication_required"`. REST keeps its `401`. This is the one place the
+two surfaces deliberately differ, and the difference is about the client's retry behaviour, not about
+what was decided.
+
+**Still out of scope, and disclosed rather than implied.** These transports perform no
+*per-conversation* authorization: they establish who the caller is and own the pooled entry they
+create, but they do not ask `ConversationAuthorizer` whether this user may open this conversation.
+The obstacle is real - the client mints a `threadId` and opens the socket before any metadata row
+exists, so an authorizer call at handshake time would refuse every new conversation as unknown - and
+closing it needs the socket to distinguish "not yours" from "not yet minted". Until then a second
+user's handshake on an owned thread is refused by the pool guard with a structured
+`principal_conflict` frame rather than by a policy decision.
+
 ### 7.7 Audit records
 
 > **Decision: P1 writes audit records to the existing structured logs. They migrate to P4's durable

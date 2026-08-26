@@ -241,7 +241,8 @@ Read this before turning it on anywhere real.
 
 With `Identity:Enforce` true:
 
-- Every `/api` request must carry a valid token from a **provisioned** tenant (slice 1).
+- Every `/api` request must carry a valid token from a **provisioned** tenant (slice 1). So must a
+  `/ws` or `/ws/subagent` handshake, which carries its token as an offered subprotocol (#342, below).
 - Every conversation **REST** route resolves the caller against the conversation's owner columns
   before answering (slice 2, #302) — both `ConversationsController` and the workspace file browser at
   `/api/conversations/{threadId}/files`, which addresses the same conversations by the same ids.
