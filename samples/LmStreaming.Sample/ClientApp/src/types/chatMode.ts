@@ -7,6 +7,19 @@ export interface ChatMode {
   description?: string;
   systemPrompt: string;
   enabledTools?: string[];
+  /**
+   * Server-side provider built-ins (e.g. `web_search`). When absent the server falls back to
+   * {@link enabledTools} for backward compatibility.
+   */
+  enabledBuiltInTools?: string[];
+  /**
+   * Qualified `group:tool` selections for the sandbox / sub-agent / workflow families.
+   *
+   * Absent (undefined) is NOT the same as empty: absent means the mode predates capability
+   * selection and keeps the legacy defaults (sub-agents on, no sandbox, no workflow tools), while
+   * an empty array is an explicit "none".
+   */
+  enabledCapabilityTools?: string[];
   isSystemDefined: boolean;
   createdAt: number;
   updatedAt: number;
@@ -20,6 +33,8 @@ export interface ChatModeCreateUpdate {
   description?: string;
   systemPrompt: string;
   enabledTools?: string[];
+  enabledBuiltInTools?: string[];
+  enabledCapabilityTools?: string[];
 }
 
 /**
@@ -30,11 +45,47 @@ export interface ChatModeCopy {
 }
 
 /**
- * Represents a tool definition.
+ * The groups the tool catalog buckets selectable tools into. The three qualified groups
+ * (`sandbox`, `subagents`, `workflow`) address their tools by a `group:tool` id; every other group
+ * uses the bare tool name it has always used.
+ */
+export const QUALIFIED_TOOL_GROUPS = ['sandbox', 'subagents', 'workflow'] as const;
+
+/** The group whose tools are selected through `enabledBuiltInTools`. */
+export const BUILT_IN_TOOL_GROUP = 'builtin';
+
+/** The token that selects every tool in a qualified group, now and in future. */
+export const WILDCARD_TOOL = '*';
+
+/**
+ * Represents a tool definition served by `/api/tools`.
  */
 export interface ToolDefinition {
+  /** Display name. For a wildcard row this is a label such as "All workspace tools". */
   name: string;
+  /**
+   * The id a mode stores for this tool: the bare name for unqualified groups, `group:tool` for the
+   * qualified ones, and `group:*` for a wildcard row. Older payloads omit it, in which case the
+   * name is the id.
+   */
+  id?: string;
   description?: string;
+  /** Group key, e.g. `sandbox`. Older payloads omit it. */
+  group?: string;
+  /** Human-readable section heading for the group. */
+  groupLabel?: string;
+  /** True for the synthetic "everything in this group" row. */
+  isWildcard?: boolean;
+  /** True when selecting this tool makes every conversation in the mode open a sandbox session. */
+  requiresSandbox?: boolean;
+  /**
+   * True when a mode that records no capability selection still gets this tool. Only the qualified
+   * groups set it; it lets the editor pre-tick exactly what a legacy mode already has instead of
+   * re-deriving the server's defaults here.
+   */
+  isLegacyDefault?: boolean;
+  /** Set when the catalog for this tool's group may be incomplete (e.g. the gateway was down). */
+  catalogWarning?: string;
 }
 
 /**

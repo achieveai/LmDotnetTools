@@ -35,6 +35,40 @@ public class SubAgentToolProvider : IFunctionProvider
     /// </summary>
     public const string WaitAgentToolName = "WaitAgent";
 
+    /// <summary>Name of the tool that sends a message to another agent.</summary>
+    public const string SendMessageToolName = "SendMessage";
+
+    /// <summary>Name of the singular non-blocking status tool.</summary>
+    public const string CheckAgentToolName = "CheckAgent";
+
+    /// <summary>Name of the fan-out status tool, offered only under collaboration.</summary>
+    public const string CheckAgentsToolName = "CheckAgents";
+
+    /// <summary>Name of the fan-out blocking wait, offered only under collaboration.</summary>
+    public const string WaitForAgentsToolName = "WaitForAgents";
+
+    /// <summary>Name of the directory-listing tool, offered only under collaboration.</summary>
+    public const string GetAgentsToolName = "GetAgents";
+
+    /// <summary>
+    /// Every tool name this provider can expose, across BOTH surface shapes — the legacy one
+    /// (<c>Agent</c>/<c>SendMessage</c>/<c>CheckAgent</c>/<c>WaitAgent</c>) and the collaboration one,
+    /// which swaps <c>WaitAgent</c> for <c>CheckAgents</c>/<c>WaitForAgents</c>/<c>GetAgents</c>. No
+    /// single conversation sees all of these at once; a host enumerating the selectable sub-agent
+    /// surface needs the union. Derived from the same name constants <see cref="GetFunctions"/> uses
+    /// so the two cannot drift.
+    /// </summary>
+    public static readonly IReadOnlyList<string> AllToolNames =
+        [
+            SpawnToolName,
+            SendMessageToolName,
+            CheckAgentToolName,
+            WaitAgentToolName,
+            CheckAgentsToolName,
+            WaitForAgentsToolName,
+            GetAgentsToolName,
+        ];
+
     /// <summary>
     /// How many known agent ids an unknown-id error may list. Bounded so a hierarchy with hundreds of
     /// agents cannot turn one mistyped id into a multi-kilobyte tool result; when it bites, the text
@@ -321,7 +355,7 @@ public class SubAgentToolProvider : IFunctionProvider
     {
         return new FunctionContract
         {
-            Name = "SendMessage",
+            Name = SendMessageToolName,
             Description =
                 "Continue an existing sub-agent with a follow-up message — PREFER THIS over "
                 + "spawning a new Agent when you are iterating on, correcting, or extending "
@@ -364,7 +398,7 @@ public class SubAgentToolProvider : IFunctionProvider
     {
         return new FunctionContract
         {
-            Name = "SendMessage",
+            Name = SendMessageToolName,
             Description =
                 "Send a message to ANY agent in this collaboration — your own sub-agents, your "
                 + "parent, or a peer you found with GetAgents. Address it by the agent_id from "
@@ -432,7 +466,7 @@ public class SubAgentToolProvider : IFunctionProvider
     {
         var contract = new FunctionContract
         {
-            Name = "CheckAgent",
+            Name = CheckAgentToolName,
             Description =
                 "Check the status and recent activity of a background sub-agent (one "
                 + "spawned with run_in_background: true). Returns its status, recent "
@@ -522,7 +556,7 @@ public class SubAgentToolProvider : IFunctionProvider
     {
         var contract = new FunctionContract
         {
-            Name = "CheckAgents",
+            Name = CheckAgentsToolName,
             Description =
                 "Check the status and recent activity of agents — several at once. Covers any agent "
                 + "you can see with GetAgents, not just your own children, so you can tell whether a "
@@ -555,7 +589,7 @@ public class SubAgentToolProvider : IFunctionProvider
     {
         var contract = new FunctionContract
         {
-            Name = "WaitForAgents",
+            Name = WaitForAgentsToolName,
             Description =
                 "Block until sub-agents YOU spawned finish, instead of polling CheckAgents in a "
                 + "loop. Only your own direct children can be waited on — to coordinate with "
@@ -619,7 +653,7 @@ public class SubAgentToolProvider : IFunctionProvider
     {
         var contract = new FunctionContract
         {
-            Name = "GetAgents",
+            Name = GetAgentsToolName,
             Description =
                 "List every agent in this collaboration — not just your own sub-agents — with its "
                 + "agent_id, name, role, description, and where it sits in the hierarchy. Use it "

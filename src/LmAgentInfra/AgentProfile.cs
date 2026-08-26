@@ -16,9 +16,27 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra;
 /// Allow-list of provider built-in tool names (e.g. web_search) the agent may use, or
 /// <c>null</c> for "all".
 /// </param>
+/// <param name="EnabledCapabilityTools">
+/// Selection of the tool families a host grants per-mode rather than per-tool — sandbox/workspace
+/// tools, sub-agent tools, workflow tools — as qualified <c>group:tool</c> ids (e.g.
+/// <c>sandbox:Bash</c>), with <c>group:*</c> meaning "every tool in that group, including ones added
+/// later". Kept separate from <paramref name="EnabledTools"/> because those three families are not
+/// registered from a static catalog: they are wired by the host at agent-construction time, so the
+/// host needs to know whether to establish a sandbox session or a workflow runtime at all — a
+/// question a flat tool allow-list cannot answer.
+/// <para>
+/// <c>null</c> means the profile predates this field and the host must apply its legacy defaults;
+/// an EMPTY list is an explicit "none". The two are deliberately distinct.
+/// </para>
+/// <para>
+/// The <c>group:</c> prefix is a SELECTION id only — it is stripped before a tool is registered, so
+/// the model always sees the bare name (<c>Bash</c>, <c>Agent</c>, <c>SetWorkflow</c>).
+/// </para>
+/// </param>
 public sealed record AgentProfile(
     string Id,
     string Name,
     string SystemPrompt,
     IReadOnlyList<string>? EnabledTools = null,
-    IReadOnlyList<string>? EnabledBuiltInTools = null);
+    IReadOnlyList<string>? EnabledBuiltInTools = null,
+    IReadOnlyList<string>? EnabledCapabilityTools = null);

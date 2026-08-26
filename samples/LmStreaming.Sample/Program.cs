@@ -656,6 +656,12 @@ try
         ?? [];
     _ = builder.Services.AddSingleton<IReadOnlyList<ToolDefinition>>(builtInToolDefinitions);
 
+    // The catalog the Modes editor lists. Assembled from the same sources the agent factory wires
+    // from, so what a mode can select matches what a conversation actually gets. Registered here,
+    // after the built-in definitions it depends on.
+    _ = builder.Services.AddSingleton<ISandboxToolCatalogProbe, SandboxToolCatalogProbe>();
+    _ = builder.Services.AddSingleton<IToolCatalog, ToolCatalog>();
+
     // Register the provider agent factory (multi-provider support via LM_PROVIDER_MODE env var)
     Log.Information("LM Provider Mode: {ProviderMode}", providerMode);
 
@@ -864,15 +870,23 @@ try
                 var mcpBaseUrl = isMedicalMode ? llmQueryMcpBaseUrl : null;
                 var normalizedProviderId = providerId.ToLowerInvariant();
 
-                // Workspace Agent AND Workflow Author modes are backed by the sandbox MCP gateway.
-                // Resolve the sandbox session up front (sync-over-async, consistent with the books
-                // wiring) and augment the system prompt with the workspace's absolute host path — the
-                // local backend has no '/workspace' mount, so the model must use the absolute path for
-                // the file tools. Workflow Author mode gets a narrower Read/Grep/Skill-only tool slice
-                // (wired further below); this shared block only establishes the session and the prompt
-                // context common to both.
-                var isWorkspaceMode = mode.Id == SystemChatModes.WorkspaceAgentModeId;
-                var isWorkflowAuthorMode = mode.Id == SystemChatModes.WorkflowAuthorModeId;
+                // What this mode is allowed to do, derived from its OWN tool selection rather than
+                // from its id. The previous `mode.Id == WorkspaceAgentModeId` checks meant a COPY of
+                // Workspace Agent - necessarily a different id - silently got no sandbox session, no
+                // sandbox tools, no workflow launch tools and no collaboration surface. See
+                // ModeCapabilities.
+                //
+                // A sandbox-backed mode resolves its session up front (sync-over-async, consistent
+                // with the books wiring) and augments the system prompt with the workspace's absolute
+                // host path - the local backend has no '/workspace' mount, so the model must use the
+                // absolute path for the file tools. A mode with a PARTIAL sandbox allow-list (e.g.
+                // Workflow Author's Read/Grep/Skill) gets the same session and a narrower tool slice
+                // wired further below; this shared block establishes what they have in common.
+                var caps = ModeCapabilities.Resolve(mode.EnabledCapabilityTools);
+                // True when the mode takes the whole gateway surface rather than a named subset.
+                // Only a full-surface mode can be served over the Copilot CLI transport, which
+                // connects to /mcp directly and cannot apply a per-tool filter.
+                var hasFullSandboxSurface = caps.NeedsSandbox && caps.SandboxToolAllowList is null;
                 var sandboxRegistry = sp.GetRequiredService<SandboxSessionRegistry>();
                 var sandboxLifetime = sp.GetRequiredService<SandboxGatewayLifetime>();
                 SandboxSession? sandboxSession = null;
@@ -880,23 +894,24 @@ try
                 // ONLY authoritative "this conversation has a sandbox workspace" signal for the file browser.
                 SandboxEstablishedBinding? stagedBinding = null;
                 var effectiveMode = mode;
-                if (isWorkspaceMode || isWorkflowAuthorMode)
+                if (caps.NeedsSandbox)
                 {
-                    // Only the middleware providers (OpenAI/Anthropic/test/...) and — in Workspace Agent
-                    // mode — Copilot are wired to route tool calls to the sandbox gateway. Reject the
-                    // CLI-only providers and mock variants up front instead of creating an unused sandbox
-                    // session and an agent with no sandbox tools.
+                    // Only the middleware providers (OpenAI/Anthropic/test/...) and - for a mode that
+                    // takes the FULL gateway surface - Copilot are wired to route tool calls to the
+                    // sandbox gateway. Reject the CLI-only providers and mock variants up front instead
+                    // of creating an unused sandbox session and an agent with no sandbox tools.
                     //
-                    // Copilot is a special case: it IS wired to the full sandbox /mcp surface in Workspace
-                    // Agent mode, but Workflow Author mode only offers the narrow Read/Grep/Skill slice via
-                    // the middleware FunctionRegistry path, which the Copilot CLI transport cannot consume
-                    // (it connects to the raw /mcp with no per-tool filter, and handing it the full surface
-                    // would defeat the narrow intent). Copilot in Workflow Author mode would therefore get
-                    // NEITHER the workflow-authoring tools (its provider arm returns before they are wired)
-                    // NOR any sandbox tools — so reject it here too, rather than establishing a live session
-                    // and appending a system-prompt suffix that promises Read/Grep/Skill it can't have.
-                    var copilotUnsupportedInWorkflowAuthor =
-                        isWorkflowAuthorMode && normalizedProviderId is "copilot";
+                    // Copilot is a special case, and the rule is about the SHAPE of the selection, not
+                    // the mode's identity: its CLI transport connects to the raw /mcp with no per-tool
+                    // filter, so it can serve a full-surface mode but cannot honour a named subset.
+                    // Handing it the full surface for a mode that asked for Read/Grep/Skill would
+                    // defeat the narrowing, and it cannot consume the filtered FunctionRegistry path
+                    // either - so a partial-surface mode on Copilot would get NEITHER the tools it
+                    // asked for NOR the workflow-authoring tools (its provider arm returns before those
+                    // are wired). Reject it here rather than establishing a live session and appending
+                    // a system-prompt suffix promising tools it can't have.
+                    var copilotCannotNarrowSandbox =
+                        !hasFullSandboxSurface && normalizedProviderId is "copilot";
                     if (
                         normalizedProviderId
                         is "codex"
@@ -904,15 +919,20 @@ try
                             or "codex-mock"
                             or "claude-mock"
                             or "copilot-mock"
-                        || copilotUnsupportedInWorkflowAuthor
+                        || copilotCannotNarrowSandbox
                     )
                     {
                         throw new ProviderUnavailableException(
                             normalizedProviderId,
-                            (isWorkspaceMode ? "Workspace Agent" : "Workflow Author")
-                                + " mode supports the OpenAI/Anthropic"
-                                + (isWorkspaceMode ? " and Copilot providers" : " providers")
-                                + "; this provider is not wired for the sandbox."
+                            $"Mode '{mode.Name}' supports the OpenAI/Anthropic"
+                                + (hasFullSandboxSurface ? " and Copilot providers" : " providers")
+                                + "; this provider is not wired for the sandbox"
+                                + (
+                                    copilotCannotNarrowSandbox
+                                        ? " when the mode selects only some workspace tools (Copilot "
+                                            + "cannot filter the gateway's tool surface)."
+                                        : "."
+                                )
                         );
                     }
 
@@ -983,19 +1003,14 @@ try
                     // RegisterThread is idempotent, and mode-switch recreations preserve threadId by design
                     // (and don't fire the pool's ThreadRemoved event), so this registration survives them.
                     sandboxRegistry.RegisterThread(sandboxSession.SessionId, threadId);
-                    // Workspace Agent gets the full file/shell tool surface; Workflow Author mode only
-                    // gets the narrower Read/Grep/Skill slice wired below — the suffix text must match
-                    // what each mode's agent actually has, or the model will confidently claim tools
-                    // (Write/Edit/Bash/...) that don't exist for it.
-                    var wsSuffix = isWorkspaceMode
-                        ? "\n\nYour workspace directory is: "
-                            + sandboxSession.HostPath
-                            + "\nUse this absolute path as the base for the file tools (Read, Write, Edit, Glob, Grep). "
-                            + "The shell tools (Bash, PowerShell) already start in this directory."
-                        : "\n\nYour workspace directory is: "
-                            + sandboxSession.HostPath
-                            + "\nUse this absolute path as the base for the Read and Grep tools, and when invoking "
-                            + "the Skill tool, while authoring. No write/edit/shell tools are available in this mode.";
+                    // The suffix must name the tools this agent ACTUALLY has, or the model will
+                    // confidently claim tools (Write/Edit/Bash/...) that do not exist for it. Derived
+                    // from the mode's own allow-list rather than from its id, so a narrowed copy gets a
+                    // narrowed suffix instead of Workspace Agent's promises.
+                    var wsSuffix = BuildWorkspaceSuffix(
+                        sandboxSession.HostPath,
+                        caps.SandboxToolAllowList
+                    );
 
                     // Seed any context files (CLAUDE.md / AGENTS.md) the gateway has already
                     // discovered into the system prompt. Mid-session deliveries land via the
@@ -1210,8 +1225,11 @@ try
                         // caller's /mcp tool calls carry its own identity; the interactive UI (null)
                         // falls back to the default (issue #153 M1/M2). Connect-time-frozen for the
                         // pooled agent by design — not re-evaluated per turn.
+                        // Only a full-surface mode reaches here with a sandbox: a partial allow-list
+                        // on Copilot was rejected above, because the CLI connects to /mcp directly and
+                        // cannot filter the gateway's tool surface.
                         Dictionary<string, string>? sandboxMcpHeaders = null;
-                        if (isWorkspaceMode)
+                        if (hasFullSandboxSurface)
                         {
                             sandboxMcpHeaders = new Dictionary<string, string>
                             {
@@ -1231,10 +1249,10 @@ try
                                 requestResponseDumpFileName,
                                 conversationStore,
                                 loggerFactory,
-                                extraMcpServers: isWorkspaceMode
+                                extraMcpServers: hasFullSandboxSurface
                                     ? BuildHttpMcpServer("sandbox", $"{sandboxLifetime.GatewayBaseUrl}/mcp", sandboxMcpHeaders!)
                                     : null,
-                                workingDirectoryOverride: isWorkspaceMode ? sandboxSession!.HostPath : null,
+                                workingDirectoryOverride: hasFullSandboxSurface ? sandboxSession!.HostPath : null,
                                 lifecycleServices: lifecycleServices
                             ),
                             cliHostedSearch.Resource is null ? null : [cliHostedSearch.Resource]
@@ -1294,7 +1312,20 @@ try
                 // Add LlmQuery book search MCP tools — only for medical knowledge mode
                 // Track MCP clients for proper disposal alongside the agent
                 var ownedResources = new List<IAsyncDisposable>();
-                var workspaceWorkflowEnabled = false;
+                // StartWorkflowAgent + friends: each launch spins up an ISOLATED controller loop with
+                // its own model and restricted tool surface, wired further below once the conversation
+                // loop exists (so an async workflow's completion notification can reach it). A
+                // deployment can switch the whole LmWorkflow surface off without a redeploy via
+                // WORKSPACE_AGENT_LMWORKFLOW_ENABLED=false. That switch now applies to EVERY mode that
+                // asks for these tools, not only Workspace Agent, so "LmWorkflow off" means off
+                // everywhere rather than off in one mode.
+                var workspaceWorkflowEnabled =
+                    caps.StartWorkflowTools
+                    && !string.Equals(
+                        Environment.GetEnvironmentVariable("WORKSPACE_AGENT_LMWORKFLOW_ENABLED"),
+                        "false",
+                        StringComparison.OrdinalIgnoreCase
+                    );
                 if (!string.IsNullOrEmpty(mcpBaseUrl))
                 {
                     var (_, mcpClients) = ConnectLlmQueryMcpClients(
@@ -1309,59 +1340,63 @@ try
                         ownedResources.AddRange(mcpClients.Cast<IAsyncDisposable>());
                     }
                 }
-                else if (isWorkspaceMode)
+
+                // Workflow authoring/mutation tools (SetWorkflow, GetWorkflow, SetCurrentNode,
+                // SetState, SetNotes, AddNode, RemoveNode) run on THIS conversation loop, so the model
+                // drives a workflow graph in place rather than handing it to an isolated controller.
+                // Selected per mode; Workflow Author takes the whole family.
+                if (caps.WorkflowAuthoringTools)
                 {
-                    // Workspace Agent gets its own per-conversation task tracker alongside the
-                    // sandbox tools — the same way a coding agent carries a todo list. The mode's
-                    // empty enabledTools list filtered the registry copy out above, and the tracker
-                    // is independent of the sandbox, so add it here unconditionally; it stays usable
-                    // even when the sandbox MCP endpoint is offline (degraded mode below).
-                    _ = filteredRegistry.AddFunctionsFromObject(new TaskManager(), providerName: "TaskManager");
-
-                    // Let the controller LLM author and drive an LmWorkflow workflow inside this
-                    // same conversation loop (no separate WorkflowSession-owned loop) — the runtime
-                    // observes the loop's own message stream (see ownedResources wiring below) to
-                    // correlate Agent tool-call spawns back into workflow state.
-                    //
-                    // Let the Workspace Agent launch LmWorkflow workflows via the StartWorkflowAgent tool
-                    // family. Each StartWorkflowAgent call spins up an ISOLATED controller loop (its own model +
-                    // restricted tool surface); the chat agent never gets direct
-                    // SetWorkflow/GetWorkflow access (that #130 wiring is retired here). The tools
-                    // themselves are wired below, once the conversation loop exists so an async
-                    // workflow's completion notification can reach it.
-                    //
-                    // On by default, but disable-able per deployment WITHOUT a redeploy via
-                    // WORKSPACE_AGENT_LMWORKFLOW_ENABLED=false.
-                    workspaceWorkflowEnabled = !string.Equals(
-                        Environment.GetEnvironmentVariable("WORKSPACE_AGENT_LMWORKFLOW_ENABLED"),
-                        "false",
-                        StringComparison.OrdinalIgnoreCase
+                    var workflowRuntime = WorkflowRuntime.CreateNew(
+                        logger: loggerFactory.CreateLogger<WorkflowRuntime>()
                     );
+                    _ = filteredRegistry.AddProvider(new WorkflowToolProvider(workflowRuntime));
+                }
 
-                    // Workspace Agent mode: expose the sandbox file/shell tools via the gateway's
-                    // MCP endpoint, bound to this agent's sandbox session by the X-Session-ID header
-                    // and the app's sandbox auth headers. The caller's credential (S2S) wins over
-                    // the process default so an S2S caller's /mcp calls carry its own identity; the
-                    // interactive UI (null) falls back to the default (issue #153 M1/M2).
-                    // Connect-time-frozen for the pooled agent; not re-evaluated per turn.
+                if (caps.NeedsSandbox)
+                {
+                    // Expose the sandbox file/shell tools via the gateway's MCP endpoint, bound to this
+                    // agent's sandbox session by the X-Session-ID header and the app's sandbox auth
+                    // headers. The caller's credential (S2S) wins over the process default so an S2S
+                    // caller's /mcp calls carry its own identity; the interactive UI (null) falls back
+                    // to the default (issue #153 M1/M2). Connect-time-frozen for the pooled agent; not
+                    // re-evaluated per turn.
                     var sandboxMcpHeaders = new Dictionary<string, string>
                     {
                         ["X-Session-ID"] = sandboxSession!.SessionId,
                     };
                     AddSandboxAuthHeaders(sandboxMcpHeaders, callerCredential ?? sandboxCredential);
-                    var sandboxClients = ConnectHttpMcpClient(
-                        filteredRegistry,
-                        "sandbox",
-                        $"{sandboxLifetime.GatewayBaseUrl}/mcp",
-                        sandboxMcpHeaders,
-                        loggerFactory,
-                        // Expose sandbox tools under their natural names (bash, edit, …) rather than
-                        // sandbox-bash; the gateway is the sole MCP server here, so no collisions.
-                        omitServerPrefix: true,
-                        // Collapse the "container has no sandbox user" Docker-exec failure class into a
-                        // single actionable message so the model stops retrying it (see SandboxToolHealth).
-                        handlerDecorator: SandboxToolHealth.Wrap
-                    );
+
+                    // Tools are exposed under their NATURAL names (Bash, Edit, ...): the `sandbox:`
+                    // prefix a mode stores is a SELECTION id and never reaches the model. The gateway is
+                    // the sole MCP server here, so no collisions. SandboxToolHealth.Wrap collapses the
+                    // "container has no sandbox user" Docker-exec failure class into a single actionable
+                    // message so the model stops retrying it.
+                    //
+                    // A null allow-list means the mode took the whole surface (sandbox:*) and must keep
+                    // taking it, including tools a marketplace plugin adds later; a non-null one is an
+                    // explicit subset and goes through the filtering connector.
+                    var sandboxClients = caps.SandboxToolAllowList is { } sandboxAllowList
+                        ? ConnectFilteredHttpMcpClient(
+                            filteredRegistry,
+                            "sandbox",
+                            $"{sandboxLifetime.GatewayBaseUrl}/mcp",
+                            sandboxMcpHeaders,
+                            loggerFactory,
+                            toolNames: sandboxAllowList,
+                            omitServerPrefix: true,
+                            handlerDecorator: SandboxToolHealth.Wrap
+                        )
+                        : ConnectHttpMcpClient(
+                            filteredRegistry,
+                            "sandbox",
+                            $"{sandboxLifetime.GatewayBaseUrl}/mcp",
+                            sandboxMcpHeaders,
+                            loggerFactory,
+                            omitServerPrefix: true,
+                            handlerDecorator: SandboxToolHealth.Wrap
+                        );
+
                     if (sandboxClients.Count > 0)
                     {
                         ownedResources.AddRange(sandboxClients.Cast<IAsyncDisposable>());
@@ -1369,10 +1404,10 @@ try
                     else
                     {
                         // The sandbox MCP endpoint is unreachable. Booting anyway is intentional
-                        // (best-effort demo), but the workspace suffix added above claims file/shell
-                        // tools that this agent does not have — rebuild the prompt from the original
-                        // mode with an honest degraded-mode notice instead, so the model tells the
-                        // user rather than hallucinating tool calls.
+                        // (best-effort demo), but the workspace suffix added above claims tools this
+                        // agent does not have - rebuild the prompt from the original mode with an
+                        // honest degraded-mode notice instead, so the model tells the user rather than
+                        // hallucinating tool calls.
                         effectiveMode = mode with
                         {
                             SystemPrompt = mode.SystemPrompt
@@ -1384,73 +1419,9 @@ try
                         loggerFactory
                             .CreateLogger<Program>()
                             .LogWarning(
-                                "Workspace Agent mode is running WITHOUT sandbox tools for thread {ThreadId}; "
+                                "Mode {ModeName} is running WITHOUT sandbox tools for thread {ThreadId}; "
                                     + "the system prompt now reports degraded mode instead of claiming tools",
-                                threadId
-                            );
-                    }
-                }
-                else if (isWorkflowAuthorMode)
-                {
-                    // Let the chat agent author and drive an LmWorkflow workflow directly on THIS
-                    // conversation loop, via the full SetWorkflow/GetWorkflow/SetCurrentNode/SetState/
-                    // SetNotes/AddNode/RemoveNode tool surface (WorkflowToolProvider) — unlike Workspace
-                    // Agent mode there is no isolated controller loop and no automatic Agent-spawn
-                    // correlation; the mode's system prompt tells the model to spawn sub-agents and
-                    // record progress manually.
-                    var workflowRuntime = WorkflowRuntime.CreateNew(
-                        logger: loggerFactory.CreateLogger<WorkflowRuntime>()
-                    );
-                    _ = filteredRegistry.AddProvider(new WorkflowToolProvider(workflowRuntime));
-
-                    // Reuse the SAME downstream StartWorkflowAgent/WorkflowManager wiring that Workspace
-                    // Agent mode uses, so this mode also gets the launch-only tools without duplicating
-                    // that block.
-                    workspaceWorkflowEnabled = true;
-
-                    // Give the model a narrow read-only slice of the sandbox — Read/Grep/Skill — so it
-                    // can inspect the repo and invoke skills while authoring, without the full Workspace
-                    // Agent file/shell surface (this mode is deliberately narrower than "operate the
-                    // sandbox"). Same connect-time-frozen credential/header pattern as Workspace Agent.
-                    var workflowAuthorMcpHeaders = new Dictionary<string, string>
-                    {
-                        ["X-Session-ID"] = sandboxSession!.SessionId,
-                    };
-                    AddSandboxAuthHeaders(workflowAuthorMcpHeaders, callerCredential ?? sandboxCredential);
-                    var workflowAuthorSandboxClients = ConnectFilteredHttpMcpClient(
-                        filteredRegistry,
-                        "sandbox",
-                        $"{sandboxLifetime.GatewayBaseUrl}/mcp",
-                        workflowAuthorMcpHeaders,
-                        loggerFactory,
-                        toolNames: new HashSet<string> { "Read", "Grep", "Skill" },
-                        omitServerPrefix: true,
-                        handlerDecorator: SandboxToolHealth.Wrap
-                    );
-                    if (workflowAuthorSandboxClients.Count > 0)
-                    {
-                        ownedResources.AddRange(workflowAuthorSandboxClients.Cast<IAsyncDisposable>());
-                    }
-                    else
-                    {
-                        // The sandbox MCP endpoint is unreachable. Booting anyway is intentional
-                        // (best-effort demo), but the workspace suffix added above claims Read/Grep/Skill
-                        // that this agent does not have — rebuild the prompt from the original mode with
-                        // an honest degraded-mode notice instead, so the model tells the user rather than
-                        // hallucinating tool calls.
-                        effectiveMode = mode with
-                        {
-                            SystemPrompt = mode.SystemPrompt
-                                + "\n\nIMPORTANT: The sandbox workspace is currently UNAVAILABLE (its MCP endpoint "
-                                + "could not be reached), so the Read/Grep/Skill tools do not exist in this "
-                                + "conversation. Do not claim or attempt to use them. Tell the user the workspace "
-                                + "is offline and that restarting the app (or the sandbox gateway) should restore it.",
-                        };
-                        loggerFactory
-                            .CreateLogger<Program>()
-                            .LogWarning(
-                                "Workflow Author mode is running WITHOUT sandbox read tools for thread {ThreadId}; "
-                                    + "the system prompt now reports degraded mode instead of claiming tools",
+                                mode.Name,
                                 threadId
                             );
                     }
@@ -1567,7 +1538,7 @@ try
                     // workflow delegate) receives THIS handle by reference, so there is exactly one
                     // directory and one ledger per conversation.
                     var rootCollaboration =
-                        CreateRootCollaboration(collaborationHostOptions, mode.Id, threadId);
+                        CreateRootCollaboration(collaborationHostOptions, caps, threadId);
 
                     var characteristicsAgentFactory = new CharacteristicsAgentFactory(
                         providerRegistry,
@@ -1581,7 +1552,14 @@ try
                         parentReasoningExtraProperties: extraProperties)
                         .Create;
                     var outputTokenPolicy = sp.GetRequiredService<AgentOutputTokenPolicy>();
-                    var subAgentOptions = BuildSubAgentOptionsAsync(
+                    // Gated on the mode's own selection: a mode that records an explicit capability
+                    // list with no subagents: entry gets NO delegation tools. A legacy mode (null
+                    // list) resolves to ModeCapabilities.LegacyDefaults, whose SubAgents is true, so
+                    // every mode that predates capability selection keeps the Agent tool it has
+                    // always had.
+                    var subAgentOptions = !caps.SubAgents
+                        ? null
+                        : BuildSubAgentOptionsAsync(
                             isTestMode,
                             sp.GetRequiredService<ITestAgentBuilder>(),
                             loggerFactory,
@@ -1592,8 +1570,8 @@ try
                             sp.GetRequiredService<MarketplaceSubAgentLoader>(),
                             sp.GetRequiredService<IWorkspaceStore>(),
                             loggerFactory.CreateLogger("LmStreaming.Sample.SubAgentCatalog"))
-                        .GetAwaiter()
-                        .GetResult();
+                            .GetAwaiter()
+                            .GetResult();
 
                     if (subAgentOptions is not null)
                     {
@@ -3001,38 +2979,30 @@ public partial class Program
     ) => policy.ApplyDelegated(options);
 
     /// <summary>
-    /// Whether hierarchy-wide collaboration (#244) is on by default for a chat mode, when the host
-    /// configuration leaves <see cref="AgentCollaborationHostOptions.Enabled"/> unset.
-    /// </summary>
-    /// <remarks>
-    /// Only the Workspace Agent defaults on: it is the mode that actually fans work out to sub-agents
-    /// and workflow delegates, so the collaboration surface (<c>CheckAgents</c>/<c>WaitForAgents</c>/
-    /// <c>GetAgents</c>) is what its prompts expect. Workflow Author and the ordinary chat modes keep
-    /// the legacy surface unless a deployment opts them in explicitly, so nothing about their tool
-    /// schemas or nesting depth changes silently.
-    /// </remarks>
-    internal static bool CollaborationDefaultsOnForMode(string modeId) =>
-        string.Equals(modeId, SystemChatModes.WorkspaceAgentModeId, StringComparison.Ordinal);
-
-    /// <summary>
     /// Builds the root collaboration handle for one conversation, or returns null when collaboration
     /// resolves to off for its chat mode.
     /// </summary>
     /// <remarks>
     /// Extracted from the conversation factory so the mode default is not merely DECLARED by
-    /// <see cref="CollaborationDefaultsOnForMode"/> but demonstrably REACHES
+    /// <see cref="ModeCapabilities.Collaboration"/> but demonstrably REACHES
     /// <see cref="AgentCollaborationHostOptions.ResolveForMode"/>: a correct predicate wired to a
     /// hard-coded <c>false</c> would still leave every mode on the legacy surface, and a test of the
     /// predicate alone cannot tell the two apart. The conversation's own threadId is the collaboration
     /// id — deliberately reusing the identity the store already keys on rather than minting a second
     /// one — so a resumed conversation rejoins the same logical collaboration.
+    /// <para>
+    /// Keyed on the mode's CAPABILITIES rather than its id: a mode asks for the collaboration surface
+    /// by selecting one of its tools (<c>subagents:CheckAgents</c> and friends), so a copy of a
+    /// collaborating mode collaborates too. The old <c>modeId == "workspace-agent"</c> default gave a
+    /// copy the legacy surface no matter what it selected.
+    /// </para>
     /// </remarks>
     internal static AgentCollaborationSetup? CreateRootCollaboration(
         AgentCollaborationHostOptions hostOptions,
-        string modeId,
+        ModeCapabilities caps,
         string threadId
     ) =>
-        hostOptions.ResolveForMode(defaultEnabled: CollaborationDefaultsOnForMode(modeId))
+        hostOptions.ResolveForMode(defaultEnabled: caps.Collaboration)
             is { } collabOptions
             ? AgentCollaborationSetup.CreateRoot(
                 collabOptions,
@@ -3807,6 +3777,50 @@ public partial class Program
     /// </summary>
     private static void AddSandboxAuthHeaders(IDictionary<string, string> headers, SandboxCredential cred) =>
         cred.StampHeaders(headers);
+
+    /// <summary>
+    ///     Builds the system-prompt suffix that tells a sandbox-backed agent where its workspace is and
+    ///     which workspace tools it has.
+    /// </summary>
+    /// <remarks>
+    ///     The tool names here are load-bearing, not decoration: a model told it has
+    ///     Read/Write/Edit/Glob/Grep will confidently call them, so a mode that selected only
+    ///     <c>sandbox:Read</c> must not be handed Workspace Agent's text. Derived from the mode's own
+    ///     allow-list so a narrowed copy gets a narrowed promise. The names are the BARE tool names the
+    ///     model sees; the <c>sandbox:</c> selection prefix never appears here.
+    /// </remarks>
+    /// <param name="hostPath">Absolute host path of the mounted workspace directory.</param>
+    /// <param name="sandboxToolAllowList">
+    ///     The mode's sandbox allow-list, or <c>null</c> when it took the whole gateway surface.
+    /// </param>
+    internal static string BuildWorkspaceSuffix(string hostPath, IReadOnlySet<string>? sandboxToolAllowList)
+    {
+        var prefix = "\n\nYour workspace directory is: " + hostPath;
+
+        // Whole-surface modes keep the long-standing wording verbatim; it names the tools the gateway
+        // has always provided and is what the Workspace Agent prompts were written against.
+        if (sandboxToolAllowList is null)
+        {
+            return prefix
+                + "\nUse this absolute path as the base for the file tools (Read, Write, Edit, Glob, Grep). "
+                + "The shell tools (Bash, PowerShell) already start in this directory.";
+        }
+
+        if (sandboxToolAllowList.Count == 0)
+        {
+            return prefix + "\nNo workspace file or shell tools are available in this mode.";
+        }
+
+        var names = sandboxToolAllowList.OrderBy(n => n, StringComparer.Ordinal).ToList();
+        var toolList = names.Count == 1
+            ? names[0]
+            : string.Join(", ", names.Take(names.Count - 1)) + " and " + names[^1];
+
+        return prefix
+            + "\nUse this absolute path as the base for the workspace tools available to you: "
+            + toolList
+            + ". No other file or shell tools exist in this mode - do not attempt to use any.";
+    }
 
     /// <summary>
     ///     Builds a single-entry MCP server configuration for an HTTP endpoint.

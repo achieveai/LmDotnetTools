@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
 import type { ChatMode, ChatModeCreateUpdate, ToolDefinition } from '@/types/chatMode';
+import { selectionFromMode, selectionToModeFields } from '@/utils/modeToolSelection';
 import ToolCheckboxList from './ToolCheckboxList.vue';
 
 const props = defineProps<{
@@ -18,7 +19,12 @@ const emit = defineEmits<{
 const name = ref('');
 const description = ref('');
 const systemPrompt = ref('');
-const enabledTools = ref<string[] | null>(null);
+/**
+ * The flat set of selected tool ids across every catalog group. A mode stores this across three
+ * fields with three different null rules, so the editor holds the flat form and converts at the
+ * boundary (see utils/modeToolSelection).
+ */
+const selectedToolIds = ref<string[]>([]);
 
 // Validation
 const nameError = ref('');
@@ -35,7 +41,7 @@ watch(
       name.value = newMode.name;
       description.value = newMode.description || '';
       systemPrompt.value = newMode.systemPrompt;
-      enabledTools.value = newMode.enabledTools ? [...newMode.enabledTools] : null;
+      selectedToolIds.value = selectionFromMode(newMode, props.tools);
     } else {
       resetForm();
     }
@@ -43,11 +49,20 @@ watch(
   { immediate: true }
 );
 
+// The catalog arrives asynchronously, so a mode opened before it lands would otherwise show an
+// empty selection and then save that emptiness. Re-derive whenever the catalog changes.
+watch(
+  () => props.tools,
+  (tools) => {
+    selectedToolIds.value = selectionFromMode(props.mode ?? null, tools);
+  }
+);
+
 function resetForm(): void {
   name.value = '';
   description.value = '';
   systemPrompt.value = '';
-  enabledTools.value = null;
+  selectedToolIds.value = selectionFromMode(null, props.tools);
   nameError.value = '';
   systemPromptError.value = '';
 }
@@ -79,7 +94,8 @@ function handleSave(): void {
     name: name.value.trim(),
     description: description.value.trim() || undefined,
     systemPrompt: systemPrompt.value.trim(),
-    enabledTools: enabledTools.value ?? undefined,
+    // props.mode is passed so a group the catalog could not show is preserved, not zeroed.
+    ...selectionToModeFields(selectedToolIds.value, props.tools, props.mode),
   };
 
   emit('save', data);
@@ -91,7 +107,7 @@ function handleCancel(): void {
 </script>
 
 <template>
-  <div class="mode-editor">
+  <div class="mode-editor" data-testid="mode-editor">
     <h2 class="editor-title">{{ title }}</h2>
 
     <form @submit.prevent="handleSave" class="editor-form">
@@ -102,6 +118,7 @@ function handleCancel(): void {
         <input
           id="mode-name"
           v-model="name"
+          data-testid="mode-editor-name"
           type="text"
           class="form-input"
           :class="{ error: nameError }"
@@ -142,7 +159,7 @@ function handleCancel(): void {
       <div class="form-group">
         <label class="form-label">Enabled Tools</label>
         <ToolCheckboxList
-          v-model="enabledTools"
+          v-model="selectedToolIds"
           :tools="tools"
           :disabled="isLoading"
         />
@@ -160,6 +177,7 @@ function handleCancel(): void {
         <button
           type="submit"
           class="btn btn-primary"
+          data-testid="mode-editor-save"
           :disabled="isLoading"
         >
           {{ isLoading ? 'Saving...' : 'Save' }}

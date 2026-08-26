@@ -73,7 +73,9 @@ public sealed class ProgramSubAgentCompositionTests
     [InlineData(SystemChatModes.DefaultModeId, false)]
     public void CollaborationDefaultsOnForMode_IsWorkspaceAgentOnly(string modeId, bool expected)
     {
-        global::Program.CollaborationDefaultsOnForMode(modeId).Should().Be(expected);
+        var mode = SystemChatModes.GetById(modeId);
+        mode.Should().NotBeNull();
+        ModeCapabilities.Resolve(mode!).Collaboration.Should().Be(expected);
     }
 
     /// <summary>
@@ -97,7 +99,12 @@ public sealed class ProgramSubAgentCompositionTests
         hostOptions.Enabled.Should()
             .BeNull("this proves nothing if the configuration already made the decision");
 
-        var setup = global::Program.CreateRootCollaboration(hostOptions, modeId, "thread-1");
+        var mode = SystemChatModes.GetById(modeId);
+        mode.Should().NotBeNull();
+        var setup = global::Program.CreateRootCollaboration(
+            hostOptions,
+            ModeCapabilities.Resolve(mode!),
+            "thread-1");
 
         var templates = new Dictionary<string, SubAgentTemplate>
         {
