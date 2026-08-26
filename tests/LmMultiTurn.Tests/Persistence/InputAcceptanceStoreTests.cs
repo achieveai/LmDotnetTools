@@ -683,10 +683,14 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
     /// </summary>
     private static async Task<T> SettleUnderExpiredBudgetAsync<T>(Task<T> inFlight, FakeTimeProvider clock)
     {
-        const int MaxAdvances = 2000;
+        // Sized so that only the FAKE clock can satisfy it: 60 s of injected time is six times the budget,
+        // while the real time the pump itself spends stays well under one budget's worth. A store that
+        // ignored the injected clock and measured the budget on the wall could not settle inside this, so
+        // the cap is what makes the pump a proof that the seam is wired rather than a slow way to wait.
+        const int MaxAdvances = 60;
         for (var i = 0; i < MaxAdvances && !inFlight.IsCompleted; i++)
         {
-            clock.Advance(TimeSpan.FromMilliseconds(100));
+            clock.Advance(TimeSpan.FromSeconds(1));
 
             // Real yield: the store's next poll resumes on the thread pool, and a delay that has not been
             // registered yet cannot be advanced past.
