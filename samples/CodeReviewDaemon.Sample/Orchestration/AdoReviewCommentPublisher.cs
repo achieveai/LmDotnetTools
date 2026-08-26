@@ -21,9 +21,6 @@ internal sealed class AdoReviewCommentPublisher : IReviewCommentPublisher
     private const string BaseUrl = "https://dev.azure.com";
     private const string ApiVersion = "7.1";
 
-    /// <summary>Per-comment content cap when listing existing findings — enough to recognize a duplicate.</summary>
-    private const int MaxBodyChars = 280;
-
     private readonly HttpClient _httpClient;
     private readonly IOAuthTokenProvider _tokenProvider;
     private readonly ILogger<AdoReviewCommentPublisher> _logger;
@@ -220,11 +217,11 @@ internal sealed class AdoReviewCommentPublisher : IReviewCommentPublisher
             ? dn.GetString()
             : null;
 
-    private static string Trim(string content)
-    {
-        var oneLine = content.ReplaceLineEndings(" ").Trim();
-        return oneLine.Length <= MaxBodyChars ? oneLine : oneLine[..MaxBodyChars] + "…";
-    }
+    /// <summary>
+    /// Per-comment cap, shared with the GitHub publisher via <see cref="ExistingCommentBody"/> so the two
+    /// cannot drift into showing the reviewer different amounts of the same conversation (#225).
+    /// </summary>
+    private static string Trim(string content) => ExistingCommentBody.Summarize(content);
 
     private async Task<HttpRequestMessage> BuildRequestAsync(
         HttpMethod method, string url, SandboxOperation operation, CancellationToken cancellationToken)

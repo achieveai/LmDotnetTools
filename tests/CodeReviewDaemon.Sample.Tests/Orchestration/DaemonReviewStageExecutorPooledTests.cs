@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -631,6 +632,212 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         text.Should().NotContain("Already posted on this PR");
+    }
+
+    // ── the already-posted block's shared size budget (#225 items 3+4) ──
+    //
+    // The block used to apply its "max 120 comments" cap to EACH rendered section, so the number a reader takes
+    // as the bound was quietly worth double, and a comment count was never a size bound anyway: bodies are
+    // written by anyone who can comment on the PR. These pin one budget — characters AND comments — drawn down
+    // across both sections, with a reserved floor for the "new since your last review" section, which is the one
+    // the guidance tells the reviewer to look hardest at because it carries questions it is REQUIRED to answer.
+    //
+    // The numbers below mirror the executor's private constants: 40,000 chars / 120 comments for the block, half
+    // of each reserved for the new section.
+    private const int BlockCharBudget = 40_000;
+    private const int NewSectionReservation = BlockCharBudget / 2;
+
+    /// <summary>Splits the rendered dedup block into its two sections so a test can size them independently.</summary>
+    private static (string Past, string New) DedupSections(string text)
+    {
+        var pastIdx = text.IndexOf("### Comments during past reviews", StringComparison.Ordinal);
+        var newIdx = text.IndexOf("### New comments since your last review", StringComparison.Ordinal);
+        pastIdx.Should().BeGreaterThan(0, "the past-reviews section must be rendered for this test to mean anything");
+        newIdx.Should().BeGreaterThan(pastIdx, "the new-comments section follows it");
+
+        // Every rendered line inside a section ends in a SINGLE newline (the renderer trims trailing ones), so the
+        // first blank line after the new-comments heading is where the block ends and the review input begins.
+        var endIdx = text.IndexOf("\n\n", newIdx, StringComparison.Ordinal);
+        endIdx.Should().BeGreaterThan(newIdx);
+        return (text[pastIdx..newIdx], text[newIdx..endIdx]);
+    }
+
+    private static int RenderedCommentCount(string text) =>
+        text.Split('\n').Count(l => l.StartsWith("    - (", StringComparison.Ordinal));
+
+    /// <summary>Seeds <paramref name="count"/> comments of roughly <paramref name="bodyChars"/> characters each,
+    /// all before the bot cutoff (past) or all after it (new), each in a thread of its own.</summary>
+    private static void SeedBulkComments(
+        Fixture fixture, string marker, int count, int bodyChars, bool isNew, string? threadId = null)
+    {
+        var cutoff = DateTimeOffset.Parse("2026-07-20T10:00:00Z", CultureInfo.InvariantCulture);
+        for (var i = 0; i < count; i++)
+        {
+            fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
+                "src/Foo.cs",
+                i.ToString(CultureInfo.InvariantCulture),
+                $"{marker}-{i:D3}-" + new string('x', bodyChars),
+                "alice",
+                IsActive: true,
+                // Ascending in i either side of the cutoff, so index order IS conversation order — a thread renders
+                // oldest-first, and a test that names PAST-000 must be naming the comment rendered first.
+                PublishedAt: isNew ? cutoff.AddHours(i + 1) : cutoff.AddHours(i - count),
+                ThreadId: threadId ?? $"{marker}-{i:D3}"));
+        }
+    }
+
+    /// <summary>Seeds the bot's own last finding, which is the cutoff that splits "past" from "new".</summary>
+    private static void SeedBotCutoff(Fixture fixture) =>
+        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
+            "src/Cutoff.cs", "1", "[Revobot] LAST-REVIEW-CUTOFF", "revobot", IsActive: true,
+            PublishedAt: DateTimeOffset.Parse("2026-07-20T10:00:00Z", CultureInfo.InvariantCulture),
+            ThreadId: "th-cutoff"));
+
+    [Fact]
+    public async Task Reviewed_bounds_the_past_section_to_what_is_not_reserved_for_the_new_one()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // A PR with a long history: 60 past comments of ~900 chars is ~54,000 characters, well past the whole
+        // block's allowance and more than twice what the past section may spend on its own.
+        SeedBotCutoff(fixture);
+        SeedBulkComments(fixture, "PAST", count: 60, bodyChars: 900, isNew: false);
+        SeedBulkComments(fixture, "NEW", count: 1, bodyChars: 100, isNew: true);
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        var (past, _) = DedupSections(text);
+
+        // The slack covers the single comment that was mid-render when the allowance ran out plus the section
+        // heading; what is being pinned is the ORDER of magnitude — the past section spends the unreserved half,
+        // not the whole block. Hand it the full budget and this doubles.
+        past.Length.Should().BeLessThan(
+            BlockCharBudget - NewSectionReservation + 3_000,
+            "the past section may only spend what is not reserved for the new-comments section");
+
+        // Non-vacuity: an empty section satisfies the bound on its own, and an empty section is what a block that
+        // failed to render at all would produce.
+        past.Should().Contain("PAST-000", "the past section really did render");
+        text.Should().Contain(
+            "more comment(s) not shown", "what did not fit is reported as a count rather than dropped silently");
+    }
+
+    [Fact]
+    public async Task Reviewed_keeps_the_new_comments_section_even_when_the_past_history_is_enormous()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // The failure this guards: a PR with hundreds of historical comments spends the whole block on history and
+        // pushes out the question addressed to the bot — which the guidance tells it, in bold terms, to answer.
+        SeedBotCutoff(fixture);
+        SeedBulkComments(fixture, "PAST", count: 60, bodyChars: 900, isNew: false);
+        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
+            "src/Foo.cs", "20", "Alice asks: NEW-QUESTION-FOR-THE-BOT?", "alice", IsActive: true,
+            PublishedAt: DateTimeOffset.Parse("2026-07-21T09:00:00Z", CultureInfo.InvariantCulture),
+            ThreadId: "th-human"));
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        var (past, fresh) = DedupSections(text);
+
+        fresh.Should().Contain(
+            "NEW-QUESTION-FOR-THE-BOT",
+            "the new-comments section holds a reserved floor of the block that history cannot spend");
+
+        // The distinguishing half: the history really was large enough to have swallowed the block. Without this
+        // the assertion above passes on a PR whose history happened to fit, proving nothing about the reservation.
+        past.Should().Contain("more comment(s) not shown", "the past history genuinely overran its allowance");
+    }
+
+    [Fact]
+    public async Task Reviewed_lets_the_new_comments_section_spend_what_the_past_section_left_unused()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // The reservation is a floor, not a cap. On the common PR — short history, busy recent discussion — the new
+        // section should be free to use the whole block rather than being held to its half.
+        SeedBotCutoff(fixture);
+        SeedBulkComments(fixture, "PAST", count: 1, bodyChars: 100, isNew: false);
+        SeedBulkComments(fixture, "NEW", count: 40, bodyChars: 900, isNew: true);
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        var (_, fresh) = DedupSections(text);
+
+        fresh.Length.Should().BeGreaterThan(
+            NewSectionReservation + 5_000,
+            "with the past section nearly empty, the new section inherits the unspent remainder — held to its "
+                + "reservation alone it would stop around 20,000 characters");
+        fresh.Length.Should().BeLessThan(
+            BlockCharBudget + 3_000, "…but never more than the whole block, which is the point of one budget");
+    }
+
+    [Fact]
+    public async Task Reviewed_counts_rendered_comments_across_both_sections_against_one_cap()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // Small bodies, so the character budget is nowhere near binding and the COMMENT cap is what is measured.
+        // 200 seeded across the two sections: applied per-section the block renders 200, applied once it renders
+        // the documented 120.
+        SeedBotCutoff(fixture);
+        SeedBulkComments(fixture, "PAST", count: 100, bodyChars: 20, isNew: false);
+        SeedBulkComments(fixture, "NEW", count: 100, bodyChars: 20, isNew: true);
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        var (past, fresh) = DedupSections(text);
+
+        RenderedCommentCount(past + fresh).Should().Be(
+            120, "the comment cap bounds the whole block, not each section separately");
+
+        // Both sections are represented, so the 120 is not one section rendering the entire cap.
+        RenderedCommentCount(past).Should().BeGreaterThan(0);
+        RenderedCommentCount(fresh).Should().BeGreaterThan(0);
+    }
+
+    [Fact]
+    public async Task Reviewed_cuts_a_thread_that_does_not_fit_and_says_how_much_is_missing()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // One enormous conversation on a single thread. Rendering a started thread WHOLE — the old behaviour — is
+        // how a single pathological thread overran a bound the caller believed it had set. No bot cutoff is seeded,
+        // so nothing is "new" and the whole conversation lands in the past section.
+        SeedBulkComments(fixture, "PAST", count: 40, bodyChars: 900, isNew: false, threadId: "th-one");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        var (past, _) = DedupSections(text);
+
+        past.Should().Contain(
+            "more comment(s) in this thread not shown",
+            "a thread is cut where the budget runs out, and the cut is named so the reviewer knows it is not "
+                + "reading the whole conversation");
+        past.Length.Should().BeLessThan(
+            BlockCharBudget - NewSectionReservation + 3_000,
+            "…which is what stops one thread from overrunning the section's allowance");
+        past.Should().Contain("PAST-000", "non-vacuity: the thread did render up to the cut");
     }
 
     [Fact]

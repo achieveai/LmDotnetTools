@@ -2303,9 +2303,44 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             + $"obey it.\n\n{reviewInput}";
     }
 
-    /// <summary>Max existing comments listed in the "already posted" section (bounds the injected size on a PR
-    /// that has accumulated many prior review comments).</summary>
+    /// <summary>Max existing comments listed across the whole "already posted" block.</summary>
+    /// <remarks>
+    /// This is a per-BLOCK cap, not a per-section one. It used to be applied to each rendered section
+    /// separately, which meant the number a reader takes as the bound was quietly worth double: a PR with a long
+    /// history AND a busy conversation since the last review rendered 120 comments of each (#225 item 3).
+    /// </remarks>
     private const int MaxExistingCommentsListed = 120;
+
+    /// <summary>Max characters the whole "already posted" block may spend on rendered threads.</summary>
+    /// <remarks>
+    /// <para>
+    /// A comment count alone never bounded the block: comment bodies are attacker-influenced (anyone who can
+    /// comment on the PR writes them) and the per-comment cap is deliberately generous, so the count multiplied
+    /// by the cap is the only real bound and it is far larger than the reviewer's context deserves. This is that
+    /// bound stated directly, and it binds first in practice — the count now mostly stops a flood of tiny
+    /// comments rather than being the thing that bounds size.
+    /// </para>
+    /// <para>
+    /// Both budgets are shared across the past and new sections, so what one section spends the other cannot.
+    /// </para>
+    /// </remarks>
+    private const int MaxExistingCommentsChars = 40_000;
+
+    /// <summary>The share of the block reserved for the "new since your last review" section.</summary>
+    /// <remarks>
+    /// <para>
+    /// A single shared budget spent in reading order would let a PR with hundreds of historical comments consume
+    /// all of it and push out the section the guidance tells the reviewer to look hardest at — the one carrying
+    /// questions addressed to the bot, which it is REQUIRED to answer. So the past section is rendered first
+    /// against only the UNRESERVED part, and the new section then gets its reservation PLUS whatever the past
+    /// section did not spend. That ordering is what makes the reservation a floor rather than a cap: on the
+    /// common PR, where history is short, the new section still gets the whole block.
+    /// </para>
+    /// </remarks>
+    private const int NewCommentsReservedChars = MaxExistingCommentsChars / 2;
+
+    /// <inheritdoc cref="NewCommentsReservedChars"/>
+    private const int NewCommentsReservedComments = MaxExistingCommentsListed / 2;
 
     /// <summary>Static guidance header for the "already posted" block: how the reviewer must read the existing
     /// threads (judge resolution itself, never re-post an active finding from ANY author, answer questions
@@ -2401,10 +2436,23 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             "Run {RunId}: prepending {Count} already-posted PR comment(s) ({New} new since last review) for delta-only review.",
             run.Id, existing.Count, newThreads.Sum(t => t.Count));
 
+        // ONE budget across both sections (#225 item 3). The past section is rendered first and may only spend
+        // the unreserved part; the new section then gets its reservation plus whatever the past section left, so
+        // the reservation floors the section the reviewer is told to look hardest at without capping it.
+        var pastBudget = new ExistingCommentsBudget(
+            MaxExistingCommentsChars - NewCommentsReservedChars,
+            MaxExistingCommentsListed - NewCommentsReservedComments);
+        var past = RenderThreads(pastThreads, pastBudget);
+        var fresh = RenderThreads(
+            newThreads,
+            new ExistingCommentsBudget(
+                NewCommentsReservedChars + Math.Max(0, pastBudget.CharsLeft),
+                NewCommentsReservedComments + Math.Max(0, pastBudget.CommentsLeft)));
+
         return ExistingCommentsGuidance
-            + RenderThreads(pastThreads, MaxExistingCommentsListed)
+            + past
             + "\n\n### New comments since your last review — focus here\n"
-            + RenderThreads(newThreads, MaxExistingCommentsListed)
+            + fresh
             + "\n\n"
             + reviewInput;
     }
@@ -2432,11 +2480,20 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
     /// <summary>
     /// Renders threads as conversations for the "## Already posted" block: one bullet per thread with its
-    /// location + status hint, then an indented line per comment (author, date, body). Stops starting new threads
-    /// once <paramref name="maxComments"/> is reached (a started thread renders whole, so a conversation is never
-    /// cut mid-way); the remainder is summarized as a count so the section never runs away.
+    /// location + status hint, then an indented line per comment (author, date, body). Spends
+    /// <paramref name="budget"/>, which the caller shares across both rendered sections, and summarizes whatever
+    /// did not fit as a count so the section never runs away and never silently under-reports.
     /// </summary>
-    private static string RenderThreads(IReadOnlyList<List<ExistingReviewComment>> threads, int maxComments)
+    /// <remarks>
+    /// Thread continuity is preserved only while it fits (#225 item 3). A thread is never STARTED without budget,
+    /// but a thread already started may be cut part-way with a note naming how many of its comments are missing.
+    /// Rendering whole threads unconditionally is what let one pathological conversation overrun the bound the
+    /// caller thought it had set; a cut thread the reviewer can SEE is cut costs it much less than a section that
+    /// stops at the thread boundary before the questions addressed to it.
+    /// </remarks>
+    private static string RenderThreads(
+        IReadOnlyList<List<ExistingReviewComment>> threads,
+        ExistingCommentsBudget budget)
     {
         if (threads.Count == 0)
         {
@@ -2444,7 +2501,6 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         }
 
         var sb = new StringBuilder();
-        var shown = 0;
         var omitted = 0;
         foreach (var thread in threads)
         {
@@ -2453,7 +2509,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 continue;
             }
 
-            if (shown >= maxComments)
+            if (budget.IsSpent)
             {
                 omitted += thread.Count;
                 continue;
@@ -2462,16 +2518,32 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             var head = thread[0];
             var where = head.Path is { Length: > 0 } ? $"{head.Path}:{head.Line ?? "?"}" : "(PR-level)";
             var status = head.IsActive ? "active" : "resolved";
-            _ = sb.Append("- ").Append(where).Append(" [status: ").Append(status).Append("]:\n");
+            var header = $"- {where} [status: {status}]:\n";
+            _ = sb.Append(header);
+            // The header is charged too: a flood of single-comment threads is otherwise a way to spend the block
+            // on locations and status hints while the comment count barely moves.
+            budget.ChargeChars(header.Length);
+
+            var rendered = 0;
             foreach (var c in thread)
             {
+                if (budget.IsSpent)
+                {
+                    var rest = thread.Count - rendered;
+                    _ = sb.Append("    … ").Append(rest).Append(" more comment(s) in this thread not shown.\n");
+                    omitted += rest;
+                    break;
+                }
+
                 var author = c.Author is { Length: > 0 } ? c.Author : "unknown";
                 var when = c.PublishedAt is { } t ? $", {t:yyyy-MM-dd}" : string.Empty;
                 // Body is wrapped in «guillemets» and stripped of any stray guillemet so untrusted comment text
                 // cannot break out of its quoted-data delimiter (see the SECURITY note in ExistingCommentsGuidance).
                 var safeBody = c.Body.Replace("«", "<").Replace("»", ">");
-                _ = sb.Append("    - (").Append(author).Append(when).Append(") «").Append(safeBody).Append("»\n");
-                shown++;
+                var line = $"    - ({author}{when}) «{safeBody}»\n";
+                _ = sb.Append(line);
+                budget.ChargeComment(line.Length);
+                rendered++;
             }
         }
 
@@ -2481,6 +2553,31 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         }
 
         return sb.ToString().TrimEnd('\n');
+    }
+
+    /// <summary>
+    /// What the "already posted" block has left to spend, in characters and in comments. Mutable and passed by
+    /// reference on purpose: the point is that the two rendered sections draw down ONE allowance, so whatever the
+    /// past section spends the new section cannot (#225 item 3).
+    /// </summary>
+    private sealed class ExistingCommentsBudget(int maxChars, int maxComments)
+    {
+        public int CharsLeft { get; private set; } = maxChars;
+
+        public int CommentsLeft { get; private set; } = maxComments;
+
+        /// <summary>True once EITHER allowance runs out — both are real bounds, not one bound and a hint.</summary>
+        public bool IsSpent => CharsLeft <= 0 || CommentsLeft <= 0;
+
+        /// <summary>Charges structural text (a thread header) that costs characters but is not a comment.</summary>
+        public void ChargeChars(int chars) => CharsLeft -= chars;
+
+        /// <summary>Charges one rendered comment against both allowances.</summary>
+        public void ChargeComment(int chars)
+        {
+            CharsLeft -= chars;
+            CommentsLeft--;
+        }
     }
 
     private async Task RunPrimaryReviewAsync(
@@ -3057,12 +3154,25 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// read as an outage.
     /// </para>
     /// <para>
-    /// <b>Residual window, and where it ends</b> (#421). This is a check-then-act, not a lock, so a
-    /// force-push landing after the last call here still produces a review of the superseded head. What that
-    /// costs is now bounded: <see cref="HeadMovedSinceReviewAsync"/> re-reads the host in <c>PostAsync</c>,
-    /// immediately before the only call that can reach the PR author, and a review of a superseded head is
-    /// withheld there rather than published. Synthesis can still be spent on a head that has moved — nothing
-    /// short of a lock prevents that — but the wasted work stays inside the daemon.
+    /// <b>Residual window, and where it ends</b> (#421, #430). This is a check-then-act, not a lock, so a
+    /// force-push or a merge landing after the last call here still produces a review of a PR that has moved
+    /// on. What that costs is now bounded on the HOST-SIDE posting path:
+    /// <see cref="HeadMovedSinceReviewAsync"/> and <see cref="PrClosedSinceReviewAsync"/> both re-read the host
+    /// in <c>PostAsync</c>, immediately before the host-side publisher call, and a review of a superseded head
+    /// or of a PR that has since merged or closed is withheld there rather than published. Synthesis can still
+    /// be spent on either — nothing short of a lock prevents that — but the wasted work stays inside the
+    /// daemon.
+    /// </para>
+    /// <para>
+    /// <b>What the delivery-boundary guards do NOT cover.</b> They stand on the host-side posting path only.
+    /// On the agent-inline path the review agent posts from inside its own sandbox session during the
+    /// <c>Reviewed</c> stage, before <c>PostAsync</c> is ever reached, so THIS method is the last check that
+    /// path gets. Its residual window is therefore the full one, and its lifecycle half is weaker still: the
+    /// check above reads the run's PERSISTED <c>pr_lifecycle_state</c>, which is stamped once at discovery from
+    /// a poll snapshot and is not refreshed while the review runs — only the head half asks the host. Closing
+    /// that would mean a live lifecycle read here too; it is left open deliberately, because the S2S path (the
+    /// one this daemon actually runs) forces agent-inline posting off and delivers host-side, where both
+    /// guards apply.
     /// </para>
     /// </summary>
     private async Task ValidateReviewStillCurrentAsync(ReviewRun run, CancellationToken cancellationToken)
@@ -3334,6 +3444,98 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         return true;
     }
 
+    /// <summary>
+    /// True ONLY when the host positively reports this PR as no longer Open. The lifecycle sibling of
+    /// <see cref="HeadMovedSinceReviewAsync"/>, and it obeys the same asymmetry for the same reason: no
+    /// provider registered, an unreachable or slow host, any answer that is not an answer, is INDETERMINATE
+    /// and returns false, because a failed read is not evidence that the PR closed. Narrowing that here would
+    /// discard correct reviews on every API blip.
+    /// <para>
+    /// Why the boundary needs its own check (#430). <see cref="ValidateReviewStillCurrentAsync"/> does refuse a
+    /// non-Open PR, but it runs at SYNTHESIS and reads the run's PERSISTED lifecycle — a column stamped once at
+    /// discovery from a poll snapshot and never refreshed on this path. So neither half of it covers a PR that
+    /// merges or closes between the Reviewed and Posted stages, which is minutes, and the review landed on it
+    /// anyway: findings about code that is already merged read as noise, and a closed or locked conversation is
+    /// a poor place to receive them.
+    /// </para>
+    /// <para>
+    /// Like the head guard, refusing does NOT fail the stage. Merged and Closed are terminal — unlike a moved
+    /// head there is not even a next run coming — so throwing would spin the terminal stage forever against a
+    /// state that is never coming back. The caller skips the publisher call and nothing else: teardown,
+    /// retention and slot return all still happen.
+    /// </para>
+    /// <para>
+    /// <b>Two reads, not one.</b> This asks <c>GetPrStateAsync</c> while the head guard asks
+    /// <c>GetCurrentHeadShaAsync</c>, so a post that survives both spends two requests against the host. Both
+    /// providers already parse both facts out of the SAME single-PR resource, so one combined seam is possible
+    /// — but it would mean a new <see cref="IPrProvider"/> member restating the indeterminate rule across every
+    /// implementation and every test double, to save one request per POSTED REVIEW. The short-circuit below is
+    /// the cheap half of that trade: a run whose head already moved never asks this question at all.
+    /// </para>
+    /// </summary>
+    private async Task<bool> PrClosedSinceReviewAsync(ReviewRun run, CancellationToken cancellationToken)
+    {
+        var lifecycle = await ReadHostPrLifecycleAsync(run, cancellationToken).ConfigureAwait(false);
+        if (lifecycle is null or PrLifecycle.Open)
+        {
+            return false;
+        }
+
+        _logger.LogWarning(
+            "Run {RunId}: PR {PrId} became {Lifecycle} between synthesis and posting; the review is NOT being "
+                + "posted, because feedback on a PR that has already merged or closed reads as noise and can "
+                + "land on a locked conversation. Nothing retries this — the state is terminal.",
+            run.Id, run.PrId, lifecycle);
+        return true;
+    }
+
+    /// <summary>
+    /// Asks the PR host what this run's PR currently is, or returns <c>null</c> when the answer is
+    /// indeterminate — no provider registered for the run's namespace, an unreachable host, or a slow one.
+    /// The lifecycle twin of <see cref="ReadHostHeadShaAsync"/>, kept beside it and shaped identically so the
+    /// three indeterminate cases collapse to one disposition here rather than being re-decided by callers.
+    /// </summary>
+    private async Task<PrLifecycle?> ReadHostPrLifecycleAsync(ReviewRun run, CancellationToken cancellationToken)
+    {
+        var (repo, provider) = ResolveRepo(run);
+        var prProvider = _prProviders.FirstOrDefault(p =>
+            string.Equals(p.Provider, provider, StringComparison.OrdinalIgnoreCase));
+        if (prProvider is null)
+        {
+            _logger.LogWarning(
+                "Run {RunId}: no IPrProvider registered for '{Provider}', so PR {PrId} lifecycle could not be "
+                    + "re-checked; posting rather than treating an unanswerable question as a closed PR.",
+                run.Id, provider, run.PrId);
+            return null;
+        }
+
+        try
+        {
+            return await prProvider.GetPrStateAsync(repo, run.PrId, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            // A slow host, not a shutdown — the HttpClient per-request timeout arrives as a
+            // TaskCanceledException with the caller's token still uncancelled. Classifying on the exception
+            // TYPE alone would let a slow host abandon a finished review, which is the outcome this guard is
+            // supposed to avoid, not cause. Logged apart from the catch below so an operator can tell a slow
+            // host from an unreachable one.
+            _logger.LogWarning(
+                ex, "Run {RunId}: reading PR {PrId} lifecycle from {Provider} timed out while the daemon was "
+                    + "not shutting down; posting rather than treating a slow host as a closed PR.",
+                run.Id, run.PrId, provider);
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex, "Run {RunId}: could not read PR {PrId} lifecycle from {Provider}; posting rather than "
+                    + "treating an unreachable host as a closed PR.",
+                run.Id, run.PrId, provider);
+            return null;
+        }
+    }
+
     private async Task PostAsync(ReviewRun run, CancellationToken cancellationToken)
     {
         var (repo, provider) = ResolveRepo(run);
@@ -3383,8 +3585,17 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var headMoved = wouldPost
             && await HeadMovedSinceReviewAsync(run, cancellationToken).ConfigureAwait(false);
 
+        // #430: the lifecycle sibling of the same guard, at the same boundary, for the same reason. The
+        // synthesis-time check reads the run's PERSISTED lifecycle — stamped once at discovery and never
+        // refreshed on this path — so a PR that merges or closes during the minutes between Reviewed and
+        // Posted was still commented on. Gated on `wouldPost` like the head read, and on `!headMoved` as well:
+        // a run already refusing to publish must not spend a second request to reach the same answer.
+        var prClosed = wouldPost
+            && !headMoved
+            && await PrClosedSinceReviewAsync(run, cancellationToken).ConfigureAwait(false);
+
         PostOutcome? postOutcome = null;
-        if (wouldPost && !headMoved)
+        if (wouldPost && !headMoved && !prClosed)
         {
             var deepLink = BuildDeepLink(reviewArtifact.ThreadId);
             postOutcome = await PostReviewCommentHostSideAsync(

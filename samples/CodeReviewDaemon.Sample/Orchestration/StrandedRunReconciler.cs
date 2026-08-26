@@ -65,9 +65,33 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// remaining bound. Make a failed resume literally eligible on the next pass and a permanently-broken run
 /// gets a full attempt — lease, clone, LLM — every cycle, through the one entry that has no governor: the
 /// hot-loop the governor exists to kill. The accepted cost is the other direction: a genuinely recoverable
-/// run whose resume failed waits a full grace period for its next attempt. A shorter dedicated retry window
-/// would have to start by addressing the orchestrator's own <c>RetryPending</c> write, which produces this
-/// delay on nearly every occurrence.
+/// run whose resume failed waits a full grace period for its next attempt.
+/// </para>
+/// <para>
+/// <b>The retry-pending fast path</b> (#429) is the shorter dedicated retry window that paragraph asks for,
+/// and it is deliberately a SECOND listing rather than a shorter grace for everything. The grace period above
+/// answers "has anything happened to this run lately?", and for a <c>Pending</c> or <c>Running</c> row the
+/// only evidence available IS its age — those keep the abandonment window unchanged. A <c>RetryPending</c> row
+/// is different in kind: the orchestrator's stage catch wrote it deliberately, so a stage ran, failed, and the
+/// run is owed another attempt. Waiting the abandonment window to honour a decision already made is an
+/// accident of using one number for two questions, and it bites hardest exactly where this class matters — a
+/// PR outside the poll's recency window, where this pass is the only retry that will ever arrive.
+/// </para>
+/// <para>
+/// What that window may NOT be is the poll's own cadence, for the reason the paragraph above gives: this path
+/// has no attempt budget and no exponential backoff, because the resume resets the governor on purpose, so the
+/// window IS the backoff. Set it to seconds and a permanently-broken run buys a full lease, clone and LLM run
+/// every cycle, forever, through the one entry the governor cannot see. So it is minutes rather than seconds,
+/// and it is an operator knob (<c>StrandedRunRetryPendingGraceMinutes</c>) whose 0 means "off — RetryPending
+/// drains on the abandonment window exactly as it did before".
+/// </para>
+/// <para>
+/// Both listings feed ONE pass and ONE resume budget. A <c>RetryPending</c> row old enough to also be
+/// abandoned appears in both and is settled once: fast rows are taken first — that is the whole point — and a
+/// slow row whose id was already taken is dropped, so no run is settled, charged or logged twice. Sharing the
+/// budget is what keeps <c>StrandedRunMaxResumesPerSweep</c> a real bound on concurrent reviews (and, on a
+/// posting daemon, on concurrent comments) instead of a per-listing bound that doubles the moment a second
+/// listing is added.
 /// </para>
 /// <para>
 /// <b>Single owner.</b> A takeover here is claimed by stamping the row's <c>updated_at</c>, not by a
@@ -82,6 +106,8 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 internal sealed class StrandedRunReconciler
 {
     private readonly Func<DateTimeOffset, int, IReadOnlyList<StrandedRunRow>> _listStrandedRuns;
+    private readonly Func<DateTimeOffset, int, IReadOnlyList<StrandedRunRow>>? _listRetryPendingRuns;
+    private readonly TimeSpan _retryPendingGrace;
     private readonly Func<StrandedRunRow, CancellationToken, Task<PrLifecycle>> _getPrLifecycleAsync;
     private readonly Func<ReviewRun, CancellationToken, Task<ReviewRun>> _resumeAsync;
     private readonly Action<long, ReviewStage, WorkflowStatus, PrLifecycleState> _updateRunState;
@@ -100,7 +126,9 @@ internal sealed class StrandedRunReconciler
         TimeSpan grace,
         int scanLimit,
         int maxResumesPerPass,
-        ILogger<StrandedRunReconciler> logger)
+        ILogger<StrandedRunReconciler> logger,
+        Func<DateTimeOffset, int, IReadOnlyList<StrandedRunRow>>? listRetryPendingRuns = null,
+        TimeSpan retryPendingGrace = default)
     {
         _listStrandedRuns = listStrandedRuns ?? throw new ArgumentNullException(nameof(listStrandedRuns));
         _getPrLifecycleAsync = getPrLifecycleAsync ?? throw new ArgumentNullException(nameof(getPrLifecycleAsync));
@@ -114,6 +142,25 @@ internal sealed class StrandedRunReconciler
         ArgumentOutOfRangeException.ThrowIfNegative(maxResumesPerPass);
         _maxResumesPerPass = maxResumesPerPass;
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+
+        // The fast path is opt-in and off unless BOTH halves arrive, so a caller that supplies only one gets an
+        // argument error rather than a path that silently does nothing — the failure mode of an "off by default"
+        // feature nobody notices is switched off. A window at or beyond the abandonment window is refused for
+        // the same reason: it would read as a fast path in the configuration and behave as a second slow one.
+        if (listRetryPendingRuns is not null)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(retryPendingGrace.Ticks);
+            ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(retryPendingGrace.Ticks, grace.Ticks);
+        }
+        else if (retryPendingGrace != default)
+        {
+            throw new ArgumentException(
+                "A retry-pending grace period was supplied without a listing to apply it to.",
+                nameof(listRetryPendingRuns));
+        }
+
+        _listRetryPendingRuns = listRetryPendingRuns;
+        _retryPendingGrace = retryPendingGrace;
     }
 
     /// <summary>
@@ -122,23 +169,38 @@ internal sealed class StrandedRunReconciler
     /// </summary>
     public async Task SweepAsync(CancellationToken cancellationToken)
     {
-        var staleBefore = _timeProvider.GetUtcNow() - _grace;
+        var now = _timeProvider.GetUtcNow();
+        var staleBefore = now - _grace;
+        var retryStaleBefore = now - _retryPendingGrace;
+
+        // Read the fast listing first only so the log below can name its count; the ORDER that matters is the
+        // merge order, which puts retry-pending rows ahead of the abandonment listing so the pass's scarce
+        // resume slots go to the runs that are owed a retry rather than to the ones merely old enough to be
+        // written off. `_scanLimit` caps each listing separately: it is a cap on reading, not on working, and a
+        // pass that reads up to twice as many rows still resumes at most `_maxResumesPerPass` of them.
+        var retryPending = _listRetryPendingRuns is null
+            ? []
+            : _listRetryPendingRuns(retryStaleBefore, _scanLimit);
         var stranded = _listStrandedRuns(staleBefore, _scanLimit);
-        if (stranded.Count == 0)
+        var settling = MergeFastPathFirst(retryPending, stranded);
+        if (settling.Count == 0)
         {
             return;
         }
 
         _logger.LogInformation(
-            "Stranded-run reconciler found {Count} run(s) untouched since {StaleBefore:O}; resuming at most "
+            "Stranded-run reconciler found {Count} run(s) to settle — {FastCount} retry-pending since "
+                + "{RetryStaleBefore:O}, the rest untouched since {StaleBefore:O}; resuming at most "
                 + "{MaxResumes} this pass.",
-            stranded.Count,
+            settling.Count,
+            retryPending.Count,
+            retryStaleBefore,
             staleBefore,
             _maxResumesPerPass);
 
         var budget = new ResumeBudget(_maxResumesPerPass);
         var deferred = 0;
-        foreach (var row in stranded)
+        foreach (var row in settling)
         {
             cancellationToken.ThrowIfCancellationRequested();
             try
@@ -186,6 +248,36 @@ internal sealed class StrandedRunReconciler
                 budget.Spent,
                 _maxResumesPerPass);
         }
+    }
+
+    /// <summary>
+    /// One settling order over both listings: every retry-pending row, then every abandonment row that is not
+    /// already in it. The two listings genuinely overlap — a <c>RetryPending</c> row that has sat past the
+    /// abandonment window satisfies both predicates — and the overlap is not an edge case but the steady state
+    /// of a run that keeps failing. Settling such a row twice in one pass would charge the resume budget twice
+    /// for one run, hand the same run to the orchestrator twice concurrently, and log it twice; deduplicating
+    /// here rather than inside <see cref="SettleAsync"/> keeps that a property of the pass rather than
+    /// something every future outcome branch has to remember.
+    /// </summary>
+    private static IReadOnlyList<StrandedRunRow> MergeFastPathFirst(
+        IReadOnlyList<StrandedRunRow> fast, IReadOnlyList<StrandedRunRow> slow)
+    {
+        if (fast.Count == 0)
+        {
+            return slow;
+        }
+
+        var seen = new HashSet<long>(fast.Count + slow.Count);
+        var merged = new List<StrandedRunRow>(fast.Count + slow.Count);
+        foreach (var row in fast.Concat(slow))
+        {
+            if (seen.Add(row.Run.Id))
+            {
+                merged.Add(row);
+            }
+        }
+
+        return merged;
     }
 
     /// <summary>

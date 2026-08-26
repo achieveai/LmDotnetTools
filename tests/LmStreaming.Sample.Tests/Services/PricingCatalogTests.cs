@@ -157,6 +157,41 @@ public class PricingCatalogTests
         resolver.Resolve("stray-e").Should().BeNull();
     }
 
+    [Theory]
+    [InlineData("NaN", "15")]
+    [InlineData("3", "NaN")]
+    [InlineData("Infinity", "15")]
+    [InlineData("3", "Infinity")]
+    [InlineData("-Infinity", "15")]
+    public void ANonFiniteRate_IsRefusedByTheCatalogItself_NotOnlyByTheResolverDownstream(
+        string prompt,
+        string completion)
+    {
+        // The sibling test above asserts through PricingConfigResolver, which discards a non-finite rate for
+        // reasons of its OWN: its ambiguity check compares candidate rates with `==`, and NaN != NaN, so a
+        // NaN reaching the resolver is dropped as "ambiguous" whatever BuildCatalog decided. A rule pinned
+        // only there is pinned to somebody else's accident (#431). This asserts the drop where the decision
+        // is actually made, so BuildCatalog's own refusal survives a change to the resolver.
+        var catalog = PricingCatalog.BuildCatalog(Config(
+            ("Pricing:Models:stray-e:PromptPerMillion", prompt),
+            ("Pricing:Models:stray-e:CompletionPerMillion", completion),
+            ("Pricing:Models:sound:PromptPerMillion", "3"),
+            ("Pricing:Models:sound:CompletionPerMillion", "15")));
+
+        // Which row pins which conjunct, so a later reader does not over-claim: the INFINITY rows are what
+        // distinguish `double.IsFinite` — delete it and +Infinity sails through `value >= 0`, turning these
+        // red. The NaN rows distinguish nothing on their own, because every comparison against NaN is false
+        // in C#: `NaN >= 0` refuses it too, so NaN is refused twice over and no single-clause deletion can
+        // turn a NaN row red. They are kept anyway — they pin that NaN never reaches a (decimal) cast, and
+        // they are the case that would go red if `value >= 0` were ever rewritten as `!(value < 0)`, which
+        // reads identically and admits NaN.
+        //
+        // The sound sibling is the non-vacuity proof: an empty catalog satisfies the NotContain on its own,
+        // and an empty catalog is exactly what a BuildCatalog reading the wrong section would return.
+        catalog.Models.Should().Contain(m => m.Id == "sound");
+        catalog.Models.Should().NotContain(m => m.Id == "stray-e");
+    }
+
     [Fact]
     public void AZeroRate_IsAFreeModel_AndMustStillResolve()
     {
