@@ -376,12 +376,20 @@ public sealed partial class SandboxClient
     /// caller's token alone. <paramref name="content"/>, when supplied, is the request body (JSON for
     /// <c>operations</c>, octet bytes for a file <c>PUT</c>).
     /// </summary>
+    /// <remarks>
+    /// <paramref name="operationId"/>, when supplied by the operations submit/poll callers, is stamped onto
+    /// every <see cref="SandboxException"/> this method raises. That id is the ONLY way a caller can re-poll
+    /// a command whose response was lost — and when the SDK generated it (the caller passed no
+    /// <see cref="SandboxCommand.OperationId"/>) the exception is the only place it is ever surfaced, so
+    /// dropping it here would strand a side-effecting command with no recovery handle at all.
+    /// </remarks>
     private async Task<HttpResponseMessage> SendDirectAsync(
         HttpMethod method,
         string relativeUri,
         HttpContent? content,
         string sessionId,
-        CancellationToken ct
+        CancellationToken ct,
+        string? operationId = null
     )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -415,7 +423,8 @@ public sealed partial class SandboxClient
             throw new SandboxException(
                 SandboxErrorKind.TransportTimeout,
                 $"Sandbox gateway request to '{relativeUri}' did not complete within the configured "
-                    + $"transport timeout ({_options.TransportTimeout})."
+                    + $"transport timeout ({_options.TransportTimeout}).",
+                operationId: operationId
             );
         }
         catch (HttpRequestException ex)
@@ -425,7 +434,8 @@ public sealed partial class SandboxClient
                 SandboxErrorKind.TransportTimeout,
                 $"Could not reach the sandbox gateway at '{_options.ServerAddress}'.",
                 statusCode: null,
-                ex
+                ex,
+                operationId
             );
         }
     }
@@ -466,7 +476,8 @@ public sealed partial class SandboxClient
         string operation,
         string sessionId,
         CancellationToken callerToken,
-        CancellationToken? readBudget = null
+        CancellationToken? readBudget = null,
+        string? operationId = null
     )
     {
         var statusCode = (int)response.StatusCode;
@@ -477,13 +488,19 @@ public sealed partial class SandboxClient
                 $"Sandbox gateway returned redirect status {statusCode} for {operation}; this SDK never "
                     + "follows redirects (following one would replay the X-Sbx-* credential headers to the "
                     + "redirect target). Point ServerAddress directly at the gateway's canonical origin.",
-                statusCode
+                statusCode,
+                operationId: operationId
             );
         }
 
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
         {
-            return new SandboxException(SandboxErrorKind.Authorization, $"Sandbox gateway returned {statusCode} for {operation}.", statusCode);
+            return new SandboxException(
+                SandboxErrorKind.Authorization,
+                $"Sandbox gateway returned {statusCode} for {operation}.",
+                statusCode,
+                operationId: operationId
+            );
         }
 
         string? errorCode = null;
@@ -521,7 +538,7 @@ public sealed partial class SandboxClient
 
         var kind = MapDirectErrorKind(response.StatusCode, errorCode);
         var codeSuffix = string.IsNullOrEmpty(errorCode) ? string.Empty : $" (error_code {errorCode})";
-        return new SandboxException(kind, $"Sandbox gateway returned {statusCode} for {operation}{codeSuffix}.", statusCode)
+        return new SandboxException(kind, $"Sandbox gateway returned {statusCode} for {operation}{codeSuffix}.", statusCode, operationId: operationId)
         {
             ErrorCode = errorCode,
         };

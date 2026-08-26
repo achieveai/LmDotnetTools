@@ -11,6 +11,44 @@ OAuth/network/discovery policy remain the caller's responsibility.
 > enforces authentication, transport hardening, credential-replay protection, and the typed error
 > taxonomy.
 
+## Everything here is remote — the SDK never touches your host filesystem
+
+Every path this SDK accepts is **workspace-relative inside the sandbox**, and every operation is an
+HTTP call to the gateway. Nothing in this package opens, creates, resolves, or deletes a file or
+directory on the machine running your code:
+
+- `SandboxCreateRequest.Workspace` is a **logical** workspace identifier, not a host path. A value
+  that *looks* like one (`/srv/data`, `C:\work`) is passed through as an opaque label — it does not
+  resolve to, and does not create, anything on your disk.
+- `ReadTextFileAsync`/`WriteTextFileAsync`/`ListDirectoryAsync`/`ExecuteAsync` paths are resolved by
+  the **gateway**, under the sandbox's workspace mount.
+- Command stdout/stderr artifacts live in the sandbox and are fetched over HTTP; no temp file is
+  written locally at any point.
+
+**Everything returned is materialized in process memory.** `ReadTextFileAsync` returns one `string`
+and `ReadFileBytesAsync` one `byte[]`, each holding the whole file; `SandboxCommandResult` holds the
+whole stdout and stderr. There is no streaming or range-read surface — the gateway's files API has no
+range read — so a caller's working set scales with the largest file or output it asks for. The
+64&#160;MiB direct-read cap below is a defensive ceiling, not a memory budget: sizing that is the
+caller's job, and `ReadTextFileAsync(sessionId, path, maxBytes)` / `ReadFileBytesAsync(…, maxBytes)`
+exist so a caller can impose a much tighter one.
+
+## Gateway contract baseline
+
+The SDK speaks the gateway's **direct** operations/files/directories REST API (ADR 0031 / issue #119)
+for commands and file transfer, plus the REST control plane for lifecycle, marketplace preview, and
+session discovery. Its effective minimum gateway is a release carrying that direct API — pinned in CI
+by image tag in
+[`.github/workflows/sandbox-contract.yml`](../../.github/workflows/sandbox-contract.yml), which runs
+`tests/Sandbox.Integration.Tests` against the real gateway with `AUTH_ENFORCE=true` and fails (never
+silently skips) when that gateway is unavailable.
+
+Issue #187 named `SandboxedOstoolsMcpServer@c0dc9cfee3e3aeafd4c3d203ef7153255a990bb6` as the original
+baseline; it remains the pinned reference for the **catalog and session-discovery** wire shapes, which
+this SDK still speaks unchanged. It is *not* a runnable floor: the direct API did not exist at that
+commit, so a gateway pinned there cannot serve this SDK's command or file operations. The image tag in
+the workflow is the operative pin.
+
 ## What this release covers
 
 - **Lifecycle:** `CreateAsync`, `GetAsync`, `ListAsync`, `DeleteAsync` — explicit sandbox
@@ -97,6 +135,12 @@ finally
 }
 ```
 
+That block is transcribed into a compiled sample,
+[`tests/Sandbox.Tests/ReadmeUsageSample.cs`](../../tests/Sandbox.Tests/ReadmeUsageSample.cs), so a
+rename or signature change breaks the build rather than quietly rotting this page. Change both in the
+same commit. The same flow runs end-to-end against a real gateway in
+`tests/Sandbox.Integration.Tests/SandboxLiveContractTests.cs`.
+
 To share a caller-managed `HttpClient` (e.g. from `IHttpClientFactory`) instead of letting the
 client own its own transport, use the two-argument constructor: `new SandboxClient(options,
 httpClient)`. The SDK never mutates a borrowed client's `DefaultRequestHeaders` or `Timeout`. Every
@@ -181,6 +225,30 @@ cleanup.
 Because the gateway may rematerialize a lost container and retry the underlying invocation, command
 execution is **at-least-once**: a non-idempotent command can run more than once even though the SDK
 returns a single result.
+
+### Recovering a command whose response was lost
+
+Every failure that leaves a command's fate **unknown** — a transport timeout or unreachable gateway on
+the submit or a poll, and a gateway-reported error on either — raises a `SandboxException` carrying
+`OperationId`. That is the recovery handle: call `ExecuteAsync` again with
+`new SandboxCommand(argv, operationId: thatId)` and the gateway answers with the existing operation's
+status instead of running the command a second time (subject to the gateway-scoped, non-durable
+retention above).
+
+This matters most when you did **not** supply an operation id: the SDK generated one and put it on the
+wire, so the exception is the only place that id is ever surfaced. Read it off the exception before
+discarding it, or a side-effecting command becomes one you can neither observe nor safely re-run.
+
+### Artifact retention and cleanup
+
+A command's stdout/stderr artifacts are created, retained, and deleted **by the gateway**, inside the
+sandbox. This SDK writes no artifact, keeps no manifest, lease, or bookkeeping of its own, and runs no
+cleanup pass — so there is no SDK-side retention window to configure, and no stale-artifact sweep that
+a caller could trigger or tune. Retention is bounded by the gateway's own policy and, ultimately, by
+`DeleteAsync` (or the sandbox otherwise going away), which is the final cleanup boundary. A
+consequence worth stating plainly: artifacts a gateway retains under the workspace mount are ordinary
+workspace files, so `ListDirectoryAsync` does not filter them out — the SDK has no reserved directory
+of its own to exclude.
 
 
 ## Errors

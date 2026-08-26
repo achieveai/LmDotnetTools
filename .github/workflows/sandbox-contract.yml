@@ -42,6 +42,18 @@ env:
   # 0.1.4 is the published direct file/command REST contract image. The previous
   # 0.1.3 tag was removed from GHCR, so pinning it made this job fail at `docker
   # pull` before exercising any SDK contract.
+  #
+  # WHICH GATEWAY CONTRACT THIS TAG CARRIES. #187 named
+  # SandboxedOstoolsMcpServer@c0dc9cfee3e3aeafd4c3d203ef7153255a990bb6 as the minimum
+  # tested contract, and that commit is still the pinned reference for the *catalog and
+  # session-discovery* wire shapes (see the fixture citation in
+  # tests/Sandbox.Tests/SandboxClientCatalogTests.cs). The SDK's effective minimum is now
+  # HIGHER than that commit, not equal to it: ADR 0031 / #119 moved command execution and
+  # file transfer onto the gateway's direct operations/files/directories REST API, which
+  # did NOT exist at c0dc9cfe. A gateway at exactly that commit therefore cannot serve
+  # this SDK — the SDK requires a release carrying the direct API, of which this tag is
+  # the published one. Treat the image tag, not the commit, as the operative pin; the
+  # commit records only the older wire shapes the SDK still speaks unchanged.
   IMAGE_TAG: '0.1.4'
   GATEWAY_IMAGE: ghcr.io/achieveai/mcp-gateway
   AGENT_IMAGE: ghcr.io/achieveai/llm-sandbox-agent
