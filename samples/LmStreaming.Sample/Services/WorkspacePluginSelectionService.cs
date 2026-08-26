@@ -261,9 +261,20 @@ public sealed class WorkspacePluginSelectionService : IWorkspacePluginSelectionS
     /// field keeps the two uses provably consistent: reconcile compares against the very refs the batch
     /// was built from, not a second copy that could drift from them.
     /// </param>
-    /// <param name="Unsettled">
+    /// <param name="NeverSettled">
     /// Partition keys whose session creation had not finished when the settle budget expired. They
     /// were NOT migrated with the batch and are owed exactly one reconcile pass.
+    /// </param>
+    /// <param name="CasLost">
+    /// Partition keys whose candidate LOST the swap's compare-and-swap because a competing writer
+    /// (most often the gateway-404 recreate path) had already replaced the slot with its own candidate
+    /// by the time the swap ran. Distinct from <see cref="NeverSettled"/>: a session for these DOES
+    /// exist and this migration's own candidate did complete — it simply never got published, because
+    /// someone else's candidate is occupying the slot instead. That competing candidate may itself still
+    /// be mid-creation, which is exactly why the reconcile pass gives these keys the same bounded settle
+    /// wait <see cref="MigrateAsync"/> gave the original batch, rather than a zero-wait snapshot that
+    /// cannot observe a winner that has not finished yet. Owed the same single reconcile pass as
+    /// <see cref="NeverSettled"/>.
     /// </param>
     /// <param name="CommittedRevision">
     /// The <see cref="Workspace.PluginsRevision"/> this migration persisted. The reconcile pass re-reads
@@ -277,7 +288,8 @@ public sealed class WorkspacePluginSelectionService : IWorkspacePluginSelectionS
         IReadOnlyList<SandboxSession> Uncommitted,
         IReadOnlyList<SandboxSession> Superseded,
         WorkspaceRef NewRef,
-        IReadOnlyList<(string WorkspaceId, string AppId)> Unsettled,
+        IReadOnlyList<(string WorkspaceId, string AppId)> NeverSettled,
+        IReadOnlyList<(string WorkspaceId, string AppId)> CasLost,
         int CommittedRevision
     );
 
@@ -457,14 +469,15 @@ public sealed class WorkspacePluginSelectionService : IWorkspacePluginSelectionS
                 .. candidates.Where(c => !uncommittedIds.Contains(c.New.SessionId)).Select(c => c.Old.Session),
             ],
             NewRef: newRef,
+            NeverSettled: snapshot.Unsettled,
             // A partition whose slot changed underneath the swap (most often the gateway-404 recreate
             // path racing this migration) is NOT an unsettled partition, but it is owed exactly the same
             // reconcile: whoever republished the slot did so under some OTHER plugin selection, and
-            // nothing else will ever revisit it. Folding its key in here — rather than tracking a third,
-            // separate list — is what lets ReconcileUnsettledOnceAsync treat "still being created" and
-            // "raced the swap" as the one case they actually are: a partition this migration never
-            // managed to publish its selection onto.
-            Unsettled: [.. snapshot.Unsettled, .. candidates.Where(c => uncommittedIds.Contains(c.New.SessionId)).Select(c => c.Old.Key)],
+            // nothing else will ever revisit it. Tracked separately from NeverSettled (rather than folded
+            // into one list) so the reconcile pass's residual warning can name the correct cause instead
+            // of claiming every leftover key is "still being created" — a CAS-lost key already has a
+            // session, it is simply not this migration's.
+            CasLost: [.. candidates.Where(c => uncommittedIds.Contains(c.New.SessionId)).Select(c => c.Old.Key)],
             CommittedRevision: updated.PluginsRevision
         );
 
@@ -610,7 +623,7 @@ public sealed class WorkspacePluginSelectionService : IWorkspacePluginSelectionS
     /// </summary>
     private async Task ReconcileUnsettledOnceAsync(string workspaceId, PostCommitWork work)
     {
-        if (work.Unsettled.Count == 0)
+        if (work.NeverSettled.Count == 0 && work.CasLost.Count == 0)
         {
             return;
         }
@@ -631,18 +644,28 @@ public sealed class WorkspacePluginSelectionService : IWorkspacePluginSelectionS
                 return;
             }
 
-            var owed = new HashSet<(string WorkspaceId, string AppId)>(work.Unsettled);
+            var owed = new HashSet<(string WorkspaceId, string AppId)>([.. work.NeverSettled, .. work.CasLost]);
 
-            // Re-snapshot rather than reuse the original: the whole point is to pick up creations
-            // that completed AFTER the budget expired. The synchronous capture is right here — an
-            // entry still in flight simply will not appear, which is the correct outcome for a pass
-            // that must not wait. Nothing may be awaited between this line and the swap inside the
-            // loop below: the captured partitions carry the compare-and-swap witnesses, and an await
-            // here would let a newer writer republish a partition that this pass then judged against
-            // a witness it no longer holds.
-            var resnapshot = _registry.SnapshotPluginSelectionPartitions(workspaceId);
+            // Re-snapshot rather than reuse the original, bounded exactly like MigrateAsync's own
+            // pre-commit snapshot (:322-ish above) — NOT the zero-budget synchronous capture this used
+            // to be. A CasLost key's winner may have WON the compare-and-swap only moments ago and still
+            // be mid-creation (IsValueCreated but not yet completed) at the exact instant this pass
+            // re-snapshots: the very interval that cost this migration's own candidate the swap in the
+            // first place. The synchronous capture cannot see that winner at all — it silently skips any
+            // entry that is not both IsValueCreated AND already completed — so it would report the
+            // winner as never having appeared and leave the partition permanently stuck on it. Nothing
+            // may be awaited between this line and the swap inside the loop below (other than the wait
+            // this call performs internally): the captured partitions carry the compare-and-swap
+            // witnesses, and an await here would let a newer writer republish a partition that this pass
+            // then judged against a witness it no longer holds.
+            var resnapshot = await _registry.SnapshotPluginSelectionPartitionsAsync(
+                workspaceId,
+                _settleBudget,
+                CancellationToken.None
+            );
+            var partitions = resnapshot.Partitions;
 
-            var late = resnapshot
+            var late = partitions
                 .Where(partition =>
                     owed.Contains(partition.Key)
                     // Fail-closed: a session that cannot PROVE it already carries the new selection is
@@ -652,13 +675,19 @@ public sealed class WorkspacePluginSelectionService : IWorkspacePluginSelectionS
                 )
                 .ToList();
 
-            // An owed key that is STILL absent from this zero-budget snapshot never settled: its
-            // creation was in flight when the settle budget expired and is in flight now. This pass
-            // is the only one there will be, so this is the last moment that residual can be named —
+            // An owed key that is STILL absent even after this bounded wait is a genuine residual. This
+            // pass is the only one there will be, so this is the last moment that residual can be named —
             // after this the store says one thing and that session serves another, with no error
-            // anywhere. Emitted BEFORE the loop so a partition failing mid-loop cannot suppress it.
-            var neverSettled = owed.Where(key => !resnapshot.Any(partition => partition.Key == key)).ToList();
-            if (neverSettled.Count > 0)
+            // anywhere. Emitted BEFORE the loop so a partition failing mid-loop cannot suppress it. Split
+            // by ORIGINAL cause — NeverSettled vs CasLost — because they are different failures with
+            // different fixes: a NeverSettled key's creation is still wedged wherever it was started; a
+            // CasLost key already has a live session, it is simply not this migration's, and "still being
+            // created" would be a false description of it.
+            var stillMissing = owed.Where(key => !partitions.Any(partition => partition.Key == key)).ToList();
+            var stillNeverSettled = stillMissing.Where(key => work.NeverSettled.Contains(key)).ToList();
+            var stillCasLost = stillMissing.Where(key => work.CasLost.Contains(key)).ToList();
+
+            if (stillNeverSettled.Count > 0)
             {
                 _logger.LogWarning(
                     "Post-commit reconcile pass for workspace {WorkspaceId} left {UnreconciledCount} partition(s) "
@@ -666,8 +695,22 @@ public sealed class WorkspacePluginSelectionService : IWorkspacePluginSelectionS
                         + "when the settle budget expired and had not appeared by the single reconcile pass, so they "
                         + "keep serving the previous plugin selection until something recreates them.",
                     workspaceId,
-                    neverSettled.Count,
-                    string.Join(", ", neverSettled.Select(key => $"{key.WorkspaceId}/{key.AppId}"))
+                    stillNeverSettled.Count,
+                    string.Join(", ", stillNeverSettled.Select(key => $"{key.WorkspaceId}/{key.AppId}"))
+                );
+            }
+
+            if (stillCasLost.Count > 0)
+            {
+                _logger.LogWarning(
+                    "Post-commit reconcile pass for workspace {WorkspaceId} left {UnreconciledCount} partition(s) "
+                        + "unreconciled: {UnreconciledPartitions}. Their candidate lost a compare-and-swap to a "
+                        + "competing writer and that writer's own candidate had still not appeared by the single "
+                        + "reconcile pass (the bounded settle wait was not enough), so they keep serving whatever "
+                        + "selection that competing writer used until something recreates them.",
+                    workspaceId,
+                    stillCasLost.Count,
+                    string.Join(", ", stillCasLost.Select(key => $"{key.WorkspaceId}/{key.AppId}"))
                 );
             }
 

@@ -2,7 +2,7 @@
 
 * Status: Accepted
 * Date: 2026-08-25
-* Related issues, PRs, or commits: `#283`, PR #274 (`517eb6d3`)
+* Related issues, PRs, or commits: [#283](https://github.com/achieveai/LmDotnetTools/issues/283), PR #274 (`517eb6d3`)
 
 ## Context
 
