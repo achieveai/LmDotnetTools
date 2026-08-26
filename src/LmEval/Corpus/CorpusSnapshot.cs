@@ -170,14 +170,84 @@ public sealed record CorpusSnapshot
 }
 
 /// <summary>
-/// Loads a frozen corpus of recorded candidates. Implemented by the <b>host</b>, not by
-/// <c>LmEval</c>: the recorded pairs live in the host's database under the host's schema, and this
-/// library owns no persistence.
+/// What one windowed corpus load produced, and — the part that carries the weight — where its
+/// window actually ended.
+/// </summary>
+public sealed record CorpusPage
+{
+    /// <summary>
+    /// The corpus, or <b>null</b> when the window held no candidate at all.
+    /// <para>
+    /// Null rather than an empty snapshot, for the reason <see cref="CorpusSnapshot.Create"/>
+    /// refuses to build one: an empty corpus has an empty denominator, which makes every rate over
+    /// it undefined rather than zero. A scheduled consumer reaches this case on most of its sweeps —
+    /// a window in which nothing new was recorded is the normal outcome and not an error — so it has
+    /// to be representable, and representable as <i>nothing to evaluate</i> rather than as
+    /// <i>evaluated nothing</i>.
+    /// </para>
+    /// </summary>
+    public CorpusSnapshot? Snapshot { get; init; }
+
+    /// <summary>
+    /// The upper edge this load actually reached. Pass it back as the next call's
+    /// <c>afterCursor</c>, and persist it if the consumer outlives its process.
+    /// <para>
+    /// It is <b>returned</b> rather than left for the caller to derive, because deriving it is where
+    /// the whole failure mode lives. A window whose lower edge nobody advances re-reads the same
+    /// oldest records for ever, and does it silently: the snapshot hash stays stable, so every
+    /// comparability refusal downstream is perfectly happy — the corpus genuinely has not changed. A
+    /// caller can still fail to <i>persist</i> this value, and a test can pin that; it can no longer
+    /// fail to know what the value was.
+    /// </para>
+    /// <para>
+    /// Equal to the incoming <c>afterCursor</c> when the window held no source record, so an empty
+    /// sweep never rewinds the window. Advanced past records that yielded no candidate, so a record
+    /// the reader looked at and rejected is not looked at again for ever.
+    /// </para>
+    /// </summary>
+    public required long NextCursor { get; init; }
+
+    /// <summary>
+    /// True when <c>limit</c> cut the window short of the end of the recorded history: there is more
+    /// to read, and a scheduled consumer should come back for it rather than wait out its interval.
+    /// <para>
+    /// On the contract rather than in a log line, because a log line is what made the original
+    /// freeze invisible. Truncation is the exact condition under which the corpus stops
+    /// accumulating, and a consumer cannot act on a warning it never reads.
+    /// </para>
+    /// </summary>
+    public required bool Truncated { get; init; }
+}
+
+/// <summary>
+/// Loads a frozen corpus of recorded candidates over a stated window. Implemented by the
+/// <b>host</b>, not by <c>LmEval</c>: the recorded pairs live in the host's database under the
+/// host's schema, and this library owns no persistence.
+/// <para>
+/// The window is on the <b>method</b> and not on the implementation's constructor. A reader
+/// constructed around one window is a reader whose caller can hold it and reload it for ever
+/// without noticing that the window never moved; a reader that demands the window per call has no
+/// such state to go stale, and the only sensible source for each call's lower edge is the
+/// <see cref="CorpusPage.NextCursor"/> the previous call returned.
+/// </para>
 /// </summary>
 public interface ICorpusReader
 {
-    /// <summary>Loads one named corpus.</summary>
+    /// <summary>Loads one named corpus over one window.</summary>
     /// <param name="corpusId">Which corpus to load.</param>
+    /// <param name="afterCursor">
+    /// Exclusive lower edge of the window, in the host's own record order. Zero starts at the
+    /// beginning of the recorded history. Never negative.
+    /// </param>
+    /// <param name="limit">
+    /// Most source records to consider in this window. Positive. When it binds,
+    /// <see cref="CorpusPage.Truncated"/> says so.
+    /// </param>
     /// <param name="cancellationToken">Cancellation.</param>
-    Task<CorpusSnapshot> LoadAsync(string corpusId, CancellationToken cancellationToken);
+    Task<CorpusPage> LoadAsync(
+        string corpusId,
+        long afterCursor,
+        int limit,
+        CancellationToken cancellationToken
+    );
 }
