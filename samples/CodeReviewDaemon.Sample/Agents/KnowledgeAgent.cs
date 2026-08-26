@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
+using static CodeReviewDaemon.Sample.Agents.KnowledgeIndexRegenerator;
 
 namespace CodeReviewDaemon.Sample.Agents;
 
@@ -16,9 +17,9 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// </summary>
 internal sealed class KnowledgeAgent
 {
-    private const string KnowledgeBaseDirectory = "KnowledgeBase";
-    private const string TocFileName = "_toc.md";
-    private const string IndexFileName = "_index.jsonl";
+    private const string KnowledgeBaseDirectory = KnowledgeIndexRegenerator.KnowledgeBaseDirectory;
+    private const string TocFileName = KnowledgeIndexRegenerator.TocFileName;
+    private const string IndexFileName = KnowledgeIndexRegenerator.IndexFileName;
 
     /// <summary>The gate sentinel: the extraction agent replies with this when nothing durable is worth writing.</summary>
     private const string NoKnowledgeSentinel = "NO_KNOWLEDGE";
@@ -81,12 +82,14 @@ internal sealed class KnowledgeAgent
     private readonly IMultiTurnAgent _agent;
     private readonly ISandboxFileSystem _fileSystem;
     private readonly ILogger<KnowledgeAgent> _logger;
+    private readonly KnowledgeIndexRegenerator _regenerator;
 
     public KnowledgeAgent(IMultiTurnAgent agent, ISandboxFileSystem fileSystem, ILogger<KnowledgeAgent> logger)
     {
         _agent = agent ?? throw new ArgumentNullException(nameof(agent));
         _fileSystem = fileSystem ?? throw new ArgumentNullException(nameof(fileSystem));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _regenerator = new KnowledgeIndexRegenerator(_fileSystem, _logger);
     }
 
     /// <summary>
@@ -224,7 +227,7 @@ internal sealed class KnowledgeAgent
         var entryMarkdown = BuildEntry(title, tags, scope, sourcePrs, todayUtc, parsed.Body);
         await _fileSystem.WriteFileAsync(targetPath, entryMarkdown, cancellationToken).ConfigureAwait(false);
 
-        await RegenerateIndexAndTocAsync(knowledgeBaseDir, cancellationToken).ConfigureAwait(false);
+        _ = await _regenerator.RegenerateAsync(knowledgeBaseDir, cancellationToken).ConfigureAwait(false);
 
         _logger.LogInformation(
             "Knowledge run {RunId} wrote entry '{Entry}' and regenerated the index + table of contents.",
@@ -737,147 +740,8 @@ internal sealed class KnowledgeAgent
         return tags;
     }
 
-    /// <summary>
-    /// Regenerates <c>_index.jsonl</c> and <c>_toc.md</c> from the layered entries actually present, so
-    /// neither ever drifts from the directory. Walks each scope directory under
-    /// <paramref name="knowledgeBaseDir"/>, parses each entry's frontmatter, and skips (with a log) any
-    /// entry that has none — malformed frontmatter never aborts the regen (design §6).
-    /// </summary>
-    private async Task RegenerateIndexAndTocAsync(string knowledgeBaseDir, CancellationToken cancellationToken)
-    {
-        var metas = await CollectEntryMetasAsync(knowledgeBaseDir, cancellationToken).ConfigureAwait(false);
-
-        var index = KnowledgeIndex.RenderIndex(metas);
-        await _fileSystem
-            .WriteFileAsync(JoinPath(knowledgeBaseDir, IndexFileName), index, cancellationToken)
-            .ConfigureAwait(false);
-
-        // _toc.md link labels: the blank-title fallback to file path lives in
-        // KnowledgeTableOfContents.RenderItems now (issue #259), so every caller gets it for free —
-        // pass the raw Title through here.
-        var tocEntries = metas.Select(meta => new KnowledgeEntry(meta.File, meta.Title)).ToList();
-        var toc = KnowledgeTableOfContents.Render(tocEntries);
-        await _fileSystem
-            .WriteFileAsync(JoinPath(knowledgeBaseDir, TocFileName), toc, cancellationToken)
-            .ConfigureAwait(false);
-    }
-
-    private async Task<IReadOnlyList<KnowledgeEntryMeta>> CollectEntryMetasAsync(
-        string knowledgeBaseDir,
-        CancellationToken cancellationToken
-    )
-    {
-        var metas = new List<KnowledgeEntryMeta>();
-        var children = await _fileSystem.ListFilesAsync(knowledgeBaseDir, cancellationToken).ConfigureAwait(false);
-
-        foreach (var child in children)
-        {
-            if (IsBookkeeping(child) || IsDevelopersDirectory(child))
-            {
-                continue;
-            }
-
-            if (child.EndsWith(".md", StringComparison.Ordinal))
-            {
-                // A legacy flat entry (no scope directory): included only if it carries frontmatter.
-                await TryAddMetaAsync(metas, knowledgeBaseDir, child, cancellationToken).ConfigureAwait(false);
-                continue;
-            }
-
-            // Otherwise a scope directory (system/, <repo>/): walk its Markdown entries.
-            var scopeDir = JoinPath(knowledgeBaseDir, child);
-            var names = await _fileSystem.ListFilesAsync(scopeDir, cancellationToken).ConfigureAwait(false);
-            foreach (var name in names)
-            {
-                if (IsBookkeeping(name) || !name.EndsWith(".md", StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                await TryAddMetaAsync(metas, knowledgeBaseDir, $"{child}/{name}", cancellationToken)
-                    .ConfigureAwait(false);
-            }
-        }
-
-        return metas;
-    }
-
-    private async Task TryAddMetaAsync(
-        List<KnowledgeEntryMeta> metas,
-        string knowledgeBaseDir,
-        string relFile,
-        CancellationToken cancellationToken
-    )
-    {
-        var read = await _fileSystem
-            .ReadFileAsync(
-                JoinPath(knowledgeBaseDir, relFile),
-                SandboxReadLimits.KnowledgeEntryBytes,
-                cancellationToken
-            )
-            .ConfigureAwait(false);
-        if (read.TooLarge)
-        {
-            // LISTED, not skipped. This regen REPLACES both listings, and the reviewer reads _toc.md as the
-            // set of entries that exist — so dropping an unreadable entry here does not merely fail to index
-            // it, it deletes the only route anything has to a file still sitting in the store. Listed under a
-            // path-derived title with no metadata: honest about what is unknown, and the link still resolves.
-            _logger.LogWarning(
-                "Knowledge Base entry '{Entry}' exceeds the {Limit}-byte read limit; listing it without "
-                    + "frontmatter rather than dropping it from the regenerated index and table of contents.",
-                relFile,
-                SandboxReadLimits.KnowledgeEntryBytes
-            );
-            metas.Add(
-                new KnowledgeEntryMeta(
-                    relFile,
-                    $"{SlugFromRelPath(relFile)} — too large to index; frontmatter unread",
-                    [],
-                    ScopeSegment(relFile) ?? string.Empty,
-                    [],
-                    string.Empty
-                )
-            );
-            return;
-        }
-
-        var content = read.Content;
-        var meta = content is null ? null : KnowledgeIndex.ParseFrontmatter(relFile, content);
-        if (meta is null)
-        {
-            _logger.LogDebug("Skipping Knowledge Base entry '{Entry}' with no parseable frontmatter during regen.", relFile);
-            return;
-        }
-
-        metas.Add(meta);
-    }
-
-    /// <summary>True for the ToC/index bookkeeping files and dotfiles the entry walk must ignore.</summary>
-    private static bool IsBookkeeping(string name) =>
-        name.StartsWith('.')
-        || string.Equals(name, TocFileName, StringComparison.Ordinal)
-        || string.Equals(name, IndexFileName, StringComparison.Ordinal);
-
-    /// <summary>
-    /// True for the reserved per-developer review-feedback directory
-    /// (<see cref="ReviewFeedbackAgent.DevelopersDirectory"/>). Those records are about ONE person and are
-    /// delivered by targeted injection into that person's own PRs; letting them into <c>_index.jsonl</c> /
-    /// <c>_toc.md</c> would put every developer's record into every reviewer's context and spend the shared
-    /// retrieval budget on it. Matched case-insensitively because a case-insensitive checkout (Windows)
-    /// collapses <c>Developers/</c> onto <c>developers/</c>.
-    /// </summary>
-    private static bool IsDevelopersDirectory(string name) =>
-        string.Equals(name, ReviewFeedbackAgent.DevelopersDirectory, StringComparison.OrdinalIgnoreCase);
-
     /// <summary>The final path segment (file name) of a KB-relative path such as <c>system/x.md</c>.</summary>
     private static string LeafName(string relPath) => relPath[(relPath.LastIndexOf('/') + 1)..];
-
-    /// <summary>The scope (first path segment) of <paramref name="relPath"/>, or <c>null</c> when it has none.</summary>
-    private static string? ScopeSegment(string relPath)
-    {
-        var slash = relPath.IndexOf('/', StringComparison.Ordinal);
-        return slash > 0 ? relPath[..slash] : null;
-    }
 
     /// <summary>
     /// Returns <paramref name="updatesRel"/> re-cased onto the entry that already exists, matching each
@@ -982,13 +846,6 @@ internal sealed class KnowledgeAgent
         return scope;
     }
 
-    /// <summary>The file stem of <paramref name="relPath"/> (a last-resort title when the model omits one).</summary>
-    private static string SlugFromRelPath(string relPath)
-    {
-        var name = relPath[(relPath.LastIndexOf('/') + 1)..];
-        return name.EndsWith(".md", StringComparison.Ordinal) ? name[..^3] : name;
-    }
-
     /// <summary>
     /// Lowercases <paramref name="title"/> and collapses every run of non-alphanumeric characters to a
     /// single hyphen, trimming leading/trailing hyphens — a deterministic, filesystem-safe file stem.
@@ -1019,8 +876,6 @@ internal sealed class KnowledgeAgent
         return slug.Length == 0 ? "entry" : slug;
     }
 
-    private static string JoinPath(string root, string relative) =>
-        $"{root.TrimEnd('/')}/{relative.TrimStart('/')}";
 }
 
 /// <summary>How an extraction attempt ended. The distinction is load-bearing: only <see cref="Failed"/>
