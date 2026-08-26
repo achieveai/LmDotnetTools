@@ -213,8 +213,14 @@ public class FileTailTriggerSourceTests
         // Non-vacuity: the assertion above is an ABSENCE, and an absence proves nothing unless the
         // watcher was actually alive and looking. Append a MATCHING line to the same handle and
         // require a fire — that distinguishes "the pattern filtered those lines out" (the claim)
-        // from "the watcher was blind to every append" (the bug this file was flaking on, where a
-        // baseline captured after the first append made the source ignore the file forever).
+        // from "this watcher delivers nothing at all" (which would satisfy the non-fire above for
+        // entirely the wrong reason, e.g. an inverted match predicate or a dead poll loop).
+        //
+        // Note what this deliberately does NOT cover: the #452 arm-window race. A baseline captured
+        // late would swallow the INFO batch, but the ERROR line appended below grows the file past
+        // that inflated baseline and fires anyway — so this test stays green under that defect by
+        // construction. Fire_WhenMatchingLineAppended is the one that pins it, because it appends
+        // exactly once and has nothing later to rescue it.
         await File.AppendAllTextAsync(file, "ERROR now it matches\n");
         await Wait.UntilAsync(
             () => fired.Task.IsCompleted,
