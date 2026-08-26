@@ -427,7 +427,12 @@ public sealed class ChatWebSocketManagerClientToolResultTests
             /*lang=json,strict*/
             $$"""{"$type":"client_tool_result","toolCallId":"{{toolCallId}}","result":"blue","isError":false}""");
 
-        var handlerTask = manager.HandleSubAgentConnectionAsync(socket, SubAgentParentThreadId, agentId, ct.Token);
+        var handlerTask = manager.HandleSubAgentConnectionAsync(
+            socket,
+            SubAgentParentThreadId,
+            agentId,
+            mayReplayPersistedTranscript: true,
+            ct.Token);
 
         await socket.WaitUntilAsync(() => socket.SentContains("client_tool_result_ack"), ct.Token);
 
@@ -459,7 +464,12 @@ public sealed class ChatWebSocketManagerClientToolResultTests
             /*lang=json,strict*/
             """{"$type":"client_tool_result","toolCallId":"does-not-exist","result":"x","isError":false}""");
 
-        var handlerTask = manager.HandleSubAgentConnectionAsync(socket, SubAgentParentThreadId, agentId, ct.Token);
+        var handlerTask = manager.HandleSubAgentConnectionAsync(
+            socket,
+            SubAgentParentThreadId,
+            agentId,
+            mayReplayPersistedTranscript: true,
+            ct.Token);
 
         await socket.WaitUntilAsync(() => socket.SentContains("client_tool_result_error"), ct.Token);
 
@@ -537,7 +547,12 @@ public sealed class ChatWebSocketManagerClientToolResultTests
         var socket = new FakeWebSocket();
         socket.EnqueueTextFrame(/*lang=json,strict*/ """{"$type":"client_tool_result","result":"x"}""");
 
-        var handlerTask = manager.HandleSubAgentConnectionAsync(socket, SubAgentParentThreadId, agentId, ct.Token);
+        var handlerTask = manager.HandleSubAgentConnectionAsync(
+            socket,
+            SubAgentParentThreadId,
+            agentId,
+            mayReplayPersistedTranscript: true,
+            ct.Token);
 
         await socket.WaitUntilAsync(() => socket.SentContains("client_tool_result_error"), ct.Token);
 

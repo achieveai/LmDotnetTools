@@ -163,9 +163,14 @@ public sealed class PrincipalFactory
     /// <see cref="ClaimTypes.NameIdentifier"/>, which a signed-in human satisfies - a bearer handler
     /// with inbound claim mapping on puts the token's <c>sub</c> there - so this projection was never
     /// the only way to reach them, and any signed-in user could register a callback and take a signing
-    /// secret. The dedicated claim is in no inbound claim map and is minted by no authentication
-    /// handler, so a token cannot carry it in; "the principal names an app" is now true by
-    /// construction rather than by enumerating which principals happen not to carry a name identifier.
+    /// secret. What makes the dedicated claim different is not the claim - a token's contents are
+    /// whatever the handler that reads it is configured to map, and a handler told to map a claim of
+    /// this name would put it straight onto the principal. It is that this host mints it in exactly
+    /// ONE place, here, downstream of having established the caller is an app, and configures no
+    /// inbound mapping for it anywhere. Nothing a caller presents populates it, so "the principal
+    /// names an app" is true by construction rather than by enumerating which principals happen not to
+    /// carry a name identifier. That guarantee is a property of this host's wiring, which is why a
+    /// host that populates <c>HttpContext.User</c> by some other route owns the same decision.
     /// The <see cref="ClaimTypes.NameIdentifier"/> and <see cref="ClaimTypes.Name"/> claims stay for
     /// readers that want a conventional display identity off a bridged principal; nothing authorizes
     /// on them any more.

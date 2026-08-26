@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmLifecycle;
 using AchieveAi.LmDotnetTools.LmLifecycle.Approval;
@@ -146,20 +145,34 @@ public sealed class LifecycleApprovalController(
             return BadRequest(new ToolApprovalDecisionResponse { Error = "malformed decision" });
         }
 
-        var appId = AuthenticatedAppId();
-        if (appId is null)
+        // Diagnosable on purpose, and as TWO conditions rather than one: "nothing wired" and "wired,
+        // but this caller is not an app" are different faults with different fixes. No headers, no
+        // body, no claim values in either log.
+        var resolved = AuthenticatedAppId();
+        if (resolved.AppId is not { } appId)
         {
-            // Diagnosable on purpose: the overwhelmingly likely cause is a host that enabled remote
-            // approval without wiring an authentication scheme, and the 403 alone does not say so.
-            // No headers, no body, no claim values — whether a principal exists at all is the one
-            // bit that distinguishes "nothing wired" from "wired but this caller is anonymous".
+            if (resolved.Refusal == LifecycleAppIdentity.AppIdRefusal.Unauthenticated)
+            {
+                logger.LogWarning(
+                    "Rejecting an approval decision: no authenticated caller (principal present: {PrincipalPresent}). "
+                        + "Remote approval is enabled, so the host must wire an authentication scheme that populates "
+                        + "HttpContext.User; webhook signature verification alone does not establish a principal.",
+                    User?.Identity is not null
+                );
+                return Denied("caller is not authenticated");
+            }
+
+            // Authentication WORKED, so saying otherwise misdirects whoever reads this. The real causes
+            // are a signed-in person reaching an app-only control plane, or a host that populates
+            // HttpContext.User itself and never stamped the app-id claim.
             logger.LogWarning(
-                "Rejecting an approval decision: no authenticated caller (principal present: {PrincipalPresent}). "
-                    + "Remote approval is enabled, so the host must wire an authentication scheme that populates "
-                    + "HttpContext.User; webhook signature verification alone does not establish a principal.",
-                User?.Identity is not null
+                "Rejecting an approval decision: the caller is authenticated but carries no {ClaimType} claim, "
+                    + "so it does not name an application. A host that populates HttpContext.User itself must "
+                    + "stamp this claim once it has established the caller is an app; a signed-in person is "
+                    + "not one.",
+                LifecycleAppIdentity.AppIdClaimType
             );
-            return Denied("caller is not authenticated");
+            return Denied("caller does not name an application");
         }
 
         var owner = await ownerResolver
@@ -258,16 +271,8 @@ public sealed class LifecycleApprovalController(
     /// rule at this endpoint; "carries the app-id claim" is.
     /// </para>
     /// </remarks>
-    private string? AuthenticatedAppId()
-    {
-        if (User?.Identity?.IsAuthenticated != true)
-        {
-            return null;
-        }
-
-        var appId = User.FindFirstValue(LifecycleAppIdentity.AppIdClaimType);
-        return string.IsNullOrWhiteSpace(appId) ? null : appId;
-    }
+    private LifecycleAppIdentity.AppIdResolution AuthenticatedAppId() =>
+        LifecycleAppIdentity.ResolveAppId(User);
 
     /// <summary>
     /// A 403 written directly rather than via <c>Forbid()</c>, which would delegate to an

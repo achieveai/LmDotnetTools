@@ -24,7 +24,7 @@ public class ConversationsControllerTests
     /// test can seed ledger/accepted-input state through the same <paramref name="store"/> instance
     /// it hands the controller.
     /// </summary>
-    private static ConversationsController CreateController(
+    internal static ConversationsController CreateController(
         IConversationStore store,
         MultiTurnAgentPool pool,
         IChatModeStore modeStore,
@@ -50,7 +50,7 @@ public class ConversationsControllerTests
 
     /// <summary>Resolves any real system mode id (default mode, math-helper, etc.) — for tests that
     /// need mode resolution to just work without stubbing one specific mode id.</summary>
-    private static IChatModeStore ModeStoreResolvingSystemModes()
+    internal static IChatModeStore ModeStoreResolvingSystemModes()
     {
         var modeStore = new Mock<IChatModeStore>();
         modeStore
@@ -331,7 +331,7 @@ public class ConversationsControllerTests
         Assert.IsType<NotFoundResult>(result);
     }
 
-    private static MultiTurnAgentPool CreatePool()
+    internal static MultiTurnAgentPool CreatePool()
     {
         return new MultiTurnAgentPool(
             (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(threadId)),

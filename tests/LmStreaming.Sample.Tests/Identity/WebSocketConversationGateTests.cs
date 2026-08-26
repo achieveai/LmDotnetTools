@@ -1,6 +1,7 @@
 using System.Text;
 using AchieveAi.LmDotnetTools.LmCore.Identity;
 using LmStreaming.Sample.Identity;
+using LmStreaming.Sample.Tests.Controllers;
 using LmStreaming.Sample.Tests.TestDoubles;
 using Microsoft.AspNetCore.Http;
 
@@ -60,6 +61,12 @@ public sealed class WebSocketConversationGateTests
     /// two surfaces answer for the same thread ids, so a client that can tell the socket's refusal
     /// from the REST surface's has learned which of the two refused it.
     /// </summary>
+    /// <remarks>
+    /// Compared against a body the REST route ACTUALLY produced, by driving a real
+    /// <c>ConversationsController</c> at an unknown thread. A third literal spelled out here would be
+    /// the same hazard the shared factory exists to remove: it agrees with both surfaces on the day it
+    /// is written, and after an edit to either one it agrees with neither while still passing.
+    /// </remarks>
     [Fact]
     public async Task TheExistenceHidingRefusal_IsTheSameBodyTheRestSurfaceWrites()
     {
@@ -67,18 +74,23 @@ public sealed class WebSocketConversationGateTests
 
         var refused = await RefuseAsync(new InMemoryConversationStore(), ThreadId, AsBob());
 
-        // Code, phrasing AND field order, which together are the whole claim: any one of them
-        // differing from ConversationsController.UnknownThread's body would let a caller tell the two
-        // surfaces apart. Read through JsonDocument rather than compared as a raw string only because
-        // both surfaces run the same default encoder over the apostrophes - the escaping is shared, so
-        // asserting on it would pin the encoder rather than this refusal.
-        using var parsed = JsonDocument.Parse(refused.Body);
-        _ = parsed.RootElement.EnumerateObject().Select(field => field.Name).Should().Equal(
-            ["error", "code"],
-            "even a different field order makes the two refusals distinguishable");
-        _ = parsed.RootElement.GetProperty("error").GetString().Should().Be(
-            $"Conversation '{ThreadId}' not found.");
-        _ = parsed.RootElement.GetProperty("code").GetString().Should().Be("unknown_thread");
+        await using var pool = ConversationsControllerTests.CreatePool();
+        var rest = await ConversationsControllerTests
+            .CreateController(
+                new InMemoryConversationStore(),
+                pool,
+                ConversationsControllerTests.ModeStoreResolvingSystemModes())
+            .SendMessage(ThreadId, new SendMessageRequest { Text = "probe" }, CancellationToken.None);
+
+        var restBody = JsonSerializer.Serialize(Assert.IsType<NotFoundObjectResult>(rest).Value);
+
+        // Serialised through the same call the gate makes, so what is compared is the two payloads and
+        // not two pipelines' encoder settings. Field order is included on purpose: it survives into the
+        // bytes, and a different order alone is enough to tell the two surfaces apart.
+        _ = refused.Body.Should().Be(
+            restBody,
+            "a caller who can distinguish the socket's 404 from the REST route's has learned which of "
+                + "the two refused, and from that whether the id names anything");
     }
 
     /// <summary>

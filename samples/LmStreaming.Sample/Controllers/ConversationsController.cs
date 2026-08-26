@@ -1731,7 +1731,7 @@ public class ConversationsController(
     /// </summary>
     /// <param name="threadId">The conversation id to report as not found.</param>
     private ObjectResult UnknownThread(string threadId) =>
-        NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
+        NotFound(UnknownThreadRefusal.Body(threadId));
 
     /// <summary>
     /// Turns one access decision into the response that carries it, or null when it allowed.

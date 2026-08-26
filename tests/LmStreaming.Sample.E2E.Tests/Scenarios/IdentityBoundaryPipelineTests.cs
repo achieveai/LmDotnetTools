@@ -332,6 +332,17 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
             "signing_secret",
             "a refused caller must not be handed signing material");
 
+        // And the refusal has to describe what actually happened. This caller authenticated - a real
+        // bearer scheme validated their token and populated HttpContext.User - so answering "caller is
+        // not authenticated" sends whoever reads it to inspect the one part of the pipeline that is
+        // demonstrably working, while the real cause (a person is not an app) goes unnamed.
+        _ = registrationBody.Should().Contain(
+            "does not name an application",
+            "the refusal must name the reason the caller was refused, not a different one");
+        _ = registrationBody.Should().NotContain(
+            "not authenticated",
+            "authentication succeeded; saying otherwise misdirects the operator reading this");
+
         // The sibling endpoint, pinned independently. Both controllers derived the app id the same
         // way and each carries its own copy of the derivation, so one of them fixed is not the fix.
         var decision = new HttpRequestMessage(
@@ -359,14 +370,21 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         var decisionBody = await decisionResponse.Content.ReadAsStringAsync();
         LogData("humanDecisionBody", decisionBody);
 
+
         _ = decisionResponse.StatusCode.Should().Be(
             HttpStatusCode.Forbidden,
             "the approval endpoint reads the caller's app identity the same way and must refuse the "
                 + "same caller");
+        // Same misdescription, same correction, pinned separately because the two controllers each
+        // carried their own copy of the check - one of them fixed was never the fix.
         _ = decisionBody.Should().Contain(
-            "not authenticated",
+            "does not name an application",
             "the refusal must be the identity one, not a validation or not-found answer that would "
-                + "make this assertion pass without the fix");
+                + "make this assertion pass without the fix - and it must name the reason that "
+                + "actually applied");
+        _ = decisionBody.Should().NotContain(
+            "not authenticated",
+            "authentication succeeded; saying otherwise misdirects the operator reading this");
     }
 
     [Fact]
@@ -418,6 +436,10 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
             HttpStatusCode.Forbidden,
             "the lifecycle control plane refuses a caller that names no app, and an unenforced host "
                 + "mints exactly such a principal for an anonymous request");
+        // The OTHER refusal, and the non-vacuity partner of the signed-in-human test above: with no
+        // scheme wired there is no principal at all, so "not authenticated" is the accurate answer
+        // here. The two cases having two messages is the whole point - one message for both told
+        // every operator to go and look at their authentication scheme.
         _ = (await response.Content.ReadAsStringAsync()).Should().Contain("not authenticated");
     }
 
@@ -471,6 +493,57 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         _ = response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
         _ = response.Headers.GetValues(IdentityMiddleware.RefusalCodeHeader).Should().ContainSingle()
             .Which.Should().Be(IdentityMiddleware.WebSocketRefusalCode);
+    }
+
+    [Fact]
+    public async Task ABlankThreadIdOnTheChatSocket_Is400_WithEnforcementOnOrOff()
+    {
+        LogTestStart();
+
+        // /ws?threadId=%20. The value is present and unusable, which is neither of the two cases the
+        // route handled: absent (mint a new conversation) or usable (route to it). It reached
+        // WebSocketConversationGate's argument guard and faulted the request as a 500 - and did so
+        // with Identity:Enforce OFF, where that gate is otherwise a no-op, so a deployment that has
+        // authorization turned off still had a route a caller could make fault.
+        //
+        // Both settings are exercised because the whole point is that the answer does not depend on
+        // enforcement: a malformed query is malformed either way, and an input whose handling is
+        // decided by an authorization flag is the shape of the original defect.
+        // Driven through a real handshake rather than a plain GET: the endpoint refuses a
+        // non-WebSocket request with its own 400 before it ever looks at the query, so a GET would
+        // report the right status for the wrong reason and pass just as well against the defect.
+        //
+        // Both configurations reach the route with a caller it will actually serve - anonymous when
+        // enforcement is off, credentialled when it is on. An anonymous handshake against an enforcing
+        // host is refused by the identity boundary long before the query is parsed, and asserting on
+        // THAT would prove nothing about this.
+        using (var permissive = NewFactory())
+        {
+            Func<Task> handshake = () => permissive.ConnectWebSocketAsync(" ");
+            var thrown = await handshake.Should().ThrowAsync<InvalidOperationException>();
+            AssertRefusedAsMalformed(thrown.Which);
+        }
+
+        using (var enforcing = NewFactory(EnforcingSettings(), WithTestPrincipalSource))
+        {
+            Func<Task> handshake = () =>
+                enforcing.ConnectWebSocketAsync(" ", subProtocols: AliceCredential());
+            var thrown = await handshake.Should().ThrowAsync<InvalidOperationException>();
+            AssertRefusedAsMalformed(thrown.Which);
+        }
+
+        // The status travels in the message - a failed handshake surfaces nothing else to the client,
+        // which is why these assertions live in this suite at all.
+        static void AssertRefusedAsMalformed(InvalidOperationException thrown)
+        {
+            _ = thrown.Message.Should().NotContain(
+                "500",
+                "a blank threadId is a client mistake, and answering it with a fault lets a caller "
+                    + "make the host log an unhandled exception at will");
+            _ = thrown.Message.Should().Contain(
+                "400",
+                "the malformed query is what is wrong, and the caller has to be told that");
+        }
     }
 
     [Fact]
@@ -762,8 +835,11 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
     /// <summary>
     /// Authenticates <c>Authorization: Bearer &lt;subject&gt;</c> into the claims an Entra access token
     /// produces once inbound claim mapping has run: <c>sub</c> on
-    /// <see cref="ClaimTypes.NameIdentifier"/>, plus a display name. Deliberately no app-id claim —
-    /// a token cannot carry one, which is the whole point of the fix.
+    /// <see cref="ClaimTypes.NameIdentifier"/>, plus a display name. Deliberately no app-id claim: this
+    /// host maps none inbound and mints it in one place only, downstream of establishing the caller is
+    /// an app, so a real token reaching a real handler here produces exactly this claim set. The
+    /// handler is what decides that, not the token, which is why the fix is the single stamping site
+    /// rather than anything about token contents.
     /// </summary>
     private sealed class SignedInHumanHandler(
         IOptionsMonitor<AuthenticationSchemeOptions> options,

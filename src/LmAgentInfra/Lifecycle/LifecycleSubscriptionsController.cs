@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -282,20 +281,35 @@ public sealed class LifecycleSubscriptionsController(
             return NotFound(NotFoundBody);
         }
 
-        var appId = AuthenticatedAppId();
-        if (appId is null)
+        // Two refusals, not one. They send an operator to opposite ends of the pipeline, and a bare
+        // 403 says neither. No headers and no claim values are logged in either case.
+        var resolved = AuthenticatedAppId();
+        if (resolved.AppId is not { } appId)
         {
-            // The overwhelmingly likely cause is a host that enabled delivery without wiring an
-            // authentication scheme, and a bare 403 does not say so. Only whether a principal exists
-            // at all is logged — no headers, no claim values.
+            if (resolved.Refusal == LifecycleAppIdentity.AppIdRefusal.Unauthenticated)
+            {
+                logger.LogWarning(
+                    "Refusing a lifecycle subscription operation: no authenticated caller (principal present: "
+                        + "{PrincipalPresent}). Lifecycle delivery is enabled, so the host must wire an authentication "
+                        + "scheme that populates HttpContext.User; webhook signature verification alone does not "
+                        + "establish a principal.",
+                    User?.Identity is not null
+                );
+                return Denied("caller is not authenticated");
+            }
+
+            // Authentication WORKED. Calling this "not authenticated" was the misdescription: it sent
+            // an operator to inspect the one part of the pipeline that is demonstrably fine, while the
+            // actual causes are a signed-in person calling an app-only control plane, or a host that
+            // populates HttpContext.User itself and never stamped the app-id claim.
             logger.LogWarning(
-                "Refusing a lifecycle subscription operation: no authenticated caller (principal present: "
-                    + "{PrincipalPresent}). Lifecycle delivery is enabled, so the host must wire an authentication "
-                    + "scheme that populates HttpContext.User; webhook signature verification alone does not "
-                    + "establish a principal.",
-                User?.Identity is not null
+                "Refusing a lifecycle subscription operation: the caller is authenticated but carries no "
+                    + "{ClaimType} claim, so it does not name an application. A host that populates "
+                    + "HttpContext.User itself must stamp this claim once it has established the caller is an "
+                    + "app; a signed-in person is not one.",
+                LifecycleAppIdentity.AppIdClaimType
             );
-            return Denied("caller is not authenticated");
+            return Denied("caller does not name an application");
         }
 
         var owner = await ownerResolver
@@ -375,16 +389,8 @@ public sealed class LifecycleSubscriptionsController(
     /// secret (#433). "Authenticated" is therefore no longer the operative rule at this endpoint;
     /// "carries the app-id claim" is.
     /// </remarks>
-    private string? AuthenticatedAppId()
-    {
-        if (User?.Identity?.IsAuthenticated != true)
-        {
-            return null;
-        }
-
-        var appId = User.FindFirstValue(LifecycleAppIdentity.AppIdClaimType);
-        return string.IsNullOrWhiteSpace(appId) ? null : appId;
-    }
+    private LifecycleAppIdentity.AppIdResolution AuthenticatedAppId() =>
+        LifecycleAppIdentity.ResolveAppId(User);
 
     /// <summary>
     /// A 403 written directly rather than via <c>Forbid()</c>, which would delegate to an

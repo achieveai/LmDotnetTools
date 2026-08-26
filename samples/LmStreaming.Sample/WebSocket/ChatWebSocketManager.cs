@@ -329,7 +329,6 @@ public sealed class ChatWebSocketManager
     /// <param name="webSocket">The WebSocket connection.</param>
     /// <param name="parentThreadId">Thread id of the parent agent that owns the sub-agent.</param>
     /// <param name="agentId">Id (or caller-supplied name) of the focused child sub-agent.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
     /// <param name="mayReplayPersistedTranscript">
     /// Whether the persisted-transcript fallback below is available to this caller (#419). False when
     /// the named child's durable parent link names a DIFFERENT conversation than
@@ -337,13 +336,22 @@ public sealed class ChatWebSocketManager
     /// that child, and without this the authorized parent id would be a passphrase for any child in
     /// the deployment. The refusal is deliberately indistinguishable from "no such agent" - see
     /// <see cref="LmStreaming.Sample.Identity.SubAgentSocketAdmission"/>.
+    /// <para>
+    /// REQUIRED, and moved ahead of the token so it cannot be forgotten. It defaulted to <c>true</c>,
+    /// which made "replay this child's transcript" the answer a caller got by saying nothing at all -
+    /// so a new call site added without a thought about provenance was, silently, the permissive one.
+    /// A security decision must be stated by whoever decides it; there is no safe default here,
+    /// because <c>false</c> would instead have new call sites quietly withholding replay from
+    /// legitimate callers.
+    /// </para>
     /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
     public async Task HandleSubAgentConnectionAsync(
         System.Net.WebSockets.WebSocket webSocket,
         string parentThreadId,
         string agentId,
-        CancellationToken cancellationToken,
-        bool mayReplayPersistedTranscript = true)
+        bool mayReplayPersistedTranscript,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(webSocket);
 
