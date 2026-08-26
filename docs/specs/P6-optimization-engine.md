@@ -1091,6 +1091,32 @@ therefore moves the reported pass rate with nothing about the candidate having c
 the exact comparison this hash exists to refuse. Ordered, because gates short-circuit: the same set
 in a different order rejects on a different gate and yields a different `gate_reason`.
 
+**`EvalBaseline.From` refuses its source run on the same bounds the baseline will impose, before it
+freezes anything.** §5.4's refusals protect the *candidate* side, and the baseline side has no
+comparison to be refused at — so a bound enforced only downstream leaves the one input it cannot
+recover from unguarded. A gate outage is the case that reaches it: an inconclusive gate does not
+block (§2.10), so an outage run scores every item and arrives at `From` with a full pass rate, a
+full coverage and a zero fault rate. It clears the only check that existed — "the run scored
+nothing" — and freezes a pass rate **measured with the gates off** as the number every later run is
+compared against. A poisoned baseline is strictly worse than a poisoned candidate: the candidate
+distorts one comparison and is refused, the baseline distorts every comparison after it and is
+refused by nothing.
+
+Two properties of that refusal are load-bearing:
+
+- **The null sentinel is respected exactly as at comparison.** `InconclusiveGateRate == null` is the
+  run that recorded no gate decision at all, and a gateless harness is a real configuration; refusing
+  every baseline it could mint would make the bound unusable rather than safe.
+- **It is checked ahead of the scored-nothing arm**, mirroring §5.4's ordering, where the gate bound
+  sits ahead of the coverage floor and of the "scored no items at all" case that shares its refusal.
+  Freezing a run and comparing it then name the same cause, and a reader is never told "this run
+  scored nothing" about a run whose gates were the reason.
+
+The bound argument itself is validated in `From` before it is read, not only on the way into
+`MaxInconclusiveGateRate`: every other bound here is merely carried, but this one decides a
+comparison inside the factory, and a bound outside [0,1] would otherwise refuse a perfectly clean
+source run and report it as a gate outage.
+
 ### 5.3 What a run emits
 
 `EvalRun` → one row per run plus one `Verdict` per corpus item, written to the same SQLite store as
