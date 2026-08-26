@@ -13,7 +13,7 @@
  * a never-minted id with the same 404 body, so a message that read "you do not have permission"
  * would turn this modal into the existence oracle that 404 exists to close.
  */
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import BaseModal from './BaseModal.vue';
 import type { ConversationShare, ShareRole } from '@/types/shares';
 import { listShares, addShare, removeShare, ConversationApiError } from '@/api/sharesApi';
@@ -108,14 +108,32 @@ function report(error: unknown, fallback: string): void {
     (error instanceof Error ? error.message : fallback);
 }
 
+/**
+ * Which read is the current one. The Add control is live while the initial GET is still in flight
+ * (that is deliberate — see the header comment: there is nothing to compute a permission from, so
+ * the control is offered and the server's answer decides), which means a grant can be added and the
+ * roster re-read before the first read has answered. Without this counter whichever read resolved
+ * LAST won, and that is routinely the initial one — answering from before the grant existed, so the
+ * row the user just created disappears from the list.
+ */
+let loadGeneration = 0;
+
 async function load(): Promise<void> {
+  const generation = ++loadGeneration;
   isLoading.value = true;
   try {
-    shares.value = await listShares(props.threadId);
+    const fetched = await listShares(props.threadId);
+    if (generation !== loadGeneration) return;
+    shares.value = fetched;
   } catch (error) {
+    // A superseded read's refusal is just as stale as its roster — reporting it would latch a
+    // verdict about a request nobody is waiting on any more.
+    if (generation !== loadGeneration) return;
     report(error, 'Could not load who this conversation is shared with.');
   } finally {
-    isLoading.value = false;
+    if (generation === loadGeneration) {
+      isLoading.value = false;
+    }
   }
 }
 
@@ -158,6 +176,25 @@ function formatExpiry(unixMs: number | null | undefined): string {
 }
 
 onMounted(load);
+
+/**
+ * Every latched flag here is a verdict about ONE conversation: `unavailable` is that thread's 404,
+ * `readOnly` is "you were shared THIS one", `sharingOff` alone is about the deployment. Carrying any
+ * of the first two into a different conversation would withhold a control the caller may well own
+ * there, or claim the new thread does not exist. The generation counter in `load()` covers the other
+ * half: a read still in flight for the old thread must not land on the new one's roster.
+ */
+watch(
+  () => props.threadId,
+  () => {
+    shares.value = [];
+    refusal.value = null;
+    unavailable.value = false;
+    readOnly.value = false;
+    subjectId.value = '';
+    void load();
+  }
+);
 </script>
 
 <template>
