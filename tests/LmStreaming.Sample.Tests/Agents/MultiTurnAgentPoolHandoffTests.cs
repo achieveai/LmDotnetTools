@@ -230,6 +230,38 @@ public class MultiTurnAgentPoolHandoffTests
     }
 
     [Fact]
+    public async Task AnAcceptOnAReplacedAgent_DoesNotMarkTheReplacement()
+    {
+        // The accept and the ledger write are two steps, and an entry can be replaced between them -
+        // a sandbox session refresh, a mode switch, a second caller's create. Marking whatever is
+        // pooled NOW gets it wrong twice over: the replacement is held busy for a turn it never
+        // received, and the agent that actually holds that turn is not held at all. So the write
+        // names the agent that accepted, and a mismatch is a no-op.
+        await using var pool = CreatePool();
+        var first = CreateOwnedAgent(pool, "thread-swapped", Alice);
+        first.CurrentRunId = null;
+        first.IsRunning = false;
+
+        await pool.RemoveAgentAsync("thread-swapped");
+        var second = CreateOwnedAgent(pool, "thread-swapped", Alice);
+        second.CurrentRunId = null;
+        second.IsRunning = false;
+        second.Should().NotBeSameAs(first);
+
+        // The late write, carrying the agent that took the input.
+        pool.NoteInputAccepted("thread-swapped", "input-1", first);
+
+        pool.TryGetHandoffState("thread-swapped", out var state).Should().BeTrue();
+        state.IsBusy.Should().BeFalse("the pooled agent never accepted that input");
+
+        // Non-vacuity: the same call against the agent that IS pooled does mark it, so what the
+        // assertion above caught is the reference check and not a ledger that stopped working.
+        pool.NoteInputAccepted("thread-swapped", "input-2", second);
+        pool.TryGetHandoffState("thread-swapped", out var marked).Should().BeTrue();
+        marked.IsBusy.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task ARunStartingAfterTheLook_IsNotAbortedByTheRelease()
     {
         // The window. The caller read an idle entry and is about to act on it; a run starts in

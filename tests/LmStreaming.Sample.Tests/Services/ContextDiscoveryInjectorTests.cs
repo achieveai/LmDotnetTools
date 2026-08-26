@@ -17,6 +17,35 @@ public class ContextDiscoveryInjectorTests
     private const string Content = "Project rules.";
 
     [Fact]
+    public async Task InjectAsync_RecordsTheAcceptedInput_LikeTheTransportsDo()
+    {
+        // The third accept path (#418). REST and WebSocket both tell the pool what they handed a
+        // pooled agent; this one sends straight to the same entry. Without the ledger write the entry
+        // reads idle the moment the injection is queued - no run id, not running - and a grantee
+        // handoff or a sandbox-session refresh arriving in that window disposes the agent with the
+        // injected context still on it, which is the same lost turn through a third door.
+        using var harness = new Harness();
+        var agent = harness.RegisterThread(SessionId, "thread-ledger");
+
+        // Baseline: nothing in hand before the injection, so the assertion below is a change and not
+        // a state the harness started in.
+        harness.Pool.TryGetHandoffState("thread-ledger", out var before).Should().BeTrue();
+        before.IsBusy.Should().BeFalse();
+
+        var sent = await harness.Injector.InjectAsync(
+            BuildPayload(sessionId: SessionId, content: Content),
+            CancellationToken.None);
+
+        sent.Should().Be(1);
+        agent.SentMessages.Should().ContainSingle("the injection really was accepted");
+
+        harness.Pool.TryGetHandoffState("thread-ledger", out var after).Should().BeTrue();
+        after.IsBusy.Should().BeTrue("an injected turn the agent has not started is still work in hand");
+        (await harness.Pool.TryReleaseIdleAgentAsync("thread-ledger", after))
+            .Should().Be(MultiTurnAgentPool.AgentReleaseOutcome.Busy);
+    }
+
+    [Fact]
     public async Task InjectAsync_HappyPath_SendsToSingleThread()
     {
         using var harness = new Harness();
