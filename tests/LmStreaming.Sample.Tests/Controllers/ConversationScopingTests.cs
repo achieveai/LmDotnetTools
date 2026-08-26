@@ -588,6 +588,71 @@ public sealed class ConversationScopingTests
     }
 
     /// <summary>
+    /// The app-id freeze (#153) must survive the grantee release (#376). The release removes the whole
+    /// pooled entry - including the <c>CallerCredential</c> the thread was frozen to - so the recreate
+    /// that follows finds no entry, skips the app-id compare entirely, and re-freezes the conversation
+    /// to whatever app the NEW caller presents. The freeze is not "deliberately not released": it is
+    /// released, silently, by the same removal.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The #153 cross-actor matrix stayed green because an app-only caller carries no
+    /// <c>EffectiveUserId</c> and returns from the release before it can remove anything. The hole
+    /// needs a caller who has BOTH a user id (so the release runs) and a different app id from the one
+    /// the thread is frozen to - which is exactly an editor grantee signing in through the UI to a
+    /// conversation an S2S app minted.
+    /// </para>
+    /// <para>
+    /// The second assertion is the one that cannot be satisfied by accident: refusing with the right
+    /// status while still having torn the entry down would leave the conversation unfrozen for the
+    /// next caller, so the freeze has to be READ before the removal, not after it.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task EditorGranteeOfAnotherApp_IsRefused_AndTheThreadStaysFrozenToTheAppThatMintedIt()
+    {
+        await using var pool = CreatePool();
+        await SeedAsync("alice-thread", TenantA, Alice);
+
+        var owner = CreateController(Signed(TenantA, Alice), pool);
+        _ = await owner.AddShare(
+            "alice-thread",
+            new ConversationShareRequest { SubjectId = Bob, Role = "editor" },
+            CancellationToken.None);
+
+        // Alice's live agent was minted by an S2S app, so the thread is frozen to that app id.
+        var daemon = new SandboxCredential("review-daemon", "0123456789abcdef0123456789abcdef");
+        _ = pool.GetOrCreateAgent(
+            "alice-thread",
+            DefaultMode(),
+            null,
+            null,
+            callerCredential: daemon,
+            ownerUserId: Alice);
+        _ = pool.GetAgentCallerAppId("alice-thread").Should().Be("review-daemon");
+
+        // Bob is an authorized editor, but he arrives through the UI: no sandbox credential, so a null
+        // app id against a frozen "review-daemon". #153 says that is a refusal.
+        var grantee = CreateController(Signed(TenantA, Bob), pool);
+        var refused = await grantee.SendMessage(
+            "alice-thread",
+            new SendMessageRequest { Text = "my turn" },
+            CancellationToken.None);
+
+        var conflict = Assert.IsType<ConflictObjectResult>(refused);
+        _ = conflict.StatusCode.Should().Be(409);
+        _ = System.Text.Json.JsonSerializer.Serialize(conflict.Value)
+            .Should().Contain("\"code\":\"caller_credential_conflict\"");
+
+        _ = pool.GetAgentCallerAppId("alice-thread").Should().Be(
+            "review-daemon",
+            "a refused handoff must leave the thread frozen to the app that minted it, not unfrozen");
+        _ = pool.GetAgentOwnerUserId("alice-thread").Should().Be(
+            Alice,
+            "the refusal costs the owner nothing - her agent is still hers");
+    }
+
+    /// <summary>
     /// A grantee may not re-share, even an editor. Sharing is the owner's right; a grant that could
     /// be re-granted would make revocation meaningless.
     /// </summary>

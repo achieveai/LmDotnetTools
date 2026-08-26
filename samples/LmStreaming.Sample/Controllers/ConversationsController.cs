@@ -752,12 +752,14 @@ public class ConversationsController(
         // same as "no caller credential" rather than dereferencing a null Request.
         var callerCredential = TryBuildCallerCredential(HttpContext?.Request?.Headers);
 
-        // AFTER the authorization above, never before - see the helper's remarks.
-        await ReleaseAgentBoundToAnotherUserAsync(threadId, "SendMessage");
-
         IMultiTurnAgent agent;
         try
         {
+            // AFTER the authorization above, never before - see the helper's remarks. Inside the try
+            // because it can now refuse a cross-app handoff, and that refusal is the same
+            // caller_credential_conflict the pool raises a few lines below.
+            await ReleaseAgentBoundToAnotherUserAsync(threadId, "SendMessage", callerCredential);
+
             _ = agentPool.GetOrCreateAgent(
                 threadId,
                 mode,
@@ -1466,11 +1468,12 @@ public class ConversationsController(
         // the request with an unhandled 500 (which, in Development, also leaks a stack-trace page).
         var callerCredential = TryBuildCallerCredential(HttpContext?.Request?.Headers);
 
-        // AFTER the authorization above, never before - see the helper's remarks.
-        await ReleaseAgentBoundToAnotherUserAsync(threadId, "Mode switch");
-
         try
         {
+            // AFTER the authorization above, never before - see the helper's remarks. Inside the try
+            // so its cross-app refusal lands on the same caller_credential_conflict catch below.
+            await ReleaseAgentBoundToAnotherUserAsync(threadId, "Mode switch", callerCredential);
+
             _ = await agentPool.RecreateAgentWithModeAsync(
                 threadId,
                 mode,
@@ -1622,11 +1625,12 @@ public class ConversationsController(
         // unavailable/unknown provider must answer a clean 503, not crash the request with a 500.
         var callerCredential = TryBuildCallerCredential(HttpContext?.Request?.Headers);
 
-        // AFTER the authorization above, never before - see the helper's remarks.
-        await ReleaseAgentBoundToAnotherUserAsync(threadId, "Provider switch");
-
         try
         {
+            // AFTER the authorization above, never before - see the helper's remarks. Inside the try
+            // so its cross-app refusal lands on the same caller_credential_conflict catch below.
+            await ReleaseAgentBoundToAnotherUserAsync(threadId, "Provider switch", callerCredential);
+
             _ = await agentPool.RecreateAgentWithProviderAsync(
                 threadId,
                 request.ProviderId,
@@ -1802,30 +1806,56 @@ public class ConversationsController(
     /// nothing from their own 404 while the owner pays for it.
     /// </para>
     /// <para>
-    /// The sandbox answer, recorded in <c>docs/deployment/AUTH_ENFORCE.md</c>: a grantee does NOT
-    /// inherit the owner's sandbox. Sharing a conversation grants the conversation - whose history is
-    /// durable and rehydrates onto the new agent - not the filesystem the owner's agent was
-    /// provisioned. Two users writing through one agent would share whatever that sandbox holds, and
-    /// revoking the grant would not take it back. Releasing costs one sandbox provision and the
-    /// pooled agent's in-memory-only state, paid only when a conversation actually changes hands.
+    /// The sandbox answer, recorded in <c>docs/deployment/AUTH_ENFORCE.md</c>: a grantee DOES inherit
+    /// the owner's sandbox, and this remark previously claimed the opposite. Releasing clears the pool
+    /// entry only, which never destroys the gateway session behind it; the recreate resolves the same
+    /// workspace id back out of persisted metadata, and the session cache is keyed
+    /// <c>(workspaceId, appId)</c> with a null app id for every interactive UI caller. Both users
+    /// therefore key the same entry and get the same live session - same id, same host path. So this
+    /// costs ZERO sandbox provisions (it is a cache hit) plus the pooled agent's in-memory-only state,
+    /// and sharing a conversation today shares its filesystem. Whether that should be so is an open
+    /// product decision tracked in #417; this releases the agent, never the sandbox.
     /// </para>
     /// <para>
-    /// A run in progress is left alone: this returns without releasing, the pool's guard raises its
-    /// conflict as before, and the caller gets the same <c>409</c> they get today. Evicting mid-run
-    /// would abort a turn belonging to whoever is streaming - the wrong party to punish for a
-    /// handoff, and a race any second caller could trigger at will.
+    /// A run in progress is left alone on a BEST-EFFORT basis: this returns without releasing, the
+    /// pool's guard raises its conflict as before, and the caller gets the same <c>409</c>. Best-effort
+    /// literally - the check and the removal are not one atomic step, and a turn that is queued but not
+    /// yet started reads as not-in-progress, so it can be dropped by a handoff arriving in that window (#418).
+    /// Evicting a genuinely streaming turn would abort the answer of whoever is mid-answer - the wrong
+    /// party to punish for a handoff, and a race any second caller could trigger at will.
     /// </para>
     /// <para>
-    /// The app-id freeze (<see cref="SandboxCredentialConflictException"/>) is deliberately NOT
-    /// released alongside this. It is the boundary between SERVICES, not between people: an app-only
-    /// S2S caller has no <c>EffectiveUserId</c> to hold a grant with, so there is no authorization
-    /// verdict here that could stand in for one, and the cross-actor resume matrix (#153) pins that
-    /// refusal on purpose.
+    /// The app-id freeze (<see cref="SandboxCredentialConflictException"/>) is NOT released alongside
+    /// this, and enforcing that is this method's job rather than the pool's. It is the boundary between
+    /// SERVICES, not between people: an app-only S2S caller has no <c>EffectiveUserId</c> to hold a
+    /// grant with, so there is no authorization verdict here that could stand in for one, and the
+    /// cross-actor resume matrix (#153) pins that refusal on purpose.
+    /// </para>
+    /// <para>
+    /// Saying so is not enough, because the release itself is what drops it: <c>RemoveAgentAsync</c>
+    /// takes the whole entry, including the <c>CallerCredential</c> the app-id compare reads, so the
+    /// recreate that follows finds nothing to compare against and re-freezes the conversation to
+    /// whatever app the NEW caller presents. So the freeze is read HERE, before the removal makes it
+    /// unreadable, and a mismatch raises the same exception the pool would have raised - the routes map
+    /// it to the same <c>409 caller_credential_conflict</c> either way. The gap was invisible to the
+    /// #153 matrix because an app-only caller returns above without ever reaching the removal; it takes
+    /// a caller with BOTH a user id and a different app id - a grantee signing in through the UI to a
+    /// conversation an S2S app minted - to reach it.
     /// </para>
     /// </remarks>
     /// <param name="threadId">The conversation whose pooled agent may need releasing.</param>
     /// <param name="operation">Which route is releasing, for the log line.</param>
-    private async Task ReleaseAgentBoundToAnotherUserAsync(string threadId, string operation)
+    /// <param name="callerCredential">
+    /// This request's sandbox credential, or <c>null</c> for an interactive UI caller. Compared against
+    /// the app id the thread is frozen to so the release cannot launder a cross-actor takeover.
+    /// </param>
+    /// <exception cref="SandboxCredentialConflictException">
+    /// Thrown when this caller's app id differs from the one the thread's agent was created under.
+    /// </exception>
+    private async Task ReleaseAgentBoundToAnotherUserAsync(
+        string threadId,
+        string operation,
+        SandboxCredential? callerCredential)
     {
         var callerUserId = CallerUserId;
         if (callerUserId is null)
@@ -1839,6 +1869,21 @@ public class ConversationsController(
         if (boundTo is null || string.Equals(boundTo, callerUserId, StringComparison.Ordinal))
         {
             return;
+        }
+
+        // Before anything is torn down, and before the run-in-progress exit below: the app-id refusal
+        // is unconditional, so it must not depend on whether someone happens to be streaming.
+        var frozenAppId = agentPool.GetAgentCallerAppId(threadId);
+        var requestedAppId = callerCredential?.AppId;
+        if (!string.Equals(frozenAppId, requestedAppId, StringComparison.Ordinal))
+        {
+            logger.LogWarning(
+                "{Operation} for thread {ThreadId} refused a handoff across app identities: frozen to {ExistingAppId}, requested {RequestedAppId}",
+                operation,
+                threadId,
+                frozenAppId ?? "(none)",
+                requestedAppId ?? "(none)");
+            throw new SandboxCredentialConflictException(threadId, frozenAppId, requestedAppId);
         }
 
         if (agentPool.IsRunInProgress(threadId))
