@@ -34,6 +34,7 @@ import AuthRequiredBanner from './AuthRequiredBanner.vue';
 import MarketplaceModal from './MarketplaceModal.vue';
 import EgressAuthModal from './EgressAuthModal.vue';
 import FileBrowserModal from './FileBrowserModal.vue';
+import ShareConversationModal from './ShareConversationModal.vue';
 
 const {
   conversations,
@@ -199,6 +200,7 @@ const isSwitchingProvider = ref(false);
 const marketplaceModalOpen = ref(false);
 const egressAuthModalOpen = ref(false);
 const fileBrowserModalOpen = ref(false);
+const shareModalOpen = ref(false);
 
 /**
  * Closes the egress-auth modal, resetting both the header-button flag and any
@@ -726,6 +728,15 @@ onBeforeUnmount(() => {
               Files
             </button>
             <button
+              class="share-btn"
+              data-testid="share-button"
+              title="Share this conversation"
+              :disabled="!currentThreadId"
+              @click="shareModalOpen = true"
+            >
+              Share
+            </button>
+            <button
               class="clear-btn"
               data-testid="clear-button"
               @click="clearMessages"
@@ -750,6 +761,16 @@ onBeforeUnmount(() => {
           v-if="fileBrowserModalOpen"
           :thread-id="currentThreadId"
           @close="fileBrowserModalOpen = false"
+        />
+
+        <!--
+          Gated on a thread id rather than accepting null: every share route is addressed by
+          thread, so with no conversation open there is nothing to share and nothing to list.
+        -->
+        <ShareConversationModal
+          v-if="shareModalOpen && currentThreadId"
+          :thread-id="currentThreadId"
+          @close="shareModalOpen = false"
         />
 
         <ConversationTabs
@@ -957,6 +978,26 @@ onBeforeUnmount(() => {
 }
 
 .file-browser-btn:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+.share-btn {
+  padding: 8px 16px;
+  background: #2d6cdf;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.share-btn:hover:not(:disabled) {
+  background: #2057bd;
+}
+
+.share-btn:disabled {
   background: #ccc;
   cursor: not-allowed;
 }
