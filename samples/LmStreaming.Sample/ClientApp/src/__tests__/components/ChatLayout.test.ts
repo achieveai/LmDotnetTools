@@ -234,6 +234,9 @@ vi.mock('@/composables/useWorkspaces', async () => {
       '@/composables/useWorkspaces'
     );
   return {
+    // The real constant, not a stand-in: ChatLayout's fallback is only meaningful if it names the
+    // id the backend actually seeds.
+    DEFAULT_WORKSPACE_ID: actual.DEFAULT_WORKSPACE_ID,
     // Most tests here only care that ChatLayout calls the right function, so they get a flat stub.
     // The conflict-visibility test needs the REAL composable — its `isLoading` flip during the
     // post-409 reload is the whole mechanism under test, and a stub cannot reproduce it honestly.
@@ -1530,6 +1533,39 @@ describe('ChatLayout new-chat provisioning (#435)', () => {
     for (const call of sharedMocks.setThreadId.mock.calls) {
       expect(call[0]).toBeNull();
     }
+  });
+
+  // A host with no reachable marketplace catalog reports every workspace as `unknown`, so
+  // `useWorkspaces` keeps no selection — the state a gateway-less deployment is permanently in.
+  // Provisioning must not be stricter than the socket it replaced, which sent whatever it had and
+  // let the backend resolve its own default.
+  it('falls back to the default workspace when the catalog can vouch for none', async () => {
+    sharedMocks.selectedWorkspaceId = null;
+
+    mountLayout();
+    await flushPromises();
+
+    const provisioned = await sharedMocks.chatOptions!.provisionThreadId!();
+
+    expect(sharedMocks.createNewConversation).toHaveBeenCalledWith({
+      workspaceId: 'default',
+      providerId: 'anthropic',
+      modeId: 'default',
+    });
+    expect(provisioned).toBe('thread-provisioned');
+  });
+
+  // The provider is a different matter: a null there means the catalog could not be read at all
+  // (`loadProviders` falls back to the backend's declared default even when nothing is available),
+  // and the backend answers 503 for a provider it cannot serve.
+  it('refuses when no provider could be resolved at all', async () => {
+    sharedMocks.selectedProviderId = null;
+
+    mountLayout();
+    await flushPromises();
+
+    await expect(sharedMocks.chatOptions!.provisionThreadId!()).rejects.toThrow(/provider/);
+    expect(sharedMocks.createNewConversation).not.toHaveBeenCalled();
   });
 
   // Reserving on click would write a metadata row per "New chat", and GET /api/conversations lists

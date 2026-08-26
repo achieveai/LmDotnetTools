@@ -12,7 +12,12 @@ import {
   WorkspaceRevisionConflictError,
 } from '@/api/workspacesApi';
 
-const DEFAULT_WORKSPACE_ID = 'default';
+/**
+ * The workspace the backend seeds and always resolves, whatever else the catalog holds. Exported
+ * because it is also the binding a caller has to fall back to when the catalog can vouch for
+ * nothing — see `ChatLayout.provisionThread`.
+ */
+export const DEFAULT_WORKSPACE_ID = 'default';
 
 /**
  * How many times `settleCatalog` follows the chain of superseding loads before giving up.

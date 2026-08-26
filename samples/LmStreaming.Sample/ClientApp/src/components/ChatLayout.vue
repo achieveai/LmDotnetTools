@@ -4,7 +4,7 @@ import { useConversations } from '@/composables/useConversations';
 import { useChat, getDisplayText } from '@/composables/useChat';
 import { useChatModes } from '@/composables/useChatModes';
 import { useProviders } from '@/composables/useProviders';
-import { useWorkspaces } from '@/composables/useWorkspaces';
+import { DEFAULT_WORKSPACE_ID, useWorkspaces } from '@/composables/useWorkspaces';
 import { egressDialogRequest, closeEgressDialog } from '@/composables/useEgressAuth';
 import { updateConversationMetadata } from '@/api/conversationsApi';
 import { WorkspaceRevisionConflictError } from '@/api/workspacesApi';
@@ -138,13 +138,22 @@ async function provisionThread(): Promise<string> {
   // wait for whichever load will win before deciding anything is missing.
   await Promise.all([settleProviderCatalog(), settleWorkspaceCatalog()]);
 
-  const workspaceId = selectedWorkspaceId.value;
   const providerId = selectedProviderId.value;
-  if (workspaceId === null || providerId === null) {
-    // The server resolves each binding and refuses the request if any is unknown, so there is
-    // nothing useful to send yet. Say which choice is missing instead of posting a doomed request.
-    throw new Error('Choose a workspace and a provider before starting a conversation.');
+  if (providerId === null) {
+    // The server resolves the provider and answers 503 for one it cannot serve, so there is nothing
+    // useful to send yet. Say what is missing instead of posting a doomed request. A null here means
+    // the provider catalog could not be read at all: `loadProviders` falls back to the backend's
+    // declared default even when nothing in the list is available.
+    throw new Error('Choose a provider before starting a conversation.');
   }
+
+  // A null workspace selection is NOT a reason to refuse. `useWorkspaces` only keeps a selection the
+  // catalog reports as `compatible`, and the backend reports every workspace as `unknown` whenever
+  // the marketplace catalog is unreachable — a gateway-less host, or a runner where
+  // `/api/marketplaces` answers 503. Refusing there would make provisioning stricter than the socket
+  // it replaced: that path sent whatever it had and let the server resolve its own default, so a
+  // host with no gateway could still chat. Fall back to the workspace the backend always resolves.
+  const workspaceId = selectedWorkspaceId.value ?? DEFAULT_WORKSPACE_ID;
   return await createNewConversation({
     workspaceId,
     providerId,
