@@ -781,10 +781,12 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
-    public async Task Posted_leaves_no_cutoff_when_the_review_was_only_collected()
+    public async Task Posted_leaves_no_cutoff_when_posting_is_switched_off_entirely()
     {
-        // An attempt is not evidence. A stamp written where nothing was delivered would push the next review's
-        // cutoff PAST real comments and hide them — strictly worse than the null it replaced.
+        // The posting-disabled path: no post is even attempted, so there is nothing that could be mistaken for
+        // delivery. This does NOT prove "an attempt is not evidence" — postOutcome is null here, so the stamp
+        // site is never reached. The test that carries that proof is the one below, where a post IS attempted
+        // and comes back CollectedOnly; mutation found this one green against a stamp written unconditionally.
         using var fixture = Fixture.Create();
         var run = fixture.SeedRun();
 
@@ -802,8 +804,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
     {
         using var fixture = Fixture.CreateS2S();
         var run = fixture.SeedRun();
-        fixture.Store.MarkReviewPosted(
-            run.Id, DateTimeOffset.Parse("2026-07-20T10:00:00Z", CultureInfo.InvariantCulture));
+        var seededCutoff = DateTimeOffset.Parse("2026-07-20T10:00:00Z", CultureInfo.InvariantCulture);
+        fixture.Store.MarkReviewPosted(run.Id, seededCutoff);
         fixture.Publisher.ListFailure = new HttpRequestException("the provider is having a moment");
 
         await RunAllStagesAsync(fixture, run);
@@ -814,6 +816,13 @@ public sealed class DaemonReviewStageExecutorPooledTests
             "the review was written without knowing what is already on the PR, and this PR already carries a "
                 + "review — posting it blind is how the duplicate-review spam comes back");
         fixture.Store.WasDedupContextLost(run.Id).Should().BeTrue();
+
+        // AN ATTEMPT IS NOT EVIDENCE, and this is the only place that proves it: posting is authorized by
+        // configuration here, so a post IS attempted and comes back CollectedOnly. A stamp written on the
+        // outcome rather than on proven delivery would drag the cutoff to now — burying every comment made
+        // since the real one, which is strictly worse than the null the stamp replaced.
+        fixture.Store.GetLastPostedReviewAt(run.RepoId, run.PrId).Should().Be(
+            seededCutoff, "nothing was delivered this round, so the cutoff is still where the last delivery left it");
     }
 
     [Fact]
