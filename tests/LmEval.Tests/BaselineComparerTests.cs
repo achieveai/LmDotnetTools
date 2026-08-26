@@ -386,12 +386,20 @@ public class BaselineComparerTests
         baseline.NoDecisionRate.Should().Be(0.2);
     }
 
+    /// <summary>
+    /// The floor is <c>0.0</c> deliberately. Since #441, <c>From</c> also applies the coverage floor
+    /// to its source run, and a run that scored nothing has a coverage of zero — so at any positive
+    /// floor this run is refused for the floor, ahead of the arm this test is named after. Setting
+    /// no floor is what keeps that arm reachable, and reaching it is the point.
+    /// <see cref="BaselineSourceBoundsTests.A_run_below_its_floor_that_also_scored_nothing_is_refused_for_the_floor"/>
+    /// pins the other side of the same ordering.
+    /// </summary>
     [Fact]
     public void A_run_that_scored_nothing_cannot_become_a_baseline()
     {
         var barren = Run([.. Enumerable.Range(0, 3).Select(i => Undecided($"i{i}"))]);
 
-        var act = () => EvalBaseline.From("base-1", barren, 0.5);
+        var act = () => EvalBaseline.From("base-1", barren, 0.0);
 
         act.Should().Throw<ArgumentException>().WithMessage("*scored none*");
     }

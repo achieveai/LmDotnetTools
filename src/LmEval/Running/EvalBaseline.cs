@@ -213,15 +213,19 @@ public sealed record EvalBaseline
     /// </summary>
     /// <param name="baselineId">Stable identity for the new baseline.</param>
     /// <param name="run">The run to freeze.</param>
-    /// <param name="minCoverage">The coverage floor to impose on future candidate runs, in [0,1].</param>
+    /// <param name="minCoverage">
+    /// The coverage floor to impose on future candidate runs, in [0,1]. Also applied to
+    /// <paramref name="run"/> itself: a run too thin to be compared against a baseline is too thin to
+    /// be frozen as one.
+    /// </param>
     /// <param name="maxFaultRate">
     /// The fault-rate bound to impose on future candidate runs, in [0,1]. Defaults to
-    /// <see cref="DefaultMaxFaultRate"/>.
+    /// <see cref="DefaultMaxFaultRate"/>. Also applied to <paramref name="run"/> itself.
     /// </param>
     /// <param name="maxInconclusiveGateRate">
     /// The inconclusive-gate bound to impose on future candidate runs, in [0,1]. Defaults to
     /// <see cref="DefaultMaxInconclusiveGateRate"/>. Validated <b>here</b>, before anything reads it,
-    /// because this method now uses it as a predicate against <paramref name="run"/> and not only as
+    /// because this method uses it as a predicate against <paramref name="run"/> and not only as
     /// a value to store: leaving it to <see cref="MaxInconclusiveGateRate"/>'s accessor would let a
     /// negative bound refuse a perfectly clean source run and report it as a gate outage, naming the
     /// run for what is wrong with the argument. The accessor check stays — it is the one a
@@ -229,8 +233,10 @@ public sealed record EvalBaseline
     /// </param>
     /// <exception cref="ArgumentOutOfRangeException">A bound is outside [0,1].</exception>
     /// <exception cref="ArgumentException">
-    /// The run's inconclusive-gate rate is above <paramref name="maxInconclusiveGateRate"/>, or it
-    /// scored nothing and so has no conditional metrics.
+    /// The run breaches one of the three bounds this baseline would impose on a candidate — fault
+    /// rate, inconclusive-gate rate, coverage — or it scored nothing and so has no conditional
+    /// metrics. Checked in that order, mirroring <see cref="BaselineComparer"/>, so freezing a run
+    /// and comparing it name the same cause.
     /// </exception>
     public static EvalBaseline From(
         string baselineId,
@@ -273,19 +279,46 @@ public sealed record EvalBaseline
             "An inconclusive-gate bound"
         );
 
-        // The source run is held to the same bound this baseline will hold every candidate to, and
-        // it is checked HERE rather than left to the comparison, because the comparison never sees
-        // this side. An inconclusive gate does not block, so an outage run scores every item: it
+        // The source run is held to EVERY bound this baseline will hold its candidates to, in the
+        // order BaselineComparer.Refuse applies them: fault rate, then inconclusive-gate rate, then
+        // the coverage floor, then the scored-nothing arm. Held here rather than left to the
+        // comparison, because the comparison never sees this side — a poisoned baseline is strictly
+        // worse than a poisoned candidate, since the candidate distorts one comparison and is
+        // refused while the baseline distorts every comparison after it and is refused by nothing.
+        //
+        // Each bound is read from the SAME parameter that is stored below, not re-stated as a
+        // literal, so the bound a run is frozen under and the bound it will impose cannot drift.
+
+        // Ahead of the gate bound for the reason the comparer gives: a faulted item holds no verdict
+        // at all where a gate-impaired item still produced one, so when both break the judge outage
+        // is the strictly larger loss and the cause worth naming. FaultRate is a plain double, never
+        // null — a run with no faults has a rate of 0.0, which is a measurement and not an absence,
+        // because FaultedCount counts rows this run definitely holds no verdict for.
+        if (run.FaultRate > maxFaultRate)
+        {
+            throw new ArgumentException(
+                $"Run '{run.RunId}' has a fault rate of {run.FaultRate:F4}, above the "
+                    + $"{maxFaultRate:F4} bound this baseline would impose; {run.FaultedCount} of "
+                    + $"{run.CorpusSize} items hold no verdict at all, so the harness could not "
+                    + "reach its judges and this run's pass rate must not be frozen as the number "
+                    + "every later run is compared against.",
+                nameof(run)
+            );
+        }
+
+        // An inconclusive gate does not block, so an outage run scores every item: it
         // walks past the "scored nothing" check below with a full pass rate, a full coverage and a
         // zero fault rate, and freezes a pass rate measured with the gates off as the number every
         // later run is judged against. A poisoned baseline is strictly worse than a poisoned
         // candidate — the candidate distorts one comparison and is refused, the baseline distorts
         // every comparison after it and is refused by nothing.
         //
-        // Ahead of the scored-nothing check, mirroring BaselineComparer.Refuse, where this bound
-        // sits ahead of the coverage floor and of the "scored no items at all" arm that shares its
-        // refusal. Freezing a run and comparing it then name the same cause, and a reader is never
-        // told "this run scored nothing" about a run whose gates were the reason.
+        // Ahead of the coverage floor and of the scored-nothing check, mirroring
+        // BaselineComparer.Refuse. Ahead of the floor because the floor cannot see this failure at
+        // ANY severity — an inconclusive gate does not block, so every impaired item still scores
+        // and coverage never moves for that reason at all. Freezing a run and comparing it then name
+        // the same cause, and a reader is never told "this run scored nothing" about a run whose
+        // gates were the reason.
         //
         // A null rate is the run that recorded no gate decision at all, and it is deliberately NOT
         // refused, exactly as at comparison: a harness with no gates configured is a real
@@ -305,6 +338,22 @@ public sealed record EvalBaseline
                     + "layer was off, so this run's pass rate is a pass rate measured with the "
                     + "gates off and must not be frozen as the number every later run is compared "
                     + "against.",
+                nameof(run)
+            );
+        }
+
+        // Ahead of the scored-nothing arm, where the comparer also puts it: the two share one
+        // ComparisonRefusal value there, and a run that scored nothing has a coverage of zero, so it
+        // breaches every positive floor as well. The floor is the fact that generalises, and a
+        // caller who set no floor at all still reaches the arm below.
+        if (run.Coverage < minCoverage)
+        {
+            throw new ArgumentException(
+                $"Run '{run.RunId}' has a coverage of {run.Coverage:F4}, below the {minCoverage:F4} "
+                    + $"floor this baseline would impose; only {run.ScoredItems} of "
+                    + $"{run.CorpusSize} items yielded a counted score. The run is too thin to "
+                    + "compare against, and so too thin to be frozen as the thing every later run "
+                    + "is compared against.",
                 nameof(run)
             );
         }
