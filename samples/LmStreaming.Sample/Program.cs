@@ -718,8 +718,11 @@ try
             : defaultOutputChannelCapacity;
 
     // Register the MultiTurnAgentPool with provider- and mode-aware factory
-    _ = builder.Services.AddSingleton<IPricingResolver>(sp =>
-        AppSettingsPricingResolver.FromConfiguration(sp.GetRequiredService<IConfiguration>()));
+    // Public-cost pricing (#328/#378). This host is where a cost is actually stamped — the review daemon
+    // runs no loop of its own and drives every review into a conversation here — so the catalog the
+    // UsageLedger resolves against has to be composed and registered by THIS process. See PricingCatalog
+    // for the configuration shape and why no rates are shipped in the repository.
+    _ = builder.Services.AddConfiguredPricing(builder.Configuration);
 
     _ = builder.Services.AddSingleton(sp =>
     {
