@@ -26,6 +26,14 @@ namespace CodeReviewDaemon.Sample.Tests.Orchestration;
 /// the host is actually asked, and that the three answers it can give are told apart — moved means refuse,
 /// unchanged means proceed, unreachable means indeterminate rather than stale.
 /// </para>
+/// <para>
+/// The delivery boundary has a second currency question with the same shape (#430): not "is this still the
+/// code?" but "is this still a PR anybody can act on?". A PR that merges or closes between the Reviewed and
+/// Posted stages used to be commented on regardless, because the only lifecycle check ran at synthesis and
+/// read a persisted column stamped once at discovery. The lifecycle tests below live beside the head ones
+/// because both guards stand at the same call site and share the same indeterminate rule — and because each
+/// clause needs its own distinguishing case, which two families of tests in two files would not give.
+/// </para>
 /// </summary>
 public sealed class StaleHeadGuardTests
 {
@@ -267,6 +275,136 @@ public sealed class StaleHeadGuardTests
         await executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
 
         publisher.PostCount.Should().Be(1);
+    }
+
+    // ── the delivery boundary's lifecycle sibling (#430) ──────────────────────────────────────────
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task PrClosesBetweenReviewedAndPosted_PublishesNothing_AndStillCleansUp(bool merged)
+    {
+        // Parameterised on a bool rather than on PrLifecycle because that enum is internal and an xUnit theory
+        // argument has to be as public as the test method.
+        var lifecycle = merged ? PrLifecycle.Merged : PrLifecycle.Abandoned;
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        // The head is DELIBERATELY unchanged. That is what makes this the lifecycle clause's own distinguishing
+        // case: the head guard agrees here, so if the review is withheld it can only be because the lifecycle
+        // clause withheld it. The synthesis-time check cannot cover this — it reads the run's persisted
+        // pr_lifecycle_state, stamped once at discovery and never refreshed while the review ran.
+        var provider = new MockPrProvider("github", [], Cursor())
+        {
+            CurrentHeadSha = "head-118",
+            PrState = lifecycle,
+        };
+        var publisher = new FakeReviewCommentPublisher("github");
+        var provisioner = new RecordingProvisioner();
+        var executor = BuildPostingExecutor(store, publisher, [provider], provisioner);
+        var run = SeedRunReadyToPost(store, headSha: "head-118");
+
+        await executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        provider.PrStateCalls.Should().Be(
+            1, "only the host can contradict the lifecycle the run was discovered with");
+        publisher.PostCount.Should().Be(
+            0, "findings on a PR that has already merged or closed read as noise, and the conversation may be locked");
+        store.GetOutboxForRun(run.Id)
+            .Should().NotContain(
+                o => o.Operation == ReviewPoster.PostReviewCommentOperation,
+                "a refusal must not leave a delivery row claiming the review reached the PR");
+        // Merged and Closed are terminal, so the skip must be non-throwing: failing the stage would spin the
+        // terminal stage forever waiting for a state that is never coming back.
+        provisioner.DestroyCalls.Should().Contain(r => r.Id == run.Id, "cleanup runs on the refusal path too");
+    }
+
+    [Fact]
+    public async Task AnOpenPrAtThePostingBoundary_IsAskedAboutAndStillPosts()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var provider = new MockPrProvider("github", [], Cursor())
+        {
+            CurrentHeadSha = "head-118",
+            PrState = PrLifecycle.Open,
+        };
+        var publisher = new FakeReviewCommentPublisher("github");
+        var executor = BuildPostingExecutor(store, publisher, [provider], new RecordingProvisioner());
+        var run = SeedRunReadyToPost(store, headSha: "head-118");
+
+        await executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        // The non-vacuity companion to the theory above: the refusals there would also be produced by a guard
+        // that refused EVERYTHING, and by a guard that never asked at all. Both are excluded here.
+        provider.PrStateCalls.Should().Be(1);
+        publisher.PostCount.Should().Be(1, "an open PR at the boundary is exactly the case that must still deliver");
+    }
+
+    [Fact]
+    public async Task AnIndeterminateLifecycleAnswerAtThePostingBoundary_StillPosts()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        // The head answer is positive and agrees, so the head guard is out of the way and the ONLY thing being
+        // decided is what an unanswerable lifecycle question means. It must mean "post": a failed read is not
+        // evidence that the PR closed, and refusing on it would discard a finished review on every API blip —
+        // the rule most easily narrowed by accident when a guard is copied to a second boundary.
+        var provider = new LifecycleUnreachablePrProvider("github", headSha: "head-118");
+        var publisher = new FakeReviewCommentPublisher("github");
+        var executor = BuildPostingExecutor(store, publisher, [provider], new RecordingProvisioner());
+        var run = SeedRunReadyToPost(store, headSha: "head-118");
+
+        await executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        provider.PrStateCalls.Should().Be(1, "the host was asked; the answer just was not one");
+        publisher.PostCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task AMovedHeadSpendsNoLifecycleRead()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var provider = new MockPrProvider("github", [], Cursor())
+        {
+            CurrentHeadSha = "head-after-force-push",
+            PrState = PrLifecycle.Open,
+        };
+        var executor = BuildPostingExecutor(
+            store, new FakeReviewCommentPublisher("github"), [provider], new RecordingProvisioner());
+        var run = SeedRunReadyToPost(store, headSha: "head-before-force-push");
+
+        await executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        // The two guards are separate provider reads, not one. A run already refusing to publish must not spend
+        // a second request to reach an answer it cannot act on differently.
+        provider.PrStateCalls.Should().Be(0, "the head guard had already withheld the review");
+    }
+
+    /// <summary>
+    /// A host that answers the head question and fails the lifecycle one, so an indeterminate lifecycle can be
+    /// tested without an indeterminate head hiding the result.
+    /// </summary>
+    private sealed class LifecycleUnreachablePrProvider(string provider, string headSha) : IPrProvider
+    {
+        public string Provider { get; } = provider;
+
+        public int PrStateCalls { get; private set; }
+
+        public Task<PullRequestPage> ListOpenPullRequestsAsync(
+            PrPollRequest request, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("not part of this test");
+
+        public Task<PrLifecycle> GetPrStateAsync(
+            RepoIdentity repo, string prId, CancellationToken cancellationToken)
+        {
+            PrStateCalls++;
+            throw new HttpRequestException("simulated provider outage");
+        }
+
+        public Task<string?> GetCurrentHeadShaAsync(
+            RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
+            Task.FromResult<string?>(headSha);
     }
 
     private static DaemonReviewStageExecutor BuildPostingExecutor(

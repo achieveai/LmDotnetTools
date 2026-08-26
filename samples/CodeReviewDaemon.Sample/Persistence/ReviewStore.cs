@@ -464,14 +464,46 @@ internal sealed class ReviewStore : IDisposable
     /// <c>workflow_status</c>, which the caller mutates as it works. A second page taken by offset over a
     /// predicate that has shifted under it would skip rows.
     /// </remarks>
-    public IReadOnlyList<StrandedRunRow> ListStrandedRuns(DateTimeOffset staleBefore, int limit)
+    public IReadOnlyList<StrandedRunRow> ListStrandedRuns(DateTimeOffset staleBefore, int limit) =>
+        ListStrandedRunsWhere("<>", WorkflowStatus.Completed, staleBefore, limit);
+
+    /// <summary>
+    /// The same listing narrowed to <see cref="WorkflowStatus.RetryPending"/> — the runs whose last write was a
+    /// deliberate "try this again", so the caller can react to them on a staleness of its own rather than on the
+    /// one that decides a run has been abandoned (#429).
+    /// <para>
+    /// Everything <see cref="ListStrandedRuns"/>'s summary says still applies, most importantly
+    /// <see cref="StrandedRunRow.Superseded"/>: this listing shares that subquery rather than restating it,
+    /// because a fast path that resumed a run whose commit pair has since been re-reviewed would publish a
+    /// stale review FASTER, which is worse than the delay it was added to remove. The only difference is the
+    /// status predicate.
+    /// </para>
+    /// <para>
+    /// Why <c>RetryPending</c> is the one status that earns a shorter window: it is written by
+    /// <see cref="Orchestration.PrOrchestrator"/>'s stage catch, so it means a stage ran and failed and the run
+    /// is owed another attempt. <c>Pending</c> and <c>Running</c> mean the opposite — nobody has said anything
+    /// about this run, so its age is the only evidence available and the abandonment window is the right one.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<StrandedRunRow> ListRetryPendingRuns(DateTimeOffset staleBefore, int limit) =>
+        ListStrandedRunsWhere("=", WorkflowStatus.RetryPending, staleBefore, limit);
+
+    /// <summary>
+    /// Shared body of the two stranded-run listings. Only the comparison OPERATOR and the status value differ,
+    /// and the operator comes from this file's own two call sites rather than from a caller, so no user input
+    /// reaches the SQL. Shared rather than copied because the half that would matter if the two drifted is the
+    /// <c>superseded</c> subquery: a listing that lost it would resume — and on a posting daemon publish — a
+    /// review of a commit pair that a later run has already replaced.
+    /// </summary>
+    private IReadOnlyList<StrandedRunRow> ListStrandedRunsWhere(
+        string statusOperator, WorkflowStatus status, DateTimeOffset staleBefore, int limit)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
 
         var results = new List<StrandedRunRow>();
         using var gate = _gate.EnterScope();
         using var command = _connection.CreateCommand();
-        command.CommandText = """
+        command.CommandText = $"""
             SELECT rr.*, r.provider, r.org_or_owner, r.project, r.repo_name, r.repo_stable_id,
                    EXISTS (SELECT 1 FROM review_run n
                             WHERE n.repo_id = rr.repo_id AND n.pr_id = rr.pr_id AND n.id > rr.id
@@ -479,11 +511,11 @@ internal sealed class ReviewStore : IDisposable
                               AND (n.head_sha <> rr.head_sha OR n.base_sha <> rr.base_sha)) AS superseded
             FROM review_run rr
             JOIN repo r ON r.id = rr.repo_id
-            WHERE rr.workflow_status <> $completed AND rr.updated_at < $staleBefore
+            WHERE rr.workflow_status {statusOperator} $status AND rr.updated_at < $staleBefore
             ORDER BY rr.id
             LIMIT $limit;
             """;
-        _ = command.Parameters.AddWithValue("$completed", WorkflowStatus.Completed.ToString());
+        _ = command.Parameters.AddWithValue("$status", status.ToString());
         _ = command.Parameters.AddWithValue("$staleBefore", Utc(staleBefore));
         _ = command.Parameters.AddWithValue("$limit", limit);
         using var reader = command.ExecuteReader();

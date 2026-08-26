@@ -3057,12 +3057,25 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// read as an outage.
     /// </para>
     /// <para>
-    /// <b>Residual window, and where it ends</b> (#421). This is a check-then-act, not a lock, so a
-    /// force-push landing after the last call here still produces a review of the superseded head. What that
-    /// costs is now bounded: <see cref="HeadMovedSinceReviewAsync"/> re-reads the host in <c>PostAsync</c>,
-    /// immediately before the only call that can reach the PR author, and a review of a superseded head is
-    /// withheld there rather than published. Synthesis can still be spent on a head that has moved — nothing
-    /// short of a lock prevents that — but the wasted work stays inside the daemon.
+    /// <b>Residual window, and where it ends</b> (#421, #430). This is a check-then-act, not a lock, so a
+    /// force-push or a merge landing after the last call here still produces a review of a PR that has moved
+    /// on. What that costs is now bounded on the HOST-SIDE posting path:
+    /// <see cref="HeadMovedSinceReviewAsync"/> and <see cref="PrClosedSinceReviewAsync"/> both re-read the host
+    /// in <c>PostAsync</c>, immediately before the host-side publisher call, and a review of a superseded head
+    /// or of a PR that has since merged or closed is withheld there rather than published. Synthesis can still
+    /// be spent on either — nothing short of a lock prevents that — but the wasted work stays inside the
+    /// daemon.
+    /// </para>
+    /// <para>
+    /// <b>What the delivery-boundary guards do NOT cover.</b> They stand on the host-side posting path only.
+    /// On the agent-inline path the review agent posts from inside its own sandbox session during the
+    /// <c>Reviewed</c> stage, before <c>PostAsync</c> is ever reached, so THIS method is the last check that
+    /// path gets. Its residual window is therefore the full one, and its lifecycle half is weaker still: the
+    /// check above reads the run's PERSISTED <c>pr_lifecycle_state</c>, which is stamped once at discovery from
+    /// a poll snapshot and is not refreshed while the review runs — only the head half asks the host. Closing
+    /// that would mean a live lifecycle read here too; it is left open deliberately, because the S2S path (the
+    /// one this daemon actually runs) forces agent-inline posting off and delivers host-side, where both
+    /// guards apply.
     /// </para>
     /// </summary>
     private async Task ValidateReviewStillCurrentAsync(ReviewRun run, CancellationToken cancellationToken)
@@ -3334,6 +3347,98 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         return true;
     }
 
+    /// <summary>
+    /// True ONLY when the host positively reports this PR as no longer Open. The lifecycle sibling of
+    /// <see cref="HeadMovedSinceReviewAsync"/>, and it obeys the same asymmetry for the same reason: no
+    /// provider registered, an unreachable or slow host, any answer that is not an answer, is INDETERMINATE
+    /// and returns false, because a failed read is not evidence that the PR closed. Narrowing that here would
+    /// discard correct reviews on every API blip.
+    /// <para>
+    /// Why the boundary needs its own check (#430). <see cref="ValidateReviewStillCurrentAsync"/> does refuse a
+    /// non-Open PR, but it runs at SYNTHESIS and reads the run's PERSISTED lifecycle — a column stamped once at
+    /// discovery from a poll snapshot and never refreshed on this path. So neither half of it covers a PR that
+    /// merges or closes between the Reviewed and Posted stages, which is minutes, and the review landed on it
+    /// anyway: findings about code that is already merged read as noise, and a closed or locked conversation is
+    /// a poor place to receive them.
+    /// </para>
+    /// <para>
+    /// Like the head guard, refusing does NOT fail the stage. Merged and Closed are terminal — unlike a moved
+    /// head there is not even a next run coming — so throwing would spin the terminal stage forever against a
+    /// state that is never coming back. The caller skips the publisher call and nothing else: teardown,
+    /// retention and slot return all still happen.
+    /// </para>
+    /// <para>
+    /// <b>Two reads, not one.</b> This asks <c>GetPrStateAsync</c> while the head guard asks
+    /// <c>GetCurrentHeadShaAsync</c>, so a post that survives both spends two requests against the host. Both
+    /// providers already parse both facts out of the SAME single-PR resource, so one combined seam is possible
+    /// — but it would mean a new <see cref="IPrProvider"/> member restating the indeterminate rule across every
+    /// implementation and every test double, to save one request per POSTED REVIEW. The short-circuit below is
+    /// the cheap half of that trade: a run whose head already moved never asks this question at all.
+    /// </para>
+    /// </summary>
+    private async Task<bool> PrClosedSinceReviewAsync(ReviewRun run, CancellationToken cancellationToken)
+    {
+        var lifecycle = await ReadHostPrLifecycleAsync(run, cancellationToken).ConfigureAwait(false);
+        if (lifecycle is null or PrLifecycle.Open)
+        {
+            return false;
+        }
+
+        _logger.LogWarning(
+            "Run {RunId}: PR {PrId} became {Lifecycle} between synthesis and posting; the review is NOT being "
+                + "posted, because feedback on a PR that has already merged or closed reads as noise and can "
+                + "land on a locked conversation. Nothing retries this — the state is terminal.",
+            run.Id, run.PrId, lifecycle);
+        return true;
+    }
+
+    /// <summary>
+    /// Asks the PR host what this run's PR currently is, or returns <c>null</c> when the answer is
+    /// indeterminate — no provider registered for the run's namespace, an unreachable host, or a slow one.
+    /// The lifecycle twin of <see cref="ReadHostHeadShaAsync"/>, kept beside it and shaped identically so the
+    /// three indeterminate cases collapse to one disposition here rather than being re-decided by callers.
+    /// </summary>
+    private async Task<PrLifecycle?> ReadHostPrLifecycleAsync(ReviewRun run, CancellationToken cancellationToken)
+    {
+        var (repo, provider) = ResolveRepo(run);
+        var prProvider = _prProviders.FirstOrDefault(p =>
+            string.Equals(p.Provider, provider, StringComparison.OrdinalIgnoreCase));
+        if (prProvider is null)
+        {
+            _logger.LogWarning(
+                "Run {RunId}: no IPrProvider registered for '{Provider}', so PR {PrId} lifecycle could not be "
+                    + "re-checked; posting rather than treating an unanswerable question as a closed PR.",
+                run.Id, provider, run.PrId);
+            return null;
+        }
+
+        try
+        {
+            return await prProvider.GetPrStateAsync(repo, run.PrId, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            // A slow host, not a shutdown — the HttpClient per-request timeout arrives as a
+            // TaskCanceledException with the caller's token still uncancelled. Classifying on the exception
+            // TYPE alone would let a slow host abandon a finished review, which is the outcome this guard is
+            // supposed to avoid, not cause. Logged apart from the catch below so an operator can tell a slow
+            // host from an unreachable one.
+            _logger.LogWarning(
+                ex, "Run {RunId}: reading PR {PrId} lifecycle from {Provider} timed out while the daemon was "
+                    + "not shutting down; posting rather than treating a slow host as a closed PR.",
+                run.Id, run.PrId, provider);
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex, "Run {RunId}: could not read PR {PrId} lifecycle from {Provider}; posting rather than "
+                    + "treating an unreachable host as a closed PR.",
+                run.Id, run.PrId, provider);
+            return null;
+        }
+    }
+
     private async Task PostAsync(ReviewRun run, CancellationToken cancellationToken)
     {
         var (repo, provider) = ResolveRepo(run);
@@ -3383,8 +3488,17 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var headMoved = wouldPost
             && await HeadMovedSinceReviewAsync(run, cancellationToken).ConfigureAwait(false);
 
+        // #430: the lifecycle sibling of the same guard, at the same boundary, for the same reason. The
+        // synthesis-time check reads the run's PERSISTED lifecycle — stamped once at discovery and never
+        // refreshed on this path — so a PR that merges or closes during the minutes between Reviewed and
+        // Posted was still commented on. Gated on `wouldPost` like the head read, and on `!headMoved` as well:
+        // a run already refusing to publish must not spend a second request to reach the same answer.
+        var prClosed = wouldPost
+            && !headMoved
+            && await PrClosedSinceReviewAsync(run, cancellationToken).ConfigureAwait(false);
+
         PostOutcome? postOutcome = null;
-        if (wouldPost && !headMoved)
+        if (wouldPost && !headMoved && !prClosed)
         {
             var deepLink = BuildDeepLink(reviewArtifact.ThreadId);
             postOutcome = await PostReviewCommentHostSideAsync(

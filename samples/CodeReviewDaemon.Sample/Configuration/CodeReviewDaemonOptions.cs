@@ -525,6 +525,39 @@ internal sealed class CodeReviewDaemonOptions
     /// </summary>
     public int StrandedRunMaxResumesPerSweep { get; init; } = 2;
 
+    /// <summary>
+    /// How many minutes a run left in <c>RetryPending</c> waits before the reconciler's fast path resumes it,
+    /// instead of waiting the whole <see cref="StrandedRunGraceHours"/> abandonment window. Default 45. Set to
+    /// 0 to switch the fast path off, leaving <c>RetryPending</c> to drain on the abandonment window as before.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>RetryPending</c> is the one status that earns a window of its own: it is written deliberately, by the
+    /// orchestrator's stage catch, and means a stage ran, failed, and the run is owed another attempt.
+    /// <c>Pending</c> and <c>Running</c> mean nobody has said anything about the run at all, so its age is the
+    /// only evidence there is and the abandonment window is the right question to ask of it. Before this knob
+    /// existed, a deliberate retry decision on a PR outside the poll's recency window waited six hours — a
+    /// number chosen to decide abandonment, reused by accident to schedule a retry.
+    /// </para>
+    /// <para>
+    /// <b>Both bounds are real.</b> It must stay comfortably ABOVE
+    /// <see cref="ReviewStageDeadlineMinutes"/> for the same reason the abandonment window must: a live run
+    /// stamps <c>updated_at</c> at stage BOUNDARIES, so a run legitimately working one long stage looks
+    /// untouched, and resuming it would put a second review of the same PR in flight beside the first. It must
+    /// also stay BELOW <see cref="StrandedRunGraceHours"/> — above it, the "fast" path is the slower of the
+    /// two and reads in configuration as something it is not; the reconciler refuses that at construction
+    /// rather than running misconfigured.
+    /// </para>
+    /// <para>
+    /// Lowering it is not free. Resumes go through the orchestrator's reconcile entry, which resets the
+    /// <c>RetryGovernor</c> on purpose, so this path has no attempt budget and no exponential backoff — this
+    /// window IS the backoff, and a permanently-broken run buys a full lease, clone and LLM run once per
+    /// window, indefinitely. <see cref="StrandedRunMaxResumesPerSweep"/> bounds how many run at once but not
+    /// how often they recur.
+    /// </para>
+    /// </remarks>
+    public double StrandedRunRetryPendingGraceMinutes { get; init; } = 45;
+
     /// <summary>The resolved cross-repo store URL: <see cref="CrossRepoStoreUrl"/> when set, else
     /// <see cref="ReviewBotRepoUrl"/> (the review store and the ReviewBot retention repo are one repo).</summary>
     public string? ResolvedStoreUrl =>

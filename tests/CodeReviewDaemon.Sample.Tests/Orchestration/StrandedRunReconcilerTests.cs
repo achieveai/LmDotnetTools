@@ -21,6 +21,9 @@ public sealed class StrandedRunReconcilerTests
     private static readonly DateTimeOffset Now = new(2026, 8, 6, 12, 0, 0, TimeSpan.Zero);
     private static readonly TimeSpan Grace = TimeSpan.FromHours(6);
 
+    /// <summary>The retry-pending fast window (#429) — deliberately far shorter than <see cref="Grace"/>.</summary>
+    private static readonly TimeSpan RetryGrace = TimeSpan.FromMinutes(45);
+
     // ── the defect: a stranded run is never retried ───────────────────────────────────────────────
 
     [Fact]
@@ -405,6 +408,127 @@ public sealed class StrandedRunReconcilerTests
         harness.Log.Should().BeEmpty("the steady state is no stranded runs, on every poll cycle, forever");
     }
 
+    // ── the retry-pending fast path (#429) ────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task A_retry_pending_run_is_resumed_off_the_fast_listing_alone()
+    {
+        // The abandonment listing is EMPTY here on purpose. Before #429 that was the only listing, so a
+        // RetryPending run on a PR outside the poll's recency window — the case this whole class exists for —
+        // sat until it aged past the six-hour abandonment window, honouring a retry decision the orchestrator
+        // had already made, six hours late.
+        var harness = new Harness().WithRetryPendingRows(Row(id: 11, stage: ReviewStage.Judged));
+
+        await harness.Reconciler().SweepAsync(CancellationToken.None);
+
+        harness.Resumed.Select(r => r.Id).Should().Equal([11L]);
+    }
+
+    [Fact]
+    public async Task A_superseded_run_on_the_fast_listing_is_retired_not_resumed()
+    {
+        // The fast listing shares the store's `superseded` subquery rather than restating it, and this is what
+        // that sharing buys: reacting sooner must not mean publishing a review of a commit pair that a later
+        // run has already replaced — it would only make the stale comment arrive faster.
+        var harness = new Harness().WithRetryPendingRows(Row(id: 11, superseded: true));
+
+        await harness.Reconciler().SweepAsync(CancellationToken.None);
+
+        harness.Resumed.Should().BeEmpty();
+        harness.Retired.Should().ContainSingle().Which.Item1.Should().Be(11L);
+    }
+
+    [Fact]
+    public async Task The_resume_cap_bounds_both_listings_together_not_each_one_separately()
+    {
+        // The design constraint #429 states outright. StrandedRunMaxResumesPerSweep exists to stop a backlog
+        // becoming a burst of concurrent reviews — and, on a posting daemon, a burst of comments. A second
+        // listing that carried a budget of its own would silently double that burst the day it was added,
+        // while the configured number stayed the same and told an operator otherwise.
+        var harness = new Harness()
+            .WithRetryPendingRows(Row(11), Row(12))
+            .WithRows(Row(13), Row(14))
+            .WithMaxResumes(2);
+
+        await harness.Reconciler().SweepAsync(CancellationToken.None);
+
+        harness.Resumed.Select(r => r.Id).Should().Equal(
+            [11L, 12L],
+            "two slots, spent on the runs that are owed a retry — not two slots per listing");
+        harness.Retired.Should().BeEmpty("a deferred run is still open work");
+    }
+
+    [Fact]
+    public async Task The_fast_listing_is_settled_before_the_abandonment_listing()
+    {
+        // Ordering is the whole point of the path: when the pass cannot resume everything, the slots must go to
+        // the runs the orchestrator explicitly asked to retry, not to the ones that merely aged out.
+        var harness = new Harness()
+            .WithRows(Row(13))
+            .WithRetryPendingRows(Row(11))
+            .WithMaxResumes(1);
+
+        await harness.Reconciler().SweepAsync(CancellationToken.None);
+
+        harness.Resumed.Select(r => r.Id).Should().Equal([11L]);
+    }
+
+    [Fact]
+    public async Task A_run_that_appears_on_both_listings_is_settled_exactly_once()
+    {
+        // Not an edge case: a RetryPending run that keeps failing eventually satisfies BOTH predicates, and
+        // that is the steady state of the runs this pass sees. Settled twice it would be handed to the
+        // orchestrator twice concurrently and charge two of the pass's slots for one run.
+        var harness = new Harness()
+            .WithRetryPendingRows(Row(11))
+            .WithRows(Row(11), Row(12))
+            .WithMaxResumes(2);
+
+        await harness.Reconciler().SweepAsync(CancellationToken.None);
+
+        harness.Resumed.Select(r => r.Id).Should().Equal(
+            [11L, 12L],
+            "run 11 is one run however many listings name it, so the second slot was still there for run 12");
+        harness.LifecycleLookups.Should().Be(2, "settling run 11 twice would ask the provider about it twice");
+    }
+
+    [Fact]
+    public async Task With_the_fast_path_off_a_retry_pending_run_waits_the_abandonment_window()
+    {
+        // The zeroed-knob shape. The fast listing is never read, so a RetryPending run reaches the pass only by
+        // the abandonment listing — exactly the behaviour before #429, which is what "off" has to mean.
+        var harness = new Harness()
+            .WithoutFastPath()
+            .WithRetryPendingRows(Row(11));
+
+        await harness.Reconciler().SweepAsync(CancellationToken.None);
+
+        harness.Resumed.Should().BeEmpty();
+        harness.Log.Should().BeEmpty("nothing reached this pass, so it has nothing to report");
+    }
+
+    [Fact]
+    public void A_fast_window_at_or_beyond_the_abandonment_window_is_refused_at_construction()
+    {
+        // A "fast" path slower than the slow one is a misconfiguration that reads, in appsettings, as the
+        // feature working. Refusing at construction turns it into a boot failure an operator can see rather
+        // than a knob that quietly does the opposite of its name.
+        var construct = () => new StrandedRunReconciler(
+            listStrandedRuns: (_, _) => [],
+            getPrLifecycleAsync: (_, _) => Task.FromResult(PrLifecycle.Open),
+            resumeAsync: (run, _) => Task.FromResult(run),
+            updateRunState: (_, _, _, _) => { },
+            timeProvider: new FakeTimeProvider(Now),
+            grace: Grace,
+            scanLimit: 50,
+            maxResumesPerPass: 2,
+            logger: new CapturingLogger<StrandedRunReconciler>([]),
+            listRetryPendingRuns: (_, _) => [],
+            retryPendingGrace: Grace);
+
+        construct.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
     // ── the store query ───────────────────────────────────────────────────────────────────────────
 
     [Fact]
@@ -453,6 +577,113 @@ public sealed class StrandedRunReconcilerTests
         stranded.Single(s => s.Run.Id == newer.Id).Superseded.Should().BeFalse();
         stranded.Single(s => s.Run.Id == only.Id).Superseded.Should().BeFalse(
             "supersession is per PR — another PR's runs say nothing about this one");
+    }
+
+    [Fact]
+    public void The_fast_listing_selects_retry_pending_alone_on_a_window_of_its_own()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+
+        var retrying = store.CreateOrGetReviewRun(SampleRun(repoId, "101"));
+        var running = store.CreateOrGetReviewRun(
+            SampleRun(repoId, "102") with { WorkflowStatus = WorkflowStatus.Running });
+        var finished = store.CreateOrGetReviewRun(SampleRun(repoId, "103"));
+        store.UpdateReviewRunState(finished.Id, ReviewStage.Posted, WorkflowStatus.Completed, PrLifecycleState.Open);
+        var justFailed = store.CreateOrGetReviewRun(SampleRun(repoId, "104"));
+        foreach (var id in new[] { retrying.Id, running.Id, finished.Id })
+        {
+            Backdate(db, id, Now - TimeSpan.FromHours(1));
+        }
+
+        Backdate(db, justFailed.Id, Now - TimeSpan.FromMinutes(1));
+
+        var fast = store.ListRetryPendingRuns(Now - RetryGrace, limit: 50);
+
+        fast.Select(s => s.Run.Id).Should().Equal(
+            [retrying.Id],
+            "RetryPending is the one status written as a DECISION to retry. Run {0} is Running and run {1} is "
+                + "Completed — for those, age is the only evidence there is, which is the abandonment window's "
+                + "question, not this one's. Run {2} failed a minute ago and has not yet waited its window.",
+            running.Id,
+            finished.Id,
+            justFailed.Id);
+    }
+
+    [Fact]
+    public void The_fast_listing_flags_supersession_exactly_as_the_abandonment_listing_does()
+    {
+        // The two listings share one query body precisely so this cannot drift. Resuming a superseded run
+        // publishes a review of a commit pair a later run already replaced; a fast path that lost the flag
+        // would deliver that stale comment SOONER, which is strictly worse than the delay it removes.
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+
+        var older = store.CreateOrGetReviewRun(SampleRun(repoId, "101") with { HeadSha = "head-1" });
+        var newer = store.CreateOrGetReviewRun(SampleRun(repoId, "101") with { HeadSha = "head-2" });
+        foreach (var id in new[] { older.Id, newer.Id })
+        {
+            Backdate(db, id, Now - TimeSpan.FromHours(1));
+        }
+
+        var fast = store.ListRetryPendingRuns(Now - RetryGrace, limit: 50);
+
+        fast.Should().HaveCount(2);
+        fast.Single(s => s.Run.Id == older.Id).Superseded.Should().BeTrue(
+            "run {0} reviewed a later head of the same PR", newer.Id);
+        fast.Single(s => s.Run.Id == newer.Id).Superseded.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task A_retry_pending_run_waits_the_fast_window_and_not_the_abandonment_one()
+    {
+        // The headline of #429, asserted against the REAL store because the claim is about the `updated_at`
+        // predicate the fake listing never evaluates. Both directions are pinned: the run is NOT taken while it
+        // is younger than the fast window (which is what stops the pass grabbing a run the poll is still
+        // working, and what makes the window a real backoff on a path that resets the RetryGovernor), and it IS
+        // taken as soon as it crosses that window — hours before the abandonment window it used to wait for.
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+        var run = store.CreateOrGetReviewRun(SampleRun(repoId, "101"));
+        // The store stamps updated_at from the wall clock, so the fake clock starts beside it.
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        Backdate(db, run.Id, clock.GetUtcNow() - RetryGrace + TimeSpan.FromMinutes(5));
+        var attempts = new List<long>();
+        var reconciler = new StrandedRunReconciler(
+            listStrandedRuns: store.ListStrandedRuns,
+            getPrLifecycleAsync: (_, _) => Task.FromResult(PrLifecycle.Open),
+            resumeAsync: (resuming, _) =>
+            {
+                attempts.Add(resuming.Id);
+                return Task.FromResult(resuming);
+            },
+            updateRunState: store.UpdateReviewRunState,
+            timeProvider: clock,
+            grace: Grace,
+            scanLimit: 50,
+            maxResumesPerPass: 5,
+            logger: new CapturingLogger<StrandedRunReconciler>([]),
+            listRetryPendingRuns: store.ListRetryPendingRuns,
+            retryPendingGrace: RetryGrace);
+
+        await reconciler.SweepAsync(CancellationToken.None);
+
+        attempts.Should().BeEmpty("the run has not yet waited its fast window");
+
+        clock.Advance(TimeSpan.FromMinutes(6));
+        await reconciler.SweepAsync(CancellationToken.None);
+
+        attempts.Should().Equal(
+            [run.Id],
+            "the run crossed the {0} fast window; before #429 it would have sat until the {1} abandonment one",
+            RetryGrace,
+            Grace);
+        clock.GetUtcNow().Should().BeBefore(
+            DateTimeOffset.UtcNow + Grace,
+            "the whole point is that no part of this waited an abandonment window");
     }
 
     [Fact]
@@ -774,6 +1005,8 @@ public sealed class StrandedRunReconcilerTests
         private long? _resumeThrowsFor;
         private Exception _resumeFailure = new TimeoutException("the review's remaining stages timed out");
         private int _maxResumes = 10;
+        private StrandedRunRow[] _retryRows = [];
+        private bool _fastPath = true;
 
         public List<ReviewRun> Resumed { get; } = [];
 
@@ -838,7 +1071,35 @@ public sealed class StrandedRunReconcilerTests
             return this;
         }
 
-        public StrandedRunReconciler Reconciler() => new(
+        /// <summary>Rows the retry-pending fast listing (#429) returns, distinct from <see cref="WithRows"/>.</summary>
+        public Harness WithRetryPendingRows(params StrandedRunRow[] rows)
+        {
+            _retryRows = rows;
+            return this;
+        }
+
+        /// <summary>Builds a reconciler with the fast path switched off, as a zeroed knob leaves it.</summary>
+        public Harness WithoutFastPath()
+        {
+            _fastPath = false;
+            return this;
+        }
+
+        public StrandedRunReconciler Reconciler()
+        {
+            Func<DateTimeOffset, int, IReadOnlyList<StrandedRunRow>>? fastListing = null;
+            if (_fastPath)
+            {
+                fastListing = (staleBefore, limit) =>
+                {
+                    staleBefore.Should().Be(
+                        Now - RetryGrace,
+                        "the fast window, not the abandonment one, decides which retry-pending rows are read");
+                    return [.. _retryRows.Take(limit)];
+                };
+            }
+
+            return new StrandedRunReconciler(
             listStrandedRuns: (staleBefore, limit) =>
             {
                 staleBefore.Should().Be(Now - Grace, "the grace period is subtracted from the current time");
@@ -875,7 +1136,10 @@ public sealed class StrandedRunReconcilerTests
             grace: Grace,
             scanLimit: 50,
             maxResumesPerPass: _maxResumes,
-            logger: new CapturingLogger<StrandedRunReconciler>(Log));
+            logger: new CapturingLogger<StrandedRunReconciler>(Log),
+            listRetryPendingRuns: fastListing,
+            retryPendingGrace: _fastPath ? RetryGrace : default);
+        }
     }
 
     /// <summary>Records the formatted message of every log entry so the deferral notices can be asserted.</summary>
