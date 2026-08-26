@@ -347,6 +347,41 @@ public sealed class EvalCorpusSweepTests : IDisposable
     }
 
     /// <summary>
+    /// A version this reader has never heard of is read <b>forward</b>, not as legacy. The ambiguity
+    /// belongs to v1 and to nothing else — the payload contract is append-compatible, so a later
+    /// version still carries a nullable score — and a branch phrased as "anything but the version I
+    /// know" would quietly reclassify every row the day the schema next moves, which is this branch's
+    /// own defect one version later.
+    /// </summary>
+    [Fact]
+    public async Task A_judge_row_from_a_later_schema_version_is_read_as_scored()
+    {
+        var runId = Reviewed("118", "src/Foo.cs:1 is wrong.");
+        AddArtifact(
+            runId,
+            JudgeAgent.JudgeArtifactSchemaVersion + 1,
+            JudgeAgent.JudgeArtifactKind,
+            new JudgeArtifactPayload(
+                7,
+                "because",
+                "primary",
+                "openai/gpt-5",
+                "anthropic/claude",
+                SelfGraded: false,
+                BallotCount: 1
+            )
+        );
+
+        var report = await SweepAsync();
+
+        report.ScoredCandidates.Should().Be(1);
+        report.MeanRecordedScore.Should().Be(7.0);
+        report
+            .AmbiguousLegacyGradeCandidates.Should()
+            .Be(0, "only v1 is ambiguous; a later version is not unknown-in-the-same-way");
+    }
+
+    /// <summary>
     /// Grades are matched per variant. One run holds a judge row per arm it graded, and grading the
     /// A arm says nothing about the B arm — matching by run alone would hand the B candidate the A
     /// arm's score, which is a wrong number rather than a missing one.
