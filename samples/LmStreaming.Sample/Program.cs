@@ -1353,10 +1353,7 @@ try
                     // Narrowed to the names the mode selected, so the editor's per-tool checkboxes
                     // mean what they say; null allow-list (workflow:*) passes the family through.
                     _ = filteredRegistry.AddProvider(
-                        AllowListedFunctionProvider.Wrap(
-                            new WorkflowToolProvider(workflowRuntime),
-                            caps.WorkflowToolAllowList
-                        )
+                        ScopeWorkflowProvider(new WorkflowToolProvider(workflowRuntime), caps)
                     );
                 }
 
@@ -1585,14 +1582,9 @@ try
                         subAgentOptions = outputTokenPolicy.ApplyDelegated(subAgentOptions);
                     }
 
-                    // Narrow the delegation surface to the names the mode actually selected. Null
-                    // (subagents:* or a legacy mode) leaves the whole shape intact. Applied here,
-                    // before the workflow/transcript blocks below add their own `with` clauses, so it
-                    // cannot be lost to a later record copy.
-                    if (subAgentOptions is not null && caps.SubAgentToolAllowList is { } subAgentAllowList)
-                    {
-                        subAgentOptions = subAgentOptions with { ExposedToolNames = subAgentAllowList };
-                    }
+                    // Applied here, before the workflow/transcript blocks below add their own `with`
+                    // clauses, so the narrowing cannot be lost to a later record copy.
+                    subAgentOptions = ApplySubAgentToolNarrowing(subAgentOptions, caps);
 
                     // Route a spawn's modelIntelligence tier (the Agent tool's argument, or a workflow task's
                     // tier) to a concrete model via the host's tier ladder, climbing to the nearest higher
@@ -1883,7 +1875,7 @@ subAgentFactory,
                         // Narrowed to the names the mode selected, so a mode that asks for
                         // StartWorkflowAgent alone does not also receive the three status tools.
                         _ = filteredRegistry.AddProvider(
-                            AllowListedFunctionProvider.Wrap(
+                            ScopeWorkflowProvider(
                                 new StartWorkflowToolProvider(
                                     workflowManager,
                                     validatePreferredProvider: p =>
@@ -1895,7 +1887,7 @@ subAgentFactory,
                                     // other late-bound launch inputs above; the handle is already built.
                                     callerCollaboration: () => rootCollaboration
                                 ),
-                                caps.WorkflowToolAllowList
+                                caps
                             )
                         );
                         ownedResources.Add(workflowManager);
@@ -3800,6 +3792,39 @@ public partial class Program
     /// </summary>
     private static void AddSandboxAuthHeaders(IDictionary<string, string> headers, SandboxCredential cred) =>
         cred.StampHeaders(headers);
+
+    /// <summary>
+    ///     Scopes a workflow tool provider to the workflow tools the mode selected.
+    /// </summary>
+    /// <remarks>
+    ///     Both workflow families - authoring and launch - are filtered by the SAME list, because the
+    ///     Modes editor offers them as one <c>workflow</c> group and a mode's stored selection cannot
+    ///     tell them apart. A null allow-list (a <c>workflow:*</c> selection, or a legacy mode that
+    ///     predates capability selection) passes the family through untouched.
+    /// </remarks>
+    internal static IFunctionProvider ScopeWorkflowProvider(
+        IFunctionProvider provider,
+        ModeCapabilities caps
+    ) => AllowListedFunctionProvider.Wrap(provider, caps.WorkflowToolAllowList);
+
+    /// <summary>
+    ///     Narrows a conversation's delegation surface to the sub-agent tools its mode selected.
+    /// </summary>
+    /// <remarks>
+    ///     A null allow-list (a <c>subagents:*</c> selection, or a legacy mode) leaves the whole shape
+    ///     intact. This governs what the PARENT is handed, which is a different question from
+    ///     <see cref="SubAgentOptions.NonInheritedToolNames" /> - that one governs the children.
+    /// </remarks>
+    internal static SubAgentOptions? ApplySubAgentToolNarrowing(
+        SubAgentOptions? options,
+        ModeCapabilities caps
+    ) =>
+        options is not null && caps.SubAgentToolAllowList is { } allowList
+            ? options with
+            {
+                ExposedToolNames = allowList,
+            }
+            : options;
 
     /// <summary>
     ///     Builds the system-prompt suffix that tells a sandbox-backed agent where its workspace is and

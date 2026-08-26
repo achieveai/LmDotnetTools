@@ -293,6 +293,41 @@ public class ModeCapabilitiesTests
     }
 
     [Fact]
+    public void DifferentWorkflowAllowLists_AreNotEqual()
+    {
+        // Three same-typed sets hang off this record. Each needs its own witness, or an Equals that
+        // compares only the first of them reads as fully covered.
+        var addNode = ModeCapabilities.Resolve([$"{ToolGroups.Workflow}:{WorkflowToolProvider.AllToolNames[0]}"]);
+        var other = ModeCapabilities.Resolve([$"{ToolGroups.Workflow}:{WorkflowToolProvider.AllToolNames[1]}"]);
+
+        addNode.Should().NotBe(other);
+    }
+
+    [Fact]
+    public void DifferentSubAgentAllowLists_AreNotEqual()
+    {
+        var spawn = ModeCapabilities.Resolve([$"{ToolGroups.SubAgents}:{SubAgentToolProvider.AllToolNames[0]}"]);
+        var other = ModeCapabilities.Resolve([$"{ToolGroups.SubAgents}:{SubAgentToolProvider.AllToolNames[1]}"]);
+
+        spawn.Should().NotBe(other);
+    }
+
+    [Fact]
+    public void AnEmptyAllowList_IsNotTheSameAsNoAllowListAtAll()
+    {
+        // null means "the whole family, including tools added later"; empty means "none of it". An
+        // equality that folded the two together would report a mode granting everything as identical
+        // to one granting nothing - and this record is what the clone check compares.
+        var unrestricted = ModeCapabilities.LegacyDefaults with { SubAgentToolAllowList = null };
+        var nothing = ModeCapabilities.LegacyDefaults with
+        {
+            SubAgentToolAllowList = new HashSet<string>(),
+        };
+
+        unrestricted.Should().NotBe(nothing);
+    }
+
+    [Fact]
     public void WildcardAndNamedSelection_AreNotEqual()
     {
         // null (everything, including tools added later) must never compare equal to an explicit
