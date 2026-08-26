@@ -975,7 +975,7 @@ if (EvalSweepConfiguration.Resolve(daemonOptions) is { } evalSweep)
             EvalCorpusSweep.GradeArtifactReader(store),
             new DaemonCorpusReader(
                 store,
-                DaemonCorpusReader.ProviderFamily,
+                ModelFamilies.Of,
                 loggerFactory.CreateLogger<DaemonCorpusReader>()),
             new EvalCorpusWatermark(store, loggerFactory.CreateLogger<EvalCorpusWatermark>()),
             evalSweepWindow,

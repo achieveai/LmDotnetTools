@@ -1511,7 +1511,7 @@ recovered:
 | `GeneratorModelId` | yes | second operand of the §3.2 relation; a judge id alone measures nothing |
 | `SelfGraded` | yes | the relation itself, stated rather than derived. **Null**, never false, when either side is unrecorded |
 | `Dispersion` | **deferred** | single-judge today (`Degradation = SingleJudge`), so dispersion over one ballot is not a number worth recording. Lands with the panel in #322 |
-| `JudgeModelFamily` | **deferred** | no production family resolver exists. `SelfGraded` compares concrete ids ordinally, so two ids from one family read as independent. Lands with #322, which needs the resolver for §7.1(2) anyway |
+| `JudgeModelFamily` | **deferred**, but no longer blocked | a production resolver now exists (`Eval/ModelFamilies.cs`, #456) and `JudgeAgent` derives the ballot's family with it. What is still deferred is *persisting* the family as its own artifact column: `JudgeModelId` is recorded, and the family is derivable from it by the documented rule, so the column would be denormalized. It becomes worth adding when a family can come from somewhere other than the id — see §7.1(2)'s stated limit. `SelfGraded` still compares concrete ids ordinally, so two ids from one family read as independent |
 
 `SelfGraded` is recorded rather than left to a reader joining the two id columns because a null on
 either side must not collapse to "not self-graded": two unknowns are not evidence of independence,
@@ -1546,6 +1546,33 @@ dependency.
    generator sharing one forces every run down to a single judge, silently degrading every verdict
    the cascade optimizes against. Validated where the cascade is configured — a whole-corpus
    degradation is a configuration error, not a runtime condition.
+
+   **What a family *is*** (#456). A family is the **vendor of the underlying model**: the path
+   segment immediately before the model name in a `[router/]vendor/model` id. The daemon derives it
+   in exactly one place, `samples/CodeReviewDaemon.Sample/Eval/ModelFamilies.cs`, which both the
+   corpus reader's `GeneratorFamily` and `JudgeAgent`'s judge family call.
+
+   | id | family |
+   |---|---|
+   | `openai/gpt-5` | `openai` |
+   | `openrouter/meta/llama-4` | `meta` |
+   | `openrouter/anthropic/claude-4` | `anthropic` |
+   | `gpt-5` | **unknown** |
+
+   It is the vendor and **not the routing provider**, because the routing reading gets this rule
+   wrong in both directions at once: everything behind one gateway reads as one family, so a panel
+   empties itself on every candidate and reports `PanelUnavailable` — which looks like an outage
+   rather than a misconfigured rule — while one vendor's model reached over two gateways reads as
+   two families, admitting exactly the self-preferring judge the rule exists to exclude.
+   Self-preference is a property of the model, not of the wire it arrived on.
+
+   **Unknown is not a family.** An id this rule cannot read resolves to null, which skips the
+   exclusion step (§2.12.1) and is segmented out of the aggregates — never to a stand-in that could
+   match something. There is deliberately **no vendor table**: the rule is positional and derives
+   nothing it was not told. Its honest limit is that a two-segment `router/model` id would yield the
+   router; nothing in the daemon writes that shape, and closing it needs per-request provider
+   metadata requests do not carry today. When they do, that is what should close it — not a
+   hand-maintained vendor list.
 
 **Data dependency:** the effort axis depends entirely on §6.2(3). If `reasoning_effort` is not
 stamped at write time, half of this fit has no input.

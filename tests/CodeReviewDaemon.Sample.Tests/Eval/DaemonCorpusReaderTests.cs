@@ -493,27 +493,6 @@ public sealed class DaemonCorpusReaderTests : IDisposable
     }
 
     /// <summary>
-    /// The family resolver the daemon actually wires in. Every unclassifiable shape resolves to
-    /// <b>null</b> rather than to the id itself: null is recorded as <i>unknown</i> and segmented
-    /// out of the aggregates, where a bare id returned as its own family would be recorded as a
-    /// family that is not the judge's — the answer generator-family exclusion acts on. Guessing
-    /// here turns "we cannot classify this model" into "this model is safe to grade".
-    /// </summary>
-    [Theory]
-    [InlineData("openai/gpt-5", "openai")]
-    [InlineData("anthropic/claude-opus-4.5", "anthropic")]
-    [InlineData("openrouter/meta/llama-4", "openrouter")]
-    [InlineData(null, null)]
-    [InlineData("", null)]
-    [InlineData("   ", null)]
-    [InlineData("gpt-5", null)]
-    [InlineData("/gpt-5", null)]
-    public void The_provider_prefix_is_the_family_and_anything_else_is_unknown(
-        string? modelId,
-        string? expected
-    ) => DaemonCorpusReader.ProviderFamily(modelId).Should().Be(expected);
-
-    /// <summary>
     /// Records <paramref name="count"/> reviewed runs, each with an input and a review.
     /// </summary>
     private void Reviewed(int count)
