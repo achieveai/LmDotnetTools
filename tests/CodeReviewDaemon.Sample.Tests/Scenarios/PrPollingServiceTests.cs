@@ -152,6 +152,10 @@ public sealed class PrPollingServiceTests : LoggingTestBase
 
         public Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("simulated provider failure");
+
+        public Task<string?> GetCurrentHeadShaAsync(
+            RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("simulated provider failure");
     }
 
     [Fact]

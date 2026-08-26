@@ -370,6 +370,32 @@ internal sealed class AdoPrProvider : IPrProvider
     /// </summary>
     public async Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken)
     {
+        using var document = await GetPullRequestAsync(repo, prId, cancellationToken).ConfigureAwait(false);
+        return MapPrLifecycle(document.RootElement.GetProperty("status").GetString());
+    }
+
+    /// <summary>
+    /// Reads the PR's current source-branch commit (<c>lastMergeSourceCommit.commitId</c> — the same field
+    /// the poll records as <see cref="PullRequestDescriptor.HeadSha"/>) from the same single-PR resource
+    /// <see cref="GetPrStateAsync"/> uses. Returns <c>null</c> only when the payload carries no such commit;
+    /// a transport or auth failure throws, because "unreachable" must never be reported as "nothing
+    /// contradicts the recorded head".
+    /// </summary>
+    public async Task<string?> GetCurrentHeadShaAsync(
+        RepoIdentity repo, string prId, CancellationToken cancellationToken)
+    {
+        using var document = await GetPullRequestAsync(repo, prId, cancellationToken).ConfigureAwait(false);
+        var head = CommitId(document.RootElement, "lastMergeSourceCommit");
+        return string.IsNullOrWhiteSpace(head) ? null : head;
+    }
+
+    /// <summary>
+    /// <c>GET .../pullrequests/{id}</c> — the single-PR resource both per-PR reads parse. The caller owns
+    /// the returned document.
+    /// </summary>
+    private async Task<JsonDocument> GetPullRequestAsync(
+        RepoIdentity repo, string prId, CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(repo);
         ArgumentException.ThrowIfNullOrEmpty(prId);
 
@@ -388,11 +414,10 @@ internal sealed class AdoPrProvider : IPrProvider
         httpRequest.Headers.Accept.ParseAdd("application/json");
 
         using var response = await _httpClient.SendAsync(httpRequest, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        _ = response.EnsureSuccessStatusCode();
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-        return MapPrLifecycle(document.RootElement.GetProperty("status").GetString());
+        return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
     }
 
     /// <summary>

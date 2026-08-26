@@ -37,6 +37,10 @@ internal sealed class MockPrProvider : IPrProvider
     /// <summary>Lifecycle returned by <see cref="GetPrStateAsync"/>; defaults to Open, settable per test.</summary>
     public PrLifecycle PrState { get; set; } = PrLifecycle.Open;
 
+    /// <summary>Head SHA returned by <see cref="GetCurrentHeadShaAsync"/>; null models a host whose payload
+    /// carries no head for this PR.</summary>
+    public string? CurrentHeadSha { get; set; }
+
     public Task<PullRequestPage> ListOpenPullRequestsAsync(PrPollRequest request, CancellationToken cancellationToken)
     {
         CallCount++;
@@ -51,4 +55,14 @@ internal sealed class MockPrProvider : IPrProvider
 
     public Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
         Task.FromResult(PrState);
+
+    /// <summary>Number of times <see cref="GetCurrentHeadShaAsync"/> was called — the non-vacuity signal for
+    /// the head-currency guard, which passes for the wrong reason if the host is never asked.</summary>
+    public int HeadShaCalls { get; private set; }
+
+    public Task<string?> GetCurrentHeadShaAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken)
+    {
+        HeadShaCalls++;
+        return Task.FromResult(CurrentHeadSha);
+    }
 }

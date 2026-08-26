@@ -250,6 +250,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// </summary>
     private readonly ConcurrentDictionary<long, ReviewNotesArtifactContext> _artifactContexts = new();
 
+    /// <summary>
+    /// The PR-host seam the head-currency check reads (#331). Empty only in tests that never exercise the
+    /// check; production registers one per configured provider namespace.
+    /// </summary>
+    private readonly IReadOnlyList<IPrProvider> _prProviders;
+
     public DaemonReviewStageExecutor(
         ReviewStore store,
         IReviewAgentLoopFactory loopFactory,
@@ -268,7 +274,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         S2SReviewWorkspacePreparer? preparer = null,
         IGatewaySkillProbe? skillProbe = null,
         IReviewSubAgentCompletionSource? completionSource = null,
-        IReviewAgentTranscriptSource? transcriptSource = null)
+        IReviewAgentTranscriptSource? transcriptSource = null,
+        IEnumerable<IPrProvider>? prProviders = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _loopFactory = loopFactory ?? throw new ArgumentNullException(nameof(loopFactory));
@@ -289,6 +296,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _skillProbe = skillProbe;
         _completionSource = completionSource;
         _transcriptSource = transcriptSource;
+        _prProviders = prProviders is null ? [] : [.. prProviders];
         _comparisonVariant = new ReviewVariant(
             VariantId: "b",
             ModelId: _options.VariantModelId,
@@ -2868,25 +2876,33 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     }
 
     /// <summary>
-    /// The lifecycle/head check that guards synthesis: re-read the run and refuse to synthesize (and therefore
-    /// to post) against a PR that has since moved to a new head or left the Open state. Run once when the
-    /// provisional turn returns and, on the barrier path, again immediately before the barrier opens — sub-agents
-    /// can take minutes, so the two observations are genuinely different. Throwing here fails the stage into
+    /// The lifecycle/head check that guards synthesis: refuse to synthesize (and therefore to post) against a
+    /// PR that has since moved to a new head or left the Open state. Run once when the provisional turn
+    /// returns and, on the barrier path, again immediately before the barrier opens — sub-agents can take
+    /// minutes, so the two observations are genuinely different. Throwing here fails the stage into
     /// RetryPending, which is correct — the next round reviews the CURRENT head.
+    /// <para>
+    /// The head half is checked against the PR HOST, not against the store (#331). A run's <c>head_sha</c> is
+    /// part of its identity: it is INSERTed once and never UPDATEd, and a new head legitimately starts a NEW
+    /// run rather than editing this one. Re-reading <c>review_run</c> therefore compares the suspect value
+    /// with itself and agrees unconditionally — which is how a review of a force-pushed-away commit reached a
+    /// PR author carrying findings about code that PR never contained. Only the host can contradict a poll
+    /// snapshot, so only the host is asked.
+    /// </para>
+    /// <para>
+    /// A host that cannot be reached, or that reports no head for the PR, is INDETERMINATE and lets the
+    /// review through: "we could not check" is not evidence of a move, and failing on it would discard a
+    /// minutes-long review over a transient API blip — for every run, for as long as the blip lasted. Only a
+    /// head the host actually reports, and that differs, refuses. Cancellation propagates rather than being
+    /// read as an outage.
+    /// </para>
     /// </summary>
-    private Task ValidateReviewStillCurrentAsync(ReviewRun run, CancellationToken cancellationToken)
+    private async Task ValidateReviewStillCurrentAsync(ReviewRun run, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var current = _store.GetReviewRun(run.Id)
             ?? throw new InvalidOperationException(
                 $"Review run {run.Id} no longer exists; abandoning its review before synthesis.");
-
-        if (!string.Equals(current.HeadSha, run.HeadSha, StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException(
-                $"PR {run.PrId} moved from {run.HeadSha} to {current.HeadSha} while this review was running; "
-                    + "abandoning it so the next round reviews the current head.");
-        }
 
         if (current.PrLifecycleState != PrLifecycleState.Open)
         {
@@ -2895,7 +2911,49 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                     + "it rather than synthesizing against a closed PR.");
         }
 
-        return Task.CompletedTask;
+        var hostHead = await ReadHostHeadShaAsync(run, cancellationToken).ConfigureAwait(false);
+        if (hostHead is not null && !string.Equals(hostHead, run.HeadSha, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"PR {run.PrId} moved from {run.HeadSha} to {hostHead} while this review was running; "
+                    + "abandoning it so the next round reviews the current head.");
+        }
+    }
+
+    /// <summary>
+    /// Asks the PR host for this run's CURRENT head SHA, or returns <c>null</c> when the answer is
+    /// indeterminate — no provider registered for the run's namespace, a payload carrying no head, or a
+    /// failed read. The three are logged apart but collapse to the same disposition on purpose: the caller
+    /// may only refuse a review on a head the host positively reported, never on the absence of one.
+    /// </summary>
+    private async Task<string?> ReadHostHeadShaAsync(ReviewRun run, CancellationToken cancellationToken)
+    {
+        var (repo, provider) = ResolveRepo(run);
+        var prProvider = _prProviders.FirstOrDefault(p =>
+            string.Equals(p.Provider, provider, StringComparison.OrdinalIgnoreCase));
+        if (prProvider is null)
+        {
+            _logger.LogWarning(
+                "Run {RunId}: no IPrProvider registered for '{Provider}', so PR {PrId} head could not be "
+                    + "re-checked before synthesis; proceeding on the recorded head {HeadSha}.",
+                run.Id, provider, run.PrId, run.HeadSha);
+            return null;
+        }
+
+        try
+        {
+            return await prProvider
+                .GetCurrentHeadShaAsync(repo, run.PrId, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex, "Run {RunId}: could not read PR {PrId} current head from {Provider}; proceeding on the "
+                    + "recorded head {HeadSha} rather than treating an unreachable host as a moved one.",
+                run.Id, run.PrId, provider, run.HeadSha);
+            return null;
+        }
     }
 
     /// <summary>
