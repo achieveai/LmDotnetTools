@@ -618,6 +618,30 @@ public sealed class SlotHygieneTests : IDisposable
     }
 
     [Fact]
+    public void VerdictForBlockedSweep_maps_a_redirected_refusal_to_reclone()
+    {
+        // Issue #276, one side of the split, reachable WITHOUT an OS-privilege-gated unreadable entry. A
+        // redirected entry is unlinked by the re-clone's wipe (removed by name, never followed), so the fresh
+        // clone lands clean — a re-clone genuinely repairs it.
+        SlotHygiene.VerdictForBlockedSweep(
+                new HostPathRefusal(Path.Combine(_root, ".git", "modules"), HostPathVerdict.Redirected))
+            .Should().Be(HygieneVerdict.NeedsReclone);
+    }
+
+    [Fact]
+    public void VerdictForBlockedSweep_maps_an_unreadable_refusal_to_retire_not_reclone()
+    {
+        // Issue #276, the side the fix changes. A re-clone begins by wiping the store, and the wipe refuses on
+        // the same UNREADABLE entry this sweep stopped at, so a re-clone would walk into the same wall and
+        // replace nothing. The verdict must therefore NOT be NeedsReclone: it is HostPathUnreadable, which the
+        // preparer raises as a refusal so the address is retired. This is the deciding line, and the mutation
+        // that collapses the split (returning NeedsReclone here) turns green only if this assertion is absent.
+        SlotHygiene.VerdictForBlockedSweep(
+                new HostPathRefusal(Path.Combine(_root, ".git", "objects"), HostPathVerdict.Unreadable))
+            .Should().Be(HygieneVerdict.HostPathUnreadable);
+    }
+
+    [Fact]
     public async Task EnsureClean_runs_no_git_at_all_on_a_store_that_redirects_the_sweep()
     {
         // The refusal IS the verdict: the slot is condemned the moment the sweep stops, and no outcome the
@@ -687,9 +711,10 @@ public sealed class SlotHygieneTests : IDisposable
             NullLogger.Instance, new HostFileSystem());
 
         verdict.Should().Be(
-            HygieneVerdict.NeedsReclone,
-            "the sweep could not establish that this store is clean, and a store it cannot walk is not one it "
-                + "can clean either -- the re-clone wipes it without walking it");
+            HygieneVerdict.HostPathUnreadable,
+            "the sweep could not establish that this store is clean, and a store whose cleanup it cannot walk is "
+                + "one a re-clone cannot walk either -- the wipe refuses on the same unreadable entry, so the slot "
+                + "is retired rather than re-cloned into the same wall");
         File.Exists(missedLock).Should().BeTrue(
             "the point is that the sweep never reached this lock: it is still there, and every git step "
                 + "reported success, so nothing downstream would have reported it either");
@@ -709,7 +734,7 @@ public sealed class SlotHygieneTests : IDisposable
         var verdict = await SlotHygiene.EnsureCleanAsync(
             new GitRunner(runner), store, CancellationToken.None, NullLogger.Instance, new HostFileSystem());
 
-        verdict.Should().Be(HygieneVerdict.NeedsReclone);
+        verdict.Should().Be(HygieneVerdict.HostPathUnreadable);
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
         commands.Should().HaveCount(
             1, "nothing after the sweep can change the verdict, so nothing after the sweep should run");
@@ -749,7 +774,7 @@ public sealed class SlotHygieneTests : IDisposable
             new GitRunner(new FakeSandboxCommandRunner()), store, CancellationToken.None,
             logs.Capturing, new HostFileSystem());
 
-        verdict.Should().Be(HygieneVerdict.NeedsReclone);
+        verdict.Should().Be(HygieneVerdict.HostPathUnreadable);
         logs.Capturing.WarningCount(moduleDir).Should().Be(
             1, "the address that stopped the sweep is the one thing the operator cannot work out for themselves");
         logs.Capturing.WarningCount("cannot be read well enough to tell").Should().Be(

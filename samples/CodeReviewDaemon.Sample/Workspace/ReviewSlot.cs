@@ -14,7 +14,7 @@ internal interface IReviewSlotPool
 
     /// <summary>
     /// Releases the lease WITHOUT putting the address back into circulation, for a slot whose host paths could
-    /// not be established as contained (<see cref="SlotHostPathRefusedException"/>).
+    /// not be established as contained (<see cref="SlotAddressUnusableException"/>).
     /// <para>
     /// The distinction from <see cref="ReturnAsync"/> is the whole reason this exists. Returning is for a slot
     /// whose next lease might go differently, which is every ordinary failure. A refusal is not one: it is a
@@ -80,7 +80,7 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
             Directory.CreateDirectory(slot.ScratchPath);
             return slot;
         }
-        catch (SlotHostPathRefusedException)
+        catch (SlotAddressUnusableException)
         {
             // Every other failure here is about this attempt, so the index goes back on the free list and the next
             // lease retries it. A refusal is about the ADDRESS, and it will still be true on the next lease, so it
@@ -167,7 +167,7 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
         {
             if (HostPathGuard.Check(path) is { } refusal)
             {
-                throw new SlotHostPathRefusedException(
+                throw new SlotAddressUnusableException(
                     $"Refusing to lease slot {slot.Index}: '{refusal.Path}' — {refusal.Reason}. Not following it, "
                         + "and not removing it either.");
             }

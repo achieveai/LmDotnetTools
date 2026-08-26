@@ -12,6 +12,17 @@ internal enum HygieneVerdict
 
     /// <summary>Store is structurally broken (or its content is corrupt) — the caller must re-clone it.</summary>
     NeedsReclone,
+
+    /// <summary>
+    /// The store's own cleanup could not be walked because an entry under it is UNREADABLE, and a re-clone is
+    /// the one repair that must not be attempted: it begins by wiping the store, and that wipe refuses on the
+    /// very entry this verdict is reporting (see <see cref="HostDirectoryWipe"/>), so a re-clone walks into the
+    /// same wall and never replaces anything. Distinct from <see cref="NeedsReclone"/> for exactly that reason —
+    /// the condition belongs to the ADDRESS, not the attempt, so the caller RETIRES the slot rather than
+    /// re-cloning or retrying it. The preparer raises <see cref="SlotAddressUnusableException"/> for this verdict
+    /// so the retirement follows from the decision itself.
+    /// </summary>
+    HostPathUnreadable,
 }
 
 /// <summary>
@@ -95,22 +106,26 @@ internal static class SlotHygiene
         //
         // It does NOT answer an UNREADABLE one. That wipe refuses on an entry it cannot classify, for the same
         // reason this gate does, so the re-clone walks into the same wall and the store is never replaced —
-        // routing Unreadable here names a repair that cannot happen. What bounds the mis-routing is the typed
-        // refusal added alongside this gate: the wipe raises <see cref="SlotHostPathRefusedException"/>, the pooled
-        // preparer spends the address rather than returning it to the free stack, and the condition ends in a
-        // retired slot instead of a re-clone loop. Fail-closed, but by a mechanism this verdict does not name. A
-        // verdict that routes Unreadable somewhere it can actually be handled is a behaviour change, filed
-        // separately rather than made here.
+        // routing Unreadable to a re-clone names a repair that cannot happen. So the two are separated at the
+        // decision: a REDIRECTED refusal is <see cref="HygieneVerdict.NeedsReclone"/> (the wipe unlinks it and the
+        // fresh clone lands clean), and an UNREADABLE one is <see cref="HygieneVerdict.HostPathUnreadable"/>, which
+        // the preparer raises as <see cref="SlotAddressUnusableException"/> so the address is RETIRED — the
+        // re-clone that would only refuse again is never attempted. The retirement now follows from the verdict
+        // itself rather than, as it once did, from the wipe's own refusal escaping a downstream catch filter.
         //
         // A second pass cannot change either case, so the gate goes ahead of the retry ladder.
-        // See <see cref="HostPathGuard.Check"/>.
+        // See <see cref="HostPathGuard.Check"/> and <see cref="VerdictForBlockedSweep"/>.
         if (pass.Blocked is { } blocked)
         {
+            var verdict = VerdictForBlockedSweep(blocked);
             logger?.LogWarning(
-                "Slot hygiene at {StorePath}: re-cloning — the stale-state sweep stopped at {BlockedPath} "
+                "Slot hygiene at {StorePath}: {Action} — the stale-state sweep stopped at {BlockedPath} "
                     + "because {Reason}. Refusing to sweep past it, and refusing to remove it.",
-                storePath, blocked.Path, blocked.Reason);
-            return HygieneVerdict.NeedsReclone;
+                storePath,
+                verdict == HygieneVerdict.NeedsReclone ? "re-cloning" : "retiring the slot",
+                blocked.Path,
+                blocked.Reason);
+            return verdict;
         }
 
         var status = await SuperprojectStatusAsync(git, storePath, ct).ConfigureAwait(false);
@@ -240,6 +255,25 @@ internal static class SlotHygiene
     }
 
     /// <summary>
+    /// The verdict for a stale-state sweep that REFUSED to cross <paramref name="refusal"/>. The two host-path
+    /// verdicts are not repaired the same way, which is the whole reason they are not one verdict here:
+    /// <list type="bullet">
+    /// <item><see cref="HostPathVerdict.Redirected"/> → <see cref="HygieneVerdict.NeedsReclone"/>. The re-clone's
+    /// wipe removes the redirected entry BY NAME as it meets it (never following it), so the fresh clone lands on
+    /// clean ground — a re-clone genuinely repairs it.</item>
+    /// <item><see cref="HostPathVerdict.Unreadable"/> → <see cref="HygieneVerdict.HostPathUnreadable"/>. The wipe
+    /// refuses on an entry it cannot classify, exactly as this sweep did, so a re-clone would walk into the same
+    /// wall and replace nothing. The slot is retired instead of re-cloned.</item>
+    /// </list>
+    /// Extracted so this address-not-attempt decision is pinned directly, without needing an actually-unreadable
+    /// host entry (an OS-privilege-gated input) to reach it through the sweep.
+    /// </summary>
+    internal static HygieneVerdict VerdictForBlockedSweep(HostPathRefusal refusal) =>
+        refusal.Verdict == HostPathVerdict.Unreadable
+            ? HygieneVerdict.HostPathUnreadable
+            : HygieneVerdict.NeedsReclone;
+
+    /// <summary>
     /// Reads the SUPERPROJECT's working-tree status, ignoring submodule state (see the gate in
     /// <see cref="EnsureCleanAsync"/> for why submodules are excluded).
     /// </summary>
@@ -317,13 +351,18 @@ internal static class SlotHygiene
     /// <para>
     /// So a path that fails the gate is neither cleaned nor surfaced, and nothing else in the pass covers it. That
     /// sits against this file's own principle three paragraphs up — untracked residue is a previous lease's
-    /// leftovers that a fresh clone is guaranteed to arrive without, which argues FOR condemning the slot. Not
-    /// condemning is a deliberate scope choice and not a claim the gap is harmless: reporting it would re-clone on
+    /// leftovers that a fresh clone is guaranteed to arrive without, which argues FOR condemning the slot.
+    /// <b>Skipping is the settled decision, not a deferral</b> (issue #279): condemning here would re-clone on
     /// precisely the deinitialized state <see cref="GitFailureClassifier"/> subtracts from its corruption markers
-    /// in order to tolerate, on every lease, which is a verdict change rather than a repair of this walk. What is
-    /// NOT deferred is the silence — every skipped path is logged at warning with the gate's own output, so a
-    /// store accumulating residue behind a broken gitlink is visible in the daemon log rather than inferred from
-    /// this paragraph.
+    /// in order to tolerate, and it would do so on EVERY lease that meets that state — a change to the tolerance
+    /// policy, not a repair of this walk, and the more expensive failure of the two. It is chosen over condemning
+    /// because a gate failure is the tolerated deinit shape far more often than it is an accumulating store, and
+    /// the log below makes the rare accumulating case observable rather than silent. Revisit only on evidence
+    /// from that log — a gate failure recurring on the SAME slot with untracked content under the skipped path —
+    /// which is the one measurement that would flip the balance toward condemning; absent it, skipping stands.
+    /// What was NEVER in question is the silence — every skipped path is logged at warning with the gate's own
+    /// output, so a store accumulating residue behind a broken gitlink is visible in the daemon log rather than
+    /// inferred from this paragraph.
     /// </para>
     /// </summary>
     private static async Task<string?> SubmoduleResidueAsync(
