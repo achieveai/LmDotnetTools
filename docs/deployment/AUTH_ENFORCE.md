@@ -478,24 +478,48 @@ an agent bound to a different user, after the authorization allows and before th
 The pool's guard itself is unchanged: a caller with no grant never reaches the release and is still
 refused as unknown, so the release cannot be turned into a way to evict a stranger's agent by id.
 
-**The sandbox answer, which is the part operators need:** a grantee does **not** inherit the owner's
-sandbox. Sharing a conversation grants the conversation — whose history is durable and rehydrates
-onto the new agent — not the filesystem the owner's agent was provisioned. Two users writing through
-one agent would share whatever that sandbox holds, and revoking the grant would not take it back. So
-a handoff costs one sandbox provision plus the pooled agent's in-memory-only state, paid only when a
-conversation actually changes hands. A conversation two people write to alternately pays it on each
-change of hands; if that becomes a real workload, the fix is per-caller agent entries, not a wider
-guard.
+> **Read this before you grant anyone editor access: sharing a conversation today also shares its
+> filesystem.** An editor grantee who takes over the pooled agent lands in the **same sandbox
+> session** the owner was using — same workspace, same working directory, same files, whatever the
+> owner left in it. Revoking the grant does not take back what they saw or wrote. If a conversation's
+> sandbox holds anything the grantee should not have, do not share that conversation.
 
-A run **in progress** is left alone: the release does not happen, and the second caller still gets
-`409 principal_conflict`. Evicting mid-run would abort the streaming turn of whoever is mid-answer —
-the wrong party to punish for someone else's handoff — and would be a race any second caller could
-trigger at will. Retry once the run ends.
+That is the current behaviour, and it is the opposite of what this section used to claim. The
+mechanism, so it can be checked rather than believed: the release removes the conversation's **pool
+entry** and nothing more, and clearing a pool entry never destroys the gateway session behind it. The
+recreate then resolves the same workspace id back out of the conversation's persisted metadata, and
+the session cache is keyed on `(workspaceId, appId)` — with `appId` null for every interactive UI
+caller. Both users therefore key the same cache entry and get the same live `SandboxSession`: same
+session id, same host path, stamped into the grantee's system prompt like any other. A handoff
+accordingly costs **zero** sandbox provisions — it is a cache hit — not the one this section used to
+quote. What it does cost is the pooled agent's in-memory-only state, discarded and rebuilt from the
+durable transcript on each change of hands.
 
-The app-id freeze (`caller_credential_conflict`) is deliberately **not** released alongside it. That
-is the boundary between services rather than between people: an app-only S2S caller has no
+Whether that sharing is the RIGHT behaviour is an open product question, tracked in **#417**: either
+grantees get their own session key, or the sharing stays and is documented as intentional. This
+runbook states what ships today.
+
+A run **in progress** is left alone on a **best-effort** basis: the release checks for an active run
+and skips if it finds one, and the second caller still gets `409 principal_conflict`. Treat it as
+best-effort literally — the check and the removal are not one atomic step, and a turn that is queued
+but has not started reads as "not in progress", so it can be dropped by a handoff that arrives in
+that window (**#418**). Evicting a genuinely streaming turn would abort the answer of whoever is mid-answer —
+the wrong party to punish for someone else's handoff — which is why the check exists at all. Retry
+once the run ends.
+
+The app-id freeze (`caller_credential_conflict`) is **not** released alongside it. That is the
+boundary between services rather than between people: an app-only S2S caller has no
 `EffectiveUserId` to hold a grant with, so there is no authorization verdict that could stand in for
 one, and the cross-actor resume matrix (#153) pins that refusal on purpose.
+
+Preserving it takes explicit work, and originally did not happen. Releasing removes the whole pool
+entry, including the caller credential the app-id comparison reads, so the recreate found nothing to
+compare against and silently re-froze the conversation to the app id of whoever took it over. The
+#153 matrix never saw it, because an app-only caller carries no user id and returns from the release
+before it can remove anything; reaching the hole takes a caller with **both** a user id and a
+different app id — a grantee signing in through the UI to a conversation an S2S app minted. The
+release now reads the frozen app id **before** the removal makes it unreadable and refuses a
+mismatch with the same `409 caller_credential_conflict` the pool would have raised.
 
 #### The WebSocket transports used to carry no token (#342, fixed)
 
@@ -524,15 +548,31 @@ offered, the handshake is admitted exactly as before, and the development princi
 
 #### The WebSocket transports do no per-conversation authorization
 
-Still open, and narrower than the gap above it. `/ws` and `/ws/subagent` now establish **who** the
-caller is, and the pooled agent they create is owned by that user (#399) — so a second user cannot
-resume someone else's live agent over the socket. What they do **not** do is ask
-`ConversationAuthorizer` whether this user may open *this* conversation: the REST routes' grant and
-tenant checks have no equivalent on the socket.
+Still open, and it is a **login wall, not an authorization check**. `/ws` and `/ws/subagent` now
+establish **who** the caller is (#342, #399), and the pooled agent `/ws` creates is owned by that
+user — so a second user cannot resume someone else's live agent over the socket. What neither
+transport does is ask `ConversationAuthorizer` whether this user may open *this* conversation: the
+REST routes' grant and tenant checks have no equivalent here. What #342 changed is who may try: it
+went from anyone to any signed-in principal in the deployment. Do not read it as closed.
 
-The reason it is not simply added is that the client mints a `threadId` and opens the socket before
-any metadata row exists, so an authorizer call at handshake time would refuse every brand-new
-conversation as unknown. Closing it needs the socket to distinguish "not yours" from "not yet
-minted". Until then: a caller who knows another user's `threadId` can open a socket on it. Every
-REST route over that same conversation still refuses them, and the agent the socket reaches is bound
-to whoever created it.
+State the consequences plainly, because the paragraph that used to sit here understated them:
+
+- **Sub-agent transcripts are readable by any signed-in principal.** `/ws/subagent` threads no
+  principal into its handler at all — the endpoint gates on "is this a WebSocket request" plus two
+  non-empty query strings, and nothing else. On a cache miss it reads the persisted content for
+  `subagent-{agentId}` straight out of the store, so a caller who knows (or guesses) an `agentId`
+  reads another user's sub-agent output.
+- **Socket rehydration hands out ownership of primed history.** A caller who names a `threadId` with
+  no live pooled entry does not get an empty agent: the socket creates one, primed on that
+  conversation's durable transcript, and freezes it to the caller as its owner. Knowing the id is
+  enough to become the owner of an agent seeded with the victim's conversation.
+- **`auth/{providerId}` answers unauthenticated GETs.** The route is outside the boundary by design
+  (a provider redirect carries no bearer token), but an unauthenticated request to it starts a
+  sign-in, and for a request that IS signed in the page renders the account and its scopes.
+
+The reason per-conversation authorization is not simply added is that the client mints a `threadId`
+and opens the socket before any metadata row exists, so an authorizer call at handshake time would
+refuse every brand-new conversation as unknown. Closing it needs the socket to distinguish "not
+yours" from "not yet minted" — which is a design change, not a missing call. Until then, treat the
+socket surface as authenticated-but-unauthorized, and do not deploy a multi-tenant host on the
+assumption that REST's grant checks cover it. Tracked in **#419**.

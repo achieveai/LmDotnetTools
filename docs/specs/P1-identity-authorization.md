@@ -1433,10 +1433,30 @@ refresh would inherit the thread (#398).
 The guard refuses on "different user", which after named sharing (7.4.1) is no longer the same thing
 as "not allowed". A caller the policy has already ALLOWED and who is not the bound user gets the
 bound agent **released** first, so their turn runs on an agent of their own; the guard itself is not
-widened, and an unauthorized caller never reaches the release (#376). A grantee does not inherit the
-owner's sandbox: sharing grants the conversation, whose history is durable and rehydrates, not the
-filesystem the owner's agent was provisioned. A run in progress is never evicted and still answers
-`409`.
+widened, and an unauthorized caller never reaches the release (#376). A run in progress is left alone
+on a best-effort basis and still answers `409` — the in-progress check and the removal are not one
+atomic step, so a turn that is queued but not yet started can be dropped by a handoff arriving in
+that window (#418).
+
+**The grantee DOES inherit the owner's sandbox, and this spec previously said the opposite.** The
+release clears the conversation's pool entry only; clearing an entry never destroys the gateway
+session behind it. The recreate resolves the same workspace id back out of the conversation's
+persisted metadata, and the session cache is keyed `(workspaceId, appId)` with `appId` null for every
+interactive UI caller — so both users key the same entry and receive the same live `SandboxSession`,
+same session id and host path, stamped into the grantee's system prompt. A handoff therefore costs
+zero sandbox provisions (it is a cache hit); what it costs is the pooled agent's in-memory-only
+state, rebuilt from the durable transcript. Sharing a conversation today shares its filesystem, and
+revoking the grant does not take that back. Whether that is the intended product behaviour — a
+per-grantee session key, or documented deliberate sharing — is an open decision tracked in #417;
+this section records what ships.
+
+The app-id freeze is preserved across that release, and preserving it takes explicit work. Removing
+the entry also removes the caller credential the app-id comparison reads, so the recreate originally
+found nothing to compare and re-froze the conversation to the new caller's app id. The release now
+reads the frozen app id **before** the removal and raises the same `caller_credential_conflict` the
+pool would have raised on a mismatch. The #153 matrix could not see this: an app-only caller has no
+`EffectiveUserId` and returns before the removal, so reaching it needs a caller with both a user id
+and a different app id.
 
 ### 7.6.1 The WebSocket transports
 
