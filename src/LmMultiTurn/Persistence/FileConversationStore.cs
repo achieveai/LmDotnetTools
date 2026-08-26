@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -23,7 +22,14 @@ public sealed class FileConversationStore
     private const string AcceptedInputsFileName = "accepted-inputs.json";
     private const string AcceptancesDirectoryName = "acceptances";
     private const string MutationGateSuffix = ".mutate";
-    private static readonly TimeSpan AcceptanceSettleTimeout = TimeSpan.FromMilliseconds(500);
+    /// <summary>
+    /// How long a caller waits for an admission record that exists but is not yet readable before calling it
+    /// a fault. The threshold separates "a live writer has not finished" from "a dead host left a half-written
+    /// record", and any fixed threshold there is a starvation-class discriminator: the waiter is starved by the
+    /// very load it is waiting on. The two defenses are keeping await points out of the guarded window — see
+    /// <see cref="TryReserveAcceptanceAsync"/> — and leaving the margin far wider than any plausible stall.
+    /// </summary>
+    private static readonly TimeSpan AcceptanceSettleTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan AcceptanceSettlePoll = TimeSpan.FromMilliseconds(5);
 
     // Deliberately a separate file from runs.json: the run ledger's shape is part of the status
@@ -31,6 +37,7 @@ public sealed class FileConversationStore
     private const string RunLifecycleFileName = "run-lifecycle.json";
 
     private readonly string _baseDirectory;
+    private readonly TimeProvider _time;
     private readonly SemaphoreSlim _lock = new(1, 1);
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -50,9 +57,14 @@ public sealed class FileConversationStore
     /// Creates a new FileConversationStore.
     /// </summary>
     /// <param name="baseDirectory">Base directory for storing conversation data.</param>
-    public FileConversationStore(string baseDirectory)
+    /// <param name="timeProvider">
+    /// Clock the admission-record settle budget is measured on. Injected so a test can prove what happens
+    /// when the budget is genuinely spent without spending it in real time; production leaves it null.
+    /// </param>
+    public FileConversationStore(string baseDirectory, TimeProvider? timeProvider = null)
     {
         _baseDirectory = baseDirectory ?? throw new ArgumentNullException(nameof(baseDirectory));
+        _time = timeProvider ?? TimeProvider.System;
         _ = Directory.CreateDirectory(_baseDirectory);
     }
 
@@ -1054,26 +1066,35 @@ public sealed class FileConversationStore
         ArgumentNullException.ThrowIfNull(acceptance);
         var acceptanceFile = GetAcceptanceFile(acceptance.ThreadId, acceptance.InputId, createDirectory: true);
 
+        // Serialized BEFORE the create, deliberately: everything between winning the arbitration and the
+        // record's content being durable happens inside the window a losing contender has to wait out, and
+        // this is the only part of it that does not have to be there.
+        var payload = JsonSerializer.SerializeToUtf8Bytes(acceptance, AcceptanceJsonOptions);
+
         // Bounded by the same settle budget the reader uses rather than by a count of tries: what has to be
         // waited out is a transient of the OS, not a fixed number of collisions. A record deleted while any
         // reader still holds it keeps its name on Windows in a delete-pending state that refuses every open,
         // and a machine under load holds that reader open for far longer than a handful of immediate retries
         // covers. Spending the budget instead lets the arbitration finish; a refusal that outlives it is a
         // real fault and is rethrown as itself.
-        var deadline = Stopwatch.GetTimestamp()
-            + (long)(AcceptanceSettleTimeout.TotalSeconds * Stopwatch.Frequency);
+        var started = _time.GetTimestamp();
         while (true)
         {
             FileStream claim;
             try
             {
+                // FileShare.None, and not FileShare.Read: the exclusive create is the arbitration, so the
+                // record's NAME necessarily exists before its content does, and a reader let in during that
+                // gap sees a zero-length record it can only report as unsettled. Denying the open instead
+                // makes "the record exists" imply "the record is readable" — the gap is still there, but
+                // nothing can observe the record in it.
                 claim = new FileStream(
                     acceptanceFile,
                     FileMode.CreateNew,
                     FileAccess.Write,
-                    FileShare.Read,
-                    bufferSize: 4096,
-                    useAsync: true);
+                    FileShare.None,
+                    bufferSize: 0,
+                    FileOptions.None);
             }
             catch (IOException)
             {
@@ -1082,24 +1103,42 @@ public sealed class FileConversationStore
                     return existing;
                 }
 
-                if (Stopwatch.GetTimestamp() >= deadline)
+                if (_time.GetElapsedTime(started) >= AcceptanceSettleTimeout)
                 {
                     throw;
                 }
 
+                // Yield before re-attempting, exactly as the sibling arm below does. Reaching here means the
+                // create was refused AND the read found nothing, and the read answers "nothing" immediately —
+                // synchronously — when the directory or the name is simply gone. DirectoryNotFoundException
+                // derives from IOException, so a thread directory deleted out from under a reserve in flight
+                // (DeleteThreadAsync takes no lock this path honours, and the directory is created once above
+                // rather than per attempt) lands here every single time with nothing to wait on: without this
+                // delay the loop is a tight synchronous spin that pegs a core for the whole budget and never
+                // observes cancellation. The budget still bounds it, and the refusal is still rethrown as
+                // itself once spent.
+                await Task.Delay(AcceptanceSettlePoll, _time, ct);
                 continue;
             }
-            catch (UnauthorizedAccessException) when (Stopwatch.GetTimestamp() < deadline)
+            catch (UnauthorizedAccessException)
+                when (_time.GetElapsedTime(started) < AcceptanceSettleTimeout)
             {
-                await Task.Delay(AcceptanceSettlePoll, ct);
+                await Task.Delay(AcceptanceSettlePoll, _time, ct);
                 continue;
             }
 
             try
             {
-                await using (claim)
+                // Straight-line synchronous, with no await between the create and the close. An async
+                // FileStream buffers a record this small entirely in memory and flushes it from a
+                // continuation, so the record sat visibly EMPTY across a thread-pool scheduling point — and
+                // on a loaded runner that point is exactly where the wait becomes unbounded, which is how a
+                // contender came to spend its whole settle budget on a writer that was merely descheduled.
+                // Unbuffered plus synchronous makes the window a handful of syscalls that nothing can
+                // deschedule.
+                using (claim)
                 {
-                    await JsonSerializer.SerializeAsync(claim, acceptance, AcceptanceJsonOptions, ct);
+                    claim.Write(payload);
                 }
             }
             catch
@@ -1200,10 +1239,9 @@ public sealed class FileConversationStore
     /// genuinely in flight, and standing down is the right answer to that.
     /// </para>
     /// </summary>
-    private static async Task<FileStream?> OpenMutationGateAsync(string gateFile, CancellationToken ct)
+    private async Task<FileStream?> OpenMutationGateAsync(string gateFile, CancellationToken ct)
     {
-        var deadline = Stopwatch.GetTimestamp()
-            + (long)(AcceptanceSettleTimeout.TotalSeconds * Stopwatch.Frequency);
+        var started = _time.GetTimestamp();
         while (true)
         {
             try
@@ -1216,7 +1254,7 @@ public sealed class FileConversationStore
                     bufferSize: 1,
                     FileOptions.None);
             }
-            catch (IOException) when (Stopwatch.GetTimestamp() < deadline)
+            catch (IOException) when (_time.GetElapsedTime(started) < AcceptanceSettleTimeout)
             {
                 // Another mutation of this record holds the gate; it is released by a handle close.
             }
@@ -1225,16 +1263,15 @@ public sealed class FileConversationStore
                 return null;
             }
 
-            await Task.Delay(AcceptanceSettlePoll, ct);
+            await Task.Delay(AcceptanceSettlePoll, _time, ct);
         }
     }
 
-    private static async Task<InputAcceptance?> ReadAcceptanceFileAsync(
+    private async Task<InputAcceptance?> ReadAcceptanceFileAsync(
         string acceptanceFile,
         CancellationToken ct)
     {
-        var deadline = Stopwatch.GetTimestamp()
-            + (long)(AcceptanceSettleTimeout.TotalSeconds * Stopwatch.Frequency);
+        var started = _time.GetTimestamp();
         while (true)
         {
             try
@@ -1267,18 +1304,19 @@ public sealed class FileConversationStore
             {
                 // The exclusive claim exists but has not settled yet.
             }
-            catch (UnauthorizedAccessException) when (Stopwatch.GetTimestamp() < deadline)
+            catch (UnauthorizedAccessException)
+                when (_time.GetElapsedTime(started) < AcceptanceSettleTimeout)
             {
                 // A Windows delete-pending name is transient; a real permission failure outlives the budget.
             }
 
-            if (Stopwatch.GetTimestamp() >= deadline)
+            if (_time.GetElapsedTime(started) >= AcceptanceSettleTimeout)
             {
                 throw new IOException(
                     $"The admission record '{acceptanceFile}' exists but never became readable.");
             }
 
-            await Task.Delay(AcceptanceSettlePoll, ct);
+            await Task.Delay(AcceptanceSettlePoll, _time, ct);
         }
     }
 
