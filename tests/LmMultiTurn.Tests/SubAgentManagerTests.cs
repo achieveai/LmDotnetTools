@@ -1108,6 +1108,98 @@ public class SubAgentManagerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SendMessageAsync_AfterAnAnsweredQuestionSettled_StillCompletesATextFreeRun()
+    {
+        // Arrange (#262, the latch's other edge): the parked latch makes a text-free completion
+        // non-terminal, which is only safe because it spans a bounded interval — parking until the real
+        // answer-derived result arrives. If it outlived that result, a sub-agent that once asked a
+        // question could never finish a text-free run again: the caller would block forever on a loop
+        // with nothing left to say. This drives exactly that continuation.
+        var askArgs = JsonSerializer.Serialize(new
+        {
+            context = "Need input before continuing.",
+            questions = new[]
+            {
+                new
+                {
+                    prompt = "Which color?",
+                    options = new object[] { new { label = "Red" }, new { label = "Blue" } },
+                },
+            },
+        });
+
+        var providerCalls = 0;
+        _subAgentMock
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, _) =>
+            {
+                List<IMessage> reply = Interlocked.Increment(ref providerCalls) switch
+                {
+                    1 =>
+                    [
+                        new ToolCallMessage
+                        {
+                            FunctionName = AskUserQuestionToolProvider.ToolName,
+                            FunctionArgs = askArgs,
+                            ToolCallId = "tc_color",
+                            Role = Role.Assistant,
+                        },
+                    ],
+                    2 => [new TextMessage { Text = "Final answer: chose Red.", Role = Role.Assistant }],
+
+                    // The continuation: a run with nothing to say, and no question outstanding.
+                    _ => [new TextMessage { Text = "nothing to add", Role = Role.Assistant, IsThinking = true }],
+                };
+
+                return Task.FromResult(ToAsyncEnumerable(reply));
+            });
+
+        _manager = CreateManager(maxConcurrent: 1);
+
+        var foregroundTask = _manager.SpawnAsync(
+            "test-agent", "Pick a color", name: "color-agent", runInBackground: false);
+
+        MultiTurnAgentLoop? loop = null;
+        await Wait.UntilAsync(
+            async () =>
+            {
+                if (_manager!.TryGetAgent("color-agent", out var agent) && agent is MultiTurnAgentLoop l)
+                {
+                    loop = l;
+                    return (await l.GetDeferredToolCallsAsync()).Any(d => d.ToolCallId == "tc_color");
+                }
+
+                return false;
+            },
+            "the child parked tc_color",
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromMilliseconds(50));
+
+        var agentId = _manager!.ListAgents().Single(a => a.Name == "color-agent").AgentId;
+
+        (await loop!.TryResolveToolCallAsync("tc_color", "Red"))
+            .Should().Be(ResolveToolCallOutcome.Resolved);
+
+        // The answer's own text settles the caller — and, with it, clears the parked latch.
+        var answer = await foregroundTask.WaitAsync(TimeSpan.FromSeconds(10));
+        answer.Should().Be("Final answer: chose Red.");
+
+        // Act + Assert: the next run produces no assistant text and no question is outstanding, so it is
+        // genuinely terminal and must settle — with the placeholder, which is what that string is
+        // legitimately for. A latch left set by the answered question would instead hold this caller
+        // open until the bound below fired.
+        var continuation = _manager.SendMessageAsync(agentId, "anything else?", runInBackground: false);
+        var continued = await continuation.WaitAsync(TimeSpan.FromSeconds(10));
+        continued.Should().Be(
+            "(no text response)",
+            "the parked latch spans only the wait for an answered question's result; a later run with "
+                + "nothing to say is genuinely terminal and must not leave the caller blocked");
+    }
+
+    [Fact]
     public async Task DisposeAsync_StopsAllAgents()
     {
         // Arrange: create a background sub-agent with a delayed response
