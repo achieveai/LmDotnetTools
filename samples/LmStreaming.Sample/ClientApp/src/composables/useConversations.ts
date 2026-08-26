@@ -3,7 +3,9 @@ import type { ConversationSummary } from '@/types/conversations';
 import {
   listConversations as apiListConversations,
   deleteConversation as apiDeleteConversation,
+  provisionConversation,
   updateConversationMetadata,
+  type ProvisionConversationRequest,
 } from '@/api/conversationsApi';
 
 /**
@@ -41,10 +43,23 @@ export function useConversations() {
   }
 
   /**
-   * Creates a new conversation and returns its thread ID.
+   * Reserves a new conversation on the server and returns the thread id the SERVER minted (#435).
+   *
+   * This is the SPA's only source of thread ids. Under `Identity:Enforce=true` the `/ws` gate
+   * authorizes the conversation before accepting the handshake, and a thread id with no metadata
+   * row is refused byte-identically to one owned by somebody else — deliberately, since minting a
+   * row for an unknown id would make unknown ids succeed while taken ones are refused, which is the
+   * existence oracle that 404 exists to close. A locally invented id therefore cannot ever open a
+   * socket once the flag is on.
+   *
+   * A failure is thrown, never swallowed: falling back to a local id would hand the caller a
+   * conversation that looks started, connects while enforcement is off, and is refused the moment
+   * it is flipped on.
    */
-  function createNewConversation(): string {
-    const newThreadId = `thread-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  async function createNewConversation(
+    binding: ProvisionConversationRequest
+  ): Promise<string> {
+    const { threadId: newThreadId } = await provisionConversation(binding);
     currentThreadId.value = newThreadId;
     return newThreadId;
   }

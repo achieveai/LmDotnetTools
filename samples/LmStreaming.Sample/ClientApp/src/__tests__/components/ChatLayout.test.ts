@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { flushPromises, mount } from '@vue/test-utils';
-import { defineComponent, inject, h } from 'vue';
+import { defineComponent, inject, h, type Ref } from 'vue';
 import ChatLayout from '@/components/ChatLayout.vue';
 import { SUBMIT_CLIENT_TOOL_RESULT, type ClientToolSubmitFn } from '@/composables/useClientToolSubmit';
 import { GO_TO_AGENT_TAB, type GoToAgentTab } from '@/composables/useConversationTabs';
@@ -31,6 +31,31 @@ const sharedMocks = vi.hoisted(() => ({
   selectMode: vi.fn(),
   switchMode: vi.fn(),
   disconnectWebSocket: vi.fn(),
+  // #435: the SPA no longer mints a thread id — `createNewConversation` POSTs /api/conversations
+  // and resolves to the id the SERVER minted. Held here so a test can assert what ChatLayout sent
+  // it and make it reject.
+  createNewConversation: vi.fn(async (_binding: unknown) => 'thread-provisioned'),
+  setThreadId: vi.fn(),
+  // The bindings ChatLayout has to send with a provisioning request; the server resolves each and
+  // refuses the whole request if any is unknown.
+  selectedProviderId: null as string | null,
+  selectedWorkspaceId: 'default' as string | null,
+  // The in-flight `/api/providers` load. Resolved by default so every existing test sees a catalog
+  // that was already there; a test that cares about the mount-time race replaces it with one it
+  // resolves by hand.
+  providerCatalogLoad: Promise.resolve() as Promise<void>,
+  providerSelectionRef: null as Ref<string | null> | null,
+  // The same, for `/api/workspaces`. Its selection starts at 'default' rather than null, so a test
+  // that only holds the PROVIDER catalog open cannot tell whether the workspace half is awaited.
+  workspaceCatalogLoad: Promise.resolve() as Promise<void>,
+  workspaceSelectionRef: null as Ref<string | null> | null,
+  // The options object ChatLayout handed to useChat, so a test can drive the provisioning hook the
+  // real composable calls on the first send.
+  chatOptions: null as { provisionThreadId?: () => Promise<string> } | null,
+  // The mode mock's `currentModeId` is one ref shared by every test in this file, so a mode-switch
+  // test leaves it changed for whatever runs next. Exposed here so a test that asserts on the mode
+  // can start from a known one instead of inheriting the previous test's.
+  setModeId: null as ((modeId: string) => void) | null,
   selectProvider: vi.fn(),
   switchProvider: vi.fn(async () => {}),
   selectWorkspace: vi.fn(),
@@ -69,7 +94,7 @@ vi.mock('@/composables/useConversations', async () => {
       currentThreadId: ref(sharedMocks.currentThreadId),
       isLoading: ref(false),
       loadConversations: vi.fn(async () => {}),
-      createNewConversation: vi.fn(() => 'thread-new'),
+      createNewConversation: sharedMocks.createNewConversation,
       selectConversation: vi.fn(),
       removeConversation: vi.fn(async () => {}),
       addOrUpdateConversation: sharedMocks.addOrUpdateConversation,
@@ -103,6 +128,9 @@ vi.mock('@/composables/useChatModes', async () => {
   ]);
 
   const currentModeId = ref('default');
+  sharedMocks.setModeId = (modeId: string) => {
+    currentModeId.value = modeId;
+  };
 
   return {
     useChatModes: () => ({
@@ -134,52 +162,68 @@ vi.mock('@/composables/useChat', async () => {
   const { ref, computed } = await import('vue');
   return {
     getDisplayText: vi.fn((text: string) => text),
-    useChat: () => ({
-      displayItems: computed(() => []),
-      isLoading: ref(sharedMocks.chatLoading),
-      isSending: ref(sharedMocks.isSending),
-      error: ref(null),
-      usage: ref(null),
-      cumulativeUsage: ref({
-        promptTokens: 0,
-        uncachedInputTokens: 0,
-        completionTokens: 0,
-        totalTokens: 0,
-        cachedTokens: 0,
-        cacheCreationTokens: 0,
-      }),
-      pendingMessages: ref([]),
-      pendingAuthRequests: computed(() => []),
-      dismissAuthRequest: vi.fn(),
-      sendMessage: vi.fn(async () => {}),
-      clearMessages: vi.fn(),
-      cancelStream: vi.fn(async () => {}),
-      disconnectWebSocket: sharedMocks.disconnectWebSocket,
-      // Hoisted useSubAgentPanel(() => chatThreadId.value) reads this; useConversationTabs watches it.
-      threadId: ref(sharedMocks.currentThreadId),
-      setThreadId: vi.fn(),
-      loadMessagesFromBackend: vi.fn(async () => {}),
-      resumeStreamIfActive: sharedMocks.resumeStreamIfActive,
-      markStreamIdle: sharedMocks.markStreamIdle,
-      markStreamLoading: sharedMocks.markStreamLoading,
-      getResultForToolCall: vi.fn(() => null),
-      hasPendingClientQuestion: computed(() => sharedMocks.hasPendingClientQuestion),
-      submitClientToolResult: sharedMocks.submitClientToolResult,
-    }),
+    useChat: (options: { provisionThreadId?: () => Promise<string> }) => {
+      // Captured so a test can invoke the provisioning hook the way the real `useChat` does on the
+      // first send of a session — the send path, unlike the "New chat" button, is reachable before
+      // ChatLayout's mount-time catalog loads have finished.
+      sharedMocks.chatOptions = options;
+      return {
+        displayItems: computed(() => []),
+        isLoading: ref(sharedMocks.chatLoading),
+        isSending: ref(sharedMocks.isSending),
+        error: ref(null),
+        usage: ref(null),
+        cumulativeUsage: ref({
+          promptTokens: 0,
+          uncachedInputTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+          cachedTokens: 0,
+          cacheCreationTokens: 0,
+        }),
+        pendingMessages: ref([]),
+        pendingAuthRequests: computed(() => []),
+        dismissAuthRequest: vi.fn(),
+        sendMessage: vi.fn(async () => {}),
+        clearMessages: vi.fn(),
+        cancelStream: vi.fn(async () => {}),
+        disconnectWebSocket: sharedMocks.disconnectWebSocket,
+        // Hoisted useSubAgentPanel(() => chatThreadId.value) reads this; useConversationTabs watches it.
+        threadId: ref(sharedMocks.currentThreadId),
+        setThreadId: sharedMocks.setThreadId,
+        loadMessagesFromBackend: vi.fn(async () => {}),
+        resumeStreamIfActive: sharedMocks.resumeStreamIfActive,
+        markStreamIdle: sharedMocks.markStreamIdle,
+        markStreamLoading: sharedMocks.markStreamLoading,
+        getResultForToolCall: vi.fn(() => null),
+        hasPendingClientQuestion: computed(() => sharedMocks.hasPendingClientQuestion),
+        submitClientToolResult: sharedMocks.submitClientToolResult,
+      };
+    },
   };
 });
 
 vi.mock('@/composables/useProviders', async () => {
   const { ref } = await import('vue');
   return {
-    useProviders: () => ({
-      providers: ref([]),
-      selectedProviderId: ref<string | null>(null),
-      isLoading: ref(false),
-      loadProviders: vi.fn(async () => {}),
-      selectProvider: sharedMocks.selectProvider,
-      switchProvider: sharedMocks.switchProvider,
-    }),
+    useProviders: () => {
+      const selectedProviderId = ref<string | null>(sharedMocks.selectedProviderId);
+      // Published so a test can let the catalog land LATE — the real composable leaves this ref null
+      // until `/api/providers` answers, and the composer is clickable long before that.
+      sharedMocks.providerSelectionRef = selectedProviderId;
+      return {
+        providers: ref([]),
+        selectedProviderId,
+        isLoading: ref(false),
+        loadProviders: vi.fn(() => sharedMocks.providerCatalogLoad),
+        settleCatalog: vi.fn(async () => {
+          await sharedMocks.providerCatalogLoad;
+          return true;
+        }),
+        selectProvider: sharedMocks.selectProvider,
+        switchProvider: sharedMocks.switchProvider,
+      };
+    },
   };
 });
 
@@ -190,21 +234,32 @@ vi.mock('@/composables/useWorkspaces', async () => {
       '@/composables/useWorkspaces'
     );
   return {
+    // The real constant, not a stand-in: ChatLayout's fallback is only meaningful if it names the
+    // id the backend actually seeds.
+    DEFAULT_WORKSPACE_ID: actual.DEFAULT_WORKSPACE_ID,
     // Most tests here only care that ChatLayout calls the right function, so they get a flat stub.
     // The conflict-visibility test needs the REAL composable — its `isLoading` flip during the
     // post-409 reload is the whole mechanism under test, and a stub cannot reproduce it honestly.
-    useWorkspaces: () =>
-      sharedMocks.useRealWorkspaces
-        ? actual.useWorkspaces()
-        : {
-            workspaces: ref([]),
-            selectedWorkspaceId: ref<string | null>('default'),
-            isLoading: ref(false),
-            loadWorkspaces: vi.fn(async () => {}),
-            selectWorkspace: sharedMocks.selectWorkspace,
-            createWorkspace: sharedMocks.createWorkspace,
-            updateWorkspace: sharedMocks.updateWorkspace,
-          },
+    useWorkspaces: () => {
+      if (sharedMocks.useRealWorkspaces) {
+        return actual.useWorkspaces();
+      }
+      const selectedWorkspaceId = ref<string | null>(sharedMocks.selectedWorkspaceId);
+      sharedMocks.workspaceSelectionRef = selectedWorkspaceId;
+      return {
+        workspaces: ref([]),
+        selectedWorkspaceId,
+        isLoading: ref(false),
+        loadWorkspaces: vi.fn(() => sharedMocks.workspaceCatalogLoad),
+        settleCatalog: vi.fn(async () => {
+          await sharedMocks.workspaceCatalogLoad;
+          return true;
+        }),
+        selectWorkspace: sharedMocks.selectWorkspace,
+        createWorkspace: sharedMocks.createWorkspace,
+        updateWorkspace: sharedMocks.updateWorkspace,
+      };
+    },
   };
 });
 
@@ -1400,5 +1455,220 @@ describe('ChatLayout keeps the workspace edit form alive across a 409 (F6)', () 
     expect(wrapper.get('[data-testid="workspace-form-error"]').text()).toContain('demo/ghost');
 
     wrapper.unmount();
+  });
+});
+
+// #435. "New chat" used to mint a thread id in the browser and hand it straight to useChat, which
+// opened a socket on it. Under `Identity:Enforce=true` that id has no metadata row and `/ws` refuses
+// the handshake — byte-identically to a thread somebody else owns, so there is nothing in the
+// refusal to act on. The component must reserve the conversation on the server first and adopt the
+// id the server minted, and must never fall back to one of its own when that fails.
+describe('ChatLayout new-chat provisioning (#435)', () => {
+  // The "Start a new chat" button lives in the not-found panel, so a deep link to an unknown
+  // thread is the cheapest way to get a real click on handleNewChat.
+  const setQuery = (query: string) => {
+    window.history.pushState({}, '', query ? `/?${query}` : '/');
+  };
+
+  const mountLayout = () =>
+    mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          ChatInput: true,
+        },
+      },
+    });
+
+  beforeEach(() => {
+    sharedMocks.currentThreadId = null;
+    sharedMocks.conversations = [];
+    sharedMocks.selectedProviderId = 'anthropic';
+    sharedMocks.selectedWorkspaceId = 'ws-1';
+    sharedMocks.createNewConversation.mockReset();
+    sharedMocks.createNewConversation.mockResolvedValue('thread-provisioned');
+    sharedMocks.setThreadId.mockReset();
+    sharedMocks.setModeId?.('default');
+    setQuery('threadId=thread-missing');
+  });
+
+  afterEach(() => {
+    sharedMocks.selectedProviderId = null;
+    sharedMocks.selectedWorkspaceId = 'default';
+    sharedMocks.providerCatalogLoad = Promise.resolve();
+    sharedMocks.workspaceCatalogLoad = Promise.resolve();
+  });
+
+  it('provisions with the current workspace/provider/mode and adopts the server-minted id', async () => {
+    mountLayout();
+    await flushPromises();
+
+    const provisioned = await sharedMocks.chatOptions!.provisionThreadId!();
+
+    expect(sharedMocks.createNewConversation).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      providerId: 'anthropic',
+      modeId: 'default',
+    });
+    // The SERVER's id is what the socket will be opened on.
+    expect(provisioned).toBe('thread-provisioned');
+  });
+
+  it('refuses rather than falling back to an id of its own when the server will not reserve one', async () => {
+    sharedMocks.createNewConversation.mockRejectedValue(
+      new Error('Provider "anthropic" is currently unavailable.')
+    );
+
+    mountLayout();
+    await flushPromises();
+
+    // The refusal has to reach useChat, which is what surfaces it and dequeues the pending prompt.
+    // Answering with an id of our own would open a socket that connects today and is refused the
+    // moment enforcement is flipped on — worse than a send that visibly failed.
+    await expect(sharedMocks.chatOptions!.provisionThreadId!()).rejects.toThrow(
+      /currently unavailable/
+    );
+    for (const call of sharedMocks.setThreadId.mock.calls) {
+      expect(call[0]).toBeNull();
+    }
+  });
+
+  // A host with no reachable marketplace catalog reports every workspace as `unknown`, so
+  // `useWorkspaces` keeps no selection — the state a gateway-less deployment is permanently in.
+  // Provisioning must not be stricter than the socket it replaced, which sent whatever it had and
+  // let the backend resolve its own default.
+  it('falls back to the default workspace when the catalog can vouch for none', async () => {
+    sharedMocks.selectedWorkspaceId = null;
+
+    mountLayout();
+    await flushPromises();
+
+    const provisioned = await sharedMocks.chatOptions!.provisionThreadId!();
+
+    expect(sharedMocks.createNewConversation).toHaveBeenCalledWith({
+      workspaceId: 'default',
+      providerId: 'anthropic',
+      modeId: 'default',
+    });
+    expect(provisioned).toBe('thread-provisioned');
+  });
+
+  // The provider is a different matter: a null there means the catalog could not be read at all
+  // (`loadProviders` falls back to the backend's declared default even when nothing is available),
+  // and the backend answers 503 for a provider it cannot serve.
+  it('refuses when no provider could be resolved at all', async () => {
+    sharedMocks.selectedProviderId = null;
+
+    mountLayout();
+    await flushPromises();
+
+    await expect(sharedMocks.chatOptions!.provisionThreadId!()).rejects.toThrow(/provider/);
+    expect(sharedMocks.createNewConversation).not.toHaveBeenCalled();
+  });
+
+  // Reserving on click would write a metadata row per "New chat", and GET /api/conversations lists
+  // every row: the sidebar fills with empty "New Conversation" entries, and after a reload the
+  // most-recent-first default selects the newest of THOSE instead of the conversation the user was
+  // reading. A blank chat is a cleared selection, not a reservation.
+  it('reserves nothing when the user opens a new chat', async () => {
+    const wrapper = mountLayout();
+    await flushPromises();
+    sharedMocks.setThreadId.mockReset();
+
+    await wrapper.get('.new-chat-btn').trigger('click');
+    await flushPromises();
+
+    expect(sharedMocks.createNewConversation).not.toHaveBeenCalled();
+    expect(sharedMocks.setThreadId).toHaveBeenCalledWith(null);
+  });
+
+  // The regression that took the browser suite down: `/api/providers` is fetched on mount but the
+  // composer is live from the first paint, so a conversation started in that window found
+  // `selectedProviderId` still null and was refused — with a message telling the user to choose a
+  // provider from a picker that had not been populated yet. Provisioning has to wait for the load
+  // that will win before it decides anything is missing.
+  it('waits for a provider catalog still in flight instead of refusing the conversation', async () => {
+    sharedMocks.selectedProviderId = null;
+    let landCatalog!: () => void;
+    sharedMocks.providerCatalogLoad = new Promise<void>((resolve) => {
+      landCatalog = () => {
+        // What the real composable does when the response applies: pick the default provider.
+        if (sharedMocks.providerSelectionRef) {
+          sharedMocks.providerSelectionRef.value = 'anthropic';
+        }
+        resolve();
+      };
+    });
+
+    mountLayout();
+    await flushPromises();
+
+    // Exactly what useChat does on the first send of a session, while the mount-time catalog load
+    // is still outstanding.
+    let provisioned: string | null = null;
+    let refusal: unknown = null;
+    const sending = sharedMocks.chatOptions!.provisionThreadId!()
+      .then((id) => {
+        provisioned = id;
+      })
+      .catch((e: unknown) => {
+        refusal = e;
+      });
+
+    await flushPromises();
+    // Still in flight: nothing provisioned, and nothing refused either.
+    expect(sharedMocks.createNewConversation).not.toHaveBeenCalled();
+    expect(refusal).toBeNull();
+
+    landCatalog();
+    await sending;
+
+    expect(sharedMocks.createNewConversation).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      providerId: 'anthropic',
+      modeId: 'default',
+    });
+    expect(refusal).toBeNull();
+    expect(provisioned).toBe('thread-provisioned');
+  });
+
+  // The workspace catalog needs the same wait for a different reason. Its selection is seeded with
+  // 'default' rather than null, so it never LOOKS missing — but the load reconciles that guess
+  // against what the host actually has, dropping it when no such workspace exists or when the one
+  // that does is incompatible with the gateway. Provisioning on the un-reconciled guess sends the
+  // server a binding the load was about to reject.
+  it('sends the workspace the catalog reconciled to, not the seeded guess', async () => {
+    let landCatalog!: () => void;
+    sharedMocks.workspaceCatalogLoad = new Promise<void>((resolve) => {
+      landCatalog = () => {
+        if (sharedMocks.workspaceSelectionRef) {
+          sharedMocks.workspaceSelectionRef.value = 'ws-reconciled';
+        }
+        resolve();
+      };
+    });
+
+    mountLayout();
+    await flushPromises();
+
+    let provisioned: string | null = null;
+    const sending = sharedMocks.chatOptions!.provisionThreadId!().then((id) => {
+      provisioned = id;
+    });
+
+    await flushPromises();
+    expect(sharedMocks.createNewConversation).not.toHaveBeenCalled();
+
+    landCatalog();
+    await sending;
+
+    expect(sharedMocks.createNewConversation).toHaveBeenCalledWith({
+      workspaceId: 'ws-reconciled',
+      providerId: 'anthropic',
+      modeId: 'default',
+    });
+    expect(provisioned).toBe('thread-provisioned');
   });
 });

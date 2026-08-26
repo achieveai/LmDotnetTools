@@ -3,6 +3,14 @@ import type { ProviderDescriptor } from '@/types/providers';
 import { listProviders, switchConversationProvider } from '@/api/providersApi';
 
 /**
+ * How many times {@link useProviders.settleCatalog} follows the chain of superseding loads before
+ * giving up. Mirrors the bound in `useWorkspaces` for the same reason: the loop only iterates when a
+ * load is superseded WHILE being awaited, so it converges as soon as one load finishes as the
+ * newest, and the bound keeps a caller that keeps starting loads from hanging whoever is waiting.
+ */
+const MAX_CATALOG_SETTLE_WAITS = 5;
+
+/**
  * Composable that loads the provider catalog from the backend and exposes the
  * user's currently-selected provider.
  *
@@ -27,14 +35,36 @@ export function useProviders() {
   );
 
   /**
+   * Monotonic id of the most recently STARTED load, and a handle on it. Together they let a caller
+   * wait for the load that will actually win rather than merely its own — see {@link settleCatalog}.
+   */
+  let loadGeneration = 0;
+  let newestLoad: Promise<void> = Promise.resolve();
+
+  /**
    * Loads the provider catalog. Selects the backend-supplied default if the
    * user has not yet picked one, falling back to the first available provider.
+   *
+   * The returned promise means "this call finished", NOT "this call applied its response": a
+   * superseded load resolves having written nothing. A caller that must read a settled selection
+   * has to follow up with {@link settleCatalog}.
    */
-  async function loadProviders(): Promise<void> {
+  function loadProviders(): Promise<void> {
+    const load = runLoad();
+    // Assigned synchronously, in the same tick in which `runLoad` bumped `loadGeneration` (an async
+    // function body runs up to its first await before returning), so the counter and this handle can
+    // never disagree about which load is newest.
+    newestLoad = load;
+    return load;
+  }
+
+  async function runLoad(): Promise<void> {
+    const generation = ++loadGeneration;
     isLoading.value = true;
     error.value = null;
     try {
       const response = await listProviders();
+      if (generation !== loadGeneration) return;
       providers.value = response.providers ?? [];
       defaultProviderId.value = response.default ?? null;
 
@@ -47,11 +77,38 @@ export function useProviders() {
         selectedProviderId.value = initial;
       }
     } catch (e) {
+      if (generation !== loadGeneration) return;
       error.value = e instanceof Error ? e.message : 'Failed to load providers';
       console.error('Failed to load providers:', e);
     } finally {
-      isLoading.value = false;
+      if (generation === loadGeneration) {
+        isLoading.value = false;
+      }
     }
+  }
+
+  /**
+   * Waits until the newest load has applied its response, and reports whether it got there.
+   *
+   * The catalog is fetched on mount while the composer is ALREADY interactive, so a first send can
+   * easily beat the response — and until it lands `selectedProviderId` is null. Reading it in that
+   * window and refusing would tell the user to "choose a provider" when the picker has not even
+   * been populated yet. Callers that need a settled selection await this first.
+   *
+   * Returns false if `MAX_CATALOG_SETTLE_WAITS` passes are spent without converging, so the caller
+   * degrades deliberately instead of waiting forever.
+   */
+  async function settleCatalog(): Promise<boolean> {
+    for (let attempt = 0; attempt < MAX_CATALOG_SETTLE_WAITS; attempt++) {
+      const generation = loadGeneration;
+      await newestLoad;
+      // No newer load started while we waited, so the one we awaited was still the latest when it
+      // completed — which is exactly the condition under which it applied its response.
+      if (loadGeneration === generation) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -101,6 +158,7 @@ export function useProviders() {
     isLoading,
     error,
     loadProviders,
+    settleCatalog,
     selectProvider,
     switchProvider,
     getProviderById,

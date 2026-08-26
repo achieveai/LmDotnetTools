@@ -188,14 +188,16 @@ enforcing?".
 Leaving `AzureAd:ClientId` empty is a second, independent off switch: with no client id, no JWT
 bearer handler is registered at all and no token can be presented.
 
-> **Client precondition — do not flip this flag with the bundled SPA as it ships (#435).** Under
-> enforcement the WebSocket transports refuse a `threadId` that has no metadata row, so a client must
-> provision the conversation through `POST /api/conversations` before opening its socket. The SPA
-> still mints its own `thread-{timestamp}-{random}` id locally and connects straight away, so a
-> **brand-new conversation cannot start** while the flag is on. Existing conversations are unaffected.
-> This is a client change that must ship with the flip, exactly as #342's subprotocol change had to.
-> See "The WebSocket transports did no per-conversation authorization (#419)" below for why the
-> server deliberately does not mint the row for you.
+> **Client precondition — met by the bundled SPA since #435.** Under enforcement the WebSocket
+> transports refuse a `threadId` that has no metadata row, so a client must provision the
+> conversation through `POST /api/conversations` before opening its socket. The SPA now does exactly
+> that: `useConversations.createNewConversation()` is its single source of thread ids, it POSTs and
+> adopts the id the **server** minted, and a provisioning failure is shown rather than papered over
+> with a locally invented id. No thread id is generated in the browser any more — a unit test scans
+> the shipped sources every run to keep it that way.
+>
+> A client of your own must do the same. See "The WebSocket transports did no per-conversation
+> authorization (#419)" below for why the server deliberately does not mint the row for you.
 
 ### Tenants are provisioned explicitly, before anyone signs in
 
@@ -493,17 +495,17 @@ response. CORS is skipped entirely only when `LmStreaming:EnableCors` is set to 
 7. **If a browser on another origin calls this host**, set `LmStreaming:AllowedOrigins` to that
    origin. Refusals are answered before the endpoint runs, so a cross-origin client can only read
    the refusal code if this host is configured to allow its origin.
-8. **Ship a client that provisions before it connects (#435), then** set `Identity:Enforce` true.
+8. **Check that every client provisions before it connects, then** set `Identity:Enforce` true.
    Anonymous `/api` requests now get `401`, and the WebSocket transports refuse any `threadId` with
-   no metadata row. The bundled SPA as it ships mints its thread id locally and connects straight
-   away, so **flipping the flag without that client change stops any brand-new conversation from
-   starting** (existing ones are unaffected). See the client precondition under "`Identity:Enforce`
-   is global" above.
+   no metadata row. The bundled SPA satisfies this since #435 — it POSTs `/api/conversations` and
+   opens the socket on the id the server minted. A client of your own that still invents its own
+   thread id can no longer start a brand-new conversation (existing ones are unaffected). See the
+   client precondition under "`Identity:Enforce` is global" above.
 
 Steps 1 through 7 are reversible and can sit in production for as long as you like. Step 8 is the
 only one that changes what any caller sees — and it changes it in two ways, not one: anonymous `/api`
-requests start getting `401`, and a client that has not been updated to provision first can no longer
-start a conversation over the socket.
+requests start getting `401`, and any client that has not been updated to provision first can no
+longer start a conversation over the socket.
 
 ### Known gaps
 
@@ -511,10 +513,11 @@ Four gaps that used to be listed here, all now fixed — none of them is still o
 exhaustive over the REST surface: every other `/api` route that names a conversation goes through the
 authorizer.
 
-Two things `Identity:Enforce` still does not do are recorded inside the #419 section below rather
-than as gaps of their own, because both are consequences of that fix rather than holes left in it:
-the `auth/{providerId}` sign-in **side effect** (the information leak is closed; an anonymous `GET`
-can still start the host operator's own sign-in), and the **client-side provisioning** #435 tracks.
+One thing `Identity:Enforce` still does not do is recorded inside the #419 section below rather than
+as a gap of its own, because it is a consequence of that fix rather than a hole left in it: the
+`auth/{providerId}` sign-in **side effect** (the information leak is closed; an anonymous `GET` can
+still start the host operator's own sign-in). The client-side provisioning that section also
+describes is no longer outstanding — #435 shipped it in the bundled SPA.
 
 #### Service callers used to be refused (#345, fixed)
 
@@ -718,8 +721,9 @@ operator-secret door the redirect flow has not been designed for.
 that has no metadata row, identically to one belonging to someone else — deliberately, because minting
 a row for an unknown id would make unknown ids succeed while taken ones refused, which is the oracle
 the `404` exists to close. A client must therefore **provision the conversation first**, through
-`POST /api/conversations`, and open the socket on the id the server mints. The bundled SPA does not yet
-do this: it mints a `thread-{timestamp}-{random}` id locally in three places
-(`useConversations.ts`, `useChat.ts`, `wsClient.ts`) and connects straight away, so under enforcement
-a brand-new conversation cannot start. Tracked in **#435** — ship it with the flip, exactly as #342's
-subprotocol change had to be. With enforcement **off** the gate short-circuits and nothing changes.
+`POST /api/conversations`, and open the socket on the id the server mints. The bundled SPA used to
+mint a `thread-{timestamp}-{random}` id locally in three places (`useConversations.ts`, `useChat.ts`,
+`wsClient.ts`); **#435 removed all three**. `createNewConversation()` now POSTs and returns the
+server's id, `useChat` asks that same hook the first time a conversation needs one, and `wsClient`
+throws rather than inventing one. With enforcement **off** the gate short-circuits and nothing
+changes.

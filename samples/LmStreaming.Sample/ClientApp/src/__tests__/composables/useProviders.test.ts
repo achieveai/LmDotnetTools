@@ -41,3 +41,80 @@ describe('useProviders.switchProvider', () => {
     expect(p.error.value).toMatch(/streaming/);
   });
 });
+
+/**
+ * `loadProviders()` resolving is not the same as "the selection is settled" — the catalog is
+ * fetched on mount while the composer is already interactive, so whoever needs a provider id has to
+ * be able to wait for the load that will actually apply its response.
+ */
+describe('useProviders.settleCatalog', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('does not resolve until an in-flight load has applied its selection', async () => {
+    let land!: (body: unknown) => void;
+    vi.spyOn(globalThis, 'fetch').mockReturnValueOnce(
+      new Promise<Response>((resolve) => {
+        land = (body) =>
+          resolve({ ok: true, status: 200, statusText: 'OK', json: async () => body } as Response);
+      })
+    );
+
+    const p = useProviders();
+    void p.loadProviders();
+
+    let settled = false;
+    const waiting = p.settleCatalog().then((ok) => {
+      settled = true;
+      return ok;
+    });
+
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(p.selectedProviderId.value).toBeNull();
+
+    land({ providers: [{ id: 'test', displayName: 'Test', available: true }], default: 'test' });
+
+    await expect(waiting).resolves.toBe(true);
+    expect(p.selectedProviderId.value).toBe('test');
+  });
+
+  it('resolves immediately when no load has ever started', async () => {
+    const p = useProviders();
+    await expect(p.settleCatalog()).resolves.toBe(true);
+  });
+
+  it('ignores a superseded load so the newest response wins the selection', async () => {
+    let landFirst!: (body: unknown) => void;
+    const first = new Promise<Response>((resolve) => {
+      landFirst = (body) =>
+        resolve({ ok: true, status: 200, statusText: 'OK', json: async () => body } as Response);
+    });
+    vi.spyOn(globalThis, 'fetch')
+      .mockReturnValueOnce(first)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          providers: [{ id: 'anthropic', displayName: 'Anthropic', available: true }],
+          default: 'anthropic',
+        }),
+      } as Response);
+
+    const p = useProviders();
+    void p.loadProviders();
+    void p.loadProviders();
+
+    // The stale response lands LAST; without the generation guard it would overwrite the newer one.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    landFirst({ providers: [{ id: 'test', displayName: 'Test', available: true }], default: 'test' });
+
+    await expect(p.settleCatalog()).resolves.toBe(true);
+    // The catalog itself is what the stale response would clobber. The SELECTION alone cannot show
+    // this: the newer load already filled it, so the "only pick when null" branch would decline to
+    // overwrite it either way — an assertion on the selection passes with or without the guard.
+    expect(p.providers.value.map((provider) => provider.id)).toEqual(['anthropic']);
+    expect(p.defaultProviderId.value).toBe('anthropic');
+    expect(p.selectedProviderId.value).toBe('anthropic');
+  });
+});

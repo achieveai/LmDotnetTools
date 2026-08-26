@@ -4,7 +4,7 @@ import { useConversations } from '@/composables/useConversations';
 import { useChat, getDisplayText } from '@/composables/useChat';
 import { useChatModes } from '@/composables/useChatModes';
 import { useProviders } from '@/composables/useProviders';
-import { useWorkspaces } from '@/composables/useWorkspaces';
+import { DEFAULT_WORKSPACE_ID, useWorkspaces } from '@/composables/useWorkspaces';
 import { egressDialogRequest, closeEgressDialog } from '@/composables/useEgressAuth';
 import { updateConversationMetadata } from '@/api/conversationsApi';
 import { WorkspaceRevisionConflictError } from '@/api/workspacesApi';
@@ -69,6 +69,7 @@ const {
   selectedProviderId,
   isLoading: providersLoading,
   loadProviders,
+  settleCatalog: settleProviderCatalog,
   selectProvider,
   switchProvider,
 } = useProviders();
@@ -80,6 +81,7 @@ const {
   selectedWorkspaceId,
   isLoading: workspacesLoading,
   loadWorkspaces,
+  settleCatalog: settleWorkspaceCatalog,
   selectWorkspace,
   createWorkspace,
   updateWorkspace,
@@ -115,7 +117,49 @@ const {
   getModeId: () => currentModeId.value,
   getProviderId: () => selectedProviderId.value,
   getWorkspaceId: () => selectedWorkspaceId.value,
+  provisionThreadId: provisionThread,
 });
+
+/**
+ * The SPA's single source of thread ids (#435): reserve the conversation on the server and use the
+ * id it minted, so nothing in the client can produce an id of its own.
+ *
+ * Under `Identity:Enforce=true` the `/ws` gate refuses a thread id with no metadata row, and refuses
+ * it byte-identically to one owned by somebody else. That refusal is correct, and it means the row
+ * has to exist before the socket opens.
+ *
+ * `useChat` calls this the first time a send needs an id — which is also the first moment a
+ * conversation is real. "New chat" deliberately does NOT call it: see `handleNewChat`.
+ */
+async function provisionThread(): Promise<string> {
+  // Both catalogs are fetched on mount, but the composer is interactive from the first paint — a
+  // send can and does beat the responses. Reading the selections straight away would find
+  // `selectedProviderId` still null and refuse a conversation that has nothing wrong with it, so
+  // wait for whichever load will win before deciding anything is missing.
+  await Promise.all([settleProviderCatalog(), settleWorkspaceCatalog()]);
+
+  const providerId = selectedProviderId.value;
+  if (providerId === null) {
+    // The server resolves the provider and answers 503 for one it cannot serve, so there is nothing
+    // useful to send yet. Say what is missing instead of posting a doomed request. A null here means
+    // the provider catalog could not be read at all: `loadProviders` falls back to the backend's
+    // declared default even when nothing in the list is available.
+    throw new Error('Choose a provider before starting a conversation.');
+  }
+
+  // A null workspace selection is NOT a reason to refuse. `useWorkspaces` only keeps a selection the
+  // catalog reports as `compatible`, and the backend reports every workspace as `unknown` whenever
+  // the marketplace catalog is unreachable — a gateway-less host, or a runner where
+  // `/api/marketplaces` answers 503. Refusing there would make provisioning stricter than the socket
+  // it replaced: that path sent whatever it had and let the server resolve its own default, so a
+  // host with no gateway could still chat. Fall back to the workspace the backend always resolves.
+  const workspaceId = selectedWorkspaceId.value ?? DEFAULT_WORKSPACE_ID;
+  return await createNewConversation({
+    workspaceId,
+    providerId,
+    modeId: currentModeId.value,
+  });
+}
 
 async function handleCancel(): Promise<void> {
   await cancelStream();
@@ -133,9 +177,9 @@ const usageCostDisplay = computed(() => {
   return `${label}: ${prefix}${amount}`;
 });
 
-// A freshly-created thread (New Chat / handleNewChat) gets `chatThreadId` immediately, well before
-// any message is sent — the backend's agent pool has no entry for it yet, so polling /subagents would
-// 404-spam. Gate the sub-agent poll on the conversation having actually STARTED: it has rendered items
+// `chatThreadId` can be set well before the backend's agent pool has an entry for it — the first
+// send reserves the thread and opens the socket in the same breath — so polling /subagents on it
+// alone would 404-spam. Gate the sub-agent poll on the conversation having actually STARTED: it has rendered items
 // (a message was sent or an existing conversation was loaded) OR it already has a sidebar entry. A
 // fresh, empty New Chat matches neither, so the poll stays idle until the first message; every started
 // conversation (including the E2E's scripted send) opens the gate so its sub-agent tabs surface.
@@ -419,9 +463,14 @@ async function handleNewChat(): Promise<void> {
   // flicker; see useChat.markStreamIdle).
   markStreamIdle();
 
-  // Create new thread (without adding to sidebar yet)
-  const newThreadId = createNewConversation();
-  setThreadId(newThreadId);
+  // NOTHING is reserved here. Since #435 the id can only come from the server, and reserving one
+  // per click would write a metadata row for every "New chat" the user never types into — rows that
+  // GET /api/conversations lists, so the sidebar fills with empty "New Conversation" entries and a
+  // reload auto-selects the newest of them instead of the conversation the user was reading.
+  // Clearing the selection is what a blank chat IS; the reservation happens on the first send, via
+  // the provisioning hook useChat calls when it needs an id (see `provisionThread`).
+  currentThreadId.value = null;
+  setThreadId(null);
 }
 
 // Handle selecting an existing conversation
@@ -492,7 +541,7 @@ async function handleDeleteConversation(threadId: string): Promise<void> {
       if (conversations.value.length > 0) {
         await handleSelectConversation(conversations.value[0].threadId);
       } else {
-        handleNewChat();
+        await handleNewChat();
       }
     }
   } catch (e) {

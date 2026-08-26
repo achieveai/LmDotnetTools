@@ -112,6 +112,16 @@ export interface UseChatOptions {
    * fall back to its configured default.
    */
   getWorkspaceId?: () => string | null | undefined;
+  /**
+   * Reserves a conversation on the SERVER and resolves to the thread id it minted (#435). Wired by
+   * `ChatLayout` to `useConversations.createNewConversation`, which POSTs `/api/conversations`.
+   *
+   * This composable has no id of its own: under `Identity:Enforce=true` the `/ws` gate refuses a
+   * thread id with no metadata row — byte-identically to one owned by somebody else — so a locally
+   * minted id can never open a socket. Omitting this hook means the caller has no way to start a
+   * NEW conversation; sends into an already-established one (`setThreadId`) never reach it.
+   */
+  provisionThreadId?: () => Promise<string>;
 }
 
 /**
@@ -142,8 +152,20 @@ export function uncachedInput(input: number, cacheRead: number): number {
 /**
  * Composable for managing chat state and interactions
  */
+/**
+ * Raised when work started for a conversation finishes after the user has left it. Carries no
+ * user-facing message on purpose: nothing about it belongs on the conversation now on screen, and
+ * `sendMessage` recognises the TYPE rather than matching on text.
+ */
+class ConversationAbandonedError extends Error {
+  constructor() {
+    super('The conversation this request belonged to was left before it completed.');
+    this.name = 'ConversationAbandonedError';
+  }
+}
+
 export function useChat(options: UseChatOptions = {}) {
-  const { transport: initialTransport = 'websocket', getModeId, getProviderId, getWorkspaceId } = options;
+  const { transport: initialTransport = 'websocket', getModeId, getProviderId, getWorkspaceId, provisionThreadId } = options;
   const recordEnabled = isRecordingEnabledFromPageQuery();
 
   // Core state
@@ -598,14 +620,52 @@ export function useChat(options: UseChatOptions = {}) {
   }
 
   /**
-   * Generate thread ID on first use (persists across messages for multi-turn)
+   * Resolve the thread this chat is on, provisioning one on the SERVER the first time (#435).
+   *
+   * Deliberately async and deliberately without a local fallback: the id has to exist as a metadata
+   * row before `/ws` will accept a handshake for it under `Identity:Enforce=true`, and the gate's
+   * refusal for an unknown id is byte-identical to its refusal for one owned by somebody else. A
+   * failure propagates to `sendMessage`, which turns it into the visible error banner.
    */
-  function getOrCreateThreadId(): string {
-    if (!threadId.value) {
-      threadId.value = `thread-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-      log.info('Created new thread', { threadId: threadId.value });
+  async function ensureThreadId(): Promise<string> {
+    if (threadId.value) {
+      return threadId.value;
     }
-    return threadId.value;
+    if (!provisionThreadId) {
+      throw new Error(
+        'Cannot start a new conversation: no provisioning hook was supplied to useChat.'
+      );
+    }
+    // The first send of a new conversation is the ONLY place a thread id is awaited into existence,
+    // so it is also the only window in which the user can navigate away from a conversation that
+    // does not have an id yet. `conversationEpoch` is bumped by both exits from this conversation —
+    // `clearMessages` (New Chat) and `setThreadId` (switch) — so it is what tells the reservation
+    // whether the conversation it was made for is still the one on screen.
+    const epochAtEntry = conversationEpoch;
+    let provisioned: string;
+    try {
+      provisioned = await provisionThreadId();
+    } catch (err) {
+      // A reservation that FAILED for an abandoned conversation is abandoned too: reporting it would
+      // put the old prompt's error on the conversation now on screen. Rethrow it as the abandonment
+      // so `sendMessage` drops it silently instead of banner-ing it.
+      if (epochAtEntry !== conversationEpoch) throw new ConversationAbandonedError();
+      throw err;
+    }
+    if (epochAtEntry !== conversationEpoch) {
+      // Adopting it here would reinstall the abandoned conversation over the current one: the caller
+      // goes on to open a socket for this id and deliver the prompt into a conversation the user has
+      // left, and the id itself flips under them. The reserved row is simply left unused — the
+      // server lists it as an empty conversation, which is what an abandoned prompt is.
+      log.info('Discarding a thread reservation the user navigated away from', {
+        discarded: provisioned,
+        current: threadId.value,
+      });
+      throw new ConversationAbandonedError();
+    }
+    threadId.value = provisioned;
+    log.info('Provisioned new thread', { threadId: provisioned });
+    return provisioned;
   }
 
   /**
@@ -1130,12 +1190,29 @@ export function useChat(options: UseChatOptions = {}) {
       
       isSending.value = false;
     } catch (err) {
-      error.value = err instanceof Error ? err.message : 'Unknown error';
       // Nothing reached the wire (every throw above is raised BEFORE the send), so this prompt
       // starts no run. Leaving it queued would let the next run's `run_assignment` activate it as
-      // that run's input — the queue is consumed positionally against `inputIds`. The banner is the
-      // user's record of it; the queue must only hold prompts that are still going to be sent.
+      // that run's input — the queue is consumed positionally against `inputIds`. Dropping it is
+      // therefore unconditional; what differs is whether anything ELSE gets to be said about it.
       pendingMessages.value = pendingMessages.value.filter(msg => msg.id !== tempId);
+      if (err instanceof ConversationAbandonedError) {
+        // This send belongs to a conversation the user has already left, so the banner would blame
+        // the conversation now on screen for a prompt it never carried, and `isLoading` would flash
+        // idle through a switch that is still loading its transcript and resuming its run — the
+        // regression `clearMessages` deliberately leaves that flag alone to avoid.
+        //
+        // `isSending` is different, and must still come down. It is per-SEND, not per-conversation,
+        // and this send is over. Nothing else would lower it: `markStreamLoading` raises `isLoading`
+        // alone, `clearMessages` resets neither, and run completion lowers only `isLoading`. Left
+        // raised it wedges the conversation switched into for good — the guard at the top of this
+        // function drops every later send with no banner, and the mode/provider/workspace selectors
+        // stay disabled.
+        log.info('Dropping a send whose conversation was left before it started', { tempId });
+        isSending.value = false;
+        return;
+      }
+      // The banner is the user's record of the prompt that was dropped above.
+      error.value = err instanceof Error ? err.message : 'Unknown error';
       isLoading.value = false;
       isSending.value = false;
     }
@@ -1547,7 +1624,7 @@ export function useChat(options: UseChatOptions = {}) {
     callbacks: { onMessage: (msg: Message) => void; onDone: () => void; onError: (err: string) => void },
     sandboxRefreshRetried = false
   ): Promise<void> {
-    const effectiveThreadId = getOrCreateThreadId();
+    const effectiveThreadId = await ensureThreadId();
 
     sandboxRefreshThreadId = effectiveThreadId;
     pendingSandboxRefreshRetry = sandboxRefreshRetried
@@ -1609,7 +1686,7 @@ export function useChat(options: UseChatOptions = {}) {
    * subscribe-only connection — no message is sent, so this never raises `isLoading`/`isSending`.
    */
   async function ensureClientToolSubmitConnection(): Promise<void> {
-    const effectiveThreadId = getOrCreateThreadId();
+    const effectiveThreadId = await ensureThreadId();
     if (
       wsConnection &&
       wsConnection.isConnected &&
