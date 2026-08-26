@@ -27,6 +27,13 @@ vi.mock('@/api/conversationsApi', () => ({
 }));
 
 /**
+ * #435: `useChat` mints no thread id of its own any more — it asks the SERVER, through the hook
+ * `ChatLayout` wires to `useConversations.createNewConversation` (`POST /api/conversations`).
+ * These cases all start on a brand-new conversation, so they supply that hook.
+ */
+const provisionThreadId = async () => 'thread-provisioned';
+
+/**
  * A live AgentMessage as it arrives on the WebSocket: `$type` present, snake_case structured fields
  * beside the camelCase identity fields, and — the trap — `role: 'user'`.
  */
@@ -66,7 +73,7 @@ describe('useChat AgentMessage (agent-to-agent pill)', () => {
   // handleMessage must not drop an AgentMessage as "unknown message type", and displayItems must
   // route it through the notification branch that PRECEDES the `role === 'user'` catch-all.
   it('routes a live AgentMessage to a pill, not a user bubble', async () => {
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     await chat.sendMessage('hello there');
     const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
     expect(options).toBeDefined();
@@ -105,7 +112,7 @@ describe('useChat AgentMessage (agent-to-agent pill)', () => {
   // Several agents can speak into one run at the same messageOrderIdx. Only message_id separates
   // them, so without it in the merge key the later message would overwrite the earlier pill.
   it('keeps two agent messages in one run distinct, in arrival order', async () => {
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     await chat.sendMessage('go');
     const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
 
@@ -140,7 +147,7 @@ describe('useChat AgentMessage (agent-to-agent pill)', () => {
   it('renders a persisted AgentMessage as a pill after reload', async () => {
     conversationsMocks.loadConversationMessages.mockResolvedValue([persistedAgentFx]);
 
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     await chat.loadMessagesFromBackend('thread-root');
 
     const items = chat.displayItems.value;
@@ -190,7 +197,7 @@ describe('useChat AgentMessage (agent-to-agent pill)', () => {
       },
     ]);
 
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     await chat.loadMessagesFromBackend('thread-old');
 
     const items = chat.displayItems.value;

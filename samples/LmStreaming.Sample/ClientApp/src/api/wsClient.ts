@@ -102,7 +102,13 @@ export interface WebSocketClientCallbacks {
  */
 export interface WebSocketClientOptions extends WebSocketClientCallbacks {
   baseUrl?: string;
-  threadId?: string;
+  /**
+   * The conversation to connect to. Required, and it must be an id the SERVER minted through
+   * `POST /api/conversations` (#435): under `Identity:Enforce=true` the `/ws` gate refuses a thread
+   * id with no metadata row, and refuses it byte-identically to one owned by somebody else, so
+   * there is nothing in the refusal for a caller to act on.
+   */
+  threadId: string;
   modeId?: string;
   /**
    * Provider id requested for this connection. Honored only when the thread has not
@@ -463,8 +469,17 @@ export function createWebSocketConnection(
   options: WebSocketClientOptions
 ): Promise<WebSocketConnection> {
   const { threadId, onMessage, onDone, onError, onAuthEvent, onSandboxSessionRefresh, onClose, onStreamRecovery, onClientToolResultAck, onClientToolResultError, onGenerationAbandoned } = options;
+  // #435: no local fallback id. This used to mint `thread-${Date.now()}-...` when the caller passed
+  // nothing, which opened a socket the server refuses under enforcement — and refuses with the same
+  // 404 it gives a thread owned by somebody else, so the cause would be unrecoverable from the wire.
+  // A missing id is a caller bug; say so here rather than in a mystery handshake failure.
+  if (!threadId) {
+    throw new Error(
+      'createWebSocketConnection requires a provisioned threadId. Reserve the conversation with POST /api/conversations first.'
+    );
+  }
   const connectionId = generateConnectionId();
-  const effectiveThreadId = threadId || generateThreadId();
+  const effectiveThreadId = threadId;
   const wsUrl = buildChatWebSocketUrl(options, effectiveThreadId, connectionId);
   return openWebSocketConnection(wsUrl, effectiveThreadId, connectionId, {
     onMessage,
@@ -542,13 +557,6 @@ export function closeWebSocketConnection(connection: WebSocketConnection): void 
  */
 export function generateConnectionId(): string {
   return `ws-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-}
-
-/**
- * Generate a unique thread ID for agent routing
- */
-function generateThreadId(): string {
-  return `thread-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 }
 
 /**

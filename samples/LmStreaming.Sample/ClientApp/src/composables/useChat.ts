@@ -112,6 +112,16 @@ export interface UseChatOptions {
    * fall back to its configured default.
    */
   getWorkspaceId?: () => string | null | undefined;
+  /**
+   * Reserves a conversation on the SERVER and resolves to the thread id it minted (#435). Wired by
+   * `ChatLayout` to `useConversations.createNewConversation`, which POSTs `/api/conversations`.
+   *
+   * This composable has no id of its own: under `Identity:Enforce=true` the `/ws` gate refuses a
+   * thread id with no metadata row — byte-identically to one owned by somebody else — so a locally
+   * minted id can never open a socket. Omitting this hook means the caller has no way to start a
+   * NEW conversation; sends into an already-established one (`setThreadId`) never reach it.
+   */
+  provisionThreadId?: () => Promise<string>;
 }
 
 /**
@@ -143,7 +153,7 @@ export function uncachedInput(input: number, cacheRead: number): number {
  * Composable for managing chat state and interactions
  */
 export function useChat(options: UseChatOptions = {}) {
-  const { transport: initialTransport = 'websocket', getModeId, getProviderId, getWorkspaceId } = options;
+  const { transport: initialTransport = 'websocket', getModeId, getProviderId, getWorkspaceId, provisionThreadId } = options;
   const recordEnabled = isRecordingEnabledFromPageQuery();
 
   // Core state
@@ -598,14 +608,26 @@ export function useChat(options: UseChatOptions = {}) {
   }
 
   /**
-   * Generate thread ID on first use (persists across messages for multi-turn)
+   * Resolve the thread this chat is on, provisioning one on the SERVER the first time (#435).
+   *
+   * Deliberately async and deliberately without a local fallback: the id has to exist as a metadata
+   * row before `/ws` will accept a handshake for it under `Identity:Enforce=true`, and the gate's
+   * refusal for an unknown id is byte-identical to its refusal for one owned by somebody else. A
+   * failure propagates to `sendMessage`, which turns it into the visible error banner.
    */
-  function getOrCreateThreadId(): string {
-    if (!threadId.value) {
-      threadId.value = `thread-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-      log.info('Created new thread', { threadId: threadId.value });
+  async function ensureThreadId(): Promise<string> {
+    if (threadId.value) {
+      return threadId.value;
     }
-    return threadId.value;
+    if (!provisionThreadId) {
+      throw new Error(
+        'Cannot start a new conversation: no provisioning hook was supplied to useChat.'
+      );
+    }
+    const provisioned = await provisionThreadId();
+    threadId.value = provisioned;
+    log.info('Provisioned new thread', { threadId: provisioned });
+    return provisioned;
   }
 
   /**
@@ -1547,7 +1569,7 @@ export function useChat(options: UseChatOptions = {}) {
     callbacks: { onMessage: (msg: Message) => void; onDone: () => void; onError: (err: string) => void },
     sandboxRefreshRetried = false
   ): Promise<void> {
-    const effectiveThreadId = getOrCreateThreadId();
+    const effectiveThreadId = await ensureThreadId();
 
     sandboxRefreshThreadId = effectiveThreadId;
     pendingSandboxRefreshRetry = sandboxRefreshRetried
@@ -1609,7 +1631,7 @@ export function useChat(options: UseChatOptions = {}) {
    * subscribe-only connection — no message is sent, so this never raises `isLoading`/`isSending`.
    */
   async function ensureClientToolSubmitConnection(): Promise<void> {
-    const effectiveThreadId = getOrCreateThreadId();
+    const effectiveThreadId = await ensureThreadId();
     if (
       wsConnection &&
       wsConnection.isConnected &&

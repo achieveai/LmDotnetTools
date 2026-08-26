@@ -115,7 +115,39 @@ const {
   getModeId: () => currentModeId.value,
   getProviderId: () => selectedProviderId.value,
   getWorkspaceId: () => selectedWorkspaceId.value,
+  provisionThreadId: provisionThread,
 });
+
+/**
+ * The SPA's single source of thread ids (#435): reserve the conversation on the server and use the
+ * id it minted. Both entry points go through here — the "New chat" button and the first send in a
+ * session that never pressed it — so nothing in the client can produce an id of its own.
+ *
+ * Under `Identity:Enforce=true` the `/ws` gate refuses a thread id with no metadata row, and refuses
+ * it byte-identically to one owned by somebody else. That refusal is correct, and it means the row
+ * has to exist before the socket opens.
+ */
+async function provisionThread(): Promise<string> {
+  const workspaceId = selectedWorkspaceId.value;
+  const providerId = selectedProviderId.value;
+  if (workspaceId === null || providerId === null) {
+    // The server resolves each binding and refuses the request if any is unknown, so there is
+    // nothing useful to send yet. Say which choice is missing instead of posting a doomed request.
+    throw new Error('Choose a workspace and a provider before starting a conversation.');
+  }
+  return await createNewConversation({
+    workspaceId,
+    providerId,
+    modeId: currentModeId.value,
+  });
+}
+
+/**
+ * A provisioning refusal, shown in the same banner as a chat error. Kept separate from useChat's
+ * `error` because it is raised before any conversation exists to attach it to.
+ */
+const provisionError = ref<string | null>(null);
+const bannerError = computed(() => provisionError.value ?? error.value);
 
 async function handleCancel(): Promise<void> {
   await cancelStream();
@@ -410,6 +442,7 @@ onMounted(async () => {
 // Handle creating a new chat
 async function handleNewChat(): Promise<void> {
   notFoundThreadId.value = null;
+  provisionError.value = null;
 
   // Disconnect current WebSocket and clear state
   await disconnectWebSocket();
@@ -419,9 +452,19 @@ async function handleNewChat(): Promise<void> {
   // flicker; see useChat.markStreamIdle).
   markStreamIdle();
 
-  // Create new thread (without adding to sidebar yet)
-  const newThreadId = createNewConversation();
-  setThreadId(newThreadId);
+  // Reserve the thread on the server first (#435) and adopt the id it minted — the socket cannot
+  // be opened on anything else once `Identity:Enforce` is on. Not added to the sidebar yet.
+  try {
+    const newThreadId = await provisionThread();
+    setThreadId(newThreadId);
+  } catch (e) {
+    // No fallback to a locally minted id: that would leave a conversation on screen whose socket
+    // connects today and is refused the moment enforcement is flipped on, which is worse than a
+    // conversation that visibly failed to start.
+    provisionError.value =
+      e instanceof Error ? e.message : 'Could not start a new conversation.';
+    setThreadId(null);
+  }
 }
 
 // Handle selecting an existing conversation
@@ -492,7 +535,7 @@ async function handleDeleteConversation(threadId: string): Promise<void> {
       if (conversations.value.length > 0) {
         await handleSelectConversation(conversations.value[0].threadId);
       } else {
-        handleNewChat();
+        await handleNewChat();
       }
     }
   } catch (e) {
@@ -787,8 +830,8 @@ onBeforeUnmount(() => {
 
           <AuthRequiredBanner :requests="pendingAuthRequests" @dismiss="dismissAuthRequest" />
 
-          <div v-if="error" class="error-banner" data-testid="error-banner">
-            {{ error }}
+          <div v-if="bannerError" class="error-banner" data-testid="error-banner">
+            {{ bannerError }}
           </div>
 
           <div

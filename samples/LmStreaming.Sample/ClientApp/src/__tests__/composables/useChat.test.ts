@@ -24,6 +24,13 @@ vi.mock('@/api/conversationsApi', () => ({
   getConversationUsage: conversationsMocks.getConversationUsage,
 }));
 
+/**
+ * #435: `useChat` mints no thread id of its own any more — it asks the SERVER, through the hook
+ * `ChatLayout` wires to `useConversations.createNewConversation` (`POST /api/conversations`).
+ * These cases all start on a brand-new conversation, so they supply that hook.
+ */
+const provisionThreadId = async () => 'thread-provisioned';
+
 describe('isTestInstruction', () => {
   it('should return true for messages with both start and end markers', () => {
     const text = '<|instruction_start|>{"instruction_chain": []}<|instruction_end|>';
@@ -92,7 +99,7 @@ describe('useChat mode-aware websocket lifecycle', () => {
 
   it('recreates websocket with updated modeId after disconnect', async () => {
     let modeId = 'default';
-    const chat = useChat({ getModeId: () => modeId });
+    const chat = useChat({ getModeId: () => modeId, provisionThreadId });
 
     await chat.sendMessage('first message');
     expect(wsMocks.createWebSocketConnection).toHaveBeenCalledTimes(1);
@@ -108,7 +115,7 @@ describe('useChat mode-aware websocket lifecycle', () => {
   });
 
   it('reconnects and resends exactly once when the server refreshes the sandbox session', async () => {
-    const chat = useChat({ getModeId: () => 'workspace-agent' });
+    const chat = useChat({ getModeId: () => 'workspace-agent', provisionThreadId });
 
     await chat.sendMessage('use the workspace');
     const firstOptions = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
@@ -125,7 +132,7 @@ describe('useChat mode-aware websocket lifecycle', () => {
   });
 
   it('does not replay a deferred sandbox message after switching conversations', async () => {
-    const chat = useChat({ getModeId: () => 'workspace-agent' });
+    const chat = useChat({ getModeId: () => 'workspace-agent', provisionThreadId });
     chat.setThreadId('thread-A');
     await chat.sendMessage('use workspace A');
     const firstOptions = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
@@ -140,7 +147,7 @@ describe('useChat mode-aware websocket lifecycle', () => {
   });
 
   it('clears deferred sandbox retry when the active stream is cancelled', async () => {
-    const chat = useChat({ getModeId: () => 'workspace-agent' });
+    const chat = useChat({ getModeId: () => 'workspace-agent', provisionThreadId });
     await chat.sendMessage('use the workspace');
     const firstOptions = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
     await firstOptions.onSandboxSessionRefresh(true);
@@ -158,7 +165,7 @@ describe('useChat mode-aware websocket lifecycle', () => {
   });
 
   it('clears deferred sandbox retry after a stream error in the same conversation', async () => {
-    const chat = useChat({ getModeId: () => 'workspace-agent' });
+    const chat = useChat({ getModeId: () => 'workspace-agent', provisionThreadId });
     await chat.sendMessage('first run');
     const firstOptions = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
     await firstOptions.onSandboxSessionRefresh(true);
@@ -176,7 +183,7 @@ describe('useChat mode-aware websocket lifecycle', () => {
   });
 
   it('does not retry more than once when the replacement session also refreshes', async () => {
-    const chat = useChat({ getModeId: () => 'workspace-agent' });
+    const chat = useChat({ getModeId: () => 'workspace-agent', provisionThreadId });
 
     await chat.sendMessage('use the workspace');
     await wsMocks.createWebSocketConnection.mock.calls[0]?.[0].onSandboxSessionRefresh(false);
@@ -187,7 +194,7 @@ describe('useChat mode-aware websocket lifecycle', () => {
   });
 
   it('waits for the active run done signal before retrying a deferred sandbox refresh', async () => {
-    const chat = useChat({ getModeId: () => 'workspace-agent' });
+    const chat = useChat({ getModeId: () => 'workspace-agent', provisionThreadId });
 
     await chat.sendMessage('use the workspace');
     const firstOptions = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
@@ -203,7 +210,7 @@ describe('useChat mode-aware websocket lifecycle', () => {
   });
 
   it('keeps reasoning pill when reasoning and text share run/generation without messageOrderIdx', async () => {
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
 
     await chat.sendMessage('test message');
     const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
@@ -256,7 +263,7 @@ describe('useChat deferred-auth prompts', () => {
   // Drives the same `options.onAuthEvent` seam the real wsClient calls, so these exercise the
   // production handleAuthEvent / dismissAuthRequest / pendingAuthRequests state machine.
   async function openChatAndCaptureAuthEvent() {
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     await chat.sendMessage('hi');
     const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
     expect(options?.onAuthEvent).toBeTypeOf('function');
@@ -342,7 +349,7 @@ describe('useChat rehydration merge-key (BUG A)', () => {
       },
     ]);
 
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
 
     await chat.loadMessagesFromBackend('thread-x');
 
@@ -432,7 +439,7 @@ describe('useChat rehydration multi-turn identity (reload keeps turns distinct)'
       persisted('p6', 1005, { $type: MessageType.ToolCall, role: 'assistant', tool_call_id: 'call_2', function_name: 'Edit', function_args: '{}' }, { ...id, messageOrderIdx: 3 }),
     ]);
 
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     await chat.loadMessagesFromBackend('thread-x');
 
     const items = chat.displayItems.value;
@@ -511,7 +518,7 @@ describe('useChat rehydration duplicate merge-key (BLOCKER 1)', () => {
       },
     ]);
 
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     await chat.loadMessagesFromBackend('thread-x');
 
     // Both records collapse to ONE merge key → exactly one rendered bubble, holding the last value.
@@ -544,7 +551,7 @@ describe('useChat socket reuse honors thread (BUG B)', () => {
   });
 
   it('does not reuse a socket bound to a different thread', async () => {
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
 
     await chat.sendMessage('to thread A');
     expect(wsMocks.createWebSocketConnection).toHaveBeenCalledTimes(1);
@@ -600,7 +607,7 @@ describe('useChat multi-turn reasoning (BUG #8 thinking collapse)', () => {
   }
 
   it('renders each turn reasoning as a distinct block when generationId+messageOrderIdx collide across turns', async () => {
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     await chat.sendMessage('do a multi-step task');
     const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
     expect(options).toBeDefined();
@@ -629,7 +636,7 @@ describe('useChat multi-turn reasoning (BUG #8 thinking collapse)', () => {
   });
 
   it('does not fragment a single turn streaming reasoning: updates then finalize stay one block', async () => {
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     await chat.sendMessage('stream then finalize');
     const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
     expect(options).toBeDefined();
@@ -646,7 +653,7 @@ describe('useChat multi-turn reasoning (BUG #8 thinking collapse)', () => {
   });
 
   it('keeps two reasoning blocks within ONE turn (distinct messageOrderIdx) and does not bump turn epoch mid-turn', async () => {
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     await chat.sendMessage('multi-part thinking');
     const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
     expect(options).toBeDefined();
@@ -696,7 +703,7 @@ describe('useChat multi-turn text interleaving (BUG: text between tool calls col
   // client merge key AND the merger accumulator. Before the fix the text collapsed into a single
   // block pinned to the top (first-insert position) instead of interleaving with the tool pills.
   it('interleaves streamed text with the tool calls of each turn instead of collapsing at the top', async () => {
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     await chat.sendMessage('multi-step with narration');
     const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
     expect(options).toBeDefined();
@@ -724,7 +731,7 @@ describe('useChat multi-turn text interleaving (BUG: text between tool calls col
   });
 
   it('keeps finalized (non-streamed) text distinct per turn when generationId+messageOrderIdx collide', async () => {
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     await chat.sendMessage('finalized text per turn');
     const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
     expect(options).toBeDefined();
@@ -785,7 +792,7 @@ describe('useChat merge-key invariant guard (distinct logical messages never col
   }
 
   it('preserves all 9 mixed messages across 3 turns under a fully colliding (generationId, messageOrderIdx) stream', async () => {
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     await chat.sendMessage('mixed multi-turn task');
     const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
     expect(options).toBeDefined();
@@ -825,7 +832,7 @@ describe('useChat concurrent tool-call grouping', () => {
   // runId/generationId/messageOrderIdx and differ only by tool_call_id. They must render as
   // distinct pills inside ONE pillbox — not collapse into a single pill via a colliding merge key.
   it('renders concurrent tool calls in one turn as distinct pills under one pillbox', async () => {
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     await chat.sendMessage('do three calculations');
     const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
     expect(options).toBeDefined();
@@ -848,7 +855,7 @@ describe('useChat concurrent tool-call grouping', () => {
   // run/generation/messageOrderIdx and differing only by tool_calls[0].tool_call_id. These must NOT
   // collide on the messageOrderIdx-only key — each must render as a distinct pill.
   it('renders single-call ToolsCallMessages with distinct tool_call_id as distinct pills', async () => {
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     await chat.sendMessage('do two calculations');
     const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
     expect(options).toBeDefined();
@@ -913,7 +920,7 @@ describe('useChat usage banner (#196)', () => {
   }
 
   it('SETs the banner to the folded conversation total from a live usage frame (subtree visible live)', async () => {
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     await chat.sendMessage('hi');
     const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
 
@@ -949,7 +956,7 @@ describe('useChat usage banner (#196)', () => {
   });
 
   it('surfaces cost from a frame when a rate is known, and stays null (unavailable) otherwise', async () => {
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     await chat.sendMessage('hi');
     const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
 
@@ -990,7 +997,7 @@ describe('useChat usage banner (#196)', () => {
   it('reconciles the banner upward from the persisted aggregate on run completion', async () => {
     conversationsMocks.getConversationUsage.mockResolvedValue(aggregate(1140));
 
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     await chat.sendMessage('hi');
     const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
 
@@ -1021,7 +1028,7 @@ describe('useChat usage banner (#196)', () => {
       () => new Promise((resolve) => { resolveUsage = resolve; }),
     );
 
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     chat.setThreadId('thread-A');
     await chat.sendMessage('hi');
     const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
@@ -1044,7 +1051,7 @@ describe('useChat usage banner (#196)', () => {
     // Persisted aggregate lags the live frames (fire-and-forget write still in flight).
     conversationsMocks.getConversationUsage.mockResolvedValue(aggregate(500));
 
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     await chat.sendMessage('hi');
     const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
 

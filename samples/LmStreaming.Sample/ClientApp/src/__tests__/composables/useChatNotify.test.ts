@@ -22,6 +22,13 @@ vi.mock('@/api/conversationsApi', () => ({
   loadConversationMessages: conversationsMocks.loadConversationMessages,
 }));
 
+/**
+ * #435: `useChat` mints no thread id of its own any more — it asks the SERVER, through the hook
+ * `ChatLayout` wires to `useConversations.createNewConversation` (`POST /api/conversations`).
+ * These cases all start on a brand-new conversation, so they supply that hook.
+ */
+const provisionThreadId = async () => 'thread-provisioned';
+
 // A live NotifyMessage as it arrives on the WebSocket (normalized through IMessageJsonConverter →
 // $type present, snake_case structured fields, camelCase identity fields, Role.User).
 function notify(overrides: Record<string, unknown> = {}) {
@@ -86,7 +93,7 @@ describe('useChat NotifyMessage (out-of-band notification pill)', () => {
   // route it through the notification branch that PRECEDES the `role === 'user'` catch-all — so it
   // renders as a pill, never a user bubble, even though it maps to Role.User.
   it('routes a NotifyMessage to a notification item, not a user bubble', async () => {
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     await chat.sendMessage('hello there');
     const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
     expect(options).toBeDefined();
@@ -117,7 +124,7 @@ describe('useChat NotifyMessage (out-of-band notification pill)', () => {
   // distinct 'notify:<guid>' generationId. They must render as TWO distinct pills in arrival order —
   // no collision onto a single merge key.
   it('renders two notifications in one run as two distinct items, in order (live)', async () => {
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     await chat.sendMessage('go');
     const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
     expect(options).toBeDefined();
@@ -138,7 +145,7 @@ describe('useChat NotifyMessage (out-of-band notification pill)', () => {
       persistedNotify('n2', 1001, 'notify:2', 'second'),
     ]);
 
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     await chat.loadMessagesFromBackend('thread-x');
 
     const items = chat.displayItems.value;
@@ -175,7 +182,7 @@ describe('useChat NotifyMessage (out-of-band notification pill)', () => {
       },
     ]);
 
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     await chat.loadMessagesFromBackend('thread-x');
 
     const items = chat.displayItems.value;

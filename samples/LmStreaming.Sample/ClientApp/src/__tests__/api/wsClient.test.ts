@@ -551,3 +551,32 @@ describe('openWebSocketConnection generation_abandoned inbound frame', () => {
     );
   });
 });
+
+// #435. `createWebSocketConnection` used to fall back to a locally generated `thread-...` id when
+// none was passed. Under `Identity:Enforce=true` that id has no metadata row, so `/ws` refuses the
+// handshake — and the refusal is byte-identical to "someone else owns this", by design. A missing
+// thread id is a caller bug, and failing loudly here is what keeps it from becoming a mystery 404.
+describe('createWebSocketConnection requires a provisioned thread id (#435)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    MockWebSocket.instances = [];
+  });
+
+  it.each([
+    ['undefined', undefined],
+    ['empty', ''],
+  ])('throws for a %s thread id and opens no socket', (_label, threadId) => {
+    vi.stubGlobal('WebSocket', MockWebSocket as unknown as typeof WebSocket);
+
+    expect(() =>
+      createWebSocketConnection({
+        threadId,
+        onMessage: () => {},
+        onDone: () => {},
+        onError: () => {},
+      } as unknown as Parameters<typeof createWebSocketConnection>[0])
+    ).toThrow(/threadId/);
+
+    expect(MockWebSocket.instances).toHaveLength(0);
+  });
+});

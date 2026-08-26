@@ -31,6 +31,19 @@ const sharedMocks = vi.hoisted(() => ({
   selectMode: vi.fn(),
   switchMode: vi.fn(),
   disconnectWebSocket: vi.fn(),
+  // #435: the SPA no longer mints a thread id — `createNewConversation` POSTs /api/conversations
+  // and resolves to the id the SERVER minted. Held here so a test can assert what ChatLayout sent
+  // it and make it reject.
+  createNewConversation: vi.fn(async (_binding: unknown) => 'thread-provisioned'),
+  setThreadId: vi.fn(),
+  // The bindings ChatLayout has to send with a provisioning request; the server resolves each and
+  // refuses the whole request if any is unknown.
+  selectedProviderId: null as string | null,
+  selectedWorkspaceId: 'default' as string | null,
+  // The mode mock's `currentModeId` is one ref shared by every test in this file, so a mode-switch
+  // test leaves it changed for whatever runs next. Exposed here so a test that asserts on the mode
+  // can start from a known one instead of inheriting the previous test's.
+  setModeId: null as ((modeId: string) => void) | null,
   selectProvider: vi.fn(),
   switchProvider: vi.fn(async () => {}),
   selectWorkspace: vi.fn(),
@@ -69,7 +82,7 @@ vi.mock('@/composables/useConversations', async () => {
       currentThreadId: ref(sharedMocks.currentThreadId),
       isLoading: ref(false),
       loadConversations: vi.fn(async () => {}),
-      createNewConversation: vi.fn(() => 'thread-new'),
+      createNewConversation: sharedMocks.createNewConversation,
       selectConversation: vi.fn(),
       removeConversation: vi.fn(async () => {}),
       addOrUpdateConversation: sharedMocks.addOrUpdateConversation,
@@ -103,6 +116,9 @@ vi.mock('@/composables/useChatModes', async () => {
   ]);
 
   const currentModeId = ref('default');
+  sharedMocks.setModeId = (modeId: string) => {
+    currentModeId.value = modeId;
+  };
 
   return {
     useChatModes: () => ({
@@ -157,7 +173,7 @@ vi.mock('@/composables/useChat', async () => {
       disconnectWebSocket: sharedMocks.disconnectWebSocket,
       // Hoisted useSubAgentPanel(() => chatThreadId.value) reads this; useConversationTabs watches it.
       threadId: ref(sharedMocks.currentThreadId),
-      setThreadId: vi.fn(),
+      setThreadId: sharedMocks.setThreadId,
       loadMessagesFromBackend: vi.fn(async () => {}),
       resumeStreamIfActive: sharedMocks.resumeStreamIfActive,
       markStreamIdle: sharedMocks.markStreamIdle,
@@ -174,7 +190,7 @@ vi.mock('@/composables/useProviders', async () => {
   return {
     useProviders: () => ({
       providers: ref([]),
-      selectedProviderId: ref<string | null>(null),
+      selectedProviderId: ref<string | null>(sharedMocks.selectedProviderId),
       isLoading: ref(false),
       loadProviders: vi.fn(async () => {}),
       selectProvider: sharedMocks.selectProvider,
@@ -198,7 +214,7 @@ vi.mock('@/composables/useWorkspaces', async () => {
         ? actual.useWorkspaces()
         : {
             workspaces: ref([]),
-            selectedWorkspaceId: ref<string | null>('default'),
+            selectedWorkspaceId: ref<string | null>(sharedMocks.selectedWorkspaceId),
             isLoading: ref(false),
             loadWorkspaces: vi.fn(async () => {}),
             selectWorkspace: sharedMocks.selectWorkspace,
@@ -1400,5 +1416,84 @@ describe('ChatLayout keeps the workspace edit form alive across a 409 (F6)', () 
     expect(wrapper.get('[data-testid="workspace-form-error"]').text()).toContain('demo/ghost');
 
     wrapper.unmount();
+  });
+});
+
+// #435. "New chat" used to mint a thread id in the browser and hand it straight to useChat, which
+// opened a socket on it. Under `Identity:Enforce=true` that id has no metadata row and `/ws` refuses
+// the handshake — byte-identically to a thread somebody else owns, so there is nothing in the
+// refusal to act on. The component must reserve the conversation on the server first and adopt the
+// id the server minted, and must never fall back to one of its own when that fails.
+describe('ChatLayout new-chat provisioning (#435)', () => {
+  // The "Start a new chat" button lives in the not-found panel, so a deep link to an unknown
+  // thread is the cheapest way to get a real click on handleNewChat.
+  const setQuery = (query: string) => {
+    window.history.pushState({}, '', query ? `/?${query}` : '/');
+  };
+
+  const mountLayout = () =>
+    mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          ChatInput: true,
+        },
+      },
+    });
+
+  beforeEach(() => {
+    sharedMocks.currentThreadId = null;
+    sharedMocks.conversations = [];
+    sharedMocks.selectedProviderId = 'anthropic';
+    sharedMocks.selectedWorkspaceId = 'ws-1';
+    sharedMocks.createNewConversation.mockReset();
+    sharedMocks.createNewConversation.mockResolvedValue('thread-provisioned');
+    sharedMocks.setThreadId.mockReset();
+    sharedMocks.setModeId?.('default');
+    setQuery('threadId=thread-missing');
+  });
+
+  afterEach(() => {
+    sharedMocks.selectedProviderId = null;
+    sharedMocks.selectedWorkspaceId = 'default';
+  });
+
+  it('provisions with the current workspace/provider/mode and adopts the server-minted id', async () => {
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    await wrapper.get('.new-chat-btn').trigger('click');
+    await flushPromises();
+
+    expect(sharedMocks.createNewConversation).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      providerId: 'anthropic',
+      modeId: 'default',
+    });
+    // The SERVER's id is what the socket will be opened on.
+    expect(sharedMocks.setThreadId).toHaveBeenCalledWith('thread-provisioned');
+  });
+
+  it('surfaces a provisioning failure and starts no conversation on a locally minted id', async () => {
+    sharedMocks.createNewConversation.mockRejectedValue(
+      new Error('Provider "anthropic" is currently unavailable.')
+    );
+
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    await wrapper.get('.new-chat-btn').trigger('click');
+    await flushPromises();
+
+    const banner = wrapper.find('[data-testid="error-banner"]');
+    expect(banner.exists()).toBe(true);
+    expect(banner.text()).toContain('currently unavailable');
+    // Every id handed on must have come from the server; a fallback would open a socket that
+    // connects today and is refused the moment the flag is flipped.
+    for (const call of sharedMocks.setThreadId.mock.calls) {
+      expect(call[0]).toBeNull();
+    }
   });
 });

@@ -26,6 +26,13 @@ vi.mock('@/api/conversationsApi', () => ({
   getConversationUsage: convMocks.getConversationUsage,
 }));
 
+/**
+ * #435: `useChat` mints no thread id of its own any more — it asks the SERVER, through the hook
+ * `ChatLayout` wires to `useConversations.createNewConversation` (`POST /api/conversations`).
+ * These cases all start on a brand-new conversation, so they supply that hook.
+ */
+const provisionThreadId = async () => 'thread-provisioned';
+
 function modelRow(modelId: string, inputTokens: number, outputTokens: number, cacheReadTokens: number, cacheWriteTokens = 0) {
   return {
     modelId,
@@ -80,7 +87,7 @@ describe('useChat — cumulative usage cached/uncached accounting', () => {
   });
 
   it('reports In as uncached input (prompt - cached), disjoint from Cached, summing to Total', async () => {
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     chat.setThreadId('thread-1');
     await chat.sendMessage('hi');
 
@@ -98,7 +105,7 @@ describe('useChat — cumulative usage cached/uncached accounting', () => {
   });
 
   it('accumulates uncached input across multiple turns', async () => {
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     chat.setThreadId('thread-1');
     await chat.sendMessage('hi');
 
@@ -112,7 +119,7 @@ describe('useChat — cumulative usage cached/uncached accounting', () => {
   });
 
   it('falls back to prompt when cached exceeds prompt (additive-cache providers) — never negative', async () => {
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     chat.setThreadId('thread-1');
     await chat.sendMessage('hi');
 
@@ -140,7 +147,7 @@ describe('useChat — cumulative usage cached/uncached accounting', () => {
       currency: 'USD',
     });
 
-    const chat = useChat({ getModeId: () => 'default' });
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     await chat.loadMessagesFromBackend('thread-1');
 
     const u = chat.cumulativeUsage.value;
