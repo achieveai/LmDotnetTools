@@ -304,17 +304,46 @@ public sealed class FileTailTriggerSource : ITriggerSource
         public FileTailArmedTrigger(string waitId, string path, Regex? regex, ITriggerEventSink sink)
         {
             WaitId = waitId;
-            _tailTask = RunAsync(path, regex, sink, _cts.Token);
+
+            // The tail baseline is captured HERE — synchronously, before ArmAsync returns — and not
+            // inside RunAsync. RunAsync opens with `await Task.Yield()`, so anything read after that
+            // yield is read on a thread-pool continuation that may not run until well after the
+            // caller has resumed. A caller that arms a file_tail wait and then does the thing that
+            // writes the log line (the normal ordering: arm, then act) would have those bytes
+            // measured into the starting offset and silently classified as pre-existing history —
+            // the watcher never fires, and no timeout can recover it, because it is a lost signal
+            // rather than a late one. Note the truncation-reset in the poll loop cannot save this
+            // case either: it only heals a baseline that is too LARGE (len < offset), whereas this
+            // race produces a baseline of exactly len. Capturing before the yield makes ArmAsync's
+            // own return the "watcher is live" signal, with no window behind it.
+            //
+            // Guarded the same way the in-loop length read is: a file that vanishes or is briefly
+            // locked at arm time starts from 0 and is picked up by the poll loop, rather than
+            // faulting a task nobody observes.
+            long startOffset;
+            try
+            {
+                startOffset = File.Exists(path) ? new FileInfo(path).Length : 0;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                startOffset = 0;
+            }
+
+            _tailTask = RunAsync(path, startOffset, regex, sink, _cts.Token);
         }
 
         public string WaitId { get; }
 
-        private static async Task RunAsync(string path, Regex? regex, ITriggerEventSink sink, CancellationToken ct)
+        private static async Task RunAsync(
+            string path, long startOffset, Regex? regex, ITriggerEventSink sink, CancellationToken ct)
         {
             // Yield first so the fire is always asynchronous — never synchronous within ArmAsync.
+            // This is purely about when the fire is delivered; the baseline it is measured against
+            // was already fixed by the constructor, above.
             await Task.Yield();
 
-            long offset = File.Exists(path) ? new FileInfo(path).Length : 0;
+            long offset = startOffset;
 
             while (!ct.IsCancellationRequested)
             {
