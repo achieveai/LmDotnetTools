@@ -73,3 +73,4 @@ together with their slugs.
 * [0009 — Scope agent collaboration to a root-owned directory, and leave delivery with the owner](0009-hierarchy-wide-agent-collaboration.md)
 * [0010 — An ADR's identity is its slug, and colliding numbers are left standing](0010-adr-identity-is-the-slug.md)
 * [0011 — Mirror each conversation's transcript into its own workspace, readable by anyone who can reach the workspace](0011-workspace-transcript-files.md)
+* [0012 — Inventory wall-clock-discriminating tests; convert the narrow-gap cases, justify the rest](0012-wall-clock-discriminating-test-inventory.md)

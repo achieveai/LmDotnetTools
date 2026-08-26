@@ -10,7 +10,6 @@ import {
   type ToolCallResultMessage,
   type RunAssignmentMessage,
   type RunCompletedMessage,
-  MessageType,
   isTextMessage,
   isReasoningMessage,
   isToolCallMessage,

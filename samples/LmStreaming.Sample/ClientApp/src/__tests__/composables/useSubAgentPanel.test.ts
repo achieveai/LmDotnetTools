@@ -1296,7 +1296,7 @@ describe('useSubAgentPanel — focusing a child of a FINISHED conversation (deep
   const history = [persistedText('p-user', 'user', 'go', 0), persistedText('p-asst', 'assistant', 'done!', 1)];
 
   it('renders the persisted transcript when the live stream dies during the history load', async () => {
-    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1', { status: 'unknown' })]);
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1', { status: 'stopped' })]);
     let resolveHistory: (() => void) | undefined;
     convMocks.loadConversationMessages.mockImplementation(
       () => new Promise((r) => { resolveHistory = () => r(history); })
@@ -1327,7 +1327,7 @@ describe('useSubAgentPanel — focusing a child of a FINISHED conversation (deep
   });
 
   it('renders the persisted transcript when the resume socket closes with the budget spent', async () => {
-    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1', { status: 'unknown' })]);
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1', { status: 'stopped' })]);
     let resolveResumeHistory: (() => void) | undefined;
     let historyCall = 0;
     convMocks.loadConversationMessages.mockImplementation(() => {
@@ -1357,7 +1357,7 @@ describe('useSubAgentPanel — focusing a child of a FINISHED conversation (deep
   });
 
   it('renders the reconcile reload when the socket dies during overflow reconciliation', async () => {
-    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1', { status: 'unknown' })]);
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1', { status: 'stopped' })]);
     let resolveFirst: (() => void) | undefined;
     let resolveReconcile: (() => void) | undefined;
     let historyCall = 0;

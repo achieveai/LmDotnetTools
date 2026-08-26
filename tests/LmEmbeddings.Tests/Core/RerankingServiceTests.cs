@@ -316,25 +316,27 @@ public class RerankingServiceTests
     [Fact]
     public async Task RerankAsync_WithNonRetryableError_FailsImmediately()
     {
-        Debug.WriteLine("Testing non-retryable error (4xx) fails immediately");
+        Debug.WriteLine("Testing non-retryable error (4xx) fails without retrying");
 
         // Arrange
-        var fakeHandler = FakeHttpMessageHandler.CreateSimpleHandler(_ => new HttpResponseMessage(
-            HttpStatusCode.BadRequest
-        ));
+        var attemptCount = 0;
+        var fakeHandler = FakeHttpMessageHandler.CreateSimpleHandler(_ =>
+        {
+            Interlocked.Increment(ref attemptCount);
+            return new HttpResponseMessage(HttpStatusCode.BadRequest);
+        });
         using var service = CreateRerankingService(fakeHandler);
 
-        // Act & Assert
-        var stopwatch = Stopwatch.StartNew();
+        // Act
         _ = await Assert.ThrowsAsync<HttpRequestException>(() => service.RerankAsync("test", documentsArray0));
-        stopwatch.Stop();
 
-        // Should fail immediately without retries
-        Assert.True(
-            stopwatch.ElapsedMilliseconds < 100,
-            $"Expected immediate failure, got {stopwatch.ElapsedMilliseconds}ms"
-        );
-        Debug.WriteLine($"Non-retryable error failed immediately in {stopwatch.ElapsedMilliseconds}ms");
+        // Assert: a non-retryable 4xx must fail on the first attempt, not be retried like a 5xx
+        // (RerankingService.IsRetryableStatusCode excludes 400). Asserting the attempt count
+        // directly - rather than elapsed wall-clock time against the 500ms/1000ms retry-delay
+        // budget - proves "no retry happened" without a timing assertion that can flake when a
+        // starved CI runner pushes even a synchronous failure past a fixed millisecond ceiling.
+        Assert.Equal(1, attemptCount);
+        Debug.WriteLine($"Non-retryable error failed after {attemptCount} attempt(s)");
     }
 
     // Helper Methods

@@ -73,7 +73,7 @@ describe('SubAgentTranscript', () => {
   });
 
   it('provides the CHILD-scoped submitClientToolResult to its subtree (#246 defect 1)', async () => {
-    const childSubmit: ClientToolSubmitFn = vi.fn(() =>
+    const childSubmit = vi.fn<ClientToolSubmitFn>(() =>
       Promise.resolve({ status: 'acked', duplicate: false })
     );
     mount(SubAgentTranscript, {

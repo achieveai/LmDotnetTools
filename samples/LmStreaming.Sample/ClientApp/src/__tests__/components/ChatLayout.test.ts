@@ -2,7 +2,6 @@ import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { flushPromises, mount } from '@vue/test-utils';
 import { defineComponent, inject, h } from 'vue';
 import ChatLayout from '@/components/ChatLayout.vue';
-import SubAgentListPanel from '@/components/SubAgentListPanel.vue';
 import { SUBMIT_CLIENT_TOOL_RESULT, type ClientToolSubmitFn } from '@/composables/useClientToolSubmit';
 import { GO_TO_AGENT_TAB, type GoToAgentTab } from '@/composables/useConversationTabs';
 import {
@@ -156,6 +155,7 @@ vi.mock('@/composables/useChat', async () => {
       clearMessages: vi.fn(),
       cancelStream: vi.fn(async () => {}),
       disconnectWebSocket: sharedMocks.disconnectWebSocket,
+      // Hoisted useSubAgentPanel(() => chatThreadId.value) reads this; useConversationTabs watches it.
       threadId: ref(sharedMocks.currentThreadId),
       setThreadId: vi.fn(),
       loadMessagesFromBackend: vi.fn(async () => {}),
@@ -165,8 +165,6 @@ vi.mock('@/composables/useChat', async () => {
       getResultForToolCall: vi.fn(() => null),
       hasPendingClientQuestion: computed(() => sharedMocks.hasPendingClientQuestion),
       submitClientToolResult: sharedMocks.submitClientToolResult,
-      // Hoisted useSubAgentPanel(() => chatThreadId.value) reads this; useConversationTabs watches it.
-      threadId: ref('thread-1'),
     }),
   };
 });

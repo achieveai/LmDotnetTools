@@ -115,6 +115,7 @@ describe('TerminalRich — escaping', () => {
       resultText: '<script>alert(1)</script>',
       hasResult: true,
       errorText: null,
+      isDeferred: false,
     };
     const toolCall: ToolCall = { tool_call_id: 't', function_name: 'sandbox-Bash', function_args: null };
 
