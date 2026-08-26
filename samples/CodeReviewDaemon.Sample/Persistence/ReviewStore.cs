@@ -324,6 +324,95 @@ internal sealed class ReviewStore : IDisposable
     }
 
     /// <summary>
+    /// Records that <paramref name="runId"/>'s review is proven to be on the PR, at
+    /// <paramref name="postedAtUtc"/>. This is the durable half of the delta-review cutoff (#225 item 1).
+    /// </summary>
+    /// <remarks>
+    /// Call this ONLY on proven delivery. The value's whole worth is that a later review can trust "anything
+    /// after this is new", and a stamp written on an attempt would move the cutoff past comments that arrived
+    /// while the post was failing — hiding exactly the discussion the next review is required to answer. It is
+    /// deliberately not part of <see cref="UpdateReviewRunState"/>: that method drives the resume axes and
+    /// refreshes <c>updated_at</c>, which the stranded-run reconciler reads as "somebody is working on this".
+    /// The instant is a parameter rather than read from the clock here so the caller that knows delivery
+    /// happened also decides when, and so a test can seed a cutoff without waiting for one.
+    /// </remarks>
+    public void MarkReviewPosted(long runId, DateTimeOffset postedAtUtc)
+    {
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            UPDATE review_run SET last_posted_review_at = $at WHERE id = $id;
+            """;
+        _ = command.Parameters.AddWithValue("$at", Utc(postedAtUtc));
+        _ = command.Parameters.AddWithValue("$id", runId);
+        _ = command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// The latest instant at which ANY run for this PR was proven to have posted its review, or null when no
+    /// run ever has. This is the delta-review cutoff: comments after it are new since the bot last spoke.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately spans head shas. A run's identity includes <c>head_sha</c>, so every new head opens a new
+    /// row — but the bot's last word on a PR is its last word whichever head it was reviewing, and scoping the
+    /// cutoff to one row would reset it on every push and re-classify the whole conversation as past.
+    /// <c>MAX</c> over the stored text is chronological because <see cref="Utc"/> writes fixed-width UTC.
+    /// Null is a real answer meaning "this PR has never carried a posted review", and callers use it as such —
+    /// see the fetch-failure path in <c>DaemonReviewStageExecutor.PrependExistingCommentsAsync</c>, where it
+    /// is the difference between a first review that is safe to post blind and a re-review that is not.
+    /// </remarks>
+    public DateTimeOffset? GetLastPostedReviewAt(long repoId, string prId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(prId);
+
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT MAX(last_posted_review_at) FROM review_run WHERE repo_id = $repoId AND pr_id = $prId;
+            """;
+        _ = command.Parameters.AddWithValue("$repoId", repoId);
+        _ = command.Parameters.AddWithValue("$prId", prId);
+        var value = command.ExecuteScalar();
+        return value is string text && text.Length > 0
+            ? DateTimeOffset.Parse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind)
+            : null;
+    }
+
+    /// <summary>
+    /// Records that <paramref name="runId"/> built its review WITHOUT the list of comments already on the PR
+    /// (the provider listing failed), so the delivery boundary can decline to post it blind (#225 item 2).
+    /// </summary>
+    /// <remarks>
+    /// One-way and idempotent: nothing clears it, because nothing later in the run's life re-acquires the
+    /// context the review was already written without. A retry that wants to post must be a NEW run, which
+    /// gets its own fetch and its own flag.
+    /// </remarks>
+    public void MarkDedupContextLost(long runId)
+    {
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            UPDATE review_run SET dedup_context_lost = 1 WHERE id = $id;
+            """;
+        _ = command.Parameters.AddWithValue("$id", runId);
+        _ = command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Whether <paramref name="runId"/> was flagged by <see cref="MarkDedupContextLost"/>. Read at the
+    /// delivery boundary rather than carried on the in-memory run, so a Posted stage reached after a restart —
+    /// the retry that most needs the answer — still gets it.
+    /// </summary>
+    public bool WasDedupContextLost(long runId)
+    {
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = "SELECT dedup_context_lost FROM review_run WHERE id = $id;";
+        _ = command.Parameters.AddWithValue("$id", runId);
+        return command.ExecuteScalar() is long flag && flag != 0;
+    }
+
+    /// <summary>
     /// Looks back over prior <c>review_run</c> rows for the same (repoId, prId), excluding
     /// <paramref name="excludeRunId"/> (the run currently being processed), to give a re-review its
     /// context: the head sha it was last reviewed at, and how many rounds have completed so far. Only

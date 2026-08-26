@@ -686,6 +686,182 @@ public sealed class DaemonReviewStageExecutorPooledTests
         }
     }
 
+    // ── #225 item 1: the cutoff comes from a durable stamp, not only from comment bodies ──────────
+
+    [Fact]
+    public async Task Reviewed_takes_the_cutoff_from_the_posted_stamp_when_no_bot_prefix_survives()
+    {
+        // The defect, exactly. Nothing on this PR carries a "[…bot]" body prefix — a batched review or a
+        // summary posted without one is enough — so the body scan finds no cutoff. Before the durable stamp,
+        // that null cutoff filed EVERY later comment under "past", including the question the bot is required
+        // to answer, which is how the new-comment handling was defeated by a formatting choice.
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+        var postedAt = DateTimeOffset.Parse("2026-07-20T10:00:00Z", CultureInfo.InvariantCulture);
+        fixture.Store.MarkReviewPosted(run.Id, postedAt);
+        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
+            "src/Foo.cs", "10", "UNPREFIXED-BOT-SUMMARY", "revobot", IsActive: true,
+            PublishedAt: postedAt.AddMinutes(-5), ThreadId: "th-old"));
+        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
+            "src/Foo.cs", "20", "NEW-HUMAN-QUESTION after the stamp", "alice", IsActive: true,
+            PublishedAt: postedAt.AddHours(1), ThreadId: "th-human"));
+
+        var text = await RenderReviewInputAsync(fixture, run);
+
+        var (past, fresh) = DedupSections(text);
+        fresh.Should().Contain(
+            "NEW-HUMAN-QUESTION",
+            "the stamp says the bot last spoke at 10:00, so a comment an hour later is new by definition");
+        past.Should().Contain("UNPREFIXED-BOT-SUMMARY", "and everything before the stamp is past");
+    }
+
+    [Fact]
+    public async Task Reviewed_keeps_a_bot_comment_newer_than_the_stamp_as_the_cutoff()
+    {
+        // The cutoff is the LATER of the two signals, not "the stamp wins". The agent-inline posting path
+        // returns no receipt to the host, so nothing stamps it — the only evidence such a comment ever existed
+        // is its body. Take the stamp alone and a human reply that came AFTER an inline comment is misfiled as
+        // new-since-last-review, so the bot re-answers a thread it already answered.
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+        var stampedAt = DateTimeOffset.Parse("2026-07-20T10:00:00Z", CultureInfo.InvariantCulture);
+        fixture.Store.MarkReviewPosted(run.Id, stampedAt);
+        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
+            "src/Foo.cs", "10", "[Revobot] INLINE-FINDING", "revobot", IsActive: true,
+            PublishedAt: stampedAt.AddHours(5), ThreadId: "th-bot"));
+        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
+            "src/Foo.cs", "20", "BETWEEN-THE-TWO", "alice", IsActive: true,
+            PublishedAt: stampedAt.AddHours(2), ThreadId: "th-between"));
+
+        var text = await RenderReviewInputAsync(fixture, run);
+
+        var (past, fresh) = DedupSections(text);
+        past.Should().Contain(
+            "BETWEEN-THE-TWO",
+            "the bot spoke again at +5h, so a comment at +2h is older than the bot's last word and is past");
+        fresh.Should().NotContain("BETWEEN-THE-TWO");
+    }
+
+    [Fact]
+    public async Task Reviewed_keeps_the_stamp_as_the_cutoff_when_it_is_newer_than_any_bot_comment()
+    {
+        // The other direction of the same MAX, so neither term can be dropped without a test noticing.
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+        var botSpokeAt = DateTimeOffset.Parse("2026-07-20T10:00:00Z", CultureInfo.InvariantCulture);
+        fixture.Store.MarkReviewPosted(run.Id, botSpokeAt.AddHours(5));
+        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
+            "src/Foo.cs", "10", "[Revobot] OLD-PREFIXED-FINDING", "revobot", IsActive: true,
+            PublishedAt: botSpokeAt, ThreadId: "th-bot"));
+        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
+            "src/Foo.cs", "20", "BETWEEN-THE-TWO", "alice", IsActive: true,
+            PublishedAt: botSpokeAt.AddHours(2), ThreadId: "th-between"));
+
+        var text = await RenderReviewInputAsync(fixture, run);
+
+        var (past, fresh) = DedupSections(text);
+        past.Should().Contain(
+            "BETWEEN-THE-TWO",
+            "the stamp proves the bot posted at +5h, so a comment at +2h predates the bot's last word");
+        fresh.Should().NotContain("BETWEEN-THE-TWO");
+    }
+
+    [Fact]
+    public async Task Posted_stamps_the_cutoff_only_once_delivery_is_proven()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+        fixture.Store.GetLastPostedReviewAt(run.RepoId, run.PrId).Should().BeNull("nothing has been posted yet");
+
+        await RunAllStagesAsync(fixture, run);
+
+        fixture.Publisher.PostCount.Should().Be(1, "this fixture authorizes live posting");
+        fixture.Store.GetLastPostedReviewAt(run.RepoId, run.PrId).Should().NotBeNull(
+            "the review reached the PR, so the next review's cutoff must know when");
+    }
+
+    [Fact]
+    public async Task Posted_leaves_no_cutoff_when_the_review_was_only_collected()
+    {
+        // An attempt is not evidence. A stamp written where nothing was delivered would push the next review's
+        // cutoff PAST real comments and hide them — strictly worse than the null it replaced.
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        await RunAllStagesAsync(fixture, run);
+
+        fixture.Publisher.PostCount.Should().Be(0, "this fixture does not authorize live posting");
+        fixture.Store.GetLastPostedReviewAt(run.RepoId, run.PrId).Should().BeNull(
+            "collecting a review is not delivering it, and only delivery may move the cutoff");
+    }
+
+    // ── #225 item 2: a failed listing withdraws posting on a re-review, not on a first review ─────
+
+    [Fact]
+    public async Task Reviewed_declines_to_post_when_the_listing_fails_on_a_pr_that_already_carries_a_review()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+        fixture.Store.MarkReviewPosted(
+            run.Id, DateTimeOffset.Parse("2026-07-20T10:00:00Z", CultureInfo.InvariantCulture));
+        fixture.Publisher.ListFailure = new HttpRequestException("the provider is having a moment");
+
+        await RunAllStagesAsync(fixture, run);
+
+        fixture.Publisher.ListCallCount.Should().BeGreaterThan(0, "the listing was attempted and it threw");
+        fixture.Publisher.PostCount.Should().Be(
+            0,
+            "the review was written without knowing what is already on the PR, and this PR already carries a "
+                + "review — posting it blind is how the duplicate-review spam comes back");
+        fixture.Store.WasDedupContextLost(run.Id).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Reviewed_still_posts_when_the_listing_fails_on_a_pr_that_has_never_been_reviewed()
+    {
+        // The non-vacuity half. A suppression that fires on EVERY fetch failure would trade a real first review
+        // for a hypothetical duplicate — there is nothing on this PR to duplicate.
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+        fixture.Publisher.ListFailure = new HttpRequestException("the provider is having a moment");
+
+        await RunAllStagesAsync(fixture, run);
+
+        fixture.Publisher.ListCallCount.Should().BeGreaterThan(0, "the listing was attempted and it threw");
+        fixture.Publisher.PostCount.Should().Be(1, "a first review has nothing to duplicate, so it still ships");
+        fixture.Store.WasDedupContextLost(run.Id).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task A_post_mode_run_that_lost_its_dedup_context_completes_instead_of_holding_the_stage_open()
+    {
+        // The trap this fix sets for itself. The delivery-truthfulness gate holds the Posted stage open when a
+        // post-mode run produced no delivery evidence — and a suppressed run never can. Posted is not a governed
+        // stage, so without teaching the gate about this suppression the run would throw on every attempt and
+        // spin forever over a decision it cannot influence, which is the same hot-loop the EnableCommentPosting
+        // escape hatch already exists to prevent.
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun(mode: "post");
+        fixture.Store.MarkReviewPosted(
+            run.Id, DateTimeOffset.Parse("2026-07-20T10:00:00Z", CultureInfo.InvariantCulture));
+        fixture.Publisher.ListFailure = new HttpRequestException("the provider is having a moment");
+
+        var act = async () => await RunAllStagesAsync(fixture, run);
+
+        await act.Should().NotThrowAsync(
+            "collecting IS the truthful outcome for a run that was never authorized to post this round");
+        fixture.Publisher.PostCount.Should().Be(0);
+    }
+
+    /// <summary>Drives the two stages that build the review prompt and returns the text the agent received.</summary>
+    private static async Task<string> RenderReviewInputAsync(Fixture fixture, ReviewRun run)
+    {
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        return fixture.Factory.CreatedAgents.Should().ContainSingle().Subject
+            .ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+    }
+
     /// <summary>Seeds the bot's own last finding, which is the cutoff that splits "past" from "new".</summary>
     private static void SeedBotCutoff(Fixture fixture) =>
         fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
@@ -1957,7 +2133,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// Seeds (or resumes) a review run for <paramref name="prId"/>. Distinct PR ids give distinct runs —
         /// which is how the isolation gate drives two reviews at once.
         /// </summary>
-        public ReviewRun SeedRun(string prId = "118", string? prAuthor = null)
+        public ReviewRun SeedRun(string prId = "118", string? prAuthor = null, string mode = "collect-only")
         {
             var repoId = Store.EnsureRepo(new RepoIdentity
             {
@@ -1976,7 +2152,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 TriggerWatermark = "wm-1",
                 ReviewKind = "full",
                 VariantId = "primary",
-                Mode = "collect-only",
+                Mode = mode,
                 Stage = ReviewStage.Discovered,
                 WorkflowStatus = WorkflowStatus.Running,
                 PrLifecycleState = PrLifecycleState.Open,
