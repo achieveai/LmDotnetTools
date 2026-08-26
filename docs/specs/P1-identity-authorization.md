@@ -1441,8 +1441,11 @@ that window (#418).
 **The grantee DOES inherit the owner's sandbox, and this spec previously said the opposite.** The
 release clears the conversation's pool entry only; clearing an entry never destroys the gateway
 session behind it. The recreate resolves the same workspace id back out of the conversation's
-persisted metadata, and the session cache is keyed `(workspaceId, appId)` with `appId` null for every
-interactive UI caller — so both users key the same entry and receive the same live `SandboxSession`,
+persisted metadata, and the session cache is keyed `(workspaceId, appId)`, where `appId` resolves through
+`credential ?? _defaultCredential` and so is the host's **configured default app id** for every
+interactive UI caller — never null; the null app id belongs to
+`MultiTurnAgentPool.GetAgentCallerAppId`, which is a different object answering a different question.
+Both users therefore key the same entry and receive the same live `SandboxSession`,
 same session id and host path, stamped into the grantee's system prompt. A handoff therefore costs
 zero sandbox provisions (it is a cache hit); what it costs is the pooled agent's in-memory-only
 state, rebuilt from the durable transcript. Sharing a conversation today shares its filesystem, and
@@ -1493,14 +1496,33 @@ with `code = "websocket_authentication_required"`. REST keeps its `401`. This is
 two surfaces deliberately differ, and the difference is about the client's retry behaviour, not about
 what was decided.
 
-**Still out of scope, and disclosed rather than implied.** These transports perform no
-*per-conversation* authorization: they establish who the caller is and own the pooled entry they
-create, but they do not ask `ConversationAuthorizer` whether this user may open this conversation.
-The obstacle is real - the client mints a `threadId` and opens the socket before any metadata row
-exists, so an authorizer call at handshake time would refuse every new conversation as unknown - and
-closing it needs the socket to distinguish "not yours" from "not yet minted". Until then a second
-user's handshake on an owned thread is refused by the pool guard with a structured
-`principal_conflict` frame rather than by a policy decision.
+**A login wall, not an authorization check.** This is the framing the deployment runbook uses, and
+this section previously understated it. These transports establish **who** the caller is and own the
+pooled entry they create; they never ask `ConversationAuthorizer` whether this user may open *this*
+conversation. What #342 changed is who may try - from anyone, to any signed-in principal in the
+deployment. It did not make the socket surface authorized.
+
+The consequences, named rather than implied:
+
+- **Sub-agent transcripts are readable by any signed-in principal.** `/ws/subagent` threads no
+  principal into its handler at all; it gates on "is this a WebSocket request" plus two non-empty
+  query strings. On a cache miss it reads the persisted content for `subagent-{agentId}` out of the
+  store, so a caller who knows or guesses an `agentId` reads another user's sub-agent output.
+- **Socket rehydration hands out ownership of primed history.** A `threadId` with no live pooled
+  entry does not yield an empty agent: the socket creates one primed on that conversation's durable
+  transcript and freezes it to the caller as owner. Knowing the id is enough to own an agent seeded
+  with the victim's conversation.
+- **`auth/{providerId}` answers unauthenticated GETs.** Outside the boundary by design - a provider
+  redirect carries no bearer token - but an unauthenticated request starts a sign-in, and a signed-in
+  one renders the account and its scopes.
+
+The obstacle to simply adding the check is real: the client mints a `threadId` and opens the socket
+before any metadata row exists, so an authorizer call at handshake time would refuse every brand-new
+conversation as unknown. Closing it needs the socket to distinguish "not yours" from "not yet minted",
+which is a design change rather than a missing call. Until then a second user's handshake on an owned
+thread is refused by the pool guard with a structured `principal_conflict` frame - a cache collision,
+not a policy decision - and a multi-tenant host must not be deployed on the assumption that REST's
+grant checks cover this surface. Tracked in **#419**.
 
 ### 7.7 Audit records
 

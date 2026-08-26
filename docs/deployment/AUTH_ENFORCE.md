@@ -488,8 +488,12 @@ That is the current behaviour, and it is the opposite of what this section used 
 mechanism, so it can be checked rather than believed: the release removes the conversation's **pool
 entry** and nothing more, and clearing a pool entry never destroys the gateway session behind it. The
 recreate then resolves the same workspace id back out of the conversation's persisted metadata, and
-the session cache is keyed on `(workspaceId, appId)` — with `appId` null for every interactive UI
-caller. Both users therefore key the same cache entry and get the same live `SandboxSession`: same
+the session cache is keyed on `(workspaceId, appId)`, where `appId` comes from
+`credential ?? _defaultCredential` — so an interactive UI caller, who presents no credential of their
+own, keys on the host's **configured default app id**, identical for everyone signed in. (Not null:
+`SandboxSessionRegistry` never keys on a null app id. `MultiTurnAgentPool.GetAgentCallerAppId` does
+return null for a UI caller, and that is a DIFFERENT value on a different object — the two were
+conflated in an earlier draft of this paragraph.) Both users therefore key the same cache entry and get the same live `SandboxSession`: same
 session id, same host path, stamped into the grantee's system prompt like any other. A handoff
 accordingly costs **zero** sandbox provisions — it is a cache hit — not the one this section used to
 quote. What it does cost is the pooled agent's in-memory-only state, discarded and rebuilt from the
@@ -506,6 +510,13 @@ but has not started reads as "not in progress", so it can be dropped by a handof
 that window (**#418**). Evicting a genuinely streaming turn would abort the answer of whoever is mid-answer —
 the wrong party to punish for someone else's handoff — which is why the check exists at all. Retry
 once the run ends.
+
+Same caveat, same issue, one layer down: the release reads the thread's owning user and then its
+frozen app id as two separate unlocked lookups. An entry that disappears between them makes the app id
+read as absent, which can refuse a caller who should have been allowed or allow one who should have
+been refused. Neither is a privilege escalation — the authorization decision has already been made
+above, and both outcomes land inside it — but it is why the whole helper is documented as best-effort
+rather than as a guard.
 
 The app-id freeze (`caller_credential_conflict`) is **not** released alongside it. That is the
 boundary between services rather than between people: an app-only S2S caller has no
