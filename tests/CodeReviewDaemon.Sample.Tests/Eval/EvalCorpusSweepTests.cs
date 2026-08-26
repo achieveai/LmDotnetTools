@@ -171,7 +171,10 @@ public sealed class EvalCorpusSweepTests : IDisposable
         ILogger<EvalCorpusSweep>? logger = null
     ) =>
         new(
-            readArtifacts ?? _store.GetArtifacts,
+            // The production binding by default, so every case below runs over the rows the daemon
+            // actually hands the sweep — judge rows only (#453) — rather than over a listing no
+            // deployment uses.
+            readArtifacts ?? EvalCorpusSweep.GradeArtifactReader(_store),
             new DaemonCorpusReader(_store, modelId => modelId?.Split('/')[0]),
             new EvalCorpusWatermark(_store),
             limit,
@@ -540,6 +543,60 @@ public sealed class EvalCorpusSweepTests : IDisposable
         // whichever arm was judged last. Both arms keep their own grade.
         report.ScoredCandidates.Should().Be(2);
         report.MeanRecordedScore.Should().Be(6.5, "(9 + 4) / 2 — each arm on its own row");
+    }
+
+    /// <summary>
+    /// The sweep never sees a <c>review-context</c> payload (#453).
+    /// <para>
+    /// This defect is invisible in the report — the numbers are byte-identical whether the reader
+    /// filtered in SQL or in memory — so the only assertable fact is what the reader handed over.
+    /// The run below records every kind the daemon writes, including a diff, and the production
+    /// reader returns judge rows and nothing else. Reintroducing an unfiltered listing here fails
+    /// this and nothing else in the suite.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task The_grade_lookup_is_never_handed_a_review_context_diff()
+    {
+        var runId = Reviewed("118", "src/Foo.cs:1 is wrong.");
+        AddArtifact(
+            runId,
+            1,
+            VariantReviewer.VariantReviewArtifactKind,
+            new VariantReviewArtifactPayload("b", "anthropic/claude", "the B review", "run-2")
+        );
+        AddV2Judge(runId, score: 7);
+
+        var production = EvalCorpusSweep.GradeArtifactReader(_store);
+        var seen = new List<ReviewArtifact>();
+
+        var report = await Sweep(
+                readArtifacts: id =>
+                {
+                    var artifacts = production(id);
+                    seen.AddRange(artifacts);
+                    return artifacts;
+                }
+            )
+            .SweepOnceAsync(CancellationToken.None);
+
+        seen.Should().NotBeEmpty("a vacuous pass here would prove nothing about the filter");
+        seen.Select(a => a.ArtifactKind)
+            .Should()
+            .AllBe(
+                JudgeAgent.JudgeArtifactKind,
+                "the sweep grades judge rows; the diff it would discard stays in SQLite"
+            );
+
+        // Non-vacuity on the other side: the run really does hold the payloads that were filtered
+        // out, so an unfiltered read would have carried them.
+        _store
+            .GetArtifacts(runId)
+            .Select(a => a.ArtifactKind)
+            .Should()
+            .Contain(DaemonReviewStageExecutor.ContextArtifactKind);
+
+        report.ScoredCandidates.Should().Be(1, "filtering must not cost the sweep its grade");
     }
 
     /// <summary>

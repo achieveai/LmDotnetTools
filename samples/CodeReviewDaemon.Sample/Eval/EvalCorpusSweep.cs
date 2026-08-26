@@ -2,6 +2,7 @@ using AchieveAi.LmDotnetTools.LmEval;
 using AchieveAi.LmDotnetTools.LmEval.Corpus;
 using AchieveAi.LmDotnetTools.LmEval.Findings;
 using CodeReviewDaemon.Sample.Agents;
+using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 
 namespace CodeReviewDaemon.Sample.Eval;
@@ -125,6 +126,38 @@ internal sealed class EvalCorpusSweep
     /// </summary>
     private const int LastAmbiguousJudgeSchemaVersion = 1;
 
+    /// <summary>
+    /// The artifact kinds one sweep actually grades. Named here rather than at the composition root
+    /// because this class is the only thing that knows the answer — <see cref="RecordedGrade"/> reads
+    /// judge rows and nothing else, and the finding-level signal comes off the candidate's own
+    /// content, not off an artifact.
+    /// </summary>
+    public static readonly string[] GradedArtifactKinds = [JudgeAgent.JudgeArtifactKind];
+
+    /// <summary>
+    /// The production <see cref="ReviewArtifactReader"/>: a kind-filtered listing over the store,
+    /// asking for <see cref="GradedArtifactKinds"/> only (#453).
+    /// <para>
+    /// <c>ReviewStore.GetArtifacts</c> returns every payload a run holds, and the largest of them by
+    /// far is <c>review-context</c> — the whole diff, as a .NET string. The sweep reads it, filters
+    /// it out and discards it, once per run, for every run in the window. Filtering in SQL means the
+    /// diff is never materialised on this path at all.
+    /// </para>
+    /// <para>
+    /// A named factory rather than a lambda at the composition root, so the binding a test exercises
+    /// and the binding the daemon runs are the same one. That matters here specifically: the defect
+    /// this closes is invisible in the sweep's output — the report is byte-identical either way — so
+    /// the only thing a test can assert is <i>what the reader handed over</i>.
+    /// </para>
+    /// </summary>
+    /// <param name="store">The daemon's review store.</param>
+    public static ReviewArtifactReader GradeArtifactReader(ReviewStore store)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+
+        return reviewRunId => store.ListArtifacts(reviewRunId, GradedArtifactKinds);
+    }
+
     private readonly ReviewArtifactReader _readArtifacts;
     private readonly ICorpusReader _reader;
     private readonly EvalCorpusWatermark _watermark;
@@ -133,7 +166,7 @@ internal sealed class EvalCorpusSweep
 
     /// <summary>Builds the sweep.</summary>
     /// <param name="readArtifacts">
-    /// Reads a run's recorded artifacts; in production <c>ReviewStore.GetArtifacts</c>.
+    /// Reads the artifacts this sweep grades; in production <see cref="GradeArtifactReader"/>.
     /// </param>
     /// <param name="reader">The corpus reader; in production <see cref="DaemonCorpusReader"/>.</param>
     /// <param name="watermark">Where the window edge is kept between sweeps.</param>

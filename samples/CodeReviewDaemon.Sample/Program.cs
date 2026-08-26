@@ -972,8 +972,10 @@ if (evalSweepInterval > TimeSpan.Zero)
 
         var sweep = new EvalCorpusSweep(
             // The read the grade lookup needs, and the whole of what this consumer wants from
-            // persistence. The sweep caches it per run for the length of one pass.
-            store.GetArtifacts,
+            // persistence: judge rows only, filtered in SQL, so the review-context diff this pass
+            // would discard is never materialised (#453). Memoised for the last run read, which is
+            // all the memory a window's worth of contiguous candidates needs.
+            EvalCorpusSweep.GradeArtifactReader(store),
             new DaemonCorpusReader(
                 store,
                 DaemonCorpusReader.ProviderFamily,
