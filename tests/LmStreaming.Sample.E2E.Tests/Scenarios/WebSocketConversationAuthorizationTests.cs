@@ -218,21 +218,32 @@ public sealed class WebSocketConversationAuthorizationTests : LoggingTestBase
         LogTestStart();
         using var factory = NewFactory();
         const string BobsParent = "thread-bobs-parent";
-        const string AlicesAgentId = "alices-midrun-agent";
-        const string NeverExistedAgentId = "never-existed-agent";
+
+        // Fresh agent ids per run, deliberately. The host's FileConversationStore lives in one
+        // process-wide directory that no test cleans, so a fixed id accumulates messages from earlier
+        // runs AND can pick up a metadata row written by one of them - which silently destroys this
+        // test's precondition, because a child WITH a row takes the provenance branch instead of the
+        // no-row branch this case exists to pin.
+        var alicesAgentId = $"alices-midrun-{Guid.NewGuid():N}";
+        var neverExistedAgentId = $"never-existed-{Guid.NewGuid():N}";
 
         await ProvisionOwnedThreadAsync(factory, BobsParent, Bob);
-        await SeedMidRunChildAsync(factory, AlicesAgentId);
+        await SeedMidRunChildAsync(factory, alicesAgentId);
 
-        // Non-vacuity for the whole comparison: leg A is only interesting if the transcript it must
-        // NOT disclose is genuinely there. A seed that silently wrote nothing would make both legs
-        // "no such child" and the assertion below would compare two identical nothings.
+        // Both halves of the precondition, asserted rather than assumed. Leg A is only interesting if
+        // the transcript it must NOT disclose is genuinely there, and only exercises the no-row branch
+        // if there is genuinely no row: with a row present the comparison still passes, for the wrong
+        // reason, and no mutation of the no-row branch can redden it.
         var store = factory.Services.GetRequiredService<IConversationStore>();
-        var seeded = await store.LoadMessagesAsync(SubAgentProvenance.ThreadIdPrefix + AlicesAgentId);
-        _ = seeded.Should().NotBeEmpty("the mid-run child must have a transcript for this to be a leak");
+        var childThreadId = SubAgentProvenance.ThreadIdPrefix + alicesAgentId;
+        _ = (await store.LoadMessagesAsync(childThreadId)).Should().NotBeEmpty(
+            "the mid-run child must have a transcript for withholding it to mean anything");
+        _ = (await store.LoadMetadataAsync(childThreadId)).Should().BeNull(
+            "this case is about a child with NO metadata row - a row would route it down the "
+                + "provenance branch instead");
 
-        var midRun = await AnswerForAsync(factory, BobsParent, AlicesAgentId);
-        var nothing = await AnswerForAsync(factory, BobsParent, NeverExistedAgentId);
+        var midRun = await AnswerForAsync(factory, BobsParent, alicesAgentId);
+        var nothing = await AnswerForAsync(factory, BobsParent, neverExistedAgentId);
 
         _ = midRun.Frames.Should().Equal(
             nothing.Frames,
