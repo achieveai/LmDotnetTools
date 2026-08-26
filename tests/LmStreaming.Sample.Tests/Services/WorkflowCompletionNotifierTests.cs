@@ -45,9 +45,11 @@ public class WorkflowCompletionNotifierTests
     [Fact]
     public async Task AFailedDelivery_DoesNotLeaveTheThreadWedgedBusy()
     {
-        // The partner of recording BEFORE the send. A throw means nothing was queued, so no run can
-        // ever name that id - and without the withdrawal the conversation would refuse every handoff
-        // until the grace expired, thirty seconds bought for a turn that does not exist.
+        // The partner of announcing an accept BEFORE the input is taken. A throw means nothing was
+        // queued, so no run can ever name that id - and an entry left standing would make the
+        // conversation refuse every handoff until the grace expired, thirty seconds bought for a turn
+        // that does not exist. Since #442 the notifier no longer records or withdraws anything
+        // itself; the net ledger effect it must not produce is the same either way.
         await using var pool = CreatePool();
         var agent = CreateAgent(pool);
         agent.ThrowOnSend = true;

@@ -163,7 +163,7 @@ public class MultiTurnAgentPoolSandboxRefreshTests
         // Exactly the state the sender is owed an answer in: accepted, no run id, not running.
         original.CurrentRunId = null;
         original.IsRunning = false;
-        pool.AddOutstandingInput("thread-queued-refresh", "input-queued", original);
+        ReportAccept(pool, "thread-queued-refresh", "input-queued", original);
 
         sessionId = "sess-2";
         var whileQueued = await pool.EnsureCurrentAgentAsync("thread-queued-refresh", credential);
@@ -472,4 +472,23 @@ public class MultiTurnAgentPoolSandboxRefreshTests
 
         public void ClearEstablishedBinding(string threadId) { }
     }
+
+    /// <summary>
+    /// Puts an accepted id into the pool's ledger the only way anything can since #442: as the
+    /// accepting agent's own report. <c>AddOutstandingInput</c> is private now, because with no host
+    /// caller left it would only be a way to hold an entry busy for an accept no agent made.
+    /// </summary>
+    /// <remarks>
+    /// The stand-in agents here are not <c>MultiTurnAgentBase</c>-derived, so their send stubs do not
+    /// run the product's mint sites; this reports on their behalf, with exactly the arguments
+    /// <c>SendAsync</c> would have passed. Where the REPORTING itself is what is under test, the tests
+    /// use <see cref="PooledReportingAgent"/> and a real send instead.
+    /// </remarks>
+    private static void ReportAccept(
+        MultiTurnAgentPool pool,
+        string threadId,
+        string inputId,
+        IMultiTurnAgent acceptedBy) =>
+        ((IInputAcceptanceObserver)pool).OnInputAccepted(threadId, inputId, acceptedBy);
+
 }

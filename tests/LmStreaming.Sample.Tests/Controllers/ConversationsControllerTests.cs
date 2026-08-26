@@ -900,9 +900,10 @@ public class ConversationsControllerTests
 
         // #418. The caller now holds a receipt, and the agent has not picked the input up: no run id,
         // not running. A grantee handoff arriving at this instant used to read that as idle and
-        // dispose the entry with this turn on it. The controller has to TELL the pool the input was
-        // accepted, and asking the pool is what proves it did — a fixture that merely returned 202
-        // would look identical.
+        // dispose the entry with this turn on it. Since #442 the accept is announced by the AGENT, so
+        // what this pins is that the controller reaches it through an accept path rather than a raw
+        // enqueue — asking the pool is what proves it, because a fixture that merely returned 202
+        // would look identical on the wire.
         pool.TryGetHandoffState(threadId, out var handoff).Should().BeTrue();
         handoff.IsBusy.Should().BeTrue(
             "an accepted turn the agent has not started is work in hand, and the send is the only "

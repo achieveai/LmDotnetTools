@@ -184,22 +184,12 @@ public sealed class ContextDiscoveryInjector
                 // this id back on the run assignment that picks the input up. With a null id the
                 // record could only ever retire on the grace backstop.
                 //
-                // One of the paths that sends straight to a pooled agent rather than through a
-                // transport (#418). Leaving it unrecorded left a hole the size of every
-                // context-discovery injection: a concurrent grantee handoff read the entry as idle and
-                // disposed the agent with this turn queued on it. Recorded before the send, and
-                // withdrawn below if the send did not take.
+                // This sends straight to a pooled agent rather than through a transport, which is
+                // what made it one of the paths #418 lost turns on. It needs no ledger call of its
+                // own: the agent announces the accept from the place this id is minted into a receipt
+                // (#434), and a failed send withdraws it from the same place (#442).
                 var inputId = ContextDiscoveryInputIdPrefix + Guid.NewGuid().ToString("N");
-                _pool.AddOutstandingInput(threadId, inputId, agent);
-                try
-                {
-                    _ = await agent.SendAsync([message], inputId, parentRunId: null, ct).ConfigureAwait(false);
-                }
-                catch
-                {
-                    _pool.RemoveOutstandingInput(threadId, inputId, agent);
-                    throw;
-                }
+                _ = await agent.SendAsync([message], inputId, parentRunId: null, ct).ConfigureAwait(false);
 
                 injected++;
             }

@@ -13,7 +13,7 @@ namespace LmStreaming.Sample.Tests.TestDoubles;
 /// test that must decide the result by consult order or throw mid-delivery sets
 /// <see cref="DeliverBehavior"/>, a per-call hook that overrides the canned result.
 /// </summary>
-internal sealed class RecordingSinkAgent : IMultiTurnAgent, ISubAgentContextSink
+internal sealed class RecordingSinkAgent : IMultiTurnAgent, ISubAgentContextSink, IAcceptanceReportingAgent
 {
     private readonly List<IMessage> _sent = [];
     private readonly List<IMessage> _delivered = [];
@@ -30,6 +30,15 @@ internal sealed class RecordingSinkAgent : IMultiTurnAgent, ISubAgentContextSink
     public string? CurrentRunId { get; set; }
 
     public bool IsRunning { get; set; } = true;
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Since #442 the pool refuses to pool an agent that is not
+    /// <see cref="IAcceptanceReportingAgent"/>, because the accepted-input ledger has no other
+    /// source. This double therefore reports like the product does: from the place the receipt id is
+    /// minted, BEFORE the input is taken.
+    /// </remarks>
+    public IInputAcceptanceObserver? InputAcceptanceObserver { get; set; }
 
     /// <summary>Result <see cref="TryDeliverContextAsync"/> returns for every call.</summary>
     public SubAgentContextDeliveryResult CannedResult { get; set; }
@@ -118,12 +127,15 @@ internal sealed class RecordingSinkAgent : IMultiTurnAgent, ISubAgentContextSink
     {
         _ = parentRunId;
         _ = ct;
+
+        var receiptId = inputId ?? Guid.NewGuid().ToString("N");
+        InputAcceptanceObserver?.OnInputAccepted(ThreadId, receiptId, this);
+
         lock (_lock)
         {
             _sent.AddRange(messages);
         }
 
-        var receiptId = inputId ?? Guid.NewGuid().ToString("N");
         return ValueTask.FromResult(new SendReceipt(receiptId, inputId, DateTimeOffset.UtcNow));
     }
 

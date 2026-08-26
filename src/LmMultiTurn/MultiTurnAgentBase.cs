@@ -202,8 +202,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// question to its parent, a sub-agent completion notification, a peer's collaboration message).
     /// A derived loop's internal raw enqueues bypass both mint sites and this observer: the loop wake
     /// sentinel (inert — empty payload, no run content, nothing to record) and the trigger notify (a
-    /// real turn, and so genuinely unobserved, but unreachable in production — it is gated behind
-    /// trigger options only test mode supplies, and #161 tracks enabling it).
+    /// real turn, and so genuinely unobserved, but unreachable in this repository's host — it is
+    /// gated behind trigger options that only test mode supplies here, and #161 tracks enabling it. A
+    /// host outside this repository that enables triggers DOES reach it, and its notify turns are not
+    /// covered by this observer).
     /// </para>
     /// <para>
     /// A throwing observer FAILS THE SEND. It is reported to after the durable accepted-input write

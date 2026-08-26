@@ -910,13 +910,12 @@ public class ConversationsController(
         // propagate to a 500, per the REST contract (no inputId returned either way). Either way the
         // admission taken above has to go back, or the id stays claimed by work that never ran and every
         // later retry of it reconciles to a turn that does not exist.
-        // Recorded BEFORE the hand-over, not after. Between the agent taking the input and this
-        // ledger learning about it, the entry has no run id and is not running - exactly what a
-        // concurrent grantee handoff or session refresh reads as "idle", and the turn goes with the
-        // disposed entry (#418). Recording afterwards leaves that window open, only narrower. Every
-        // exit below that does NOT leave an input queued withdraws it again.
-        agentPool.AddOutstandingInput(threadId, admission.InputId, agent);
-
+        // No pool ledger call here. The agent records its own accept from the place the receipt id is
+        // minted (#434), and since #442 the pool refuses to pool an agent that cannot - so a second,
+        // synchronous record on this one transport would be a duplicate of a fact the agent already
+        // reports, kept in a list of call sites that has to stay complete. That list is what #434
+        // removed the need for. The rollbacks below are still needed for the ADMISSION, which is this
+        // controller's own and which nothing else withdraws.
         SendReceipt? receipt;
         try
         {
@@ -932,11 +931,8 @@ public class ConversationsController(
         }
         catch
         {
-            // The send threw, so nothing is queued: withdraw the id or it sits in the ledger with no
-            // run that can ever name it, and every handoff for this thread answers 409 until the
-            // grace expires. Outside the `when (idempotent)` filter on purpose - the ledger write was
-            // unconditional, so its rollback has to be too.
-            agentPool.RemoveOutstandingInput(threadId, admission.InputId, agent);
+            // The send threw, so nothing is queued. The agent's own rescind withdraws its accept from
+            // the pool's ledger; what this has to undo is the admission.
             if (idempotent)
             {
                 await ReleaseAdmissionAsync(acceptances!, admission);
@@ -947,8 +943,8 @@ public class ConversationsController(
 
         if (receipt == null)
         {
-            // Queue full: the input was refused, so the ledger write above has to come back out.
-            agentPool.RemoveOutstandingInput(threadId, admission.InputId, agent);
+            // Queue full: the input was refused. TrySendAsync has already rescinded the accept it
+            // reported, so the only thing left to undo here is the admission.
             logger.LogWarning("SendMessage for thread {ThreadId} rejected: input queue full", threadId);
             if (idempotent)
             {

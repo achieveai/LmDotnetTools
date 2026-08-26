@@ -19,11 +19,14 @@ public class ContextDiscoveryInjectorTests
     [Fact]
     public async Task InjectAsync_RecordsTheAcceptedInput_LikeTheTransportsDo()
     {
-        // The third accept path (#418). REST and WebSocket both tell the pool what they handed a
-        // pooled agent; this one sends straight to the same entry. Without the ledger write the entry
-        // reads idle the moment the injection is queued - no run id, not running - and a grantee
-        // handoff or a sandbox-session refresh arriving in that window disposes the agent with the
-        // injected context still on it, which is the same lost turn through a third door.
+        // The third accept path (#418). REST and WebSocket reach a pooled agent through its accept
+        // path and are covered by the ledger the agent writes for them; this one sends straight to
+        // the same entry and must be covered the same way. Without a ledger entry the entry reads
+        // idle the moment the injection is queued - no run id, not running - and a grantee handoff or
+        // a sandbox-session refresh arriving in that window disposes the agent with the injected
+        // context still on it, which is the same lost turn through a third door. Since #442 the entry
+        // comes from the agent's own report rather than a call this injector makes, so what stays
+        // pinned here is that the injector reaches the agent through an accept path at all.
         using var harness = new Harness();
         var agent = harness.RegisterThread(SessionId, "thread-ledger");
 
