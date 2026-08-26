@@ -145,16 +145,17 @@ public sealed class IdentityMiddleware
     /// that they be onboarded, which is what enforcement means everywhere else.
     /// </para>
     /// <para>
-    /// <b>What that does NOT yet buy, stated so nobody reads more into it.</b> Admitting the caller at
-    /// the boundary is not the same as the plane authorizing it. The principal is stashed in
-    /// <c>HttpContext.Items</c> (<see cref="IdentityHttpItems.PrincipalKey"/>); both lifecycle
-    /// controllers' <c>AuthenticatedAppId()</c> reads <c>HttpContext.User</c>, and nothing in this
-    /// repository bridges the two — the only registered scheme is JWT bearer, which the S2S headers do
-    /// not trigger. A caller presenting only those headers is thus still refused by the controllers,
-    /// precisely as it was before #402, when these routes were exempt and <c>HttpContext.User</c> was
-    /// equally unauthenticated behind them. Guarding regressed no working caller; making the plane
-    /// reachable for an S2S-only caller is a separate change (an <c>Items</c>-to-<c>User</c> bridge, or
-    /// controllers that read the principal accessor) and is not claimed here.
+    /// <b>And the caller now actually arrives.</b> Admitting a caller at the boundary was for a while
+    /// not the same as the plane authorizing it: the principal was published on
+    /// <c>HttpContext.Items</c> (<see cref="IdentityHttpItems.PrincipalKey"/>) alone, both lifecycle
+    /// controllers' <c>AuthenticatedAppId()</c> reads <c>HttpContext.User</c>, and nothing bridged the
+    /// two — the only registered scheme is JWT bearer, which the S2S headers do not trigger. A caller
+    /// presenting only those headers was therefore refused by the controllers, exactly as it had been
+    /// before #402 when these routes were exempt. #424 closed that: <see cref="BridgeToHttpUser"/>
+    /// publishes an app-bearing principal on <c>User</c> as well, so a caller onboarded under
+    /// <c>Identity:Apps</c> reaches the plane's actions and is answered as their own owner. Pinned
+    /// end-to-end against the real host by
+    /// <c>IdentityBoundaryPipelineTests.WithEnforcementOn_ARegisteredServiceCaller_ReachesTheLifecycleControlPlane</c>.
     /// Recorded in <c>docs/specs/P1-identity-authorization.md</c> §4.5.
     /// </para>
     /// <para>
@@ -285,7 +286,48 @@ public sealed class IdentityMiddleware
         }
 
         context.Items[IdentityHttpItems.PrincipalKey] = principal;
+        BridgeToHttpUser(context, principal);
         await _next(context).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Publishes an app-bearing principal on <see cref="HttpContext.User"/> as well as on
+    /// <c>Items</c>, so a controller that reads the claims principal sees the identity this middleware
+    /// established (#424).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The lifecycle control plane's two controllers live in <c>LmAgentInfra</c>, cannot reference this
+    /// sample's <see cref="Principal"/>, and authenticate off <c>HttpContext.User</c>. Nothing bridged
+    /// the two, so a registered <c>Identity:Apps</c> caller presenting the daemon's S2S headers passed
+    /// the boundary here and was then refused by those controllers - the only registered scheme is JWT
+    /// bearer, which those headers do not trigger. This is that bridge.
+    /// </para>
+    /// <para>
+    /// <b>An already-authenticated request is never overwritten.</b> When the JWT bearer handler
+    /// validated a token it has already populated <c>User</c> with the token's own claims; replacing
+    /// them with a reconstruction would narrow a real identity to the three claims this bridge knows
+    /// about, and would do it silently.
+    /// </para>
+    /// <para>
+    /// What is bridged is decided in one place -
+    /// <see cref="PrincipalFactory.ToClaimsPrincipalOrNull"/> - and is narrow on purpose: only a
+    /// principal that names an app. The development principal carries no app id, so with
+    /// <c>Identity:Enforce</c> off nothing here changes what an anonymous request looks like to a
+    /// controller reading <c>User</c>.
+    /// </para>
+    /// </remarks>
+    private static void BridgeToHttpUser(HttpContext context, Principal principal)
+    {
+        if (context.User?.Identity?.IsAuthenticated == true)
+        {
+            return;
+        }
+
+        if (PrincipalFactory.ToClaimsPrincipalOrNull(principal) is { } claimsPrincipal)
+        {
+            context.User = claimsPrincipal;
+        }
     }
 
     /// <summary>

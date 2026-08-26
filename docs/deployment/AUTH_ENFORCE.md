@@ -397,14 +397,22 @@ The registration does not replace `Auth:S2SInboundSecret`; it reads the same val
 same constant-time comparison the endpoint filter uses, so the two can never disagree about what a
 service request is.
 
-**Infrastructure callbacks sit outside this boundary entirely.** `/api/auth/webhook/*` and
-`/api/lifecycle/*` have no user and no tenant to resolve, and each carries its own credential — the
-gateway's deferred-auth webhook puts a *session secret* in `Authorization`, which the JWT handler
-cannot parse by design, and the lifecycle control plane runs its own signature check and is off by
-default. Guarding them would refuse every legitimate caller and grant nothing. That exemption is
-asserted, not trusted: a test enumerates this host's real endpoint table and requires every `/api`
-route to be either guarded or named on `IdentityMiddleware.UnguardedApiPaths`, so a newly added
-route cannot land outside the boundary silently.
+**Infrastructure callbacks sit outside this boundary entirely.** `/api/auth/webhook/*` has no user
+and no tenant to resolve and carries its own credential: the gateway's deferred-auth webhook puts a
+*session secret* in `Authorization`, which the JWT handler cannot parse by design, so guarding it
+would refuse every legitimate caller and grant nothing. That exemption is asserted, not trusted: a
+test enumerates this host's real endpoint table and requires every `/api` route to be either guarded
+or named on `IdentityMiddleware.UnguardedApiPaths`, so a newly added route cannot land outside the
+boundary silently.
+
+**`/api/lifecycle/*` was on that list and no longer is (#402).** Its exemption rested on the lifecycle
+control plane running "its own signature check". It does not — the plane's only signing is *outbound*,
+and `LifecycleApprovalController` states in its own remarks that it does not authenticate. The
+exemption therefore granted nothing and cost tenant refusal, so the routes are now guarded like any
+other. A lifecycle caller must be onboarded under `Identity:Apps` when enforcement is on, which is
+what enforcement already means for every other service-to-service route, and since #424 an onboarded
+caller is authenticated to the plane's controllers as well as admitted at the boundary — the minted
+principal is published on `HttpContext.User`, which is what those controllers read.
 
 `/api/auth/egress-keys*` is **not** one of these, despite looking like one. Its controller presents
 no credential — it is loopback-gated only — and the SPA reaches it through `apiFetch`, which attaches

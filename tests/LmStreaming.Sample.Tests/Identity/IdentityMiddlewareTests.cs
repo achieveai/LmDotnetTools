@@ -1,4 +1,5 @@
 using System.Net;
+using System.Security.Claims;
 using AchieveAi.LmDotnetTools.LmCore.Identity;
 using LmStreaming.Sample.Identity;
 using Microsoft.AspNetCore.Builder;
@@ -77,9 +78,16 @@ public sealed class IdentityMiddlewareTests
     /// A resolution to place on <see cref="HttpContext.Items"/> before the middleware runs,
     /// standing in for what the JWT bearer handler stashes after validating a token.
     /// </param>
+    /// <param name="preAuthenticated">
+    /// A principal to place on <see cref="HttpContext.User"/> before the middleware runs, standing
+    /// in for what <c>UseAuthentication</c> leaves behind when a scheme validated the request.
+    /// <c>UseSampleIdentity</c> runs that middleware ahead of this one, so this is not a synthetic
+    /// arrangement - it is the ordering the sample ships.
+    /// </param>
     private static async Task<TestServer> StartAsync(
         bool enforce,
-        PrincipalResolution? stashedResolution = null)
+        PrincipalResolution? stashedResolution = null,
+        ClaimsPrincipal? preAuthenticated = null)
     {
         var host = await new HostBuilder()
             .ConfigureWebHost(webHost => webHost
@@ -99,11 +107,20 @@ public sealed class IdentityMiddlewareTests
                 })
                 .Configure(app =>
                 {
-                    if (stashedResolution is not null)
+                    if (stashedResolution is not null || preAuthenticated is not null)
                     {
                         app.Use(async (context, next) =>
                         {
-                            context.Items[IdentityHttpItems.ResolutionKey] = stashedResolution;
+                            if (stashedResolution is not null)
+                            {
+                                context.Items[IdentityHttpItems.ResolutionKey] = stashedResolution;
+                            }
+
+                            if (preAuthenticated is not null)
+                            {
+                                context.User = preAuthenticated;
+                            }
+
                             await next(context);
                         });
                     }
@@ -113,13 +130,23 @@ public sealed class IdentityMiddlewareTests
                     {
                         var principal = context.Items[IdentityHttpItems.PrincipalKey] as Principal;
                         await context.Response.WriteAsync(
-                            $"{ReachedBody}:{principal?.TenantId ?? "<none>"}:{principal?.Actor.Id ?? "<none>"}");
+                            $"{ReachedBody}:{principal?.TenantId ?? "<none>"}:{principal?.Actor.Id ?? "<none>"}"
+                                + $"|{DescribeUser(context.User)}");
                     });
                 }))
             .StartAsync();
 
         return host.GetTestServer();
     }
+
+    /// <summary>
+    /// The claims principal the request carries, as authentication type and name identifier - the
+    /// two facts the lifecycle control plane's <c>AuthenticatedAppId()</c> reads (#424).
+    /// </summary>
+    private static string DescribeUser(ClaimsPrincipal? user) =>
+        user?.Identity?.IsAuthenticated == true
+            ? $"{user.Identity.AuthenticationType}:{user.FindFirstValue(ClaimTypes.NameIdentifier) ?? "<no-nameid>"}"
+            : "<anonymous>";
 
     /// <summary>Reads the <c>code</c> field out of a refusal body.</summary>
     private static async Task<string?> ReadCodeAsync(HttpResponseMessage response)
@@ -138,7 +165,11 @@ public sealed class IdentityMiddlewareTests
         // The regression gate for the whole pillar: with the flag off nothing is refused, so every
         // existing integration test keeps passing without being edited.
         _ = response.StatusCode.Should().Be(HttpStatusCode.OK);
-        _ = (await response.Content.ReadAsStringAsync()).Should().Be($"{ReachedBody}:legacy:dev:local");
+        // The trailing segment is the #424 bridge's regression gate on this same path: the
+        // development principal names no app, so nothing is projected onto User and an anonymous
+        // request stays anonymous to everything that reads a claims principal.
+        _ = (await response.Content.ReadAsStringAsync())
+            .Should().Be($"{ReachedBody}:legacy:dev:local|<anonymous>");
     }
 
     [Fact]
@@ -496,7 +527,67 @@ public sealed class IdentityMiddlewareTests
         var response = await server.CreateClient().GetAsync(new Uri("/api/conversations", UriKind.Relative));
 
         _ = response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // An end-user principal names no app either, so it too is published on Items alone.
         _ = (await response.Content.ReadAsStringAsync())
-            .Should().Be($"{ReachedBody}:tnt_acme:tid-1:oid-1");
+            .Should().Be($"{ReachedBody}:tnt_acme:tid-1:oid-1|<anonymous>");
+    }
+
+    [Fact]
+    public async Task AnAppBearingPrincipal_IsAlsoPublishedAsTheRequestsClaimsPrincipal()
+    {
+        // #424. Publishing on Items alone reaches only code that can see this sample's Principal
+        // type. The lifecycle control plane cannot - it lives in LmAgentInfra - and authenticates
+        // off HttpContext.User, so a service caller identity had just accepted was refused by it as
+        // unauthenticated. The name identifier is asserted by VALUE because that is what the plane
+        // resolves an owner from: a projection that carried the tenant, or a constant, would still
+        // be "authenticated" and would silently file every app's subscriptions under one owner.
+        using var server = await StartAsync(enforce: true, PrincipalResolution.Success(new Principal
+        {
+            TenantId = "tnt_daemon",
+            Actor = new PrincipalRef(PrincipalKind.App, "review-daemon"),
+            AppId = "review-daemon",
+            Source = PrincipalSource.AppOnly,
+        }));
+
+        var response = await server.CreateClient().GetAsync(new Uri("/api/conversations", UriKind.Relative));
+
+        _ = response.StatusCode.Should().Be(HttpStatusCode.OK);
+        _ = (await response.Content.ReadAsStringAsync())
+            .Should().EndWith($"|{PrincipalFactory.BridgedAuthenticationType}:review-daemon");
+    }
+
+    [Fact]
+    public async Task AnAlreadyAuthenticatedRequest_KeepsTheClaimsItsOwnSchemeEstablished()
+    {
+        // UseSampleIdentity runs UseAuthentication ahead of this middleware, so with an Entra app
+        // registration configured the bearer handler has already populated User with the token's
+        // own claims by the time the bridge runs. Overwriting those would narrow a real identity to
+        // the three claims the projection knows about - and would do it silently, since the
+        // replacement is also a well-formed authenticated principal. The bridge is a fill-in, and a
+        // fill-in that overwrites is not one.
+        var bearerIdentity = new ClaimsIdentity(
+            [
+                new Claim(ClaimTypes.NameIdentifier, "entra-object-id"),
+                new Claim("scp", "Conversations.ReadWrite"),
+            ],
+            "Bearer");
+
+        using var server = await StartAsync(
+            enforce: true,
+            PrincipalResolution.Success(new Principal
+            {
+                TenantId = "tnt_daemon",
+                Actor = new PrincipalRef(PrincipalKind.App, "review-daemon"),
+                AppId = "review-daemon",
+                Source = PrincipalSource.AppOnly,
+            }),
+            new ClaimsPrincipal(bearerIdentity));
+
+        var response = await server.CreateClient().GetAsync(new Uri("/api/conversations", UriKind.Relative));
+
+        _ = response.StatusCode.Should().Be(HttpStatusCode.OK);
+        _ = (await response.Content.ReadAsStringAsync())
+            .Should().EndWith("|Bearer:entra-object-id");
     }
 }

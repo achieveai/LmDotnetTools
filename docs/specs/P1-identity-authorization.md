@@ -758,23 +758,35 @@ that a lifecycle caller must now be onboarded under `Identity:Apps` when `Identi
 which is what enforcement already means for every other service-to-service route. With enforcement
 off, nothing changes: the development principal is established as before.
 
-**Known gap: the front door admits the caller, it does not yet authorize the plane.** The paragraph
-above is a statement about the *boundary*, and must not be read as saying an S2S-only caller can now
-drive lifecycle. It cannot. The principal this front door mints is stashed in `HttpContext.Items`,
-while `AuthenticatedAppId()` in both controllers reads `HttpContext.User` (as this section already
-notes two paragraphs up) — and nothing in the repository copies one into the other. The single
-registered authentication scheme is JWT bearer, which the S2S headers do not trigger. So a caller
-presenting only `X-S2S-Auth` + `X-Sbx-App-Id` passes the boundary and is then refused *by the
-controllers*, with `403`.
+**The front door now authorizes the plane as well as admitting the caller (#424).** For a while it
+did not, and this section said so: the principal the front door minted was published on
+`HttpContext.Items` alone, while `AuthenticatedAppId()` in both controllers reads `HttpContext.User`
+(as this section notes two paragraphs up), and nothing copied one into the other. The single
+registered authentication scheme is JWT bearer, which the S2S headers do not trigger — so a caller
+presenting only `X-S2S-Auth` + `X-Sbx-App-Id` passed the boundary and was then refused *by the
+controllers*, with `403`. That was a pre-existing gap rather than a regression from #402: before that
+change these routes were exempt, `IdentityMiddleware` returned at its first line, and
+`HttpContext.User` behind them was equally unauthenticated.
 
-This is a pre-existing gap, not a regression from #402: before the change these routes were exempt,
-so `IdentityMiddleware` returned at its first line and `HttpContext.User` behind them was equally
-unauthenticated. Bringing them inside the boundary took nothing away from any caller that worked.
-Closing the gap requires a deliberate bridge — an `IClaimsTransformation`, an authentication handler
-for the S2S scheme, or controllers that read `IPrincipalAccessor` instead of `HttpContext.User` —
-together with a test that drives the *real* controllers and asserts a non-`403`. Note that
-`ServiceCallerPrincipalTests` proves the boundary half only: its host terminates in the fixture's own
-endpoint and wires no controllers.
+`IdentityMiddleware` now also publishes the minted principal as a `ClaimsPrincipal` on
+`HttpContext.User`, projected by `PrincipalFactory.ToClaimsPrincipalOrNull`, so an app onboarded
+under `Identity:Apps` reaches the plane's actions and is resolved to its own owner key. Two
+properties bound that bridge, and both are asserted rather than described:
+
+- **It carries the app id, by value.** `ClaimTypes.NameIdentifier` holds `Principal.AppId`, because
+  that is what `ILifecycleOwnerResolver.ResolveCallerAsync` turns into an owner. A projection that
+  put anything else there would still authenticate, and would file every app's subscriptions under
+  one owner.
+- **It projects nothing for a principal that names no app, and never displaces an existing one.**
+  The development principal (enforcement off) and every end-user principal name no app, so `User`
+  behind them stays anonymous exactly as before — without which a feature flag would have become an
+  open subscription endpoint. And where `UseAuthentication` has already established a principal, the
+  bridge leaves it alone rather than narrowing a real identity to three claims.
+
+The proof that the *real* controllers answer this caller shape lives in
+`IdentityBoundaryPipelineTests` (`WithEnforcementOn_ARegisteredServiceCaller_ReachesTheLifecycleControlPlane`),
+on a host that wires MVC and publishes the plane. `ServiceCallerPrincipalTests` still proves the
+boundary half only: its host terminates in the fixture's own endpoint and wires no controllers.
 
 **`/api/auth/egress-keys` is deliberately not exempt**, and is named here because it looks like an
 infrastructure route and is not one. It is a SPA management surface the browser calls through

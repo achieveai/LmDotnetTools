@@ -175,20 +175,21 @@ public sealed class ServiceCallerPrincipalTests
         // surface, ServiceCallerPrincipalSource is the service-to-service front door, and the app
         // principal it mints carries the tenant that enforcement needs to refuse a suspended one.
         //
-        // Scope, deliberately narrow. The host here terminates in this fixture's own endpoint, not in
-        // LifecycleApprovalController/LifecycleSubscriptionsController. So this asserts what the
+        // Scope. The host here terminates in this fixture's own endpoint, not in
+        // LifecycleApprovalController/LifecycleSubscriptionsController, so this asserts what the
         // BOUNDARY does - admits the caller, with a tenant-bearing AppOnly principal - and nothing
         // about what those controllers then do with it.
         //
-        // What it must NOT be read as saying: that this caller shape is AUTHORIZED by the plane. The
-        // principal lands in HttpContext.Items (IdentityHttpItems.PrincipalKey); both controllers'
-        // AuthenticatedAppId() reads HttpContext.User, and nothing in the repo copies one to the
-        // other - the sole registered scheme is JWT bearer, which these headers do not trigger. A
-        // caller presenting only the S2S headers is therefore still refused by the controllers
-        // themselves, exactly as it was BEFORE #402 (the routes were exempt, so User was unauthenticated
-        // there too). Guarding regressed nothing; it also did not, on its own, make the plane reachable
-        // for an S2S-only caller. Closing that gap needs a real Items -> User bridge and a test driving
-        // the real controllers, which is separate work from this PR.
+        // That gap used to be the end of the story, and this comment used to say so: the principal
+        // landed on HttpContext.Items alone, both controllers' AuthenticatedAppId() reads
+        // HttpContext.User, nothing copied one to the other, and the sole registered scheme is JWT
+        // bearer - which these headers do not trigger. So a caller admitted here was refused there.
+        // #424 closed it: IdentityMiddleware now also publishes an app-bearing principal on
+        // HttpContext.User, and the real controllers answer this caller shape. The proof of THAT
+        // lives where it belongs, on a host that wires MVC -
+        // IdentityBoundaryPipelineTests.WithEnforcementOn_ARegisteredServiceCaller_ReachesTheLifecycleControlPlane
+        // in LmStreaming.Sample.E2E.Tests - because a fixture endpoint cannot show what a controller
+        // does. What this test still owns, and all it owns, is the boundary half.
         using var server = await StartAsync(
             enforce: true,
             s2sSecret: Secret,
