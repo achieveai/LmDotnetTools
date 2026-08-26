@@ -435,6 +435,35 @@ public sealed class DaemonCorpusReaderTests : IDisposable
     }
 
     /// <summary>
+    /// The case that distinguishes "the edge reached" from "the edge of what yielded candidates":
+    /// a window in which <b>nothing</b> paired. When even one run in the window forms a candidate
+    /// the two readings coincide — the last run's id is the answer either way — so only a window
+    /// that produced no corpus at all can tell them apart. Reading the yield instead of the reach
+    /// parks the cursor on these rows for ever: every later sweep re-reads the same unusable runs,
+    /// never reaches what came after them, and reports an empty corpus while the store fills up.
+    /// </summary>
+    [Fact]
+    public async Task A_window_in_which_nothing_paired_still_advances_the_cursor()
+    {
+        var firstOrphan = CreateRun("118");
+        AddReview(firstOrphan, "a review with no diff behind it");
+
+        var lastOrphan = CreateRun("119");
+        AddReview(lastOrphan, "another review with no diff behind it");
+
+        var page = await LoadAsync(Reader());
+
+        page.Snapshot.Should().BeNull("no run in the window formed a pair");
+        page.NextCursor
+            .Should()
+            .Be(
+                lastOrphan,
+                "the reader read both runs and will learn nothing new from either; leaving the "
+                    + "cursor behind them re-reads them for ever and never reaches what came after"
+            );
+    }
+
+    /// <summary>
     /// The window is stated per call, so two loads from a reader that has been held across both
     /// cover different rows. That is the whole reason the window left the constructor: a reader
     /// built around one fixed lower edge returns the same oldest history for ever, and the snapshot
