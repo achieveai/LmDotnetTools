@@ -102,7 +102,11 @@ public class MultiTurnAgentPoolHandoffTests
         // took, then completed - and completing a run puts CurrentRunId back to null, exactly as
         // MultiTurnAgentBase does. The id retires on that echo, not on a timer and not on an
         // inference from whichever run id happens to be current at the moment somebody looks.
-        await using var pool = CreatePool();
+        // A frozen clock, so the grace can never fire during the wait below. Without it the wait's
+        // own budget races the 30s backstop and a pass could mean the backstop cleared the ledger -
+        // the very mechanism this test exists to distinguish the evidence path from.
+        var time = new FakeTimeProvider(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        await using var pool = CreatePool(time);
         var agent = CreateOwnedAgent(pool, "thread-drained", Alice);
         agent.CurrentRunId = null;
         agent.IsRunning = false;
@@ -115,13 +119,13 @@ public class MultiTurnAgentPoolHandoffTests
         agent.CompleteRun();
         agent.IsRunning = false;
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await Wait.UntilAsync(
             () => pool.TryGetHandoffState("thread-drained", out var s) && !s.IsBusy,
             "the run assignment naming input-1 retires it from the ledger",
             cancellationToken: cts.Token);
 
-        // Well inside the grace, so what cleared the ledger is the evidence and not the backstop.
+        // The clock never moved, so what cleared the ledger is the evidence and not the backstop.
         pool.TryGetHandoffState("thread-drained", out var state).Should().BeTrue();
         (await pool.TryReleaseIdleAgentAsync("thread-drained", state))
             .Should().Be(MultiTurnAgentPool.AgentReleaseOutcome.Released);

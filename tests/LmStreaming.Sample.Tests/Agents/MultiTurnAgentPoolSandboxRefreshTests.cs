@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using LmStreaming.Sample.Tests.TestDoubles;
+using Microsoft.Extensions.Time.Testing;
 
 namespace LmStreaming.Sample.Tests.Agents;
 
@@ -140,11 +141,16 @@ public class MultiTurnAgentPoolSandboxRefreshTests
         var sessionId = "sess-1";
         var created = new List<FakeMultiTurnAgent>();
 
+        // A frozen clock: the accepted input must stay in hand because nothing retired it, never
+        // because the 30s grace has not elapsed yet - and the wait further down must not be able to
+        // pass by outliving that grace instead of by the assignment arriving.
+        var time = new FakeTimeProvider(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
         await using var pool = CreatePool(
             credential,
             () => sessionId,
             (_, _) => Task.FromResult(new SandboxSession("workspace-1", "sess-2", "workspace", "/workspace")),
-            created);
+            created,
+            time);
 
         var original = (FakeMultiTurnAgent)pool.GetOrCreateAgent(
             "thread-queued-refresh",
@@ -175,7 +181,7 @@ public class MultiTurnAgentPoolSandboxRefreshTests
         original.CompleteRun();
         original.IsRunning = false;
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await Wait.UntilAsync(
             () => pool.TryGetHandoffState("thread-queued-refresh", out var state) && !state.IsBusy,
             "the assignment echoing the accepted input retires it from the ledger",
@@ -427,7 +433,8 @@ public class MultiTurnAgentPoolSandboxRefreshTests
         SandboxCredential credential,
         Func<string> sessionId,
         Func<SandboxEstablishedBinding, CancellationToken, Task<SandboxSession>> resolver,
-        List<FakeMultiTurnAgent> created)
+        List<FakeMultiTurnAgent> created,
+        TimeProvider? timeProvider = null)
     {
         return new MultiTurnAgentPool(
             context =>
@@ -449,7 +456,10 @@ public class MultiTurnAgentPoolSandboxRefreshTests
             conversationStore: null,
             NullLogger<MultiTurnAgentPool>.Instance,
             bindingSink: new RecordingBindingSink(),
-            liveSessionResolver: resolver);
+            liveSessionResolver: resolver)
+        {
+            TimeProvider = timeProvider ?? TimeProvider.System,
+        };
     }
 
     private sealed class RecordingBindingSink : ISandboxBindingSink
