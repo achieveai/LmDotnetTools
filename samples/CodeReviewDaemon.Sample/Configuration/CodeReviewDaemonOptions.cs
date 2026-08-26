@@ -558,6 +558,48 @@ internal sealed class CodeReviewDaemonOptions
     /// </remarks>
     public double StrandedRunRetryPendingGraceMinutes { get; init; } = 45;
 
+    // ── eval corpus sweep (#400) ─────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// How often the eval corpus sweep runs, in minutes. Default <c>0</c>, which switches it off:
+    /// nothing about the sweep is on by default, matching every other opt-in above.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The sweep reads the reviews recorded since it last ran, measures each one's citation surface
+    /// and joins it to the grade the daemon's own judge wrote, and advances a persisted cursor. It
+    /// contacts no model and writes no artifact — the cost is a pass over rows the store already
+    /// holds — but that pass covers the whole window, so it is not something to run on the poller's
+    /// thirty-second cadence, which is what "no knob" would have meant.
+    /// </para>
+    /// <para>
+    /// Cadence and enablement are ONE knob rather than a bool beside an interval, because the pair
+    /// admits a state the single value cannot: enabled with no cadence, or a cadence set and quietly
+    /// ignored because the flag beside it is false. Zero here is unambiguous — the schedule is not
+    /// registered at all, and <see cref="Eval.EvalCorpusSweepSchedule"/> refuses a zero interval
+    /// rather than reading it as "as often as possible".
+    /// </para>
+    /// <para>
+    /// A window the limit cut short overrides this interval: the next maintenance tick resumes
+    /// immediately instead of waiting, so raising the cadence delays the start of a backlog drain
+    /// without slowing the drain itself.
+    /// </para>
+    /// </remarks>
+    public double EvalCorpusSweepIntervalMinutes { get; init; }
+
+    /// <summary>
+    /// Most review runs one eval sweep considers. Default 1000.
+    /// </summary>
+    /// <remarks>
+    /// This bounds the work of a single pass, not the corpus: a sweep that fills its window reports
+    /// the window as truncated and the next tick resumes from the edge it reached, so lowering this
+    /// makes each pass cheaper rather than making the sweep skip history. It is <b>not</b>
+    /// <c>required</c>, deliberately — the configuration binder does not enforce that keyword, so a
+    /// <c>required</c> knob absent from configuration would bind as <c>0</c> and be refused at
+    /// construction, turning a missing line in a JSON file into a daemon that will not start.
+    /// </remarks>
+    public int EvalCorpusSweepWindow { get; init; } = 1000;
+
     /// <summary>The resolved cross-repo store URL: <see cref="CrossRepoStoreUrl"/> when set, else
     /// <see cref="ReviewBotRepoUrl"/> (the review store and the ReviewBot retention repo are one repo).</summary>
     public string? ResolvedStoreUrl =>

@@ -1030,6 +1030,73 @@ completion, and `InputAcceptance` / `AcceptedInputEntry`
 name** — not quality acceptance. Closing that gap is §8's job; until it lands the runner's
 human-agreement numbers come from the fixed-finding proxy, with that fact recorded on the run.
 
+#### 5.1.1 How a corpus is read: the window is stated per call
+
+`ICorpusReader` takes its window as **arguments**, not as constructor state, and returns the edge it
+reached:
+
+```csharp
+Task<CorpusPage> LoadAsync(string corpusId, long afterCursor, int limit, CancellationToken ct);
+
+sealed record CorpusPage
+{
+    CorpusSnapshot? Snapshot { get; init; }   // null, not empty
+    required long NextCursor { get; init; }
+    required bool Truncated { get; init; }
+}
+```
+
+**Why not a window held by the reader.** A reader constructed with one fixed lower edge and a limit
+issues `ORDER BY id LIMIT n`, which takes the **oldest** n rows. Once the store holds more than
+`limit` qualifying runs, every load returns the same earliest history — for ever, and silently. The
+silence is the part that matters: the corpus snapshot hash stays stable, so §5.4's comparability
+refusals are all perfectly satisfied. They are the machinery that says "you are not measuring what
+you think you are measuring", and here they have no complaint, because the corpus genuinely has not
+changed. A window stated per call has no such state to go stale.
+
+The three return values each answer a question a caller cannot otherwise answer:
+
+- **`Snapshot` is `null`, not an empty snapshot**, when the window yielded no candidate.
+  `CorpusSnapshot.Create` refuses an empty item list — an empty denominator makes every rate over it
+  undefined rather than zero (§5.3) — and a scheduled sweep that found nothing new is the normal
+  outcome, not an error. The two need different shapes so the normal one is not an exception.
+- **`NextCursor` is the edge REACHED**, not the edge of what yielded candidates. A source record the
+  reader looked at and rejected — no recorded diff, an unreadable payload — is still one it will
+  never learn anything new about, so leaving the cursor behind it makes every later window re-read
+  it and never reach what came after. The distinguishing case is a window in which *nothing* paired:
+  whenever anything pairs, "last record seen" and "last record used" coincide, and only an
+  all-rejected window separates them.
+- **`Truncated` says the limit cut the window short of the end of the history**, so the caller comes
+  back rather than concluding it has seen everything. It is on the contract rather than in a log
+  line because a log line is what made the original freeze invisible, and because a consumer has to
+  *act* on it. A window that filled its limit and reached the end is **not** truncated: an
+  implementation that infers truncation from the row count alone reports it at exact fit, which
+  sends the caller back for rows that do not exist.
+
+**Who advances the cursor.** The consumer, and the value has to survive the process — "nobody
+advanced it" is the same silent freeze, arrived at from the other side. In the daemon that is
+`EvalCorpusWatermark`, which keeps the edge in the existing `poll_cursor` record under
+`provider = "eval-corpus"`, scoped by corpus id. That table is already the daemon's general
+"(provider, scope) → where this reader got to" record, with an opaque payload and a documented
+resync-on-mismatch contract; a second table with the same semantics would be a second answer to a
+question the schema already answers. Two consequences are recorded rather than left to be
+discovered: the stored id is **nullable on the way in**, so a payload that lost its only field reads
+as unreadable instead of binding to `default(long)` and restarting the sweep over the whole history
+in silence; and a reader at an older payload version **overwrites** a newer row rather than refusing
+to write, because the cost of that clobber is re-reading history — which is idempotent — where the
+cost of refusing is a reader that can never record its own progress.
+
+**The daemon's consumer** is `EvalCorpusSweep`, which reads the watermark, loads one window, measures
+each candidate's citation surface with `ReviewFindingParser`, joins it to the `judge` row the daemon
+recorded for **that arm** (not that run — one run holds a judge row per arm, and the A arm's grade
+says nothing about the B arm's), and advances the watermark. It deliberately does **not** re-judge
+the corpus through `EvalRunner`: that costs a model call per candidate and needs a live panel and a
+frozen baseline, none of which exists yet, and it would put the expensive half of the loop in front
+of the cheap half that can already be trusted. Grades are reported in four arms that partition the
+window — scored, unscored (the harness ran and declined to put a number on the reply), *ambiguous
+legacy* (a `judge` row at `artifact_schema_version <= 1`, whose non-nullable `0` cannot be told from
+a real worst grade), and ungraded — and the mean is `null`, never `0.0`, when nothing was scored.
+
 ### 5.2 Baseline per task type
 
 ```csharp

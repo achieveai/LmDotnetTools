@@ -6,6 +6,7 @@ using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
+using Microsoft.Extensions.Logging;
 
 namespace CodeReviewDaemon.Sample.Tests.Eval;
 
@@ -149,12 +150,30 @@ public sealed class EvalCorpusSweepTests : IDisposable
             )
         );
 
-    private EvalCorpusSweep Sweep(int limit = 1000) =>
+    /// <summary>Writes an artifact whose payload is arbitrary text rather than a serialized shape.</summary>
+    private void AddRawArtifact(long runId, int schemaVersion, string kind, string payload) =>
+        _ = _store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = runId,
+                ArtifactSchemaVersion = schemaVersion,
+                ArtifactKind = kind,
+                Provider = "github",
+                Payload = payload,
+            }
+        );
+
+    private EvalCorpusSweep Sweep(
+        int limit = 1000,
+        ReviewArtifactReader? readArtifacts = null,
+        ILogger<EvalCorpusSweep>? logger = null
+    ) =>
         new(
-            _store,
+            readArtifacts ?? _store.GetArtifacts,
             new DaemonCorpusReader(_store, modelId => modelId?.Split('/')[0]),
             new EvalCorpusWatermark(_store),
-            limit
+            limit,
+            logger
         );
 
     private Task<EvalSweepReport> SweepAsync(int limit = 1000) =>
@@ -408,6 +427,117 @@ public sealed class EvalCorpusSweepTests : IDisposable
         report
             .UngradedCandidates.Should()
             .Be(1, "the B arm has no grade — it must not inherit the A arm's");
+    }
+
+    /// <summary>
+    /// An unreadable <b>newest</b> judge row must not hand the candidate the row it superseded.
+    /// <para>
+    /// The lookup walks this run's judge rows newest-first and stops at the first one whose variant
+    /// matches. Skipping past a row it could not deserialise sounds harmless and is not: the row's
+    /// variant is exactly the field that could not be read, so it cannot be ruled out as this
+    /// candidate's — and stepping over it silently promotes a grade the daemon has already replaced.
+    /// The sweep then reports a score for a review that was re-judged, with nothing anywhere saying
+    /// the number is stale.
+    /// </para>
+    /// <para>
+    /// The rule is the one <see cref="DaemonCorpusReader"/> already applies on the same table: the
+    /// newest row of a kind is the answer, and if it cannot be read there is no answer. Ungraded is
+    /// the honest report — the sweep separates "never judged" from "judged inconclusively" precisely
+    /// so that a missing grade is not read as a bad one.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task An_unreadable_newest_judge_row_does_not_promote_the_grade_it_superseded()
+    {
+        var runId = Reviewed("118", "src/Foo.cs:1 is wrong.");
+
+        // The older grade the fall-through would have resurrected.
+        AddV2Judge(runId, score: 8);
+
+        // Re-judged, and the newer row is corrupt.
+        AddRawArtifact(
+            runId,
+            JudgeAgent.JudgeArtifactSchemaVersion,
+            JudgeAgent.JudgeArtifactKind,
+            "{ this is not a judge payload"
+        );
+
+        var logger = new CapturingLogger<EvalCorpusSweep>();
+        var report = await Sweep(logger: logger).SweepOnceAsync(CancellationToken.None);
+
+        report.CandidateCount.Should().Be(1);
+        report
+            .ScoredCandidates.Should()
+            .Be(0, "the superseded 8 must not be reported as this candidate's grade");
+        report.MeanRecordedScore.Should().BeNull("zero is a real grade; null is the absence");
+        report
+            .UngradedCandidates.Should()
+            .Be(1, "no readable grade is a missing grade, not a bad one");
+        logger.WarningCount("did not deserialize").Should().Be(1);
+    }
+
+    /// <summary>
+    /// The non-vacuity half: with no corrupt row in the way, the newest readable grade IS reported.
+    /// Without this, "always ungraded" satisfies the case above.
+    /// </summary>
+    [Fact]
+    public async Task The_newest_readable_judge_row_is_the_grade()
+    {
+        var runId = Reviewed("118", "src/Foo.cs:1 is wrong.");
+
+        AddV2Judge(runId, score: 3);
+        AddV2Judge(runId, score: 9);
+
+        var report = await SweepAsync();
+
+        report.ScoredCandidates.Should().Be(1);
+        report.MeanRecordedScore.Should().Be(9.0, "the re-judged score supersedes the first one");
+    }
+
+    // ---- one artifact read per run, not per candidate ---------------------------------------------
+
+    /// <summary>
+    /// The grade lookup used to re-read a run's <b>entire</b> artifact list once per candidate, and
+    /// a run yields two candidates. That list includes the <c>review-context</c> row, which carries
+    /// the whole diff — so at a window of a thousand runs the sweep materialised thousands of full
+    /// diffs out of SQLite to find a judge row it had already read.
+    /// <para>
+    /// Counted rather than timed, because a timing assertion on this would be a flake and a read
+    /// count is the thing that actually changed. Two candidates over one run, one read.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Two_candidates_over_one_run_read_that_runs_artifacts_once()
+    {
+        var runId = Reviewed("118", "the A review of src/Foo.cs:1");
+        AddArtifact(
+            runId,
+            1,
+            VariantReviewer.VariantReviewArtifactKind,
+            new VariantReviewArtifactPayload("b", "anthropic/claude", "the B review", "run-2")
+        );
+        AddV2Judge(runId, score: 9, variantId: "primary");
+        AddV2Judge(runId, score: 4, variantId: "b");
+
+        var reads = new List<long>();
+        var report = await Sweep(
+                readArtifacts: id =>
+                {
+                    reads.Add(id);
+                    return _store.GetArtifacts(id);
+                }
+            )
+            .SweepOnceAsync(CancellationToken.None);
+
+        report.CandidateCount.Should().Be(2, "both arms are candidates over the same input");
+        reads
+            .Should()
+            .Equal([runId], "one read for the run, not one per candidate over it");
+
+        // The non-vacuity half: caching the read must not also collapse the per-variant match into
+        // whichever arm was judged last. Both arms keep their own grade.
+        report.ScoredCandidates.Should().Be(2);
+        report.MeanRecordedScore.Should().Be(6.5, "(9 + 4) / 2 — each arm on its own row");
     }
 
     // ---- the finding-level signal ----------------------------------------------------------------

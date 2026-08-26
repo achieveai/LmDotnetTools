@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Auth;
 using CodeReviewDaemon.Sample.Configuration;
+using CodeReviewDaemon.Sample.Eval;
 using CodeReviewDaemon.Sample.Hosting;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
@@ -944,6 +945,54 @@ if (daemonOptions.StrandedRunGraceHours > 0)
             retryPendingGrace: retryPendingGrace);
     });
 }
+// ── eval corpus sweep (#400) ───────────────────────────────────────────────────────────────────
+// The corpus reader, its persisted window and the consumer that joins the two, registered only when
+// an operator has set a cadence. Until this existed, all three were complete, tested and constructed
+// by nothing but their own tests — which reads as a shipped capability and is not one.
+//
+// The sweep contacts no model and writes no artifact: it reads the reviews recorded since it last
+// ran, measures each one's citation surface, joins it to the grade the daemon's own judge recorded,
+// and advances a cursor in poll_cursor. It rides the poller's maintenance tick, behind its own
+// interval — that tick fires every thirty seconds, which is the right cadence for what it was built
+// for and far too hot for a pass over a window of recorded history.
+var evalSweepInterval = TimeSpan.FromMinutes(daemonOptions.EvalCorpusSweepIntervalMinutes);
+if (evalSweepInterval > TimeSpan.Zero)
+{
+    // Refused here, with the configuration key named, rather than left to EvalCorpusSweep's own
+    // guard: that one throws on `limit`, an argument no operator ever passed.
+    if (daemonOptions.EvalCorpusSweepWindow <= 0)
+    {
+        throw new InvalidOperationException(
+            $"{CodeReviewDaemonOptions.SectionName}:{nameof(CodeReviewDaemonOptions.EvalCorpusSweepWindow)} "
+            + "must be positive when a sweep interval is configured; a window of zero would make every "
+            + "sweep report an empty corpus while the store fills up.");
+    }
+
+    builder.Services.AddSingleton(sp =>
+    {
+        var store = sp.GetRequiredService<ReviewStore>();
+        var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+
+        var sweep = new EvalCorpusSweep(
+            // The read the grade lookup needs, and the whole of what this consumer wants from
+            // persistence. The sweep caches it per run for the length of one pass.
+            store.GetArtifacts,
+            new DaemonCorpusReader(
+                store,
+                DaemonCorpusReader.ProviderFamily,
+                loggerFactory.CreateLogger<DaemonCorpusReader>()),
+            new EvalCorpusWatermark(store, loggerFactory.CreateLogger<EvalCorpusWatermark>()),
+            daemonOptions.EvalCorpusSweepWindow,
+            loggerFactory.CreateLogger<EvalCorpusSweep>());
+
+        return new EvalCorpusSweepSchedule(
+            sweep.SweepOnceAsync,
+            evalSweepInterval,
+            TimeProvider.System,
+            loggerFactory.CreateLogger<EvalCorpusSweepSchedule>());
+    });
+}
+
 // The PR-watching loop. Registering a BackgroundService adds NO route, so the host's mapped routes stay
 // exactly the one webhook below. With the allow-list empty (default) it has no targets and is inert.
 builder.Services.AddHostedService(sp => new PrPollingService(
@@ -953,13 +1002,17 @@ builder.Services.AddHostedService(sp => new PrPollingService(
     sp.GetRequiredService<PrOrchestrator>(),
     sp.GetRequiredService<ILogger<PrPollingService>>(),
     // Maintenance runs on the poller cadence: the PR-lifecycle sweep (registered by the pooled path), the
-    // deep-link retention sweep (registered by the S2S path when a window is configured), and the stranded-run
-    // reconciler. Any of them may be absent, in which case the poller keeps polling with whatever remains
-    // (design §4.5). The reconciler runs last so it observes the state this cycle's polls left behind.
+    // deep-link retention sweep (registered by the S2S path when a window is configured), the stranded-run
+    // reconciler, and the eval corpus sweep (registered when a cadence is configured; it gates itself on
+    // its own interval rather than running on every tick). Any of them may be absent, in which case the
+    // poller keeps polling with whatever remains (design §4.5). The reconciler runs before the eval sweep
+    // so it observes the state this cycle's polls left behind, and the eval sweep runs last because it
+    // only reads: nothing downstream of it depends on when in the cycle it happened.
     sweepAsync: ComposeMaintenanceSweep(
         sp.GetService<PrLifecycleSweeper>() is { } lifecycleSweeper ? lifecycleSweeper.SweepAsync : null,
         sp.GetService<DeepLinkRetentionSweeper>() is { } retentionSweeper ? retentionSweeper.SweepAsync : null,
-        sp.GetService<StrandedRunReconciler>() is { } strandedReconciler ? strandedReconciler.SweepAsync : null)));
+        sp.GetService<StrandedRunReconciler>() is { } strandedReconciler ? strandedReconciler.SweepAsync : null,
+        sp.GetService<EvalCorpusSweepSchedule>() is { } evalSweep ? evalSweep.SweepAsync : null)));
 
 // Chains the optional maintenance sweeps into the poller's single seam, in the order they were introduced:
 // the lifecycle sweep first, so its today's-semantics timing is unchanged by the sweeps landing behind it.
