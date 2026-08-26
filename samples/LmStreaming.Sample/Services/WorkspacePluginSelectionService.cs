@@ -417,7 +417,37 @@ public sealed class WorkspacePluginSelectionService : IWorkspacePluginSelectionS
         // are carried separately rather than concatenated: an unreferenced candidate cannot have a
         // run on it and goes immediately, whereas a superseded session may have acquired one after
         // the pre-commit idle wait and is owed the grace.
-        var uncommitted = _registry.SwapPluginSelectionSessions(candidates);
+        IReadOnlyList<SandboxSession> uncommitted;
+        try
+        {
+            uncommitted = _registry.SwapPluginSelectionSessions(candidates);
+        }
+        catch (Exception swapEx)
+        {
+            // The persisted half has already committed, so this can never become a replacement
+            // failure (502, a claim about the gateway) or a conflict (409, a claim about the store) —
+            // both describe the persist, which succeeded. Something AFTER it — most plausibly the
+            // registry being disposed mid-migration, which makes the swap throw
+            // ObjectDisposedException before touching a single partition — kept every candidate from
+            // ever being published. Not one of them is referenced by anything, so they get the same
+            // best-effort cleanup as every earlier failure path; the exception itself is rethrown
+            // unwrapped, exactly like the persist-failure catch above.
+            //
+            // Logged here, not only inside the registry's own best-effort teardown: the registry may
+            // be exactly what just threw (a disposed transport cannot itself report that its own
+            // cleanup call failed), so this is the one place guaranteed to still have a working logger
+            // when the swap fails after commit.
+            _logger.LogWarning(
+                swapEx,
+                "Plugin-selection swap failed for workspace {WorkspaceId} after the update had already "
+                    + "persisted; the selection is committed and {CandidateCount} candidate session(s) "
+                    + "are being aborted best-effort.",
+                workspaceId,
+                candidates.Count
+            );
+            await AbortAllAsync(candidates);
+            throw;
+        }
         var uncommittedIds = new HashSet<string>(uncommitted.Select(session => session.SessionId), StringComparer.Ordinal);
 
         var work = new PostCommitWork(
@@ -427,7 +457,14 @@ public sealed class WorkspacePluginSelectionService : IWorkspacePluginSelectionS
                 .. candidates.Where(c => !uncommittedIds.Contains(c.New.SessionId)).Select(c => c.Old.Session),
             ],
             NewRef: newRef,
-            Unsettled: snapshot.Unsettled,
+            // A partition whose slot changed underneath the swap (most often the gateway-404 recreate
+            // path racing this migration) is NOT an unsettled partition, but it is owed exactly the same
+            // reconcile: whoever republished the slot did so under some OTHER plugin selection, and
+            // nothing else will ever revisit it. Folding its key in here — rather than tracking a third,
+            // separate list — is what lets ReconcileUnsettledOnceAsync treat "still being created" and
+            // "raced the swap" as the one case they actually are: a partition this migration never
+            // managed to publish its selection onto.
+            Unsettled: [.. snapshot.Unsettled, .. candidates.Where(c => uncommittedIds.Contains(c.New.SessionId)).Select(c => c.Old.Key)],
             CommittedRevision: updated.PluginsRevision
         );
 

@@ -1074,8 +1074,10 @@ internal static class KnowledgeDigest
             // is quoted or parenthesised and "[b](...)" is neither, so the OUTER link does not parse and the
             // nested one renders on its own. Splitting at the space validated "system/ok.md" and handed the
             // agent a line whose only real link was the one we never looked at. Refused rather than split,
-            // and reported whole, so the log names the part that matters. A title is refused along with it;
-            // our generator emits none, and #258 owns reading them properly.
+            // and reported whole, so the log names the part that matters. This check is now defensive rather
+            // than load-bearing for a title: <see cref="TryEndOfDestination"/> stops the bare destination at
+            // the first unescaped whitespace, so a well-formed title never reaches this far - only a bare
+            // destination followed by something that is not a valid title still lands here as whitespace.
             var raw = line[open..textEnd].Trim();
             if (raw.Length > 0 && raw[0] != '<' && raw.AsSpan().IndexOfAny(' ', '\t') >= 0)
             {
@@ -1105,6 +1107,12 @@ internal static class KnowledgeDigest
     /// Three separate ways for our end to land before the agent's, each leaving a contained prefix in front
     /// of the rule and the whole path in front of the agent.
     /// </para>
+    /// <para>
+    /// Neither form closes the LINK the moment its destination ends — CommonMark allows an optional title
+    /// between the destination and the closing <c>)</c>, itself optionally surrounded by whitespace. Both
+    /// branches hand that off to <see cref="TryCloseLink"/> once the destination boundary is settled, rather
+    /// than each re-deriving title syntax. #258.
+    /// </para>
     /// </summary>
     private static bool TryEndOfDestination(string line, int open, out int textEnd, out int next)
     {
@@ -1118,26 +1126,8 @@ internal static class KnowledgeDigest
                 return false;
             }
 
-            // The angle brackets delimit the DESTINATION; the link still has to close, and the ")" that
-            // closes it is the NEXT thing after the ">" - not the next one anywhere on the line. Searching
-            // the remainder for it reads "](<ok.md> [b](../../../etc/passwd)" as ONE contained link and
-            // consumes the escaping second link along with it: the extent defect again, one form over.
-            // Without a ")" at all this is not a link to any Markdown reader, and a line we cannot render as
-            // written is not a line we may render as read.
-            var afterAngle = closingAngle + 1;
-            while (afterAngle < line.Length && (line[afterAngle] == ' ' || line[afterAngle] == '\t'))
-            {
-                afterAngle++;
-            }
-
-            if (afterAngle >= line.Length || line[afterAngle] != ')')
-            {
-                return false;
-            }
-
             textEnd = closingAngle + 1;
-            next = afterAngle + 1;
-            return true;
+            return TryCloseLink(line, textEnd, out next);
         }
 
         var depth = 0;
@@ -1154,17 +1144,123 @@ internal static class KnowledgeDigest
             if (character == '(')
             {
                 depth++;
+                continue;
             }
-            else if (character == ')')
+
+            if (character == ')')
             {
                 if (depth == 0)
                 {
                     textEnd = scan;
-                    next = scan + 1;
-                    return true;
+                    return TryCloseLink(line, scan, out next);
                 }
 
                 depth--;
+                continue;
+            }
+
+            if (depth == 0 && (character == ' ' || character == '\t'))
+            {
+                // A bare destination may not contain unescaped whitespace, so this is where it ends -
+                // whatever comes next is either an optional title or nothing a Markdown reader can parse.
+                textEnd = scan;
+                return TryCloseLink(line, scan, out next);
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Whether the link resumes, one way or another, starting at <paramref name="afterDestination"/> - the
+    /// first position after the destination has already been delimited - and if so where it resumes
+    /// (<paramref name="next"/>, exclusive of the closing <c>)</c>).
+    /// <para>
+    /// Between a destination and the <c>)</c> that closes its link, CommonMark permits whitespace, an
+    /// optional title, and more whitespace, in that order. A title is quoted (<c>"…"</c> or <c>'…'</c>) or
+    /// parenthesised (<c>(…)</c>); anything else found here - a second link's <c>[</c>, an unquoted word - is
+    /// not a title CommonMark recognises, so the link fails to parse and we report it undelimited rather than
+    /// guess at where it might have meant to close.
+    /// </para>
+    /// </summary>
+    private static bool TryCloseLink(string line, int afterDestination, out int next)
+    {
+        next = -1;
+        var scan = afterDestination;
+        while (scan < line.Length && (line[scan] == ' ' || line[scan] == '\t'))
+        {
+            scan++;
+        }
+
+        if (scan < line.Length && line[scan] == ')')
+        {
+            next = scan + 1;
+            return true;
+        }
+
+        if (scan >= line.Length || (line[scan] != '"' && line[scan] != '\'' && line[scan] != '('))
+        {
+            return false;
+        }
+
+        if (!TryConsumeTitle(line, scan, out var titleEnd))
+        {
+            return false;
+        }
+
+        scan = titleEnd;
+        while (scan < line.Length && (line[scan] == ' ' || line[scan] == '\t'))
+        {
+            scan++;
+        }
+
+        if (scan >= line.Length || line[scan] != ')')
+        {
+            return false;
+        }
+
+        next = scan + 1;
+        return true;
+    }
+
+    /// <summary>
+    /// Consumes a CommonMark link title beginning at <paramref name="start"/> - which must be one of
+    /// <c>"</c>, <c>'</c>, or <c>(</c> - and reports where it ends (<paramref name="end"/>, exclusive of the
+    /// closing delimiter), or <c>false</c> when it is never closed.
+    /// <para>
+    /// The title is not read into the rendered output; only its EXTENT matters here, so that whatever
+    /// follows it - whitespace, then the closing <c>)</c> - is found at the right offset rather than inside
+    /// what a reader would treat as title text. A backslash escapes the next character unconditionally,
+    /// including the delimiter itself, so a quoted title may contain an escaped quote of its own kind. A
+    /// parenthesised title may not contain an unescaped <c>(</c> at all - CommonMark does not allow nesting
+    /// there the way a bare destination allows balanced parens - so one ends the attempt rather than being
+    /// counted toward a matching close.
+    /// </para>
+    /// </summary>
+    private static bool TryConsumeTitle(string line, int start, out int end)
+    {
+        end = -1;
+        var opener = line[start];
+        var closer = opener == '(' ? ')' : opener;
+
+        for (var scan = start + 1; scan < line.Length; scan++)
+        {
+            var character = line[scan];
+            if (character == '\\')
+            {
+                scan++;
+                continue;
+            }
+
+            if (opener == '(' && character == '(')
+            {
+                return false;
+            }
+
+            if (character == closer)
+            {
+                end = scan + 1;
+                return true;
             }
         }
 

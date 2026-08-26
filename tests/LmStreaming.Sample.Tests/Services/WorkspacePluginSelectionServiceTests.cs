@@ -316,6 +316,38 @@ public class WorkspacePluginSelectionServiceTests
     }
 
     [Fact]
+    public async Task RegistryDisposalInterruptingTheSwap_StillAttemptsToAbortEveryCandidate()
+    {
+        // The swap sits between the persisted commit and the candidates actually being published: by
+        // the time it runs, the update has ALREADY committed, so a failure here cannot be reported as
+        // the update failing to persist - the caller who sees the exception must still be told that
+        // cleanup was attempted for every candidate, even though reaching the gateway through a
+        // registry that has finished disposing is not something this service can guarantee.
+        var hooks = new StoreHooks();
+        await using var h = CreateHarness(hooks: hooks);
+        var workspace = await SeedWorkspaceAsync(h, ["official"]);
+        _ = await SeedSessionAsync(h, workspace, "app-a");
+        hooks.AfterUpdate = () => h.Registry.DisposeAsync().AsTask();
+
+        var act = () =>
+            h.Service.ApplyPluginSelectionUpdateAsync(
+                workspace.Id,
+                Update(["official"], [SelectedPlugin], revision: 0)
+            );
+
+        _ = await act.Should().ThrowAsync<ObjectDisposedException>();
+
+        // The SPECIFIC workspace, not merely "something was logged at Warning": the registry's own
+        // best-effort teardown logs through a NullLogger in this harness, so this warning has to come
+        // from the SERVICE's own catch - the one place able to name which workspace's swap failed.
+        h.Logger
+            .Entries.Where(entry => entry.Level == LogLevel.Warning)
+            .Select(entry => entry.Message)
+            .Should()
+            .ContainSingle(message => message.Contains(workspace.Id, StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task SuccessfulMigration_SwapsEveryPartition_AndRetiresTheOldSessions()
     {
         await using var h = CreateHarness();
@@ -422,6 +454,60 @@ public class WorkspacePluginSelectionServiceTests
                 "a candidate that lost its swap references nothing and leaks a container unless retired"
             );
         h.Registry.TryGetSessionById(candidate, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task LostSwap_ReconcilesTheWinnerToTheNewSelection()
+    {
+        // The other half of the CAS-loss story from LostSwap_RetiresTheUncommittedCandidate above:
+        // retiring the losing candidate is only half the job when what beat it into the slot is a
+        // session that does not reflect the new selection. Dropping the partition there leaves that
+        // foreign winner published indefinitely - the store says the migration completed, and the
+        // session actually served does not match it. The lost partition must be folded into the single
+        // post-commit reconcile pass so the winner itself gets checked and, if it does not reflect the
+        // selection, replaced.
+        await using var h = CreateHarness();
+        var workspace = await SeedWorkspaceAsync(h, ["official"]);
+        _ = await SeedSessionAsync(h, workspace, "app-a");
+
+        h.Gateway.HoldCreatesFor("app-a");
+        var updateTask = h.Service.ApplyPluginSelectionUpdateAsync(
+            workspace.Id,
+            Update(["official"], [SelectedPlugin], revision: 0)
+        );
+        await h.Gateway.WaitForHeldCreatesAsync(1);
+
+        // A competing writer republishes the partition while this batch's own candidate is still being
+        // built - the exact CAS-loss window LostSwap_RetiresTheUncommittedCandidate forces from the
+        // other side. Materialized with a real resolve immediately after: SnapshotPluginSelectionPartitions
+        // skips a Lazy whose value was never accessed, and a genuine competing resolve would not leave
+        // it that way either.
+        var partition = h
+            .Registry.SnapshotPluginSelectionPartitions(workspace.Id)
+            .Single(candidate => candidate.Key.AppId == "app-a");
+        var winner = partition.Session with { SessionId = "winner-session" };
+        h.Registry.SwapPluginSelectionSessions([(partition, winner)]).Should().BeEmpty();
+        _ = await h.Registry.GetOrCreateSessionAsync(
+            new WorkspaceRef(workspace.Id),
+            credential: CredentialFor("app-a")
+        );
+
+        h.Gateway.ReleaseCreatesFor("app-a");
+        var updated = await updateTask.WaitAsync(TimeSpan.FromSeconds(30));
+
+        updated.PluginsRevision.Should().Be(1, "the persisted half of the migration still committed");
+
+        var resolved = await h.Registry.GetOrCreateSessionAsync(
+            new WorkspaceRef(workspace.Id),
+            credential: CredentialFor("app-a")
+        );
+        resolved
+            .SessionId.Should()
+            .NotBe(
+                "winner-session",
+                "a partition that lost its swap must still be reconciled to the new selection, "
+                    + "not left on whoever happened to win it"
+            );
     }
 
     [Fact]
