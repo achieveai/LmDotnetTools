@@ -257,6 +257,24 @@ public sealed class ChatWebSocketManager
                 return;
             }
 
+            catch (AgentNotPooledException ex)
+            {
+                // Setup calls GetOrCreateAgent and then EnsureCurrentAgentAsync, and a grantee handoff
+                // removing the entry between those two lines - or inside the refresh's own await on the
+                // live-session resolver - leaves the second call with nothing to refresh. The
+                // per-message path already answers this; without the same catch here a connect landing
+                // in that window aborts frameless, which is the failure #399 set out to remove. Same
+                // answer as the message path: tell the client its agent is gone and close cleanly, so
+                // it reconnects instead of guessing.
+                _logger.LogInformation(
+                    ex,
+                    "Connection setup for thread {ThreadId} met a released agent; closing so the client reconnects",
+                    threadId);
+
+                await SendAgentReleasedAsync(connection, recordWriter, cancellationToken);
+                return;
+            }
+
             // Create linked cancellation for connection lifetime
             using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
@@ -1024,15 +1042,7 @@ public sealed class ChatWebSocketManager
                 "Message for thread {ThreadId} arrived while its pooled agent was being handed off; closing so the client reconnects",
                 threadId
             );
-            var released = JsonSerializer.Serialize(new Dictionary<string, string>
-            {
-                ["$type"] = "sandbox_session_refresh",
-            });
-            _ = await connection.TrySendTextAsync(released, ct).ConfigureAwait(false);
-            await connection.TryCloseAsync(
-                WebSocketCloseStatus.NormalClosure,
-                "Agent released",
-                ct).ConfigureAwait(false);
+            await SendAgentReleasedAsync(connection, recordWriter: null, ct).ConfigureAwait(false);
         }
         catch (JsonException ex)
         {
@@ -1540,6 +1550,39 @@ public sealed class ChatWebSocketManager
             WebSocketCloseStatus.NormalClosure,
             "Sandbox unavailable",
             CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Tells a client its pooled agent is gone and closes the socket normally, so it reconnects onto
+    /// whatever agent the thread now has.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately the SAME frame a replaced sandbox session sends: from the client's side the two are
+    /// one situation - "the thing you were talking to is no longer there, reconnect" - and giving it a
+    /// second name would buy a second branch that behaves identically. What it must never be is silence:
+    /// an unhandled release aborts the socket, and an abort is indistinguishable from the network
+    /// dropping.
+    /// </remarks>
+    private static async Task SendAgentReleasedAsync(
+        RegisteredWebSocketConnection connection,
+        StreamWriter? recordWriter,
+        CancellationToken ct)
+    {
+        var json = JsonSerializer.Serialize(new Dictionary<string, string>
+        {
+            ["$type"] = "sandbox_session_refresh",
+        });
+
+        if (await connection.TrySendTextAsync(json, ct).ConfigureAwait(false) && recordWriter != null)
+        {
+            await recordWriter.WriteLineAsync(json);
+            await recordWriter.FlushAsync();
+        }
+
+        await connection.TryCloseAsync(
+            WebSocketCloseStatus.NormalClosure,
+            "Agent released",
+            ct).ConfigureAwait(false);
     }
 
     private async Task SendPrincipalConflictErrorAsync(

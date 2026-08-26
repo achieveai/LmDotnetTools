@@ -1,3 +1,4 @@
+using System.Net.WebSockets;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.TestDoubles;
 using LmStreaming.Sample.WebSocket;
@@ -49,17 +50,23 @@ public sealed class ChatWebSocketManagerPrincipalHandoffTests
 
         socket.EnqueueTextFrame(/*lang=json,strict*/ """{"Message":"still here?"}""");
 
-        await socket.WaitUntilAsync(() => socket.SentContains("principal_conflict"), cts.Token);
+        // The trailing quote is load-bearing: matching the bare code would also match any longer code
+        // that merely starts with it, which is how a frame-type assertion quietly stops discriminating.
+        await socket.WaitUntilAsync(
+            () => socket.SentContains("\"code\":\"principal_conflict\""), cts.Token);
 
         // The refusal must not name the other user. This connection was never authorized to learn who
         // else uses the conversation, and trading an abort for a leak would not be a fix.
         _ = socket.SentFrames.Should().NotContain(frame => frame.Contains(Bob, StringComparison.Ordinal));
 
         // The connection ends by closing, not by throwing: an exception here escapes to the host and
-        // the client sees a bare disconnect no matter what frame preceded it.
+        // the client sees a bare disconnect no matter what frame preceded it. CloseAsyncCalled alone
+        // does not say that - a close carrying an error status is still an abort as far as the client
+        // is concerned, so the STATUS is what the assertion has to name.
         await cts.CancelAsync();
         await handlerTask;
         _ = socket.CloseAsyncCalled.Should().BeTrue();
+        _ = socket.LastCloseStatus.Should().Be(WebSocketCloseStatus.NormalClosure);
     }
 
     [Fact]
@@ -82,11 +89,79 @@ public sealed class ChatWebSocketManagerPrincipalHandoffTests
 
         // Same answer a replaced sandbox session gets, for the same reason: the client's agent is gone,
         // so it must reconnect. What it must NOT get is the connection dying with nothing said.
-        await socket.WaitUntilAsync(() => socket.SentContains("sandbox_session_refresh"), cts.Token);
+        // Matched with its closing quote, so this cannot be satisfied by the DIFFERENT frame the
+        // deferred-refresh path emits: "sandbox_session_refresh" is a prefix of
+        // "sandbox_session_refresh_deferred", and a substring match would accept either.
+        await socket.WaitUntilAsync(
+            () => socket.SentContains("\"$type\":\"sandbox_session_refresh\""),
+            cts.Token);
 
         await cts.CancelAsync();
         await handlerTask;
         _ = socket.CloseAsyncCalled.Should().BeTrue();
+        _ = socket.LastCloseStatus.Should().Be(WebSocketCloseStatus.NormalClosure);
+    }
+
+    /// <summary>
+    /// The same release, met during CONNECTION SETUP rather than on a later message. Setup calls
+    /// <c>GetOrCreateAgent</c> and then <c>EnsureCurrentAgentAsync</c>; a handoff removing the entry in
+    /// between - or, as here, while the refresh is awaiting the live-session resolver - leaves the
+    /// second call with nothing to refresh.
+    /// </summary>
+    /// <remarks>
+    /// The connect-time catch list already handles the principal conflict and the credential conflict.
+    /// This is the third exception the same window can produce, and it was the one that still aborted
+    /// the socket frameless. The resolver is the seam that makes the race deterministic: it removes the
+    /// entry and then reports a DIFFERENT session id, so the refresh is obliged to look the entry up a
+    /// second time and finds it gone.
+    /// </remarks>
+    [Fact]
+    public async Task AConnectionSetupThatMeetsAReleasedAgent_ClosesCleanly_NotAnAbort()
+    {
+        const string threadId = "handoff-at-connect";
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        MultiTurnAgentPool? pool = null;
+        var binding = new SandboxEstablishedBinding(
+            new WorkspaceRef("ws-handoff"),
+            new SandboxCredential("test-app", string.Empty),
+            SessionId: "session-before");
+
+        // Typed local rather than an inline lambda: the pool has a four-arg factory overload too, and
+        // naming the delegate is what picks the context-shaped one without an explicit parameter type.
+        Func<MultiTurnAgentPool.AgentCreationContext, MultiTurnAgentPool.AgentCreationResult> factory =
+            ctx => new MultiTurnAgentPool.AgentCreationResult(
+                new FakeMultiTurnAgent(ctx.ThreadId) { KeepSubscriptionOpen = true })
+            {
+                StagedBinding = binding,
+            };
+
+        pool = new MultiTurnAgentPool(
+            factory,
+            providerRegistry: null,
+            conversationStore: null,
+            NullLogger<MultiTurnAgentPool>.Instance,
+            bindingSink: null,
+            liveSessionResolver: async (_, _) =>
+            {
+                // The grantee handoff, landing exactly inside the refresh's await.
+                await pool!.RemoveAgentAsync(threadId);
+                return new SandboxSession("ws-handoff", "session-after", "/w", "/host");
+            });
+
+        await using (pool)
+        {
+            var socket = new FakeWebSocket();
+            var handlerTask = Connect(pool, socket, threadId, Alice, cts.Token);
+
+            await socket.WaitUntilAsync(
+                () => socket.SentContains("\"$type\":\"sandbox_session_refresh\""),
+                cts.Token);
+
+            await handlerTask;
+            _ = socket.CloseAsyncCalled.Should().BeTrue();
+            _ = socket.LastCloseStatus.Should().Be(WebSocketCloseStatus.NormalClosure);
+        }
     }
 
     /// <summary>The mode a conversation gets when nothing pinned one - what these threads run under.</summary>
