@@ -73,8 +73,11 @@ public sealed partial class SandboxClient
                 // Pass the CALLER's ct (so genuine caller cancellation still surfaces as OCE) AND this
                 // call's already-running whole-call CTS as the read budget, so the error-body parse shares
                 // the SAME single TransportTimeout the headers consumed — the whole download is bounded by
-                // one deadline, never two composed back-to-back.
-                throw await MapDirectErrorAsync(response, operation, sessionId, ct, timeoutCts.Token).ConfigureAwait(false);
+                // one deadline, never two composed back-to-back. The operationId rides along for the same
+                // reason the sibling exits below stamp it: by this point the command has already RUN, and a
+                // gateway rejection on its stdout/stderr artifact leaves the caller holding output it cannot
+                // see — the id is what lets it re-address the operation and collect that output.
+                throw await MapDirectErrorAsync(response, operation, sessionId, ct, timeoutCts.Token, operationId).ConfigureAwait(false);
             }
 
             var declaredLength = response.Content.Headers.ContentLength;

@@ -185,7 +185,11 @@ public class DirectFileTransferTests
 
         Func<Task> act = () => client.WriteTextFileAsync(Session, "bad.txt", content);
 
-        (await act.Should().ThrowAsync<ArgumentException>()).And.ParamName.Should().Be("content");
+        var thrown = await act.Should().ThrowAsync<ArgumentException>();
+        thrown.And.ParamName.Should().Be("content");
+        // The original encoder failure is preserved, not swallowed: the CHANGELOG promises callers can still
+        // reach the character index the strict encoder objected to, which lives only on the inner exception.
+        thrown.And.InnerException.Should().BeOfType<EncoderFallbackException>();
         // Refused before anything left the process: the target file is untouched and no PUT was issued.
         handler.Requests.Should().NotContain(r => r.Method == HttpMethod.Put);
     }

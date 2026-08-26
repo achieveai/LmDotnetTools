@@ -496,6 +496,76 @@ public sealed class OperationExecuteTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_SubmitCannotReachGateway_CarriesTheOperationId()
+    {
+        const string sessionId = "sess-unreachable";
+        const string operationId = "op-unreachable";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 2);
+        // A submit that never reaches the gateway is the MOST ambiguous exit of all: the SDK cannot know
+        // whether the connection died before or after the operation was created, so the recovery handle is
+        // the caller's only way to find out. A transport fault is not a response, so this arrives as an
+        // HttpRequestException rather than a status code.
+        handler.On(
+            req => req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
+            _ => throw new HttpRequestException("connection reset by peer")
+        );
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["git", "push"], operationId: operationId));
+
+        var thrown = await act.Should().ThrowAsync<SandboxException>();
+        thrown.Which.Kind.Should().Be(SandboxErrorKind.TransportTimeout);
+        thrown.Which.OperationId.Should().Be(operationId);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_PollRejectedByGateway_CarriesTheOperationId()
+    {
+        const string sessionId = "sess-poll-rejected";
+        const string operationId = "op-poll-rejected";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 4);
+        RegisterSubmit(handler, $$"""{"operation_id":"{{operationId}}","status":"running"}""");
+        // The command IS running by now, so a 5xx on the poll leaves it strictly in flight — losing the id
+        // here would strand a command the caller knows exists but can no longer address.
+        handler.On(
+            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/operations/{operationId}", StringComparison.Ordinal),
+            _ => Json("""{"error":"boom","error_code":"internal"}""", HttpStatusCode.InternalServerError)
+        );
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["git", "push"], operationId: operationId));
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.OperationId.Should().Be(operationId);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ArtifactDownloadRejectedByGateway_CarriesTheOperationId()
+    {
+        const string sessionId = "sess-artifact-rejected";
+        const string operationId = "op-artifact-rejected";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 9);
+        RegisterSubmit(
+            handler,
+            "{\"operation_id\":\""
+                + operationId
+                + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":9,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
+            HttpStatusCode.OK
+        );
+        // The command has already RUN — only fetching its recorded stdout failed. The caller must still be
+        // able to re-address the operation to collect the output it cannot see, so this exit carries the id
+        // exactly like the submit and poll exits do.
+        handler.On(
+            req => req.Method == HttpMethod.Get && req.RequestUri!.Query.Contains("path=out", StringComparison.Ordinal),
+            _ => Json("""{"error":"artifact unavailable","error_code":"internal"}""", HttpStatusCode.ServiceUnavailable)
+        );
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["make"], operationId: operationId));
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.OperationId.Should().Be(operationId);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_CombinedOutput_IsStandardOutputThenStandardError()
     {
         const string sessionId = "sess-combined";

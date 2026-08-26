@@ -13,6 +13,11 @@ namespace AchieveAi.LmDotnetTools.Sandbox.Tests;
 /// other in the same commit — a compiled sample only protects the README while the two say the same
 /// thing. Every call in the documented catalog -&gt; create -&gt; command -&gt; file -&gt; delete flow appears
 /// here exactly once.
+/// <para>
+/// What this pins is SIGNATURES, not prose. The compiler catches a renamed method or a changed parameter
+/// list; it cannot catch the README describing behaviour the SDK no longer has. Claims about what a call
+/// DOES still need a test — or a reader who checks.
+/// </para>
 /// </remarks>
 internal static class ReadmeUsageSample
 {
@@ -70,9 +75,17 @@ internal static class ReadmeUsageSample
         {
             return await client.ExecuteAsync(sessionId, new SandboxCommand(argv));
         }
-        catch (SandboxException ex) when (ex.OperationId is { } operationId)
+        catch (SandboxException ex)
+            when (ex.OperationId is { } operationId
+                && ex.Kind is SandboxErrorKind.TransportTimeout or SandboxErrorKind.Unavailable
+            )
         {
-            // Re-poll the SAME operation rather than running a side-effecting command a second time.
+            // Gate on Kind, not merely on the id being present. The id is stamped on DETERMINISTIC failures
+            // too (a 403, a refused redirect) — re-issuing those just fails again, and for a side-effecting
+            // command like `git push` a blind retry loop is exactly the wrong reflex. Only an AMBIGUOUS
+            // failure, where the response was lost and the command may or may not have run, is worth
+            // re-issuing: passing the same operation id makes the gateway replay the existing operation
+            // rather than run the push a second time.
             return await client.ExecuteAsync(sessionId, new SandboxCommand(argv, operationId: operationId));
         }
     }
