@@ -256,6 +256,47 @@ public class AnthropicResponse_ToMessages_Tests
         return events;
     }
 
+    [Fact]
+    public void NonStreaming_Usage_PreservesCacheReadAndCacheCreationTokens()
+    {
+        // The non-streaming ToMessages path built a bare Usage from input/output only, dropping the cache
+        // read (cached) and cache creation (cache-write) counts — while the streaming parser preserves both.
+        // Streaming and non-streaming must agree, so the accounting layer sees the same cache details (#116).
+        const string json = """
+            {
+              "id": "msg_cache",
+              "type": "message",
+              "role": "assistant",
+              "model": "claude-3-7-sonnet",
+              "content": [ { "type": "text", "text": "hello" } ],
+              "stop_reason": "end_turn",
+              "usage": {
+                "input_tokens": 1000,
+                "output_tokens": 200,
+                "cache_read_input_tokens": 800,
+                "cache_creation_input_tokens": 300
+              }
+            }
+            """;
+        var response =
+            JsonSerializer.Deserialize<AnthropicResponse>(
+                json,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true }
+            ) ?? throw new InvalidOperationException("Failed to deserialize response");
+
+        var messages = response.ToMessages("test-agent");
+
+        var usageMessage = Assert.IsType<UsageMessage>(messages.Single(m => m is UsageMessage));
+        var usage = usageMessage.Usage;
+        Assert.NotNull(usage);
+        Assert.Equal(1000, usage.PromptTokens);
+        Assert.Equal(200, usage.CompletionTokens);
+        // Cache-read tokens surface through the nested InputTokenDetails (TotalCachedTokens reads it).
+        Assert.Equal(800, usage.TotalCachedTokens);
+        // Cache-creation tokens surface as an ExtraProperty, exactly like the streaming parser.
+        Assert.Equal(300, usage.GetExtraProperty<int>("cache_creation_input_tokens"));
+    }
+
     // Simple class to represent an SSE event
     private class SseEvent
     {

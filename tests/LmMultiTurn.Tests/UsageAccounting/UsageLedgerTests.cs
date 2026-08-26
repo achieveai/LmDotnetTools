@@ -224,6 +224,64 @@ public class UsageLedgerTests
         rebuilt.Snapshot().FoldedRevision.Should().BeGreaterThan(originalSnapshot.FoldedRevision);
     }
 
+    [Fact]
+    public void SeedFromRecords_DerivesProvenance_FromPopulatedCost_OnLegacyRows()
+    {
+        // A usage row persisted before CostProvenance existed (#367) has no such field in its JSON, so it
+        // deserializes to the default Unavailable — even when a real cost sits right beside it. Seeding must
+        // re-derive the provenance from which cost field is populated rather than restoring the misleading
+        // default verbatim (#393). Provider-reported is the higher-information source and wins over estimate.
+        var legacyReported =
+            Obs("a1", "model-A", input: 100, output: 40) with
+            {
+                ProviderReportedCostMicros = 5000,
+                CostProvenance = CostProvenance.Unavailable,
+            };
+        var legacyEstimated =
+            Obs("a2", "model-B", input: 10, output: 5) with
+            {
+                EstimatedPublicCostMicros = 1200,
+                CostProvenance = CostProvenance.Unavailable,
+            };
+        var legacyBoth =
+            Obs("a3", "model-C", input: 20, output: 10) with
+            {
+                EstimatedPublicCostMicros = 1200,
+                ProviderReportedCostMicros = 900,
+                CostProvenance = CostProvenance.Unavailable,
+            };
+        var genuinelyUnpriced = Obs("a4", "model-D", input: 5, output: 5);
+
+        var ledger = new UsageLedger("conv-1");
+        ledger.SeedFromRecords([legacyReported, legacyEstimated, legacyBoth, genuinelyUnpriced], foldedRevision: 4);
+
+        var seeded = ledger.SnapshotRecords();
+        seeded.Single(r => r.ProviderAttemptId == "a1").CostProvenance.Should().Be(CostProvenance.ProviderReported);
+        seeded.Single(r => r.ProviderAttemptId == "a2").CostProvenance.Should().Be(CostProvenance.PublicEstimate);
+        seeded.Single(r => r.ProviderAttemptId == "a3").CostProvenance.Should().Be(CostProvenance.ProviderReported);
+        // A row with no cost at all stays Unavailable — there is nothing to derive from.
+        seeded.Single(r => r.ProviderAttemptId == "a4").CostProvenance.Should().Be(CostProvenance.Unavailable);
+    }
+
+    [Fact]
+    public void SeedFromRecords_DoesNotDowngradeAnAlreadyStampedProvenance()
+    {
+        // Derivation fires only on the Unavailable default. A row that already carries an explicit provenance
+        // is trusted as-is, even if a different cost field also happens to be populated.
+        var alreadyEstimate =
+            Obs("a1", "model-A", input: 100, output: 40) with
+            {
+                EstimatedPublicCostMicros = 1200,
+                ProviderReportedCostMicros = 5000,
+                CostProvenance = CostProvenance.PublicEstimate,
+            };
+
+        var ledger = new UsageLedger("conv-1");
+        ledger.SeedFromRecords([alreadyEstimate], foldedRevision: 1);
+
+        ledger.SnapshotRecords().Single().CostProvenance.Should().Be(CostProvenance.PublicEstimate);
+    }
+
     private sealed class StubResolver(string model, decimal promptPerMillion, decimal completionPerMillion)
         : IPricingResolver
     {

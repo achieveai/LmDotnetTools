@@ -565,6 +565,11 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
             var totalTokens = GetIntValue(usageDict, "total_tokens");
             var totalCost = GetDoubleValue(usageDict, "total_cost");
 
+            // Carry the nested cached/reasoning detail through the inline path — a plain flat parse dropped
+            // it, so any cache hit surfaced through OpenRouter inline usage was silently lost (#116).
+            var cachedTokens = GetNestedIntValue(usageDict, "prompt_tokens_details", "cached_tokens");
+            var reasoningTokens = GetNestedIntValue(usageDict, "completion_tokens_details", "reasoning_tokens");
+
             return new Usage
             {
                 PromptTokens = promptTokens,
@@ -572,7 +577,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
                 TotalTokens = totalTokens > 0 ? totalTokens : promptTokens + completionTokens,
                 TotalCost = totalCost,
                 ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add("source", "inline"),
-            };
+            }.WithTokenDetails(cachedTokens, reasoningTokens);
         }
         catch
         {
@@ -592,6 +597,33 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
                 _ => 0,
             }
             : 0;
+    }
+
+    /// <summary>
+    ///     Reads an int from a nested object under <paramref name="outerKey" /> → <paramref name="innerKey" />,
+    ///     tolerating the two shapes an inline usage dictionary can take: a nested
+    ///     <see cref="Dictionary{TKey, TValue}" /> (already materialized) or a <see cref="JsonElement" />
+    ///     object (raw JSON). Returns 0 when absent or not an object.
+    /// </summary>
+    private static int GetNestedIntValue(Dictionary<string, object?> dict, string outerKey, string innerKey)
+    {
+        if (!dict.TryGetValue(outerKey, out var nested) || nested is null)
+        {
+            return 0;
+        }
+
+        return nested switch
+        {
+            Dictionary<string, object?> nestedDict => GetIntValue(nestedDict, innerKey),
+            JsonElement { ValueKind: JsonValueKind.Object } element when element.TryGetProperty(innerKey, out var inner) =>
+                inner.ValueKind switch
+                {
+                    JsonValueKind.Number => inner.GetInt32(),
+                    JsonValueKind.String when int.TryParse(inner.GetString(), out var parsed) => parsed,
+                    _ => 0,
+                },
+            _ => 0,
+        };
     }
 
     private static double? GetDoubleValue(Dictionary<string, object?> dict, string key)
@@ -1013,6 +1045,11 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
             CompletionTokens = finalCompletionTokens,
             TotalTokens = finalTotalTokens,
             TotalCost = finalCost,
+            // The OpenRouter generation-stats endpoint reports no cached/reasoning detail, so a plain
+            // reconstruction here dropped whatever the existing usage carried. Preserve the nested details —
+            // prefer the incoming usage's when present, else keep the existing usage's (#116).
+            InputTokenDetails = newUsage.InputTokenDetails ?? existingUsage.InputTokenDetails,
+            OutputTokenDetails = newUsage.OutputTokenDetails ?? existingUsage.OutputTokenDetails,
             ExtraProperties = MergeExtraProperties(
                 existingUsage.ExtraProperties,
                 newUsage.ExtraProperties,

@@ -36,6 +36,11 @@ public class ConversationUsageMessageTests
                 InputTokens = 50,
                 CacheReadTokens = 70,
                 OutputTokens = 10,
+                // Both models are priced so the (strict) conversation cost fold sums across them rather than
+                // collapsing to null — the mixed priced/unpriced case is owned by
+                // ConversationUsageAggregateTests.Fold_MixedPricing_* (#377). This suite exercises the
+                // token/uncached-input projection, so it keeps a concrete non-null cost flowing through.
+                EstimatedPublicCostMicros = 500,
             },
         };
 
@@ -58,7 +63,7 @@ public class ConversationUsageMessageTests
         // 70 (m1: 100-30) + 50 (m2: cacheRead 70 > input 50 -> full input) = 120
         Assert.Equal(120, frame.UncachedInputTokens);
         Assert.Equal("Complete", frame.Completeness);
-        Assert.Equal(1234, frame.EstimatedCostMicros);
+        Assert.Equal(1734, frame.EstimatedCostMicros); // 1234 (m1) + 500 (m2)
         Assert.Null(frame.ProviderReportedCostMicros);
     }
 
@@ -93,7 +98,7 @@ public class ConversationUsageMessageTests
         var frame = Assert.IsType<ConversationUsageMessage>(restored);
         Assert.Equal(200, frame.TotalTokens);
         Assert.Equal(120, frame.UncachedInputTokens);
-        Assert.Equal(1234, frame.EstimatedCostMicros);
+        Assert.Equal(1734, frame.EstimatedCostMicros); // 1234 (m1) + 500 (m2)
         Assert.Equal("Complete", frame.Completeness);
     }
 }

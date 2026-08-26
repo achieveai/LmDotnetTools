@@ -86,10 +86,16 @@ public sealed record ConversationUsageAggregate
     /// <summary>Grand total tokens across all models.</summary>
     public long TotalTokens { get; init; }
 
-    /// <summary>Grand known-cost subtotal for the public estimate, or null when none is known.</summary>
+    /// <summary>
+    ///     Grand public-estimate cost across all models, or null when <b>any</b> model is unpriced — a strict
+    ///     fold, so this is never a confident number that silently omits an unpriced model (#377).
+    /// </summary>
     public long? EstimatedPublicCostMicros { get; init; }
 
-    /// <summary>Grand known-cost subtotal for provider-reported cost, or null when none is known.</summary>
+    /// <summary>
+    ///     Grand provider-reported cost across all models, or null when <b>any</b> model lacks a reported
+    ///     cost — a strict fold, for the same reason as <see cref="EstimatedPublicCostMicros" /> (#377).
+    /// </summary>
     public long? ProviderReportedCostMicros { get; init; }
 
     /// <summary>ISO currency code for the cost figures.</summary>
@@ -137,8 +143,8 @@ public sealed record ConversationUsageAggregate
             Completeness = completeness,
             PerModel = perModel,
             TotalTokens = perModel.Sum(m => m.TotalTokens),
-            EstimatedPublicCostMicros = SumKnown(perModel.Select(m => m.EstimatedPublicCostMicros)),
-            ProviderReportedCostMicros = SumKnown(perModel.Select(m => m.ProviderReportedCostMicros)),
+            EstimatedPublicCostMicros = SumStrict(perModel.Select(m => m.EstimatedPublicCostMicros)),
+            ProviderReportedCostMicros = SumStrict(perModel.Select(m => m.ProviderReportedCostMicros)),
         };
     }
 
@@ -194,5 +200,34 @@ public sealed record ConversationUsageAggregate
         }
 
         return anyKnown ? sum : null;
+    }
+
+    /// <summary>
+    ///     Sums cost figures across a set of components strictly: any single null poisons the whole total,
+    ///     so the result is null unless <b>every</b> component is known. Used to fold the per-model cost
+    ///     subtotals into the conversation total — a conversation that used a priced model and an unpriced
+    ///     one must surface <c>null</c> ("cost incomplete"), never a confident number that silently omits the
+    ///     unpriced model. For a cost figure the failure direction matters: an under-count reads as "cheaper
+    ///     than it was" and goes unquestioned, whereas an absent total is visible and recoverable (#377). The
+    ///     per-attempt subtotal within a single model deliberately keeps <see cref="SumKnown" /> — pricing is
+    ///     a property of the model, so an attempt-level null is a missing observation of a known-priced model,
+    ///     not an unpriced one.
+    /// </summary>
+    private static long? SumStrict(IEnumerable<long?> values)
+    {
+        long sum = 0;
+        var any = false;
+        foreach (var value in values)
+        {
+            if (!value.HasValue)
+            {
+                return null;
+            }
+
+            sum += value.Value;
+            any = true;
+        }
+
+        return any ? sum : null;
     }
 }

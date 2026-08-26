@@ -697,6 +697,120 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
     }
 
     [Fact]
+    public async Task InvokeStreamingAsync_ExistingUsageWithCacheDetails_PreservesThemThroughMerge()
+    {
+        // The OpenRouter generation-stats endpoint reports no cached/reasoning detail. When the middleware
+        // merges its cost stats into an existing usage that DID carry those details, the merge must preserve
+        // them — MergeUsageData reconstructed a bare Usage and dropped the nested details (#116).
+        const string completionId = "chatcmpl-cache-merge";
+
+        var generationResponse = CreateOpenRouterGenerationResponse("openai/gpt-4", 25, 12, 0.001425);
+        var httpHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(generationResponse);
+        var httpClient = new HttpClient(httpHandler);
+
+        var existingUsageMessage = new UsageMessage
+        {
+            Usage = new Usage
+            {
+                PromptTokens = 25,
+                CompletionTokens = 12,
+                TotalTokens = 37,
+                TotalCost = null,
+            }.WithTokenDetails(cachedTokens: 20, reasoningTokens: 8),
+            Role = Role.Assistant,
+            FromAgent = "test-agent",
+            GenerationId = completionId,
+        };
+
+        var messages = new List<IMessage>
+        {
+            new TextMessage { Role = Role.User, Text = "Hello!" },
+            existingUsageMessage,
+        };
+
+        var fakeAgent = new FakeStreamingAgent(messages);
+        var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
+
+        var context = new MiddlewareContext(
+            [new TextMessage { Role = Role.User, Text = "Hello" }],
+            new GenerateReplyOptions()
+        );
+
+        var messageStream = await middleware.InvokeStreamingAsync(context, fakeAgent);
+        var result = new List<IMessage>();
+        await foreach (var message in messageStream)
+        {
+            result.Add(message);
+        }
+
+        var finalUsageMessage = result.OfType<UsageMessage>().Last();
+
+        // The merge added the OpenRouter cost...
+        Assert.Equal(0.001425, finalUsageMessage.Usage.TotalCost);
+        // ...without dropping the cache/reasoning details the existing usage already carried.
+        Assert.Equal(20, finalUsageMessage.Usage.TotalCachedTokens);
+        Assert.Equal(8, finalUsageMessage.Usage.TotalReasoningTokens);
+    }
+
+    [Fact]
+    public async Task InlineUsageDictionary_WithNestedDetails_PreservesCachedAndReasoning()
+    {
+        // Inline OpenRouter usage that arrives as a raw JSON dictionary carries nested
+        // prompt_tokens_details / completion_tokens_details. ParseUsageFromDictionary read only the flat
+        // counts and dropped the nested cached/reasoning detail (#116).
+        const string completionId = "chatcmpl-inline-nested";
+
+        var inlineUsageDict = new Dictionary<string, object?>
+        {
+            ["prompt_tokens"] = 100,
+            ["completion_tokens"] = 50,
+            ["total_tokens"] = 150,
+            ["total_cost"] = 0.004,
+            ["prompt_tokens_details"] = new Dictionary<string, object?> { ["cached_tokens"] = 40 },
+            ["completion_tokens_details"] = new Dictionary<string, object?> { ["reasoning_tokens"] = 15 },
+        };
+
+        var metadata = ImmutableDictionary<string, object>
+            .Empty.Add("completion_id", completionId)
+            .Add("inline_usage", inlineUsageDict);
+
+        var messages = new List<IMessage>
+        {
+            new TextMessage { Role = Role.User, Text = "Hello" },
+            new TextMessage
+            {
+                Role = Role.Assistant,
+                Text = "Hi",
+                GenerationId = completionId,
+                Metadata = metadata,
+            },
+        };
+
+        // Inline usage carries its own cost, so the HTTP fallback must never be needed.
+        var httpHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler("{}", HttpStatusCode.InternalServerError);
+        var httpClient = new HttpClient(httpHandler);
+        var fakeAgent = new FakeStreamingAgent(messages);
+        var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
+
+        var context = new MiddlewareContext(
+            [new TextMessage { Role = Role.User, Text = "Hello" }],
+            new GenerateReplyOptions()
+        );
+
+        var messageStream = await middleware.InvokeStreamingAsync(context, fakeAgent);
+        var result = new List<IMessage>();
+        await foreach (var message in messageStream)
+        {
+            result.Add(message);
+        }
+
+        var usage = result.OfType<UsageMessage>().Last().Usage;
+        Assert.Equal(100, usage.PromptTokens);
+        Assert.Equal(40, usage.TotalCachedTokens);
+        Assert.Equal(15, usage.TotalReasoningTokens);
+    }
+
+    [Fact]
     public async Task InvokeStreamingAsync_WithTokenDiscrepancies_ShouldLogWarningsAndUseOpenRouterValues()
     {
         // Arrange: Setup OpenRouter response with different token counts than existing usage
