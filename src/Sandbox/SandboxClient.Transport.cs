@@ -19,6 +19,15 @@ public sealed partial class SandboxClient
     internal const long MaxDirectReadBytes = 64L * 1024 * 1024;
 
     /// <summary>
+    /// Arms ONE per-call transport budget: a <see cref="CancellationTokenSource"/> that cancels after
+    /// <see cref="SandboxClientOptions.TransportTimeout"/> measured on <see cref="TransportClock"/>.
+    /// On the default system clock this is exactly the old <c>CancelAfter</c> behavior; a test that
+    /// injects a manual clock can instead fire the expiry deterministically. Callers link the returned
+    /// source's token with the caller's own token and must dispose both.
+    /// </summary>
+    private CancellationTokenSource StartTransportBudget() => new(_options.TransportTimeout, TransportClock);
+
+    /// <summary>
     /// Sends a session-scoped direct-API <c>GET</c> whose response body the SDK materializes whole (a file
     /// body or a command stdout/stderr artifact) and returns those bytes, BOUNDED in both size and time.
     /// Unlike <see cref="SendDirectAsync"/> (which buffers the whole body under
@@ -51,8 +60,8 @@ public sealed partial class SandboxClient
         StampAuthHeaders(request);
         _ = request.Headers.TryAddWithoutValidation(SessionIdHeader, sessionId);
 
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeoutCts.CancelAfter(_options.TransportTimeout);
+        using var budgetCts = StartTransportBudget();
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct, budgetCts.Token);
         try
         {
             using var response = await Transport
@@ -205,8 +214,8 @@ public sealed partial class SandboxClient
             _ = request.Headers.TryAddWithoutValidation(SessionIdHeader, sessionId);
         }
 
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeoutCts.CancelAfter(_options.TransportTimeout);
+        using var budgetCts = StartTransportBudget();
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct, budgetCts.Token);
         HttpResponseMessage? response = null;
         try
         {
@@ -386,8 +395,8 @@ public sealed partial class SandboxClient
         StampAuthHeaders(request);
         _ = request.Headers.TryAddWithoutValidation(SessionIdHeader, sessionId);
 
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeoutCts.CancelAfter(_options.TransportTimeout);
+        using var budgetCts = StartTransportBudget();
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct, budgetCts.Token);
         try
         {
             // ResponseContentRead: SendAsync completes only once the entire body is buffered, so the
@@ -483,13 +492,8 @@ public sealed partial class SandboxClient
             // Link to the caller's token so a caller cancel trips IMMEDIATELY. When the caller (the download
             // path) supplies its already-running whole-call CTS, the read shares that ONE deadline (headers +
             // error body bounded together); otherwise impose the SDK's transport deadline here.
-            using var bodyCts = readBudget is { } budget
-                ? CancellationTokenSource.CreateLinkedTokenSource(callerToken, budget)
-                : CancellationTokenSource.CreateLinkedTokenSource(callerToken);
-            if (readBudget is null)
-            {
-                bodyCts.CancelAfter(_options.TransportTimeout);
-            }
+            using var bodyBudgetCts = readBudget is null ? StartTransportBudget() : null;
+            using var bodyCts = CancellationTokenSource.CreateLinkedTokenSource(callerToken, readBudget ?? bodyBudgetCts!.Token);
 
             var error = await response.Content.ReadFromJsonAsync<GatewayErrorDto>(SandboxJson.RestOptions, bodyCts.Token).ConfigureAwait(false);
             errorCode = error?.ErrorCode;
@@ -600,8 +604,8 @@ public sealed partial class SandboxClient
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         using var request = new HttpRequestMessage(HttpMethod.Get, ResolveRequestUri("health"));
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeoutCts.CancelAfter(_options.TransportTimeout);
+        using var budgetCts = StartTransportBudget();
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct, budgetCts.Token);
         try
         {
             using var response = await Transport.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
