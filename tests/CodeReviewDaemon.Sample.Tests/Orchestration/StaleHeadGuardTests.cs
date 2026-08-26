@@ -6,6 +6,7 @@ using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
+using CodeReviewDaemon.Sample.Workspace;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -203,6 +204,156 @@ public sealed class StaleHeadGuardTests
 
     /// <summary>The head-read swallow's own log line — the observable that separates it from a real cancel.</summary>
     private const string TimedOutHeadReadLog = "current head from github timed out while the daemon was not";
+
+    [Fact]
+    public async Task HeadMovesBetweenReviewedAndPosted_PublishesNothing_AndStillCleansUp()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        // The residual window #414 accepted: synthesis passed the guard, then the branch was force-pushed
+        // before the terminal stage ran. Publishing now attributes findings to code the PR no longer contains.
+        var provider = new MockPrProvider("github", [], Cursor()) { CurrentHeadSha = "head-after-force-push" };
+        var publisher = new FakeReviewCommentPublisher("github");
+        var provisioner = new RecordingProvisioner();
+        var executor = BuildPostingExecutor(store, publisher, [provider], provisioner);
+        var run = SeedRunReadyToPost(store, headSha: "head-before-force-push");
+
+        await executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        provider.HeadShaCalls.Should().Be(1, "only the host can contradict the recorded head at this boundary");
+        publisher.PostCount.Should().Be(0, "the publisher is the last thing between a stale review and the author");
+        store.GetOutboxForRun(run.Id)
+            .Should().NotContain(
+                o => o.Operation == ReviewPoster.PostReviewCommentOperation,
+                "a refusal must not leave a delivery row claiming the review reached the PR");
+        // A refusal that leaked the sandbox session would trade a stale comment for a stuck pooled slot.
+        provisioner.DestroyCalls.Should().Contain(r => r.Id == run.Id, "cleanup runs on the refusal path too");
+    }
+
+    [Fact]
+    public async Task HeadUnchangedAtThePostingBoundary_PostsExactlyOnce()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var provider = new MockPrProvider("github", [], Cursor()) { CurrentHeadSha = "head-118" };
+        var publisher = new FakeReviewCommentPublisher("github");
+        var executor = BuildPostingExecutor(store, publisher, [provider], new RecordingProvisioner());
+        var run = SeedRunReadyToPost(store, headSha: "head-118");
+
+        await executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        // The re-check must not cost a legitimate delivery, and must not double-post by running the poster twice.
+        provider.HeadShaCalls.Should().Be(1);
+        publisher.PostCount.Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task AnIndeterminateAnswerAtThePostingBoundary_StillPosts(bool hostUnreachable)
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        // Two indeterminate answers, one rule: a failed read is not evidence of a move. Narrowing that at the
+        // NEW site would silently discard correct reviews over a transport blip — the rule most easily lost
+        // when a guard is copied to a second boundary.
+        IPrProvider provider = hostUnreachable
+            ? new UnreachablePrProvider("github")
+            : new MockPrProvider("github", [], Cursor()) { CurrentHeadSha = null };
+        var publisher = new FakeReviewCommentPublisher("github");
+        var executor = BuildPostingExecutor(store, publisher, [provider], new RecordingProvisioner());
+        var run = SeedRunReadyToPost(store, headSha: "head-118");
+
+        await executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        publisher.PostCount.Should().Be(1);
+    }
+
+    private static DaemonReviewStageExecutor BuildPostingExecutor(
+        ReviewStore store,
+        FakeReviewCommentPublisher publisher,
+        IReadOnlyList<IPrProvider> prProviders,
+        IReviewSessionProvisioner provisioner) =>
+        new(
+            store,
+            new FakeReviewAgentLoopFactory(),
+            new FakeSandboxCommandRunner(),
+            new FakeSandboxFileSystem(),
+            // EnableHostSummaryFallback is what makes the terminal stage post at all; without it the
+            // publisher is never called and "posted nothing" would be true for the wrong reason.
+            new CodeReviewDaemonOptions
+            {
+                EnableCommentPosting = true,
+                EnableHostSummaryFallback = true,
+                EnableToolAssistedReview = true,
+            },
+            [publisher],
+            NullLoggerFactory.Instance,
+            provisioner,
+            prProviders: prProviders);
+
+    /// <summary>Seeds a run plus the <c>review</c> artifact the Posted stage reads, so that stage can be driven
+    /// directly. <c>mode: "post"</c> is what authorizes a live delivery — a collect-only run posts nothing
+    /// whatever the head says, and would prove nothing here.</summary>
+    private static ReviewRun SeedRunReadyToPost(ReviewStore store, string headSha)
+    {
+        var repoId = store.EnsureRepo(new RepoIdentity
+        {
+            Provider = "github",
+            OrgOrOwner = "achieveai",
+            RepoName = "LmDotnetTools",
+            RepoStableId = "repo-stable-1",
+        });
+        var run = store.CreateOrGetReviewRun(new ReviewRun
+        {
+            RepoId = repoId,
+            PrId = "118",
+            HeadSha = headSha,
+            BaseSha = "base-118",
+            TriggerWatermark = "wm-118",
+            ReviewKind = "full",
+            VariantId = "primary",
+            Mode = "post",
+            Stage = ReviewStage.Judged,
+            WorkflowStatus = WorkflowStatus.Running,
+            PrLifecycleState = PrLifecycleState.Open,
+        });
+
+        _ = store.AddArtifact(new ReviewArtifact
+        {
+            ReviewRunId = run.Id,
+            ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
+            ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
+            Provider = "github",
+            Payload = JsonSerializer.Serialize(new ReviewArtifactPayload("Found one thing.", "run-1", "primary")),
+        });
+
+        return run;
+    }
+
+    /// <summary>Records terminal-cleanup calls, so a refusal can be shown not to leak the session.</summary>
+    private sealed class RecordingProvisioner : IReviewSessionProvisioner
+    {
+        public List<ReviewRun> DestroyCalls { get; } = [];
+
+        public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct) =>
+            Task.FromResult<ReviewRunSession?>(new ReviewRunSession(
+                $"session-{run.Id}",
+                $"/workspace/review-run-{run.Id}",
+                new FakeSandboxCommandRunner(),
+                new FakeSandboxFileSystem()));
+
+        public Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct) =>
+            GetOrCreateAsync(run, ct);
+
+        public Task DestroyAsync(ReviewRun run, CancellationToken ct)
+        {
+            DestroyCalls.Add(run);
+            return Task.CompletedTask;
+        }
+
+        public Task DestroyAsync(long runId, CancellationToken ct) => Task.CompletedTask;
+    }
 
     private static OpaqueCursor Cursor() => new()
     {
