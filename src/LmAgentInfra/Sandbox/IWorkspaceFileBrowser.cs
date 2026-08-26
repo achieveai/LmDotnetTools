@@ -22,6 +22,41 @@ public interface IWorkspaceFileBrowser
         CancellationToken ct = default
     );
 
+    /// <summary>
+    /// Resolves a conversation thread to a LIVE sandbox workspace session for IN-PROCESS BACKGROUND
+    /// work that has no caller — no inbound request, no principal, no credential of its own. Same
+    /// resolution as <see cref="ResolveThreadWorkspaceSessionAsync"/> in every respect except that
+    /// the cross-actor provenance comparison is not performed, because there is no actor to compare.
+    /// See <see cref="SandboxSessionRegistry.ResolveThreadWorkspaceSessionForBackgroundAsync"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Never call this from a request-handling path.</b> The provenance check this skips is what
+    /// stops one app reading another app's session, and a route that reached this method would be
+    /// handing any caller the owner's session. The distinction is not "trusted vs untrusted code" —
+    /// it is whether a caller exists at all. A controller always has one, even when it is null
+    /// (null means "the interactive UI", which is a provenance, not an absence).
+    /// </para>
+    /// <para>
+    /// Its one consumer is the workspace transcript mirror (#251/#253), which writes a thread's own
+    /// record into that thread's own workspace on a drain loop. Presenting <c>null</c> there was not
+    /// the mirror claiming to be the UI, it was the mirror having nothing to say — and the registry
+    /// read that silence as a foreign claim, so an S2S-created conversation reported
+    /// <see cref="SandboxSessionResolutionOutcome.CredentialConflict"/> on every flush forever and
+    /// got no transcript at all.
+    /// </para>
+    /// <para>
+    /// This grants no new reach. The gateway call underneath uses the binding's own stored
+    /// credential either way; what changes is only whether an absent caller is mistaken for a
+    /// mismatched one.
+    /// </para>
+    /// </remarks>
+    Task<SandboxSessionResolution> ResolveThreadWorkspaceSessionForBackgroundAsync(
+        string threadId,
+        string persistedWorkspaceId,
+        CancellationToken ct = default
+    );
+
     /// <summary>Lists a workspace directory's rich entries (name/type/size/nameLossy). Propagates <see cref="SandboxException"/>.</summary>
     Task<IReadOnlyList<SandboxDirectoryEntry>> ListWorkspaceDirectoryAsync(string sessionId, string relativePath, CancellationToken ct = default);
 

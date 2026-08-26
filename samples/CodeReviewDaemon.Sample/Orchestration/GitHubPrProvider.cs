@@ -123,6 +123,38 @@ internal sealed class GitHubPrProvider : IPrProvider
     /// </summary>
     public async Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken)
     {
+        using var document = await GetPullRequestAsync(repo, prId, cancellationToken).ConfigureAwait(false);
+        return MapPrLifecycle(document.RootElement);
+    }
+
+    /// <summary>
+    /// Reads the PR's current <c>head.sha</c> from the same single-PR resource
+    /// <see cref="GetPrStateAsync"/> uses, so the currency check costs one request and no extra concept.
+    /// Returns <c>null</c> only when the payload genuinely carries no head SHA; a transport or auth failure
+    /// throws, because "unreachable" must never be reported as "nothing contradicts the recorded head".
+    /// </summary>
+    public async Task<string?> GetCurrentHeadShaAsync(
+        RepoIdentity repo, string prId, CancellationToken cancellationToken)
+    {
+        using var document = await GetPullRequestAsync(repo, prId, cancellationToken).ConfigureAwait(false);
+        if (!document.RootElement.TryGetProperty("head", out var head)
+            || !head.TryGetProperty("sha", out var sha)
+            || sha.ValueKind is not JsonValueKind.String)
+        {
+            return null;
+        }
+
+        var value = sha.GetString();
+        return string.IsNullOrWhiteSpace(value) ? null : value;
+    }
+
+    /// <summary>
+    /// <c>GET /repos/{owner}/{repo}/pulls/{number}</c> — the single-PR resource both per-PR reads parse.
+    /// The caller owns the returned document.
+    /// </summary>
+    private async Task<JsonDocument> GetPullRequestAsync(
+        RepoIdentity repo, string prId, CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(repo);
         ArgumentException.ThrowIfNullOrEmpty(prId);
 
@@ -138,11 +170,10 @@ internal sealed class GitHubPrProvider : IPrProvider
         httpRequest.Headers.Accept.ParseAdd("application/vnd.github+json");
 
         using var response = await _httpClient.SendAsync(httpRequest, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        _ = response.EnsureSuccessStatusCode();
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-        return MapPrLifecycle(document.RootElement);
+        return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
     }
 
     /// <summary>

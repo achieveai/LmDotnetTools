@@ -505,11 +505,62 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// identity, durable workspace) a live session ⇒ <see cref="SandboxSessionResolutionOutcome.Resolved"/>.</item>
     /// </list>
     /// </summary>
-    public async Task<SandboxSessionResolution> ResolveThreadWorkspaceSessionAsync(
+    public Task<SandboxSessionResolution> ResolveThreadWorkspaceSessionAsync(
         string threadId,
         string persistedWorkspaceId,
         SandboxCredential? requestCredential,
         CancellationToken ct = default
+    ) => ResolveThreadWorkspaceSessionCoreAsync(threadId, persistedWorkspaceId, requestCredential, ct);
+
+    /// <summary>
+    /// Resolves a thread's live workspace session for IN-PROCESS BACKGROUND work that has no caller.
+    /// Identical to <see cref="ResolveThreadWorkspaceSessionAsync"/> except that the cross-actor
+    /// provenance comparison is skipped, because there is no actor to compare against.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The comparison is skipped, not passed.</b> There is no credential that would satisfy it: a
+    /// background drain has no inbound request to borrow one from, and the binding's owning app id
+    /// is precisely the thing this method must not require the caller to already know. Synthesising
+    /// the owner's credential to hand back to the check would be the same code with a lie in the
+    /// middle — the honest statement is that provenance is not applicable here.
+    /// </para>
+    /// <para>
+    /// <b>Why that is safe, stated as a condition rather than as trust.</b> The provenance rule
+    /// answers "may THIS caller use the session another caller established?". It is meaningful only
+    /// when a caller exists. Every request-handling path has one — including the interactive UI,
+    /// whose <c>null</c> is a provenance and not an absence, which is exactly why null conflicts
+    /// with an S2S-owned binding rather than matching everything. This method exists for the one
+    /// shape that is not a caller at all: host code writing a thread's own data into that thread's
+    /// own workspace, off any request. That is why it is a separate method and not a nullable flag
+    /// on the existing one — a flag would sit on the request path, one bad default away from
+    /// disabling the cross-actor guard for real callers, whereas an unreferenced method cannot be
+    /// reached by accident.
+    /// </para>
+    /// <para>
+    /// <b>It grants no reach the owner did not already have.</b> The gateway call below uses
+    /// <c>binding.Credential</c> — the session's own stored credential — in both methods, so no new
+    /// privilege is minted; the workspace-id match against the persisted conversation still applies,
+    /// so a stale binding after a workspace switch is still refused; and a thread with no binding
+    /// still resolves to <see cref="SandboxSessionResolutionOutcome.NoSession"/>. The single
+    /// behavioural difference is that an absent caller is no longer mistaken for a mismatched one.
+    /// </para>
+    /// </remarks>
+    /// <param name="threadId">The conversation whose session is wanted.</param>
+    /// <param name="persistedWorkspaceId">The conversation's authoritative persisted workspace id.</param>
+    /// <param name="ct">Cancellation.</param>
+    public Task<SandboxSessionResolution> ResolveThreadWorkspaceSessionForBackgroundAsync(
+        string threadId,
+        string persistedWorkspaceId,
+        CancellationToken ct = default
+    ) => ResolveThreadWorkspaceSessionCoreAsync(threadId, persistedWorkspaceId, null, ct, compareProvenance: false);
+
+    private async Task<SandboxSessionResolution> ResolveThreadWorkspaceSessionCoreAsync(
+        string threadId,
+        string persistedWorkspaceId,
+        SandboxCredential? requestCredential,
+        CancellationToken ct,
+        bool compareProvenance = true
     )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -536,7 +587,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         // id are never conflated. The effective binding.Credential is still what the gateway call uses.
         var ownerAppId = binding.CallerCredential?.AppId;
         var callerAppId = requestCredential?.AppId;
-        if (!string.Equals(ownerAppId, callerAppId, StringComparison.Ordinal))
+        if (compareProvenance && !string.Equals(ownerAppId, callerAppId, StringComparison.Ordinal))
         {
             return new SandboxSessionResolution(
                 SandboxSessionResolutionOutcome.CredentialConflict,

@@ -112,16 +112,50 @@ public sealed class IdentityMiddleware
     /// <para>
     /// A deliberate decision, not an oversight, and a different one from
     /// <see cref="AnonymousApiPaths"/>. Those are user-facing routes that must stay reachable while
-    /// signed out. These are infrastructure callbacks that have no user and no tenant to resolve:
-    /// the sandbox gateway's deferred-auth webhook presents a per-session secret, and the lifecycle
-    /// control plane is a service-to-service surface gated behind its own signature check (and off
-    /// by default). Neither can produce a <see cref="Principal"/>, so guarding them would refuse
-    /// every legitimate caller and grant nothing.
+    /// signed out. This one is an infrastructure callback that has no user and no tenant to
+    /// resolve, and — the load-bearing half — <b>cannot produce a <see cref="Principal"/> at all</b>,
+    /// so guarding it would refuse the only caller it has and grant nothing.
     /// </para>
     /// <para>
-    /// The webhook is the sharpest case: its <c>Authorization</c> header carries a session secret,
-    /// not a JWT. The bearer handler tries to parse it, fails, stashes nothing, and the guard would
-    /// then refuse the caller for presenting the credential its own endpoint requires.
+    /// The webhook is the whole list, and it is the sharpest case: its <c>Authorization</c> header
+    /// carries a per-session secret, not a JWT. The bearer handler tries to parse it, fails, stashes
+    /// nothing, and the guard would then refuse the caller for presenting the credential its own
+    /// endpoint requires. No front door in <see cref="IRequestPrincipalSource"/> recognises a
+    /// session secret, so there is no principal to be had here at any price.
+    /// </para>
+    /// <para>
+    /// <b><c>/api/lifecycle</c> used to be here and is deliberately NOT any more (#402).</b> The
+    /// entry rested on two claims, and the second was false. The plane is indeed config-gated off by
+    /// default — but it is <i>not</i> "gated behind its own signature check":
+    /// <c>LifecycleApprovalController</c>'s own remarks state that it "does not authenticate", that
+    /// it reads <c>HttpContext.User</c> established by whatever the host wired in front of it, and
+    /// that "no subscriber-to-host signing convention exists, so nothing a caller sends to this
+    /// endpoint carries a signature for anyone to check". The plane's only signing is OUTBOUND, in
+    /// <c>HttpLifecycleDeliverySender</c>. So the carve-out bought no authority it did not already
+    /// have, and cost the one thing it did: with the routes outside the boundary, a suspended or
+    /// not-provisioned tenant's still-valid token was never answered here, reached those controllers,
+    /// and satisfied their <c>AuthenticatedAppId()</c> — which reads the raw <c>ClaimsPrincipal</c>.
+    /// <c>Identity:Enforce</c> gated the REST front door and silently did not gate this one.
+    /// </para>
+    /// <para>
+    /// Unlike the webhook, lifecycle HAS a front door that can speak for it:
+    /// <c>ServiceCallerPrincipalSource</c> turns the inbound S2S secret plus an
+    /// <c>X-Sbx-App-Id</c> registration into a tenant-bearing <c>AppOnly</c> principal. Guarding these
+    /// routes therefore refuses no caller that is onboarded under <c>Identity:Apps</c>; it only requires
+    /// that they be onboarded, which is what enforcement means everywhere else.
+    /// </para>
+    /// <para>
+    /// <b>What that does NOT yet buy, stated so nobody reads more into it.</b> Admitting the caller at
+    /// the boundary is not the same as the plane authorizing it. The principal is stashed in
+    /// <c>HttpContext.Items</c> (<see cref="IdentityHttpItems.PrincipalKey"/>); both lifecycle
+    /// controllers' <c>AuthenticatedAppId()</c> reads <c>HttpContext.User</c>, and nothing in this
+    /// repository bridges the two — the only registered scheme is JWT bearer, which the S2S headers do
+    /// not trigger. A caller presenting only those headers is thus still refused by the controllers,
+    /// precisely as it was before #402, when these routes were exempt and <c>HttpContext.User</c> was
+    /// equally unauthenticated behind them. Guarding regressed no working caller; making the plane
+    /// reachable for an S2S-only caller is a separate change (an <c>Items</c>-to-<c>User</c> bridge, or
+    /// controllers that read the principal accessor) and is not claimed here.
+    /// Recorded in <c>docs/specs/P1-identity-authorization.md</c> §4.5.
     /// </para>
     /// <para>
     /// <c>/api/auth/egress-keys</c> is deliberately NOT here. It looks like an infrastructure route
@@ -142,7 +176,6 @@ public sealed class IdentityMiddleware
     private static readonly string[] InfrastructureApiPaths =
     [
         "/api/auth/webhook",
-        "/api/lifecycle",
     ];
 
     /// <summary>

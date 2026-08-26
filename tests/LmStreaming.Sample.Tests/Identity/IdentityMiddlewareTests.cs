@@ -195,6 +195,50 @@ public sealed class IdentityMiddlewareTests
     }
 
     [Theory]
+    [InlineData("/api/lifecycle/subscriptions", PrincipalResolution.TenantNotProvisioned)]
+    [InlineData("/api/lifecycle/subscriptions", PrincipalResolution.TenantSuspended)]
+    [InlineData("/api/lifecycle/approvals/decisions", PrincipalResolution.TenantNotProvisioned)]
+    [InlineData("/api/lifecycle/approvals/decisions", PrincipalResolution.TenantSuspended)]
+    public async Task ATenantRefusal_IsAnsweredOnTheLifecycleControlPlaneToo(string path, string code)
+    {
+        // #402. The lifecycle plane used to be listed in InfrastructureApiPaths, so IsGuardedApiPath
+        // answered false for it and this middleware returned at its first line - never reading the
+        // refusal the bearer handler had already stashed. A suspended or unprovisioned tenant's
+        // still-valid token therefore reached the lifecycle controllers, which authenticate off the
+        // RAW ClaimsPrincipal (their own AuthenticatedAppId() reads HttpContext.User) and so saw an
+        // authenticated caller. That made Identity:Enforce gate the REST front door and not this one.
+        //
+        // The carve-out's stated reason was that lifecycle "is gated behind its own signature check".
+        // It is not: LifecycleApprovalController's own remarks say it "does not authenticate" and
+        // that "no subscriber-to-host signing convention exists". So the exemption bought nothing and
+        // cost tenant refusal. Lifecycle is inside the boundary now.
+        var rejection = PrincipalResolution.Reject(code, StatusCodes.Status403Forbidden);
+        using var server = await StartAsync(enforce: true, rejection);
+
+        var response = await server.CreateClient().GetAsync(new Uri(path, UriKind.Relative));
+
+        _ = response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        _ = (await ReadCodeAsync(response)).Should().Be(code);
+    }
+
+    [Theory]
+    [InlineData("/api/lifecycle/subscriptions")]
+    [InlineData("/api/lifecycle/approvals/decisions")]
+    public async Task WithEnforcementOn_AnUnauthenticatedLifecycleRequest_IsRefused(string path)
+    {
+        // The other half of #402: no stashed refusal at all, just a caller with no credential. Before
+        // the carve-out was dropped this reached the controller; now identity answers first. Pinned
+        // separately from the refusal case because the two failure modes have different codes, and a
+        // fix that only answered a STASHED rejection would leave the credential-less caller in.
+        using var server = await StartAsync(enforce: true);
+
+        var response = await server.CreateClient().GetAsync(new Uri(path, UriKind.Relative));
+
+        _ = response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        _ = (await ReadCodeAsync(response)).Should().Be("authentication_required");
+    }
+
+    [Theory]
     [InlineData(PrincipalResolution.TenantNotProvisioned)]
     [InlineData(PrincipalResolution.TenantSuspended)]
     public async Task ATenantRefusal_DoesNotSendTheBrowserBackToEntra(string code)

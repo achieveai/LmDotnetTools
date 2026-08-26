@@ -542,16 +542,21 @@ public class DirectFileTransferTests
         // clock: an elapsed-time ceiling cannot tell a loaded CI runner from the defect returning, because
         // a stalled runner overshoots the bug's own signature (issue #330).
         //
-        // The handler holds the file-GET headers back until the SDK's per-call transport token has ACTUALLY
-        // fired — it waits on that very token, so no clock is compared — and only then delivers a 409 whose
-        // body is legible only to a reader that still holds budget:
+        // The handler EXPIRES the SDK's per-call transport budget ITSELF — it fires the budget's armed
+        // timer on a manual clock injected into the client, and the cancellation chain runs synchronously
+        // inside that call, so the token the SDK handed the transport is observed as already-fired before
+        // the headers are delivered. The ordering is an event the handler causes, never a wall-clock race:
+        // a starved runner can delay real timers past any fixed guard (issue #343), which is how the old
+        // wait-on-the-token-vs-30s-guard handshake was occasionally observed as un-expired on net8.0.
+        // Only then does it deliver a 409 whose body is legible only to a reader that still holds budget:
         //   ONE shared budget -> the error-body read is born already-cancelled, so classification falls
         //                        back to the status alone: Conflict, no error_code.
         //   a SECOND budget   -> the body parses and its error_code (path_not_found) reclassifies the
         //                        failure as NotFound — which is exactly what this test refuses.
         const string errorBody = """{"error":"gone","code":409,"error_code":"path_not_found","retryable":false}""";
         var serverAddress = TestSupport.NewLoopbackAddress();
-        var handler = new BudgetExhaustingHeaderHandler(errorBody);
+        var clock = new ManualTimeProvider();
+        var handler = new BudgetExhaustingHeaderHandler(errorBody, clock);
         using var httpClient = new HttpClient(handler) { BaseAddress = serverAddress, Timeout = Timeout.InfiniteTimeSpan };
         var options = new SandboxClientOptions(
             serverAddress,
@@ -560,7 +565,7 @@ public class DirectFileTransferTests
             TimeSpan.FromMinutes(5),
             TimeSpan.FromMilliseconds(200)
         );
-        using var client = new SandboxClient(options, httpClient);
+        using var client = new SandboxClient(options, httpClient) { TransportClock = clock };
 
         Func<Task> act = () => client.ReadTextFileAsync(Session, "notes.txt");
         var exception = await act.Should().ThrowAsync<SandboxException>();
@@ -750,49 +755,156 @@ public class DirectFileTransferTests
     }
 
     /// <summary>
-    /// Answers mount resolution immediately, but withholds the (error) files-response headers until the
-    /// SDK's per-call transport budget has ACTUALLY expired — it waits on the very
-    /// <see cref="CancellationToken"/> the SDK handed the transport, so the ordering is an observed event
-    /// rather than a clock comparison — and only then returns a non-2xx carrying a
-    /// <see cref="BudgetGatedContent"/> error body. That makes "did the error-body read start a SECOND
-    /// transport budget?" visible in the classified exception instead of in elapsed milliseconds.
+    /// Answers mount resolution immediately; on the files GET it EXPIRES the SDK's per-call transport
+    /// budget itself — firing the budget's armed timer on the test's <see cref="ManualTimeProvider"/> —
+    /// and then observes the very <see cref="CancellationToken"/> the SDK handed the transport. The
+    /// cancellation chain (budget CTS → the SDK's linked per-call CTS → this handler's token) runs
+    /// synchronously inside that call, so the token is seen as fired-before-headers iff the SDK really
+    /// armed its budget through the clock — an event this handler CAUSES, never a wall-clock deadline it
+    /// races. (The previous handshake waited on the token against a 30s guard; a starved runner could
+    /// process the guard's timer before the budget's 200ms timer and observe the budget as un-expired —
+    /// issues #330/#343.) It then returns a non-2xx carrying a <see cref="BudgetGatedContent"/> error
+    /// body, which makes "did the error-body read start a SECOND transport budget?" visible in the
+    /// classified exception instead of in elapsed milliseconds.
     /// </summary>
-    private sealed class BudgetExhaustingHeaderHandler(string errorBody) : HttpMessageHandler
+    private sealed class BudgetExhaustingHeaderHandler(string errorBody, ManualTimeProvider clock) : HttpMessageHandler
     {
-        /// <summary>Guards against an unbounded hang if the SDK never arms a budget at all: the wait gives up and the test then fails loudly.</summary>
-        private static readonly TimeSpan WaitGuard = TimeSpan.FromSeconds(30);
-
         /// <summary>True only if the transport token fired BEFORE the file-GET headers were delivered — the precondition every assertion here rests on.</summary>
         public bool BudgetExpiredBeforeHeaders { get; private set; }
 
-        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var path = request.RequestUri!.AbsolutePath;
             if (request.Method == HttpMethod.Get && path.Contains("/files/", StringComparison.Ordinal))
             {
-                BudgetExpiredBeforeHeaders = await WaitForCancellationAsync(cancellationToken).ConfigureAwait(false);
+                // Fire the SDK's armed transport-budget timer now, then observe the per-call token. Both
+                // steps are synchronous, so a false observation can only mean the SDK never armed the
+                // budget (or armed it off-clock) — never that a real timer was still in flight.
+                _ = clock.FireArmed();
+                BudgetExpiredBeforeHeaders = cancellationToken.IsCancellationRequested;
 
                 // Deliver the headers anyway: a real gateway's response can land at the very moment the
                 // client-side deadline lapses, and the SDK must still classify it.
-                return new HttpResponseMessage(HttpStatusCode.Conflict) { Content = new BudgetGatedContent(errorBody) };
+                return Task.FromResult(
+                    new HttpResponseMessage(HttpStatusCode.Conflict) { Content = new BudgetGatedContent(errorBody) }
+                );
             }
 
-            return new HttpResponseMessage(HttpStatusCode.OK)
+            return Task.FromResult(
+                new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        """{"session_id":"s1","volumes":{"workspace":{"container_path":"/workspace","read_only":false,"id":7}}}""",
+                        Encoding.UTF8,
+                        "application/json"
+                    ),
+                }
+            );
+        }
+    }
+
+    /// <summary>
+    /// A <see cref="TimeProvider"/> whose timers fire ONLY when the test says so: time never advances on
+    /// its own. <see cref="FireArmed"/> synchronously invokes every armed, un-disposed timer callback on
+    /// the calling thread, so a <see cref="CancellationTokenSource"/> built on this clock cancels — and
+    /// runs its whole linked-token chain — inside that call. This is what lets
+    /// <see cref="BudgetExhaustingHeaderHandler"/> turn "the transport budget expired" from a raced
+    /// ThreadPool timer into an event it causes and immediately observes.
+    /// </summary>
+    private sealed class ManualTimeProvider : TimeProvider
+    {
+        private readonly object _gate = new();
+        private readonly List<ManualTimer> _timers = [];
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = new ManualTimer(callback, state, dueTime);
+            lock (_gate)
             {
-                Content = new StringContent(
-                    """{"session_id":"s1","volumes":{"workspace":{"container_path":"/workspace","read_only":false,"id":7}}}""",
-                    Encoding.UTF8,
-                    "application/json"
-                ),
-            };
+                _timers.Add(timer);
+            }
+
+            return timer;
         }
 
-        private static async Task<bool> WaitForCancellationAsync(CancellationToken cancellationToken)
+        /// <summary>Synchronously fires every armed, un-disposed timer; returns how many fired.</summary>
+        public int FireArmed()
         {
-            var fired = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            using var registration = cancellationToken.Register(() => fired.TrySetResult());
-            var completed = await Task.WhenAny(fired.Task, Task.Delay(WaitGuard, CancellationToken.None)).ConfigureAwait(false);
-            return ReferenceEquals(completed, fired.Task);
+            List<ManualTimer> armed;
+            lock (_gate)
+            {
+                armed = [.. _timers.Where(t => t.IsArmed)];
+            }
+
+            foreach (var timer in armed)
+            {
+                timer.Fire();
+            }
+
+            return armed.Count;
+        }
+
+        private sealed class ManualTimer(TimerCallback callback, object? state, TimeSpan dueTime) : ITimer
+        {
+            private readonly object _gate = new();
+            private TimeSpan _dueTime = dueTime;
+            private bool _disposed;
+
+            public bool IsArmed
+            {
+                get
+                {
+                    lock (_gate)
+                    {
+                        return !_disposed && _dueTime != Timeout.InfiniteTimeSpan;
+                    }
+                }
+            }
+
+            public void Fire()
+            {
+                lock (_gate)
+                {
+                    if (_disposed || _dueTime == Timeout.InfiniteTimeSpan)
+                    {
+                        return;
+                    }
+
+                    // One-shot: disarm before invoking so a re-entrant Change/Dispose from the callback
+                    // (CancellationTokenSource disposes its timer while cancelling) cannot double-fire.
+                    _dueTime = Timeout.InfiniteTimeSpan;
+                }
+
+                callback(state);
+            }
+
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                lock (_gate)
+                {
+                    if (_disposed)
+                    {
+                        return false;
+                    }
+
+                    _dueTime = dueTime;
+                    return true;
+                }
+            }
+
+            public void Dispose()
+            {
+                lock (_gate)
+                {
+                    _disposed = true;
+                }
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                Dispose();
+                return ValueTask.CompletedTask;
+            }
         }
     }
 

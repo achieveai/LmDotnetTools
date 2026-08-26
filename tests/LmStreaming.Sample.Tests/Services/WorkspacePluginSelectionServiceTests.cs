@@ -316,6 +316,61 @@ public class WorkspacePluginSelectionServiceTests
     }
 
     [Fact]
+    public async Task RegistryDisposalInterruptingTheSwap_StillAttemptsToAbortEveryCandidate()
+    {
+        // The swap sits between the persisted commit and the candidates actually being published: by
+        // the time it runs, the update has ALREADY committed, so a failure here cannot be reported as
+        // the update failing to persist - the caller who sees the exception must still be told that
+        // cleanup was attempted for every candidate, even though reaching the gateway through a
+        // registry that has finished disposing is not something this service can guarantee.
+        var hooks = new StoreHooks();
+        await using var h = CreateHarness(hooks: hooks);
+        var workspace = await SeedWorkspaceAsync(h, ["official"]);
+        var original = await SeedSessionAsync(h, workspace, "app-a");
+        hooks.AfterUpdate = () => h.Registry.DisposeAsync().AsTask();
+
+        var act = () =>
+            h.Service.ApplyPluginSelectionUpdateAsync(
+                workspace.Id,
+                Update(["official"], [SelectedPlugin], revision: 0)
+            );
+
+        _ = await act.Should().ThrowAsync<ObjectDisposedException>();
+
+        // The SPECIFIC workspace, not merely "something was logged at Warning": the registry's own
+        // best-effort teardown logs through its OWN CapturingLogger in this harness (see RegistryLogger
+        // below), so this warning has to come from the SERVICE's own catch - the one place able to name
+        // which workspace's swap failed.
+        h.Logger
+            .Entries.Where(entry => entry.Level == LogLevel.Warning)
+            .Select(entry => entry.Message)
+            .Should()
+            .ContainSingle(message => message.Contains(workspace.Id, StringComparison.Ordinal));
+
+        // Proves AbortAllAsync actually attempted to tear the candidate down, not merely that the swap's
+        // own catch logged and rethrew. By the time this runs the registry has ALREADY finished disposing
+        // (the hook above awaits DisposeAsync to completion before the swap even attempts), which
+        // unconditionally clears _sessionsById and disposes the shared HttpClient as part of the
+        // registry's OWN teardown - so TryGetSessionById(candidate) throws ObjectDisposedException post-
+        // disposal (SandboxSessionRegistry.cs:1992's ThrowIf) rather than returning false, and no gateway
+        // DELETE is ever recorded regardless of whether AbortAllAsync runs at all; neither can discriminate
+        // this mutation here. What DOES discriminate: DestroySessionAsync's own attempt to reach the gateway
+        // through the now-disposed transport throws, and that failure is logged by the REGISTRY's logger
+        // (captured separately as RegistryLogger, unlike the NullLogger a prior version of this harness
+        // used) - a line that can only exist if AbortAllAsync actually invoked the teardown for this
+        // candidate.
+        var candidate = h.Gateway.CreatedSessionIds.Single(id => id != original.SessionId);
+        h.RegistryLogger
+            .Entries.Where(entry => entry.Level == LogLevel.Warning)
+            .Select(entry => entry.Message)
+            .Should()
+            .Contain(
+                message => message.Contains(candidate, StringComparison.Ordinal),
+                "AbortAllAsync must have actually attempted to destroy the candidate"
+            );
+    }
+
+    [Fact]
     public async Task SuccessfulMigration_SwapsEveryPartition_AndRetiresTheOldSessions()
     {
         await using var h = CreateHarness();
@@ -422,6 +477,139 @@ public class WorkspacePluginSelectionServiceTests
                 "a candidate that lost its swap references nothing and leaks a container unless retired"
             );
         h.Registry.TryGetSessionById(candidate, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task LostSwap_ReconcilesTheWinnerToTheNewSelection()
+    {
+        // The other half of the CAS-loss story from LostSwap_RetiresTheUncommittedCandidate above:
+        // retiring the losing candidate is only half the job when what beat it into the slot is a
+        // session that does not reflect the new selection. Dropping the partition there leaves that
+        // foreign winner published indefinitely - the store says the migration completed, and the
+        // session actually served does not match it. The lost partition must be folded into the single
+        // post-commit reconcile pass so the winner itself gets checked and, if it does not reflect the
+        // selection, replaced.
+        await using var h = CreateHarness();
+        var workspace = await SeedWorkspaceAsync(h, ["official"]);
+        _ = await SeedSessionAsync(h, workspace, "app-a");
+
+        h.Gateway.HoldCreatesFor("app-a");
+        var updateTask = h.Service.ApplyPluginSelectionUpdateAsync(
+            workspace.Id,
+            Update(["official"], [SelectedPlugin], revision: 0)
+        );
+        await h.Gateway.WaitForHeldCreatesAsync(1);
+
+        // A competing writer republishes the partition while this batch's own candidate is still being
+        // built - the exact CAS-loss window LostSwap_RetiresTheUncommittedCandidate forces from the
+        // other side. Materialized with a real resolve immediately after: SnapshotPluginSelectionPartitions
+        // skips a Lazy whose value was never accessed, so this deliberately does NOT exercise the
+        // narrower race InFlightCasLossWinner_IsStillReconciled_ViaTheBoundedSettleWait below covers -
+        // a genuine competing resolve CAN leave the winner IsValueCreated but not yet completed (still
+        // mid-creation) at the exact moment the reconcile pass re-snapshots, which is exactly what that
+        // test forces instead of materializing here.
+        var partition = h
+            .Registry.SnapshotPluginSelectionPartitions(workspace.Id)
+            .Single(candidate => candidate.Key.AppId == "app-a");
+        var winner = partition.Session with { SessionId = "winner-session" };
+        h.Registry.SwapPluginSelectionSessions([(partition, winner)]).Should().BeEmpty();
+        _ = await h.Registry.GetOrCreateSessionAsync(
+            new WorkspaceRef(workspace.Id),
+            credential: CredentialFor("app-a")
+        );
+
+        h.Gateway.ReleaseCreatesFor("app-a");
+        var updated = await updateTask.WaitAsync(TimeSpan.FromSeconds(30));
+
+        updated.PluginsRevision.Should().Be(1, "the persisted half of the migration still committed");
+
+        var resolved = await h.Registry.GetOrCreateSessionAsync(
+            new WorkspaceRef(workspace.Id),
+            credential: CredentialFor("app-a")
+        );
+        resolved
+            .SessionId.Should()
+            .NotBe(
+                "winner-session",
+                "a partition that lost its swap must still be reconciled to the new selection, "
+                    + "not left on whoever happened to win it"
+            );
+    }
+
+    [Fact]
+    public async Task InFlightCasLossWinner_IsStillReconciled_ViaTheBoundedSettleWait()
+    {
+        // Blocker 1 (adversarial review of PR #416): the reconcile pass's re-snapshot used to be the
+        // SYNCHRONOUS, zero-budget SnapshotPluginSelectionPartitions, which - per its own guard -
+        // cannot see a competing writer's candidate that just WON the compare-and-swap and is still
+        // mid-creation: the exact interval that caused THIS migration's own candidate to lose its swap
+        // in the first place. Unlike LostSwap_ReconcilesTheWinnerToTheNewSelection above, the winner
+        // here is NEVER explicitly materialized - it is left genuinely in flight (IsValueCreated but not
+        // yet completed), held at the gateway, so only a snapshot that can WAIT for it will ever see it.
+        Func<Task>? deferred = null;
+        var hooks = new StoreHooks();
+        await using var h = CreateHarness(
+            hooks: hooks,
+            settleBudget: TimeSpan.FromSeconds(2),
+            postCommitScheduler: work =>
+            {
+                deferred = work;
+                return Task.CompletedTask;
+            }
+        );
+        var workspace = await SeedWorkspaceAsync(h, ["official"]);
+        _ = await SeedSessionAsync(h, workspace, "app-a");
+
+        Task<SandboxSession>? competingWinner = null;
+        hooks.BeforeUpdate = async () =>
+        {
+            // Lands in the exact window SwapPluginSelectionSessions needs: after this migration's own
+            // candidate exists (so its swap can be raced), before the swap runs. Destroying the slot and
+            // starting a REAL, held creation for it - rather than SwapPluginSelectionSessions's synthetic
+            // Task.FromResult winner used above - is what keeps the winner's Lazy genuinely
+            // IsValueCreated but not yet completed, instead of never-accessed (invisible to every
+            // snapshot, sync or bounded) or immediately complete (this suite's existing, narrower
+            // coverage above).
+            await h.Registry.DestroyWorkspaceSessionAsync(workspace.Id);
+            h.Gateway.HoldCreatesFor("app-a");
+            competingWinner = h.Registry.GetOrCreateSessionAsync(
+                new WorkspaceRef(workspace.Id),
+                credential: CredentialFor("app-a")
+            );
+            await h.Gateway.WaitForHeldCreatesAsync(1);
+        };
+
+        var updated = await h.Service.ApplyPluginSelectionUpdateAsync(
+            workspace.Id,
+            Update(["official"], [SelectedPlugin], revision: 0)
+        );
+
+        updated.PluginsRevision.Should().Be(1, "the persisted half of the migration still committed");
+        deferred.Should().NotBeNull("a migration whose candidate lost its swap owes a post-commit phase");
+
+        var postCommit = Task.Run(deferred!);
+        // The winner is still held at the gateway when the pass starts; releasing it here - well
+        // within the 2s settle budget above - is what the bounded wait exists to catch. Under the old
+        // synchronous re-snapshot this release could never land in time: that call does not wait at
+        // all, so it would have judged the winner absent no matter when this release ran.
+        await Task.Delay(100);
+        h.Gateway.ReleaseCreatesFor("app-a");
+        await postCommit.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var winnerSession = await competingWinner!.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var resolved = await h.Registry.GetOrCreateSessionAsync(
+            new WorkspaceRef(workspace.Id),
+            credential: CredentialFor("app-a")
+        );
+        resolved
+            .SessionId.Should()
+            .NotBe(
+                winnerSession.SessionId,
+                "the winner did not reflect the new selection and the bounded settle wait must have "
+                    + "given the reconcile pass a chance to see it and replace it, instead of the pass "
+                    + "missing it entirely because it was still mid-creation at snapshot time"
+            );
     }
 
     [Fact]
@@ -1182,6 +1370,13 @@ public class WorkspacePluginSelectionServiceTests
         /// <summary>Everything the service logged, for the paths whose only output IS a log line.</summary>
         public required CapturingLogger<WorkspacePluginSelectionService> Logger { get; init; }
 
+        /// <summary>
+        /// Everything the REGISTRY logged. Distinct from <see cref="Logger"/>: some behaviour (e.g. a
+        /// best-effort teardown attempted against an already-disposed transport) is only ever visible
+        /// through the registry's own log line, because the gateway call it makes fails silently.
+        /// </summary>
+        public required CapturingLogger<SandboxSessionRegistry> RegistryLogger { get; init; }
+
         public ValueTask DisposeAsync() => Registry.DisposeAsync();
 
         /// <param name="failCreateAfter">The gateway starts failing creates once this many have succeeded.</param>
@@ -1230,6 +1425,11 @@ public class WorkspacePluginSelectionServiceTests
         {
             Func<Func<Task>, Task> inlinePostCommit = work => work();
             var capturingLogger = logger ?? new CapturingLogger<WorkspacePluginSelectionService>();
+            // Not NullLogger: RegistryDisposalInterruptingTheSwap_StillAttemptsToAbortEveryCandidate needs
+            // to observe the registry's OWN best-effort teardown warnings — the service's post-disposal
+            // gateway calls fail silently (disposed transport), so a captured log line is the only
+            // observable proof that a destroy was actually attempted for a given candidate.
+            var registryLogger = new CapturingLogger<SandboxSessionRegistry>();
             var gateway = new FakeGateway(failCreateAfter, omitPluginResolution);
             var options = new SandboxGatewayOptions
             {
@@ -1247,7 +1447,7 @@ public class WorkspacePluginSelectionServiceTests
                     new HttpClient(new AlwaysOkHandler())
                 ),
                 options,
-                NullLogger<SandboxSessionRegistry>.Instance,
+                registryLogger,
                 new HttpClient(gateway),
                 new AuthOptions(),
                 new SessionSecretStore(
@@ -1267,6 +1467,7 @@ public class WorkspacePluginSelectionServiceTests
                 FileStore = fileStore,
                 Probe = probe,
                 Logger = capturingLogger,
+                RegistryLogger = registryLogger,
                 Service = new WorkspacePluginSelectionService(
                     store,
                     new WorkspaceCatalogCompatibilityService(new StubCatalogClient(pluginFiltering), options),
