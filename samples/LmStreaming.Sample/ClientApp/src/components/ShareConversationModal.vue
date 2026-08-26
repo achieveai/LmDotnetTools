@@ -118,6 +118,17 @@ function report(error: unknown, fallback: string): void {
  */
 let loadGeneration = 0;
 
+/**
+ * Which conversation this modal is about. Bumped by the `props.threadId` watcher below.
+ *
+ * `loadGeneration` cannot serve here: it distinguishes one READ from a later read, and the two reads
+ * either side of a switch are both legitimate. What the mutations need to know is different — not
+ * "was my read superseded" but "is the conversation I was started for still the one on screen" —
+ * because everything they write after their await (the cleared input, the refusal, `readOnly`,
+ * `busy`) is a statement about THAT conversation and about the caller's rights on it.
+ */
+let threadGeneration = 0;
+
 async function load(): Promise<void> {
   const generation = ++loadGeneration;
   isLoading.value = true;
@@ -142,29 +153,43 @@ async function handleAdd(): Promise<void> {
   if (subject.length === 0) {
     return;
   }
+  const generation = threadGeneration;
   busy.value = true;
   refusal.value = null;
   try {
     await addShare(props.threadId, { subjectId: subject, role: role.value });
+    // The grant was made, on the thread it was made for. Clearing the input and re-reading are both
+    // about THAT thread, and the watcher has already re-read the one now on screen — so a stale
+    // continuation would only wipe a subject the user has since typed and race that read.
+    if (generation !== threadGeneration) return;
     subjectId.value = '';
     await load();
   } catch (error) {
+    if (generation !== threadGeneration) return;
     report(error, 'Could not share this conversation.');
   } finally {
-    busy.value = false;
+    // `busy` belongs to whichever mutation is current; the watcher lowers it for the new thread.
+    if (generation === threadGeneration) {
+      busy.value = false;
+    }
   }
 }
 
 async function handleRemove(subject: string): Promise<void> {
+  const generation = threadGeneration;
   busy.value = true;
   refusal.value = null;
   try {
     await removeShare(props.threadId, subject);
+    if (generation !== threadGeneration) return;
     await load();
   } catch (error) {
+    if (generation !== threadGeneration) return;
     report(error, 'Could not revoke this share.');
   } finally {
-    busy.value = false;
+    if (generation === threadGeneration) {
+      busy.value = false;
+    }
   }
 }
 
@@ -187,11 +212,16 @@ onMounted(load);
 watch(
   () => props.threadId,
   () => {
+    threadGeneration += 1;
     shares.value = [];
     refusal.value = null;
     unavailable.value = false;
     readOnly.value = false;
     subjectId.value = '';
+    // No mutation is in flight for the conversation just switched TO. Anything still open belongs to
+    // the one left behind and will no longer lower this — which is the point: without resetting it
+    // here, an abandoned mutation would leave the new conversation's controls disabled for good.
+    busy.value = false;
     void load();
   }
 );

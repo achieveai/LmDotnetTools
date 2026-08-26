@@ -152,6 +152,18 @@ export function uncachedInput(input: number, cacheRead: number): number {
 /**
  * Composable for managing chat state and interactions
  */
+/**
+ * Raised when work started for a conversation finishes after the user has left it. Carries no
+ * user-facing message on purpose: nothing about it belongs on the conversation now on screen, and
+ * `sendMessage` recognises the TYPE rather than matching on text.
+ */
+class ConversationAbandonedError extends Error {
+  constructor() {
+    super('The conversation this request belonged to was left before it completed.');
+    this.name = 'ConversationAbandonedError';
+  }
+}
+
 export function useChat(options: UseChatOptions = {}) {
   const { transport: initialTransport = 'websocket', getModeId, getProviderId, getWorkspaceId, provisionThreadId } = options;
   const recordEnabled = isRecordingEnabledFromPageQuery();
@@ -624,7 +636,33 @@ export function useChat(options: UseChatOptions = {}) {
         'Cannot start a new conversation: no provisioning hook was supplied to useChat.'
       );
     }
-    const provisioned = await provisionThreadId();
+    // The first send of a new conversation is the ONLY place a thread id is awaited into existence,
+    // so it is also the only window in which the user can navigate away from a conversation that
+    // does not have an id yet. `conversationEpoch` is bumped by both exits from this conversation —
+    // `clearMessages` (New Chat) and `setThreadId` (switch) — so it is what tells the reservation
+    // whether the conversation it was made for is still the one on screen.
+    const epochAtEntry = conversationEpoch;
+    let provisioned: string;
+    try {
+      provisioned = await provisionThreadId();
+    } catch (err) {
+      // A reservation that FAILED for an abandoned conversation is abandoned too: reporting it would
+      // put the old prompt's error on the conversation now on screen. Rethrow it as the abandonment
+      // so `sendMessage` drops it silently instead of banner-ing it.
+      if (epochAtEntry !== conversationEpoch) throw new ConversationAbandonedError();
+      throw err;
+    }
+    if (epochAtEntry !== conversationEpoch) {
+      // Adopting it here would reinstall the abandoned conversation over the current one: the caller
+      // goes on to open a socket for this id and deliver the prompt into a conversation the user has
+      // left, and the id itself flips under them. The reserved row is simply left unused — the
+      // server lists it as an empty conversation, which is what an abandoned prompt is.
+      log.info('Discarding a thread reservation the user navigated away from', {
+        discarded: provisioned,
+        current: threadId.value,
+      });
+      throw new ConversationAbandonedError();
+    }
     threadId.value = provisioned;
     log.info('Provisioned new thread', { threadId: provisioned });
     return provisioned;
@@ -1152,12 +1190,22 @@ export function useChat(options: UseChatOptions = {}) {
       
       isSending.value = false;
     } catch (err) {
-      error.value = err instanceof Error ? err.message : 'Unknown error';
       // Nothing reached the wire (every throw above is raised BEFORE the send), so this prompt
       // starts no run. Leaving it queued would let the next run's `run_assignment` activate it as
-      // that run's input — the queue is consumed positionally against `inputIds`. The banner is the
-      // user's record of it; the queue must only hold prompts that are still going to be sent.
+      // that run's input — the queue is consumed positionally against `inputIds`. Dropping it is
+      // therefore unconditional; what differs is whether anything ELSE gets to be said about it.
       pendingMessages.value = pendingMessages.value.filter(msg => msg.id !== tempId);
+      if (err instanceof ConversationAbandonedError) {
+        // This send belongs to a conversation the user has already left, and every remaining write
+        // below is about the conversation now on screen. The banner would blame it for a prompt it
+        // never carried, and lowering the flags would flash idle through a switch that is still
+        // loading its transcript and resuming its run — the regression those flags are deliberately
+        // not reset in `clearMessages` to avoid.
+        log.info('Dropping a send whose conversation was left before it started', { tempId });
+        return;
+      }
+      // The banner is the user's record of the prompt that was dropped above.
+      error.value = err instanceof Error ? err.message : 'Unknown error';
       isLoading.value = false;
       isSending.value = false;
     }

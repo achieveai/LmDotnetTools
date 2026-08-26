@@ -301,3 +301,103 @@ describe('ShareConversationModal withdraws mutation for every refusal that will 
     expect(wrapper.find('[data-testid="share-row-tid-1:oid-a"]').exists()).toBe(true);
   });
 });
+
+/**
+ * #445 item 6, second half. `load()` guards its own continuation, but the two MUTATIONS did not, and
+ * they are the calls that can be in flight the longest: `handleAdd` and `handleRemove` each await a
+ * POST/DELETE and then a re-read. Everything after those awaits is written for the conversation the
+ * mutation was started on — the cleared input, the refusal verdict, the latched `readOnly`, the
+ * lowered `busy` — so if `props.threadId` changed meanwhile, all of it lands on the conversation now
+ * on screen: a control withdrawn on a thread the caller may well own, an error about a thread they
+ * are no longer looking at, and a half-typed subject wiped out from under them.
+ */
+describe('ShareConversationModal mutation lands after the thread changed (#445)', () => {
+  /** The grant listed for the conversation switched TO, so the assertions can name its row. */
+  const otherThreadGrant: ConversationShare = {
+    ...viewerGrant,
+    threadId: 'thread-2',
+    subjectId: 'tid-1:oid-z',
+  };
+
+  /**
+   * Starts a mutation on thread-1, holds its request open, switches to thread-2 and types there.
+   * Returns the handle that settles the held request, so each case decides whether the abandoned
+   * mutation SUCCEEDS or is REFUSED — the two continuations write different things, and both write.
+   */
+  async function mutationInFlightAcrossSwitch(kind: 'add' | 'remove') {
+    const { wrapper, fetchSpy } = await mountModal([viewerGrant]);
+
+    let settleMutation: (response: Response) => void = () => {};
+    fetchSpy.mockReturnValueOnce(
+      new Promise<Response>((resolve) => {
+        settleMutation = resolve;
+      })
+    );
+
+    if (kind === 'add') {
+      await wrapper.find('[data-testid="share-subject-input"]').setValue('tid-1:oid-b');
+      await wrapper.find('[data-testid="share-add-button"]').trigger('click');
+    } else {
+      await wrapper.find(`[data-testid="share-remove-${viewerGrant.subjectId}"]`).trigger('click');
+    }
+    await flushPromises();
+
+    // The user moves on while that request is still open.
+    fetchSpy.mockResolvedValueOnce(jsonResponse([otherThreadGrant]));
+    await wrapper.setProps({ threadId: 'thread-2' });
+    await flushPromises();
+    await wrapper.find('[data-testid="share-subject-input"]').setValue('tid-1:oid-typed-here');
+
+    return { wrapper, fetchSpy, settleMutation: (r: Response) => settleMutation(r) };
+  }
+
+  /** Everything the abandoned continuation must not have touched, checked as one statement. */
+  function expectThreadTwoUntouched(wrapper: Awaited<ReturnType<typeof mountModal>>['wrapper']) {
+    expect(wrapper.find(`[data-testid="share-row-${otherThreadGrant.subjectId}"]`).exists()).toBe(
+      true
+    );
+    expect(wrapper.find(`[data-testid="share-row-${viewerGrant.subjectId}"]`).exists()).toBe(false);
+    expect(wrapper.find('[data-testid="share-refusal"]').exists()).toBe(false);
+    // Present at all = `readOnly` was not latched from the other thread's verdict.
+    expect(wrapper.find('[data-testid="share-add-form"]').exists()).toBe(true);
+    const input = wrapper.find('[data-testid="share-subject-input"]')
+      .element as HTMLInputElement;
+    expect(input.value).toBe('tid-1:oid-typed-here');
+    // Enabled = neither `busy` was left raised nor `sharingOff` latched.
+    expect(
+      wrapper.find('[data-testid="share-add-button"]').attributes('disabled')
+    ).toBeUndefined();
+  }
+
+  it.each(['add', 'remove'] as const)(
+    'ignores a SUCCESSFUL %s that completes after the switch',
+    async (kind) => {
+      const { wrapper, fetchSpy, settleMutation } = await mutationInFlightAcrossSwitch(kind);
+
+      // The re-read the abandoned continuation would start — answered with a roster that is not
+      // thread-2's, so a continuation that runs shows up as the wrong list rather than as nothing.
+      fetchSpy.mockResolvedValue(jsonResponse([viewerGrant]));
+      settleMutation(jsonResponse(kind === 'add' ? viewerGrant : {}));
+      await flushPromises();
+
+      expectThreadTwoUntouched(wrapper);
+    }
+  );
+
+  it.each(['add', 'remove'] as const)(
+    'ignores a REFUSED %s that completes after the switch',
+    async (kind) => {
+      const { wrapper, settleMutation } = await mutationInFlightAcrossSwitch(kind);
+
+      settleMutation(
+        jsonResponse(
+          { error: 'forbidden', code: 'grantee_may_not_reshare', threadId: 'thread-1' },
+          403
+        )
+      );
+      await flushPromises();
+
+      expectThreadTwoUntouched(wrapper);
+    }
+  );
+});

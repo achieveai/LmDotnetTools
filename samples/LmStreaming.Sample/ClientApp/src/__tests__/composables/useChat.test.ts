@@ -1082,3 +1082,163 @@ describe('useChat usage banner (#196)', () => {
     expect(chat.cumulativeUsage.value.totalTokens).toBe(1140);
   });
 });
+
+/**
+ * #435 follow-up: the first send of a brand-new conversation reserves its thread id on the SERVER,
+ * so for the first time there is an await between "the user pressed send" and "this chat has an id".
+ * The user can navigate during that window — New Chat, or straight to another conversation — and the
+ * reservation still resolves afterwards. Adopting it then would reinstall the abandoned prompt's
+ * thread over the one now on screen: `threadId` flips under the user, a socket opens on it, and the
+ * prompt is delivered into a conversation they left.
+ *
+ * `conversationEpoch` already marks exactly that boundary — it is bumped by `clearMessages` (New
+ * Chat) and by `setThreadId` (switch) — so the reservation is checked against the epoch it was
+ * started in, and a stale one is dropped without touching ANY live state: not the thread, not the
+ * socket, not the banner, and not the streaming flags (lowering those would flash idle through a
+ * switch that is still resuming).
+ */
+describe('useChat first-send reservation vs. navigation (#435)', () => {
+  beforeEach(() => {
+    wsMocks.createWebSocketConnection.mockReset();
+    wsMocks.sendWebSocketMessage.mockReset();
+    wsMocks.closeWebSocketConnection.mockReset();
+    conversationsMocks.loadConversationMessages.mockReset();
+    conversationsMocks.loadConversationMessages.mockResolvedValue([]);
+
+    wsMocks.createWebSocketConnection.mockImplementation(async (options: any) => ({
+      socket: { readyState: WebSocket.OPEN },
+      connectionId: `ws-${Date.now()}`,
+      threadId: options.threadId,
+      isConnected: true,
+    }));
+  });
+
+  /** A provisioning hook whose promise the test settles by hand, so navigation can win the race. */
+  function deferredProvision() {
+    let settleWith: ((id: string) => void) | null = null;
+    let failWith: ((err: Error) => void) | null = null;
+    const hook = vi.fn(
+      () =>
+        new Promise<string>((resolve, reject) => {
+          settleWith = resolve;
+          failWith = reject;
+        })
+    );
+    return {
+      hook,
+      resolve: (id: string) => settleWith!(id),
+      reject: (err: Error) => failWith!(err),
+    };
+  }
+
+  /**
+   * Sends on a fresh chat and returns once the reservation is genuinely in flight — asserted on the
+   * hook having been called rather than on a fixed number of microtask hops, so the setup cannot
+   * silently stop reaching the await it is about to race.
+   *
+   * The in-flight send is handed back WRAPPED: returning it bare from an async function would make
+   * `await` on this helper adopt it, and the caller would be waiting on the very send it has not
+   * settled the reservation for yet.
+   */
+  async function sendAndAwaitReservation(
+    chat: ReturnType<typeof useChat>,
+    provision: { hook: ReturnType<typeof vi.fn> }
+  ): Promise<{ sending: Promise<void> }> {
+    const sending = chat.sendMessage('a prompt the user abandons');
+    await vi.waitFor(() => expect(provision.hook).toHaveBeenCalled());
+    return { sending };
+  }
+
+  it.each([
+    {
+      what: 'the user opened a new chat',
+      navigate: async (chat: ReturnType<typeof useChat>) => {
+        await chat.clearMessages();
+        chat.setThreadId(null);
+      },
+      expectedThreadId: null,
+    },
+    {
+      what: 'the user switched to another conversation',
+      navigate: async (chat: ReturnType<typeof useChat>) => {
+        await chat.clearMessages();
+        chat.setThreadId('thread-b');
+      },
+      expectedThreadId: 'thread-b',
+    },
+  ])('drops a reservation that lands after $what', async ({ navigate, expectedThreadId }) => {
+    const provision = deferredProvision();
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId: provision.hook });
+
+    const { sending } = await sendAndAwaitReservation(chat, provision);
+    await navigate(chat);
+    chat.markStreamIdle();
+
+    provision.resolve('thread-abandoned');
+    await sending;
+
+    expect(chat.threadId.value).toBe(expectedThreadId);
+    expect(wsMocks.createWebSocketConnection).not.toHaveBeenCalled();
+    expect(wsMocks.sendWebSocketMessage).not.toHaveBeenCalled();
+    expect(chat.error.value).toBeNull();
+    expect(chat.pendingMessages.value).toHaveLength(0);
+    expect(chat.isLoading.value).toBe(false);
+    expect(chat.isSending.value).toBe(false);
+  });
+
+  it.each([
+    {
+      what: 'the user opened a new chat',
+      navigate: async (chat: ReturnType<typeof useChat>) => {
+        await chat.clearMessages();
+        chat.setThreadId(null);
+      },
+      expectedThreadId: null,
+    },
+    {
+      what: 'the user switched to another conversation',
+      navigate: async (chat: ReturnType<typeof useChat>) => {
+        await chat.clearMessages();
+        chat.setThreadId('thread-b');
+      },
+      expectedThreadId: 'thread-b',
+    },
+  ])('keeps a failed abandoned reservation off the banner after $what', async ({ navigate, expectedThreadId }) => {
+    const provision = deferredProvision();
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId: provision.hook });
+
+    const { sending } = await sendAndAwaitReservation(chat, provision);
+    await navigate(chat);
+    chat.markStreamIdle();
+
+    provision.reject(new Error('Choose a provider before starting a conversation.'));
+    await sending;
+
+    // The prompt that failed is gone with the conversation it belonged to. Reporting its failure
+    // here would blame the conversation now on screen for something the user already walked away
+    // from — and on the switch path it would sit on top of a transcript that loaded fine.
+    expect(chat.error.value).toBeNull();
+    expect(chat.threadId.value).toBe(expectedThreadId);
+    expect(wsMocks.createWebSocketConnection).not.toHaveBeenCalled();
+    expect(chat.isLoading.value).toBe(false);
+    expect(chat.isSending.value).toBe(false);
+  });
+
+  it('still adopts the reservation for a send the user did not abandon', async () => {
+    const provision = deferredProvision();
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId: provision.hook });
+
+    const { sending } = await sendAndAwaitReservation(chat, provision);
+    provision.resolve('thread-minted-by-server');
+    await sending;
+
+    expect(chat.threadId.value).toBe('thread-minted-by-server');
+    expect(provision.hook).toHaveBeenCalledTimes(1);
+    expect(wsMocks.createWebSocketConnection).toHaveBeenCalledTimes(1);
+    expect(wsMocks.createWebSocketConnection.mock.calls[0]?.[0]?.threadId).toBe(
+      'thread-minted-by-server'
+    );
+    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledTimes(1);
+    expect(chat.error.value).toBeNull();
+  });
+});
