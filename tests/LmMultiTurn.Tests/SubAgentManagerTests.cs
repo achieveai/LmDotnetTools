@@ -1194,8 +1194,13 @@ public class SubAgentManagerTests : IAsyncLifetime
                     1 => [StreamingAskUserQuestionCall("tc_color", askArgs, opts.GenerationId)],
                     2 => [new TextMessage { Text = "Final answer: chose Red.", Role = Role.Assistant }],
 
-                    // The continuation: a run with nothing to say, and no question outstanding.
-                    _ => [new TextMessage { Text = "nothing to add", Role = Role.Assistant, IsThinking = true }],
+                    // The continuation, deliberately shaped as ZERO model turns rather than a
+                    // thinking-only reply. Thinking-only is rejected by the "did the model speak"
+                    // discriminator no matter what the latch says, so it could not tell a cleared
+                    // latch from a stale one — the sibling test at the dangerous edge covers that
+                    // shape. A run that never reached the model is the one and only case the latch
+                    // itself decides, so it is the case that can prove the latch was released.
+                    _ => [],
                 };
 
                 return Task.FromResult(ToAsyncEnumerable(reply));
@@ -1241,6 +1246,94 @@ public class SubAgentManagerTests : IAsyncLifetime
             "(no text response)",
             "the parked latch spans only the wait for an answered question's result; a later run with "
                 + "nothing to say is genuinely terminal and must not leave the caller blocked");
+    }
+
+    [Fact]
+    public async Task SpawnAsync_Foreground_WhenASecondZeroTurnRunFollows_StopsAbsorbingAndSettles()
+    {
+        // Arrange (#262, the latch's bound): absorbing a text-free completion is only safe if the latch
+        // is CONSUMED by the completion that absorbs it. A latch that stayed armed would absorb the next
+        // text-free run too, and the one after that — the caller never settles and the permit never comes
+        // back, for as long as the agent keeps producing nothing. The sibling tests cannot see this: each
+        // has only ONE run for the latch to swallow, so an unconsumed latch and a consumed one behave
+        // identically. This is the shape that separates them: two zero-turn runs in a row, where only the
+        // first may be absorbed.
+        var askArgs = AskColorArgs();
+
+        var providerCalls = 0;
+        _subAgentMock
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, opts, _) =>
+            {
+                List<IMessage> reply = Interlocked.Increment(ref providerCalls) switch
+                {
+                    1 => [StreamingAskUserQuestionCall("tc_color", askArgs, opts.GenerationId)],
+
+                    // Every run after the question is a zero-turn run: the resolution-triggered one the
+                    // latch legitimately absorbs, and then a second one it must not.
+                    _ => [],
+                };
+
+                return Task.FromResult(ToAsyncEnumerable(reply));
+            });
+
+        _manager = CreateManager(maxConcurrent: 1);
+
+        var foregroundTask = _manager.SpawnAsync(
+            "test-agent", "Pick a color", name: "color-agent", runInBackground: false);
+
+        MultiTurnAgentLoop? loop = null;
+        IReadOnlyList<DeferredToolCallInfo> deferred = [];
+        await Wait.UntilAsync(
+            async () =>
+            {
+                if (_manager!.TryGetAgent("color-agent", out var agent) && agent is MultiTurnAgentLoop l)
+                {
+                    loop = l;
+                    deferred = await l.GetDeferredToolCallsAsync();
+                    return deferred.Any(d => d.ToolCallId == "tc_color");
+                }
+
+                return false;
+            },
+            "the child parked tc_color",
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromMilliseconds(50),
+            observed: () => loop is null
+                ? "no MultiTurnAgentLoop registered yet for 'color-agent'"
+                : $"deferred tool calls: [{string.Join(", ", deferred.Select(d => d.ToolCallId))}], "
+                    + $"provider calls: {Volatile.Read(ref providerCalls)}");
+
+        var agentId = _manager!.ListAgents().Single(a => a.Name == "color-agent").AgentId;
+
+        (await loop!.TryResolveToolCallAsync("tc_color", "Red"))
+            .Should().Be(ResolveToolCallOutcome.Resolved);
+
+        // The resolution-triggered run is the one the latch is for. Wait for it to have happened and be
+        // absorbed — the caller still blocked is what "absorbed" looks like from here.
+        await Wait.UntilAsync(
+            () => Volatile.Read(ref providerCalls) >= 2,
+            "the resolution-triggered run reached the provider",
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromMilliseconds(50),
+            observed: () => $"provider calls: {Volatile.Read(ref providerCalls)}");
+
+        // Act: a second run with nothing to say. The latch is spent, so this one is terminal.
+        // Both this caller and the still-outstanding spawn await the same pending completion.
+        var continuation = _manager.SendMessageAsync(agentId, "anything else?", runInBackground: false);
+
+        // Assert: it settles rather than being swallowed like its predecessor.
+        var continued = await continuation.WaitAsync(TimeSpan.FromSeconds(10));
+        continued.Should().Be(
+            "(no text response)",
+            "the latch entitles exactly one text-free completion to be absorbed; leaving it armed makes "
+                + "every later text-free run non-terminal and blocks the caller indefinitely");
+
+        var result = await foregroundTask.WaitAsync(TimeSpan.FromSeconds(10));
+        result.Should().Be("(no text response)", "the original caller settles from that same completion");
     }
 
     [Fact]
