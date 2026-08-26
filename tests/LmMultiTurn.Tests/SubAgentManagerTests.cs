@@ -1050,20 +1050,37 @@ public class SubAgentManagerTests : IAsyncLifetime
         // computed) before any subscriber dequeues it, so once this side has counted run 2's completion,
         // the monitor is guaranteed to process that exact text-free, no-pending-messages completion —
         // whatever the test does next.
+        //
+        // The subscription must be REGISTERED before the answer, and registering it from a Task.Run
+        // body would not be: `SubscribeAsync` only reaches its registration when the enumerator is
+        // first advanced, so under the full suite's load the thread pool can leave this side
+        // unregistered until after run 2 has already completed. Replay would not cover for that —
+        // publishing a RunCompletedMessage clears the replay buffer and marks the run inactive, so a
+        // late subscriber sees nothing of it. Advancing the enumerator once HERE closes that: the
+        // method body runs synchronously as far as the registration (there is no await before it), so
+        // by the time MoveNextAsync has returned — completed or not — this subscriber is in the
+        // publish set. The pending advance is then handed to the loop below.
         using var watchCts = new CancellationTokenSource();
         var completedRuns = 0;
-        var watcher = Task.Run(
-            async () =>
+        var messages = loop!.SubscribeAsync(watchCts.Token).GetAsyncEnumerator(watchCts.Token);
+        var pendingMove = messages.MoveNextAsync();
+        var watcher = Task.Run(async () =>
+        {
+            try
             {
-                await foreach (var msg in loop!.SubscribeAsync(watchCts.Token))
+                for (var moved = await pendingMove; moved; moved = await messages.MoveNextAsync())
                 {
-                    if (msg is RunCompletedMessage { HasPendingMessages: false })
+                    if (messages.Current is RunCompletedMessage { HasPendingMessages: false })
                     {
                         _ = Interlocked.Increment(ref completedRuns);
                     }
                 }
-            },
-            watchCts.Token);
+            }
+            finally
+            {
+                await messages.DisposeAsync();
+            }
+        });
 
         var completedBeforeAnswer = Volatile.Read(ref completedRuns);
 
