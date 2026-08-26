@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { flushPromises, mount } from '@vue/test-utils';
-import { defineComponent, inject, h } from 'vue';
+import { defineComponent, inject, h, type Ref } from 'vue';
 import ChatLayout from '@/components/ChatLayout.vue';
 import { SUBMIT_CLIENT_TOOL_RESULT, type ClientToolSubmitFn } from '@/composables/useClientToolSubmit';
 import { GO_TO_AGENT_TAB, type GoToAgentTab } from '@/composables/useConversationTabs';
@@ -40,6 +40,14 @@ const sharedMocks = vi.hoisted(() => ({
   // refuses the whole request if any is unknown.
   selectedProviderId: null as string | null,
   selectedWorkspaceId: 'default' as string | null,
+  // The in-flight `/api/providers` load. Resolved by default so every existing test sees a catalog
+  // that was already there; a test that cares about the mount-time race replaces it with one it
+  // resolves by hand.
+  providerCatalogLoad: Promise.resolve() as Promise<void>,
+  providerSelectionRef: null as Ref<string | null> | null,
+  // The options object ChatLayout handed to useChat, so a test can drive the provisioning hook the
+  // real composable calls on the first send.
+  chatOptions: null as { provisionThreadId?: () => Promise<string> } | null,
   // The mode mock's `currentModeId` is one ref shared by every test in this file, so a mode-switch
   // test leaves it changed for whatever runs next. Exposed here so a test that asserts on the mode
   // can start from a known one instead of inheriting the previous test's.
@@ -150,52 +158,68 @@ vi.mock('@/composables/useChat', async () => {
   const { ref, computed } = await import('vue');
   return {
     getDisplayText: vi.fn((text: string) => text),
-    useChat: () => ({
-      displayItems: computed(() => []),
-      isLoading: ref(sharedMocks.chatLoading),
-      isSending: ref(sharedMocks.isSending),
-      error: ref(null),
-      usage: ref(null),
-      cumulativeUsage: ref({
-        promptTokens: 0,
-        uncachedInputTokens: 0,
-        completionTokens: 0,
-        totalTokens: 0,
-        cachedTokens: 0,
-        cacheCreationTokens: 0,
-      }),
-      pendingMessages: ref([]),
-      pendingAuthRequests: computed(() => []),
-      dismissAuthRequest: vi.fn(),
-      sendMessage: vi.fn(async () => {}),
-      clearMessages: vi.fn(),
-      cancelStream: vi.fn(async () => {}),
-      disconnectWebSocket: sharedMocks.disconnectWebSocket,
-      // Hoisted useSubAgentPanel(() => chatThreadId.value) reads this; useConversationTabs watches it.
-      threadId: ref(sharedMocks.currentThreadId),
-      setThreadId: sharedMocks.setThreadId,
-      loadMessagesFromBackend: vi.fn(async () => {}),
-      resumeStreamIfActive: sharedMocks.resumeStreamIfActive,
-      markStreamIdle: sharedMocks.markStreamIdle,
-      markStreamLoading: sharedMocks.markStreamLoading,
-      getResultForToolCall: vi.fn(() => null),
-      hasPendingClientQuestion: computed(() => sharedMocks.hasPendingClientQuestion),
-      submitClientToolResult: sharedMocks.submitClientToolResult,
-    }),
+    useChat: (options: { provisionThreadId?: () => Promise<string> }) => {
+      // Captured so a test can invoke the provisioning hook the way the real `useChat` does on the
+      // first send of a session — the send path, unlike the "New chat" button, is reachable before
+      // ChatLayout's mount-time catalog loads have finished.
+      sharedMocks.chatOptions = options;
+      return {
+        displayItems: computed(() => []),
+        isLoading: ref(sharedMocks.chatLoading),
+        isSending: ref(sharedMocks.isSending),
+        error: ref(null),
+        usage: ref(null),
+        cumulativeUsage: ref({
+          promptTokens: 0,
+          uncachedInputTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+          cachedTokens: 0,
+          cacheCreationTokens: 0,
+        }),
+        pendingMessages: ref([]),
+        pendingAuthRequests: computed(() => []),
+        dismissAuthRequest: vi.fn(),
+        sendMessage: vi.fn(async () => {}),
+        clearMessages: vi.fn(),
+        cancelStream: vi.fn(async () => {}),
+        disconnectWebSocket: sharedMocks.disconnectWebSocket,
+        // Hoisted useSubAgentPanel(() => chatThreadId.value) reads this; useConversationTabs watches it.
+        threadId: ref(sharedMocks.currentThreadId),
+        setThreadId: sharedMocks.setThreadId,
+        loadMessagesFromBackend: vi.fn(async () => {}),
+        resumeStreamIfActive: sharedMocks.resumeStreamIfActive,
+        markStreamIdle: sharedMocks.markStreamIdle,
+        markStreamLoading: sharedMocks.markStreamLoading,
+        getResultForToolCall: vi.fn(() => null),
+        hasPendingClientQuestion: computed(() => sharedMocks.hasPendingClientQuestion),
+        submitClientToolResult: sharedMocks.submitClientToolResult,
+      };
+    },
   };
 });
 
 vi.mock('@/composables/useProviders', async () => {
   const { ref } = await import('vue');
   return {
-    useProviders: () => ({
-      providers: ref([]),
-      selectedProviderId: ref<string | null>(sharedMocks.selectedProviderId),
-      isLoading: ref(false),
-      loadProviders: vi.fn(async () => {}),
-      selectProvider: sharedMocks.selectProvider,
-      switchProvider: sharedMocks.switchProvider,
-    }),
+    useProviders: () => {
+      const selectedProviderId = ref<string | null>(sharedMocks.selectedProviderId);
+      // Published so a test can let the catalog land LATE — the real composable leaves this ref null
+      // until `/api/providers` answers, and the composer is clickable long before that.
+      sharedMocks.providerSelectionRef = selectedProviderId;
+      return {
+        providers: ref([]),
+        selectedProviderId,
+        isLoading: ref(false),
+        loadProviders: vi.fn(() => sharedMocks.providerCatalogLoad),
+        settleCatalog: vi.fn(async () => {
+          await sharedMocks.providerCatalogLoad;
+          return true;
+        }),
+        selectProvider: sharedMocks.selectProvider,
+        switchProvider: sharedMocks.switchProvider,
+      };
+    },
   };
 });
 
@@ -217,6 +241,7 @@ vi.mock('@/composables/useWorkspaces', async () => {
             selectedWorkspaceId: ref<string | null>(sharedMocks.selectedWorkspaceId),
             isLoading: ref(false),
             loadWorkspaces: vi.fn(async () => {}),
+            settleCatalog: vi.fn(async () => true),
             selectWorkspace: sharedMocks.selectWorkspace,
             createWorkspace: sharedMocks.createWorkspace,
             updateWorkspace: sharedMocks.updateWorkspace,
@@ -1458,6 +1483,7 @@ describe('ChatLayout new-chat provisioning (#435)', () => {
   afterEach(() => {
     sharedMocks.selectedProviderId = null;
     sharedMocks.selectedWorkspaceId = 'default';
+    sharedMocks.providerCatalogLoad = Promise.resolve();
   });
 
   it('provisions with the current workspace/provider/mode and adopts the server-minted id', async () => {
@@ -1495,5 +1521,55 @@ describe('ChatLayout new-chat provisioning (#435)', () => {
     for (const call of sharedMocks.setThreadId.mock.calls) {
       expect(call[0]).toBeNull();
     }
+  });
+
+  // The regression that took the browser suite down: `/api/providers` is fetched on mount but the
+  // composer is live from the first paint, so a conversation started in that window found
+  // `selectedProviderId` still null and was refused — with a message telling the user to choose a
+  // provider from a picker that had not been populated yet. Provisioning has to wait for the load
+  // that will win before it decides anything is missing.
+  it('waits for a provider catalog still in flight instead of refusing the conversation', async () => {
+    sharedMocks.selectedProviderId = null;
+    let landCatalog!: () => void;
+    sharedMocks.providerCatalogLoad = new Promise<void>((resolve) => {
+      landCatalog = () => {
+        // What the real composable does when the response applies: pick the default provider.
+        if (sharedMocks.providerSelectionRef) {
+          sharedMocks.providerSelectionRef.value = 'anthropic';
+        }
+        resolve();
+      };
+    });
+
+    mountLayout();
+    await flushPromises();
+
+    // Exactly what useChat does on the first send of a session, while the mount-time catalog load
+    // is still outstanding.
+    let provisioned: string | null = null;
+    let refusal: unknown = null;
+    const sending = sharedMocks.chatOptions!.provisionThreadId!()
+      .then((id) => {
+        provisioned = id;
+      })
+      .catch((e: unknown) => {
+        refusal = e;
+      });
+
+    await flushPromises();
+    // Still in flight: nothing provisioned, and nothing refused either.
+    expect(sharedMocks.createNewConversation).not.toHaveBeenCalled();
+    expect(refusal).toBeNull();
+
+    landCatalog();
+    await sending;
+
+    expect(sharedMocks.createNewConversation).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      providerId: 'anthropic',
+      modeId: 'default',
+    });
+    expect(refusal).toBeNull();
+    expect(provisioned).toBe('thread-provisioned');
   });
 });

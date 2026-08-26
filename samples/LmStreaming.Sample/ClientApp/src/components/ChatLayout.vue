@@ -69,6 +69,7 @@ const {
   selectedProviderId,
   isLoading: providersLoading,
   loadProviders,
+  settleCatalog: settleProviderCatalog,
   selectProvider,
   switchProvider,
 } = useProviders();
@@ -80,6 +81,7 @@ const {
   selectedWorkspaceId,
   isLoading: workspacesLoading,
   loadWorkspaces,
+  settleCatalog: settleWorkspaceCatalog,
   selectWorkspace,
   createWorkspace,
   updateWorkspace,
@@ -128,6 +130,12 @@ const {
  * has to exist before the socket opens.
  */
 async function provisionThread(): Promise<string> {
+  // Both catalogs are fetched on mount, but the composer is interactive from the first paint — a
+  // send can and does beat the responses. Reading the selections straight away would find
+  // `selectedProviderId` still null and refuse a conversation that has nothing wrong with it, so
+  // wait for whichever load will win before deciding anything is missing.
+  await Promise.all([settleProviderCatalog(), settleWorkspaceCatalog()]);
+
   const workspaceId = selectedWorkspaceId.value;
   const providerId = selectedProviderId.value;
   if (workspaceId === null || providerId === null) {

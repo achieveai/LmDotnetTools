@@ -262,6 +262,7 @@ export function useWorkspaces() {
     isLoading,
     error,
     loadWorkspaces,
+    settleCatalog,
     selectWorkspace,
     createWorkspace,
     updateWorkspace,
