@@ -781,6 +781,40 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task Posted_does_not_move_the_cutoff_forward_when_a_retry_replays_the_same_post()
+    {
+        // The Posted stage is ALWAYS retried after a terminal failure (retention, a stale index.lock, a
+        // publisher blip), and the retry is resumed by the very fast path this branch documents. On that retry
+        // ReviewPoster correctly REPLAYS rather than re-posting — but IsDeliveryProven(ReplayNoOp) is true by
+        // design, because the replay proves a comment exists on the PR. What it does NOT prove is that the
+        // comment arrived just now. Stamping the retry's clock would drag the cutoff across the whole outage
+        // and reclassify every comment left during it as PAST, so the next review never answers them — exactly
+        // the failure the v5 migration comment calls strictly worse than the null it replaces.
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+
+        await RunAllStagesAsync(fixture, run);
+        var firstStamp = fixture.Store.GetLastPostedReviewAt(run.RepoId, run.PrId);
+        firstStamp.Should().NotBeNull("the first pass delivered, so it must have stamped");
+
+        // Long enough that UtcNow is certain to have moved on (the Windows system timer is ~15.6ms), and the
+        // assertion below proves it actually did rather than trusting the delay. Without that guard a clock
+        // that had not ticked would make this test pass against a stamp rewritten on every pass.
+        await Task.Delay(TimeSpan.FromMilliseconds(250));
+        DateTimeOffset.UtcNow.Should().BeAfter(
+            firstStamp!.Value,
+            "the gap must be observable, or this test cannot tell a frozen cutoff from a rewritten one");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        fixture.Publisher.PostCount.Should().Be(1, "the retry replays the outbox row; it does not post again");
+        fixture.Store.GetLastPostedReviewAt(run.RepoId, run.PrId).Should().Be(
+            firstStamp,
+            "the cutoff records when the bot last SPOKE, and the retry did not speak — it found the words "
+                + "already there");
+    }
+
+    [Fact]
     public async Task Posted_leaves_no_cutoff_when_posting_is_switched_off_entirely()
     {
         // The posting-disabled path: no post is even attempted, so there is nothing that could be mistaken for

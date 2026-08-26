@@ -327,13 +327,32 @@ internal sealed class ReviewStore : IDisposable
     /// refreshes <c>updated_at</c>, which the stranded-run reconciler reads as "somebody is working on this".
     /// The instant is a parameter rather than read from the clock here so the caller that knows delivery
     /// happened also decides when, and so a test can seed a cutoff without waiting for one.
+    /// <para>
+    /// FIRST WRITE WINS — hence <c>AND last_posted_review_at IS NULL</c>. Proven delivery is not a
+    /// once-only observation: the Posted stage is retried after any terminal failure, and on that retry
+    /// <c>ReviewPoster</c> replays the outbox row, which still proves a comment is on the PR. So the
+    /// caller can truthfully report proven delivery many times over for ONE posted comment, each time holding a
+    /// fresh clock reading. Taking the latest would walk the cutoff forward across the whole outage and bury
+    /// every comment left during it. A run posts at most once — its identity includes <c>head_sha</c>, so a new
+    /// push opens a new row, and within a row the outbox guarantees exactly-once — therefore any write after
+    /// the first is necessarily a re-observation of the same comment, and the first reading is the closest one
+    /// to when it was actually published.
+    /// </para>
+    /// <para>
+    /// The stamp is the daemon's clock, the comments it is later compared against carry the provider's, and
+    /// the two are not the same clock. The asymmetry is deliberate rather than merely tolerated: a daemon
+    /// running BEHIND the provider is harmless — the cutoff falls early and at worst re-reads a comment it has
+    /// already answered — while a daemon running AHEAD can bury a comment published within the skew. That is
+    /// the direction that loses discussion, so if this is ever tightened, tighten it by moving the stamp
+    /// earlier (the provider's own published-at for the posted comment), never later.
+    /// </para>
     /// </remarks>
     public void MarkReviewPosted(long runId, DateTimeOffset postedAtUtc)
     {
         using var gate = _gate.EnterScope();
         using var command = _connection.CreateCommand();
         command.CommandText = """
-            UPDATE review_run SET last_posted_review_at = $at WHERE id = $id;
+            UPDATE review_run SET last_posted_review_at = $at WHERE id = $id AND last_posted_review_at IS NULL;
             """;
         _ = command.Parameters.AddWithValue("$at", Utc(postedAtUtc));
         _ = command.Parameters.AddWithValue("$id", runId);
