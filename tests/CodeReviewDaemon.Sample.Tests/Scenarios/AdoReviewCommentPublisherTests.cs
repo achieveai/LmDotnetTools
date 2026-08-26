@@ -148,6 +148,38 @@ public sealed class AdoReviewCommentPublisherTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task ListExisting_caps_a_body_at_the_cap_shared_with_the_other_provider()
+    {
+        // The sibling of the GitHub suite's test of the same name, asserting the same numbers. The point of the
+        // pair is the drift the two private copies of this cap invited (#225 item 4): a change made in one
+        // publisher alone cannot leave both files green.
+        var threads = JsonSerializer.Serialize(new
+        {
+            value = new object[]
+            {
+                new { status = "active", comments = new object[]
+                {
+                    new { content = "HEAD-" + new string('a', 1_400), author = new { displayName = "alice" } },
+                    new { content = "LONG-" + new string('b', 4_000), author = new { displayName = "alice" } },
+                } },
+            },
+        });
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/pullRequests/7/threads", threads);
+
+        var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        // A body well past the OLD 280-char cap survives whole — the resolution signal that settles a thread sits
+        // at the end of a conversation, and cutting it off is how a settled thread gets re-raised.
+        existing.Should().ContainSingle(e => e.Body.StartsWith("HEAD-", StringComparison.Ordinal))
+            .Which.Body.Length.Should().Be(1_405, "a body under the shared cap is carried verbatim");
+
+        // …and the cap is still a real cap.
+        var capped = existing.Should().ContainSingle(e => e.Body.StartsWith("LONG-", StringComparison.Ordinal)).Which.Body;
+        capped.Length.Should().Be(2_001, "2,000 characters plus the ellipsis that marks the cut");
+        capped.Should().EndWith("…", "a truncated comment must be distinguishable from a terse one");
+    }
+
+    [Fact]
     public async Task ListExisting_maps_thread_status_to_active_or_resolved()
     {
         // The daemon must not re-post a finding that is already an ACTIVE (open) comment, but MAY re-raise a

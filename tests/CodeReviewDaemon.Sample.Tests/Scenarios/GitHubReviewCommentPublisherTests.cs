@@ -183,6 +183,39 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task ListExisting_caps_a_body_at_the_cap_shared_with_the_other_provider()
+    {
+        // The per-comment cap used to be a private constant in THIS class and an identical private constant in the
+        // ADO publisher — which is a cap that differs by provider the moment either is edited, so a GitHub review
+        // and an ADO review would see different amounts of the same conversation while both believed they saw all
+        // of it (#225 item 4). Both now go through ExistingCommentBody, and the ADO suite asserts the same two
+        // facts against the same numbers; a change to one publisher alone cannot satisfy both files.
+        var reviews = JsonSerializer.Serialize(new object[]
+        {
+            new { body = "HEAD-" + new string('a', 1_400), user = new { login = "alice" }, state = "COMMENTED", submitted_at = "2026-07-20T10:00:00Z" },
+            new { body = "LONG-" + new string('b', 4_000), user = new { login = "alice" }, state = "COMMENTED", submitted_at = "2026-07-20T11:00:00Z" },
+        });
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/pulls/7/comments", "[]")
+            .OnJson(HttpMethod.Get, "/pulls/7/reviews", reviews)
+            .OnJson(HttpMethod.Get, "/issues/7/comments", "[]");
+
+        var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        // A body well past the OLD 280-char cap survives whole. This is the half that matters for review quality:
+        // the signal that settles a thread ("fixed in abc123") sits at the END of a conversation, so a tight cap
+        // removed exactly the part that resolves it and kept the finding — which is how a settled thread gets
+        // re-raised. Restore a 280-char cap on either publisher and this goes red.
+        existing.Should().ContainSingle(e => e.Body.StartsWith("HEAD-", StringComparison.Ordinal))
+            .Which.Body.Length.Should().Be(1_405, "a body under the shared cap is carried verbatim");
+
+        // …and the cap is still a real cap, so one pathological comment cannot spend the reviewer's context.
+        var capped = existing.Should().ContainSingle(e => e.Body.StartsWith("LONG-", StringComparison.Ordinal)).Which.Body;
+        capped.Length.Should().Be(2_001, "2,000 characters plus the ellipsis that marks the cut");
+        capped.Should().EndWith("…", "a truncated comment must be distinguishable from a terse one");
+    }
+
+    [Fact]
     public async Task ListExisting_folds_in_pr_conversation_issue_comments()
     {
         // The publisher posts its SUMMARY via /issues/{pr}/comments, and humans ask questions there; those must
