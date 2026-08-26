@@ -658,13 +658,36 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             // (Skipped on S2S: BuildToolContextAsync returns before provisioning anything, so the daemon owns
             // no session — the container belongs to the review host. DestroyAsync is a documented no-op there,
             // but state the invariant at the call site rather than leaving it to be inferred.)
-            if (_options.EnableToolAssistedReview && _provisioner is not null && !_options.UseS2SReviewAgent)
+            //
+            // The teardown runs inside a try/finally whose finally RETURNS THE SLOT. The TryRemove above has
+            // already happened — that atomicity is what stops a concurrent release from double-returning into
+            // the pool's semaphore — so from here on nothing else can ever give this slot back. A throw
+            // between the two would therefore leak pool capacity for the life of the process, permanently
+            // (issue #218 item 11). ReviewSessionProvisioner swallows its own failures today and its comment
+            // calls that swallow load-bearing for exactly this reason; the return must not DEPEND on a
+            // promise kept in another class, one refactor away from being broken.
+            try
             {
-                await _provisioner.DestroyAsync(runId, CancellationToken.None).ConfigureAwait(false);
+                if (_options.EnableToolAssistedReview && _provisioner is not null && !_options.UseS2SReviewAgent)
+                {
+                    await _provisioner.DestroyAsync(runId, CancellationToken.None).ConfigureAwait(false);
+                }
             }
-
-            await _slotWorkspace.Pool.ReturnAsync(lease.Slot, CancellationToken.None).ConfigureAwait(false);
-            _logger.LogInformation("Run {RunId}: returned pooled slot {Index} on the terminal path.", runId, lease.Slot.Index);
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(
+                    ex,
+                    "Run {RunId}: session teardown failed on the terminal path; returning pooled slot {Index} "
+                        + "anyway so the failure costs one dirty store rather than a slot. The next lease's "
+                        + "clean-on-entry covers the store.",
+                    runId,
+                    lease.Slot.Index);
+            }
+            finally
+            {
+                await _slotWorkspace.Pool.ReturnAsync(lease.Slot, CancellationToken.None).ConfigureAwait(false);
+                _logger.LogInformation("Run {RunId}: returned pooled slot {Index} on the terminal path.", runId, lease.Slot.Index);
+            }
         }
     }
 

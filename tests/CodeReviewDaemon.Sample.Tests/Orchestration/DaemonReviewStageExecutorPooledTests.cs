@@ -1544,6 +1544,53 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.CleanupOrder.Should().ContainInOrder("destroy", "return");
     }
 
+    /// <summary>
+    /// Issue #218 item 11 — the lease record was removed from <c>_leasedReviews</c> BEFORE the teardown and
+    /// the pool return ran. That removal is what makes a second release a no-op, so once it has happened
+    /// nothing else can ever give the slot back: a throw between it and <c>ReturnAsync</c> leaks a pool slot
+    /// permanently, and the daemon loses that capacity for the rest of the process's life.
+    /// <para>
+    /// Production's provisioner swallows its own failures today, and the code that does carries a comment
+    /// calling that swallow load-bearing. Depending on it means the leak is one refactor away in a DIFFERENT
+    /// class; the return must hold on its own.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task ReleaseReviewLease_returns_the_slot_even_when_the_session_teardown_throws()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        fixture.Provisioner.DestroyFailure = new InvalidOperationException("gateway refused the unlink");
+
+        await fixture.Executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
+
+        fixture.Pool.ReturnCount.Should().Be(
+            1, "a slot that is never returned is pool capacity the daemon loses permanently");
+        fixture.CleanupOrder.Should().ContainInOrder(
+            ["destroy", "return"], "the teardown is still attempted first; only its failure is contained");
+    }
+
+    /// <summary>
+    /// The containment must not cost idempotency: the atomic removal is what stops a concurrent release (or
+    /// the Posted stage) from double-returning the slot, and the pool's semaphore throws on an over-return.
+    /// </summary>
+    [Fact]
+    public async Task ReleaseReviewLease_after_a_thrown_teardown_still_does_not_double_return()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        fixture.Provisioner.DestroyFailure = new InvalidOperationException("gateway refused the unlink");
+
+        await fixture.Executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
+        await fixture.Executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
+
+        fixture.Pool.ReturnCount.Should().Be(1, "the lease was already released; a second release is a no-op");
+    }
+
     [Fact]
     public async Task ReleaseReviewLease_returns_the_leased_slot_and_is_idempotent()
     {
@@ -2459,16 +2506,21 @@ public sealed class DaemonReviewStageExecutorPooledTests
             return new ReviewRunSession($"session-{run.Id}", slot.HostPath, SdkRunner, SdkFileSystem);
         }
 
-        public Task DestroyAsync(ReviewRun run, CancellationToken ct)
-        {
-            Order?.Add("destroy");
-            return Task.CompletedTask;
-        }
+        /// <summary>
+        /// When set, every <c>DestroyAsync</c> throws it. Production's ReviewSessionProvisioner swallows its
+        /// own failures, but the pooled slot's return must not DEPEND on that: the release path is the only
+        /// thing that can give the slot back, and it must survive a teardown that throws.
+        /// </summary>
+        public Exception? DestroyFailure { get; set; }
 
-        public Task DestroyAsync(long runId, CancellationToken ct)
+        public Task DestroyAsync(ReviewRun run, CancellationToken ct) => Destroy();
+
+        public Task DestroyAsync(long runId, CancellationToken ct) => Destroy();
+
+        private Task Destroy()
         {
             Order?.Add("destroy");
-            return Task.CompletedTask;
+            return DestroyFailure is { } failure ? Task.FromException(failure) : Task.CompletedTask;
         }
     }
 
