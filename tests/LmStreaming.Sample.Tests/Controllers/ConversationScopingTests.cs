@@ -655,8 +655,9 @@ public sealed class ConversationScopingTests
             "the refusal costs the owner nothing - her agent is still hers");
 
         // The refusal must not double as a directory lookup. Bob is an authorized editor of this
-        // conversation; he is NOT authorized to learn which service minted it, and the WebSocket
-        // sibling of this refusal has always suppressed that id.
+        // conversation; he is NOT authorized to learn which service minted it. The WebSocket sibling
+        // of this refusal suppresses the same id - it did NOT originally, and was corrected alongside
+        // this, so the two transports cannot be played against each other.
         _ = System.Text.Json.JsonSerializer.Serialize(conflict.Value)
             .Should().NotContain(
                 "review-daemon",

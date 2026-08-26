@@ -1526,6 +1526,13 @@ on a best-effort basis and still answers `409` — the in-progress check and the
 atomic step, so a turn that is queued but not yet started can be dropped by a handoff arriving in
 that window (#418).
 
+The same caveat has a second half, and #418 covers both. The release reads the thread's owning user
+and its frozen app id as two separate unlocked lookups, so an entry removed between them makes the
+app id read as absent — which either refuses a caller who should have been allowed or allows one who
+should have been refused. Neither is a privilege escalation, since the authorization decision is
+already made above and both outcomes land inside it; it is why the whole helper is documented as
+best-effort rather than as a guard.
+
 **The grantee DOES inherit the owner's sandbox, and this spec previously said the opposite.** The
 release clears the conversation's pool entry only; clearing an entry never destroys the gateway
 session behind it. The recreate resolves the same workspace id back out of the conversation's

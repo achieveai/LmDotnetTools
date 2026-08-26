@@ -444,6 +444,7 @@ public sealed class IdentityMiddleware
         }
 
         string? credential = null;
+        var stripped = 0;
         var kept = new List<string>();
         foreach (var value in request.Headers[HeaderNames.SecWebSocketProtocol])
         {
@@ -465,6 +466,7 @@ public sealed class IdentityMiddleware
                     // Strip on the prefix alone; promote only what actually has a token behind it. A
                     // bare "lm.bearer." carries nothing to honour, but it is still credential-shaped
                     // and has no business travelling on into logs or the accept's echo.
+                    stripped++;
                     if (candidate.Length > WebSocketCredentialSubProtocolPrefix.Length)
                     {
                         credential ??= candidate[WebSocketCredentialSubProtocolPrefix.Length..];
@@ -477,20 +479,27 @@ public sealed class IdentityMiddleware
             }
         }
 
+        // Strip BEFORE either early return below, never after: the whole point is that a
+        // credential-shaped entry leaves the request regardless of whether anything ends up using it.
+        // Gating this on "we found something to promote" is the same fusion of two decisions that let
+        // a second lm.bearer.* survive above - and it let a BARE "lm.bearer." survive here, because
+        // that sets no credential yet is excluded from the keep list, so returning early left the
+        // original header in place untouched.
+        if (stripped > 0)
+        {
+            if (kept.Count == 0)
+            {
+                _ = request.Headers.Remove(HeaderNames.SecWebSocketProtocol);
+            }
+            else
+            {
+                request.Headers[HeaderNames.SecWebSocketProtocol] = string.Join(", ", kept);
+            }
+        }
+
         if (credential is null)
         {
             return false;
-        }
-
-        // Strip BEFORE the precedence check below, never after: the whole point is that the token
-        // leaves the request regardless of whether anything ends up using it.
-        if (kept.Count == 0)
-        {
-            _ = request.Headers.Remove(HeaderNames.SecWebSocketProtocol);
-        }
-        else
-        {
-            request.Headers[HeaderNames.SecWebSocketProtocol] = string.Join(", ", kept);
         }
 
         if (request.Headers.ContainsKey(HeaderNames.Authorization))

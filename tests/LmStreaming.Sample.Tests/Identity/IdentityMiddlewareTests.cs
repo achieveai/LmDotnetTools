@@ -396,6 +396,34 @@ public sealed class IdentityMiddlewareTests
         _ = offered.Should().NotContain(IdentityMiddleware.WebSocketCredentialSubProtocolPrefix);
     }
 
+    /// <summary>
+    /// A bare <c>lm.bearer.</c> with no token behind it leaves the request too. It carries nothing to
+    /// promote, which is exactly why it used to survive: the method returned early on "no credential
+    /// found" BEFORE writing the filtered list back, so the original header - prefix and all - stayed
+    /// on the request untouched.
+    /// </summary>
+    /// <remarks>
+    /// Nothing secret leaks in this case; the point is that the stripping promise is unconditional, and
+    /// a promise with a silent exception in it is not one a reader can rely on. It is also the cheapest
+    /// possible check that the write-back happens on the no-credential path at all.
+    /// </remarks>
+    [Fact]
+    public void ABareCredentialPrefixWithNoTokenIsStripped_EvenThoughNothingIsPromoted()
+    {
+        var request = WebSocketRequest(
+            "/ws",
+            $"{IdentityMiddleware.WebSocketCredentialSubProtocolPrefix}, "
+                + IdentityMiddleware.WebSocketSubProtocol);
+
+        // Nothing to promote, so the return value is false - and the header is still cleaned.
+        _ = IdentityMiddleware.PromoteWebSocketCredential(request).Should().BeFalse();
+        _ = request.Headers.Authorization.ToString().Should().BeEmpty();
+
+        var offered = request.Headers["Sec-WebSocket-Protocol"].ToString();
+        _ = offered.Should().Be(IdentityMiddleware.WebSocketSubProtocol);
+        _ = offered.Should().NotContain(IdentityMiddleware.WebSocketCredentialSubProtocolPrefix);
+    }
+
     [Fact]
     public void ASubprotocolCredential_IsIgnoredOutsideTheWebSocketTransports()
     {

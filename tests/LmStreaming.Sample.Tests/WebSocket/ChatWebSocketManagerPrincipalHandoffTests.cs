@@ -164,6 +164,64 @@ public sealed class ChatWebSocketManagerPrincipalHandoffTests
         }
     }
 
+    /// <summary>
+    /// The app-id sibling of the refusal above, pinned on the SOCKET for the first time: the frame
+    /// names neither app identity.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The REST body stopped disclosing this, but the socket kept appending
+    /// <c>SandboxCredentialConflictException.Message</c> - which interpolates BOTH app ids - so the
+    /// transport that suppresses the PRINCIPAL conflict was still handing out the app identity beside
+    /// it. Two surfaces answering one condition must not disagree about what the refused caller is
+    /// entitled to learn; disagreeing only tells an attacker which door to use.
+    /// </para>
+    /// <para>
+    /// Reaching it needs no race. The socket passes no caller credential at all, so a thread whose
+    /// pooled entry was minted by an S2S app is refused the moment this connection asks the pool to
+    /// bring the agent current (#153).
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ACredentialConflictFrame_NamesNeitherAppIdentity()
+    {
+        const string threadId = "frozen-to-a-daemon";
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using var pool = CreatePool();
+
+        // Minted by an S2S caller, so the thread is frozen to that app id for its lifetime.
+        _ = pool.GetOrCreateAgent(
+            threadId,
+            DefaultMode(),
+            null,
+            null,
+            callerCredential: new SandboxCredential("review-daemon", "0123456789abcdef0123456789abcdef"),
+            ownerUserId: Alice);
+
+        var socket = new FakeWebSocket();
+        var handlerTask = Connect(pool, socket, threadId, Alice, cts.Token);
+
+        await socket.WaitUntilAsync(
+            () => socket.SentContains("\"code\":\"caller_credential_conflict\""),
+            cts.Token);
+
+        await handlerTask;
+
+        var frame = socket.SentFrames.Single(f => f.Contains("caller_credential_conflict", StringComparison.Ordinal));
+        _ = frame.Should().NotContain(
+            "review-daemon",
+            "the frame must not name the app identity the thread is frozen to");
+        _ = frame.Should().NotContain(
+            "0123456789abcdef0123456789abcdef",
+            "and it must never carry the app KEY, which the exception message has always excluded");
+        _ = frame.Should().Contain(
+            "cannot be continued here",
+            "the caller still needs to be told what happened, just not who it happened with");
+
+        _ = socket.CloseAsyncCalled.Should().BeTrue();
+        _ = socket.LastCloseStatus.Should().Be(WebSocketCloseStatus.NormalClosure);
+    }
+
     /// <summary>The mode a conversation gets when nothing pinned one - what these threads run under.</summary>
     private static AgentProfile DefaultMode() =>
         SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;

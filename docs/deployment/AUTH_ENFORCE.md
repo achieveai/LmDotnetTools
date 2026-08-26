@@ -106,8 +106,12 @@ lifetime:
 | Plain UI (no credential) | Plain UI (no credential) | Continues under the sample's own default identity |
 
 `ConversationsController.SendMessage` maps the pool's `SandboxCredentialConflictException` to a
-`409` with a body naming only the conflicting app ids (never app keys):
+`409` whose body names **neither** app id — `detail` is a fixed sentence, and the `/ws` frame carrying
+the same `code` matches it word for word:
 `{ "error": "caller_credential_conflict", "code": "caller_credential_conflict", "detail": "...", "threadId": "..." }`.
+For the ids, read the structured log line the refusal writes (`ExistingAppId` / `RequestedAppId`); app
+keys appear in neither place. The body used to carry both ids, on a diagnosability argument that did
+not survive #376 putting an ordinary editor grantee on this path.
 This binding is in-memory only; a process restart clears it, but the gateway's own per-app session
 scoping is the durable backstop (a foreign `AppId` addressing a known session id still 404s at the
 gateway).

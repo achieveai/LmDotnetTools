@@ -1633,10 +1633,15 @@ public sealed class ChatWebSocketManager
         {
             ["$type"] = "error",
             ["code"] = "caller_credential_conflict",
-            // App ids only — the exception message never contains the app key.
+
+            // Deliberately does NOT relay ex.Message, for the same reason as its principal sibling
+            // below: the message interpolates BOTH app ids, and this connection has not been
+            // authorized to learn which service the conversation is frozen to. It used to be appended
+            // on the grounds that app ids are not app keys - true, and beside the point once the REST
+            // body stopped carrying them. Two transports answering one condition must agree on what
+            // the refused caller may learn. The ids remain on the log line above.
             ["message"] =
-                "This conversation belongs to a different caller identity and cannot be continued here. "
-                + ex.Message,
+                "This conversation belongs to a different caller identity and cannot be continued here.",
         };
         var json = JsonSerializer.Serialize(payload, _jsonOptions);
 
