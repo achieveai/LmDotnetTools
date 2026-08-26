@@ -752,6 +752,9 @@ public class ConversationsController(
         // same as "no caller credential" rather than dereferencing a null Request.
         var callerCredential = TryBuildCallerCredential(HttpContext?.Request?.Headers);
 
+        // AFTER the authorization above, never before - see the helper's remarks.
+        await ReleaseAgentBoundToAnotherUserAsync(threadId, "SendMessage");
+
         IMultiTurnAgent agent;
         try
         {
@@ -1462,6 +1465,10 @@ public class ConversationsController(
         // session. A gateway rejection or an unreachable gateway must answer a clean 503 — not crash
         // the request with an unhandled 500 (which, in Development, also leaks a stack-trace page).
         var callerCredential = TryBuildCallerCredential(HttpContext?.Request?.Headers);
+
+        // AFTER the authorization above, never before - see the helper's remarks.
+        await ReleaseAgentBoundToAnotherUserAsync(threadId, "Mode switch");
+
         try
         {
             _ = await agentPool.RecreateAgentWithModeAsync(
@@ -1614,6 +1621,10 @@ public class ConversationsController(
         // Switching to a sandbox-backed provider eagerly reprovisions; a gateway rejection or an
         // unavailable/unknown provider must answer a clean 503, not crash the request with a 500.
         var callerCredential = TryBuildCallerCredential(HttpContext?.Request?.Headers);
+
+        // AFTER the authorization above, never before - see the helper's remarks.
+        await ReleaseAgentBoundToAnotherUserAsync(threadId, "Provider switch");
+
         try
         {
             _ = await agentPool.RecreateAgentWithProviderAsync(
@@ -1775,6 +1786,76 @@ public class ConversationsController(
             detail = ex.Message,
             threadId,
         });
+    }
+
+    /// <summary>
+    /// Releases a pooled agent frozen to a DIFFERENT user than this request's caller, so a caller the
+    /// policy has already allowed gets an agent of their own instead of colliding with the owner's
+    /// (#376).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MUST be called only AFTER <see cref="AuthorizeAsync"/> has allowed the action. It is not a
+    /// guard and decides nothing about access; it acts on the pool for a caller who is already
+    /// entitled to write. Called before the decision it would be worse than the bug it fixes: any
+    /// tenant member could evict a stranger's live agent - and its sandbox - by id alone, learning
+    /// nothing from their own 404 while the owner pays for it.
+    /// </para>
+    /// <para>
+    /// The sandbox answer, recorded in <c>docs/deployment/AUTH_ENFORCE.md</c>: a grantee does NOT
+    /// inherit the owner's sandbox. Sharing a conversation grants the conversation - whose history is
+    /// durable and rehydrates onto the new agent - not the filesystem the owner's agent was
+    /// provisioned. Two users writing through one agent would share whatever that sandbox holds, and
+    /// revoking the grant would not take it back. Releasing costs one sandbox provision and the
+    /// pooled agent's in-memory-only state, paid only when a conversation actually changes hands.
+    /// </para>
+    /// <para>
+    /// A run in progress is left alone: this returns without releasing, the pool's guard raises its
+    /// conflict as before, and the caller gets the same <c>409</c> they get today. Evicting mid-run
+    /// would abort a turn belonging to whoever is streaming - the wrong party to punish for a
+    /// handoff, and a race any second caller could trigger at will.
+    /// </para>
+    /// <para>
+    /// The app-id freeze (<see cref="SandboxCredentialConflictException"/>) is deliberately NOT
+    /// released alongside this. It is the boundary between SERVICES, not between people: an app-only
+    /// S2S caller has no <c>EffectiveUserId</c> to hold a grant with, so there is no authorization
+    /// verdict here that could stand in for one, and the cross-actor resume matrix (#153) pins that
+    /// refusal on purpose.
+    /// </para>
+    /// </remarks>
+    /// <param name="threadId">The conversation whose pooled agent may need releasing.</param>
+    /// <param name="operation">Which route is releasing, for the log line.</param>
+    private async Task ReleaseAgentBoundToAnotherUserAsync(string threadId, string operation)
+    {
+        var callerUserId = CallerUserId;
+        if (callerUserId is null)
+        {
+            // An app-only caller (or enforcement off) carries no user to compare, and the pool's
+            // principal guard short-circuits on a null on either side. Nothing to release.
+            return;
+        }
+
+        var boundTo = agentPool.GetAgentOwnerUserId(threadId);
+        if (boundTo is null || string.Equals(boundTo, callerUserId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (agentPool.IsRunInProgress(threadId))
+        {
+            logger.LogInformation(
+                "{Operation} for thread {ThreadId} left the agent bound to another user in place: a run is in progress",
+                operation,
+                threadId);
+            return;
+        }
+
+        logger.LogInformation(
+            "{Operation} for thread {ThreadId} released the agent bound to another user so an authorized caller gets their own",
+            operation,
+            threadId);
+
+        await agentPool.RemoveAgentAsync(threadId);
     }
 
     /// <summary>Lists the grants on a conversation. Reading the roster is a read of the resource.</summary>
