@@ -29,7 +29,7 @@ internal static class HostDirectoryWipe
     /// the link is not followed and it is not removed either, since unlinking is itself a write chosen by
     /// whoever planted it, and re-creating the directory afterwards (which <c>ReviewSlotPreparer</c>'s scratch
     /// clear does) only hands the next one a fresh target. It is raised as
-    /// <see cref="SlotHostPathRefusedException"/>, the type that means exactly this, and NOT as one of the two
+    /// <see cref="SlotAddressUnusableException"/>, the type that means exactly this, and NOT as one of the two
     /// re-clone types: those drive the recovery ladder into a wipe, and this wipe is what already refused. An
     /// earlier note here defended throwing an untyped <see cref="InvalidOperationException"/> on that same "not
     /// one of the re-clone types" reasoning, which mistook the absence of a wrong type for the absence of a right
@@ -131,7 +131,7 @@ internal static class HostDirectoryWipe
     /// handed or one it found on the way down. <paramref name="cause"/> is carried when the refusal came from a
     /// failed call rather than from a verdict, so the log still shows whether the listing was denied or the
     /// device failed — the two produce the same refusal but not the same operator response.</summary>
-    private static SlotHostPathRefusedException Refuse(
+    private static SlotAddressUnusableException Refuse(
         string root, HostPathRefusal refusal, Exception? cause = null) =>
         new(
             $"Refusing to wipe host directory '{root}': '{refusal.Path}' — {refusal.Reason}. Not following it, "
@@ -194,7 +194,7 @@ internal static class HostDirectoryWipe
     /// up. An entry the daemon is not allowed to unlink leaves the walk with no move it may make: it will not
     /// follow the link, it cannot remove it, and it must not delete the tree around it and call the store
     /// cleared. Letting the raw exception out was fail-closed but arrived untyped, and the pooled caller routes
-    /// on TYPE — only <see cref="SlotHostPathRefusedException"/> retires the slot, everything else returns it to
+    /// on TYPE — only <see cref="SlotAddressUnusableException"/> retires the slot, everything else returns it to
     /// a free list that is a STACK. A denied unlink is not transient the way a busy file is: it is a property of
     /// the entry, so the next run takes the same index and is denied again, forever. Returning the slot is what
     /// makes that loop, and the refusal type is what breaks it.

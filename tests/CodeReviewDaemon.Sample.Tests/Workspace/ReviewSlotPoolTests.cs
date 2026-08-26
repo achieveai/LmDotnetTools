@@ -142,7 +142,7 @@ public class ReviewSlotPoolTests : IDisposable
 
         var act = async () => await pool.LeaseAsync(default);
 
-        await act.Should().ThrowAsync<SlotHostPathRefusedException>();
+        await act.Should().ThrowAsync<SlotAddressUnusableException>();
         Directory.Exists(Path.Combine(_outsideRoot, "scratch")).Should().BeFalse(
             "CreateDirectory succeeds through a junction, so an unguarded lease builds the slot outside the pool");
     }
@@ -157,7 +157,7 @@ public class ReviewSlotPoolTests : IDisposable
 
         var act = async () => await pool.LeaseAsync(default);
 
-        await act.Should().ThrowAsync<SlotHostPathRefusedException>()
+        await act.Should().ThrowAsync<SlotAddressUnusableException>()
             .WithMessage("*store*", "the store is the path the clone and the wipe both write to");
     }
 
@@ -171,7 +171,7 @@ public class ReviewSlotPoolTests : IDisposable
 
         var act = async () => await pool.LeaseAsync(default);
 
-        await act.Should().ThrowAsync<SlotHostPathRefusedException>()
+        await act.Should().ThrowAsync<SlotAddressUnusableException>()
             .WithMessage("*scratch*", "the lease creates the scratch dir, and the preparer later clears it");
     }
 
@@ -186,7 +186,7 @@ public class ReviewSlotPoolTests : IDisposable
 
         var act = async () => await pool.LeaseAsync(default);
 
-        var refusal = await act.Should().ThrowAsync<SlotHostPathRefusedException>();
+        var refusal = await act.Should().ThrowAsync<SlotAddressUnusableException>();
         refusal.Which.Message.Should()
             .Contain($"'{Path.Combine(_hostRoot, "slot-0")}'")
             .And.NotContain(
@@ -203,7 +203,7 @@ public class ReviewSlotPoolTests : IDisposable
         DirectoryLink.Create(Path.Combine(_hostRoot, "slot-0"), _outsideRoot);
         var pool = CreatePool(maxSlots: 1);
         var refused = async () => await pool.LeaseAsync(default);
-        await refused.Should().ThrowAsync<SlotHostPathRefusedException>();
+        await refused.Should().ThrowAsync<SlotAddressUnusableException>();
 
         var next = await pool.LeaseAsync(default).WaitAsync(TimeSpan.FromSeconds(10));
 

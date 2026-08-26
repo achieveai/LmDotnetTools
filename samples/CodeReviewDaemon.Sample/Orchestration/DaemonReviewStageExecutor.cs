@@ -633,7 +633,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// the reviewed repo is not a submodule of the store so the caller falls back to the per-run checkout.
     /// The slot is always released on any decline/failure so a transient error can never leak pool capacity;
     /// a genuine prep/diff failure surfaces (throws) so the stage retries with no partial artifact (§8).
-    /// <b>Released</b>, not necessarily returned: a <see cref="SlotHostPathRefusedException"/> retires the
+    /// <b>Released</b>, not necessarily returned: a <see cref="SlotAddressUnusableException"/> retires the
     /// address instead. That distinction is the whole point — see <see cref="IReviewSlotPool.RetireAsync"/>.
     /// This is the one place a refusal raised anywhere in preparation can reach the pool, because every
     /// preparer entry point on the pooled path (both the in-process and the S2S branch) runs inside this
@@ -742,7 +742,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 ManifestFileCount(fileManifest), prepared.TargetDir);
             return true;
         }
-        catch (SlotHostPathRefusedException)
+        catch (SlotAddressUnusableException)
         {
             // Preparation refused to cross an entry under this slot that it could not establish as contained.
             // Nothing about a later attempt changes that, and the pool's free list is a STACK, so returning the
@@ -846,7 +846,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// retried ONCE. A second failure surfaces so the stage retries and the retry governor bounds it.
     /// <para>
     /// The filter is by TYPE and not by "prepare failed" for a reason. A
-    /// <see cref="SlotHostPathRefusedException"/> also comes out of prepare, and the re-clone is precisely the
+    /// <see cref="SlotAddressUnusableException"/> also comes out of prepare, and the re-clone is precisely the
     /// wrong answer to it: the wipe it starts with walks into the entry the refusal declined to cross. Widening
     /// this catch — or adding a bare <c>catch</c> beside it — turns the recovery step into the redirected write.
     /// </para>

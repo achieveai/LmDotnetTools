@@ -328,7 +328,7 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
         {
             HostDirectoryWipe.Delete(hostDir);
         }
-        catch (SlotHostPathRefusedException ex)
+        catch (SlotAddressUnusableException ex)
         {
             // Deliberately NOT the best-effort warning below, and deliberately not rethrown either.
             //

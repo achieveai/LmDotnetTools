@@ -30,5 +30,5 @@ internal sealed class SlotCorruptException(string message) : Exception(message);
 /// paths raised this is retired rather than retried — see <see cref="IReviewSlotPool.RetireAsync"/>.
 /// </para>
 /// </summary>
-internal sealed class SlotHostPathRefusedException(string message, Exception? innerException = null)
+internal sealed class SlotAddressUnusableException(string message, Exception? innerException = null)
     : Exception(message, innerException);

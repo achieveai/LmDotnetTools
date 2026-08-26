@@ -229,13 +229,29 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         ArgumentNullException.ThrowIfNull(policy);
 
         await EnsureStoreAsync(storeRoot, storeUrl, cancellationToken).ConfigureAwait(false);
-        if (await SlotHygiene
-                .EnsureCleanAsync(_git, storeRoot, cancellationToken, _logger, _fileSystem)
-                .ConfigureAwait(false)
-            == HygieneVerdict.NeedsReclone)
+        var hygiene = await SlotHygiene
+            .EnsureCleanAsync(_git, storeRoot, cancellationToken, _logger, _fileSystem)
+            .ConfigureAwait(false);
+        switch (hygiene)
         {
-            throw new SlotNeedsRecloneException(
-                $"Run {run.Id}: review store '{storeRoot}' is structurally unusable; re-clone required.");
+            case HygieneVerdict.NeedsReclone:
+                throw new SlotNeedsRecloneException(
+                    $"Run {run.Id}: review store '{storeRoot}' is structurally unusable; re-clone required.");
+
+            // The store's own cleanup could not be walked past an UNREADABLE entry, and a re-clone is the one
+            // repair that must not run: it begins by wiping the store, and the wipe refuses on that same entry
+            // (see HostDirectoryWipe). Raise the refusal type DIRECTLY rather than laundering it through
+            // SlotNeedsRecloneException — its consumers retire the address, which is the only correct outcome,
+            // and the retirement then follows from this decision rather than from the wipe's refusal escaping a
+            // catch filter downstream (issue #276).
+            case HygieneVerdict.HostPathUnreadable:
+                throw new SlotAddressUnusableException(
+                    $"Run {run.Id}: review store '{storeRoot}' cannot have its cleanup walked (an entry under it "
+                        + "is unreadable); a re-clone would refuse on the same entry, so the slot is retired.");
+
+            case HygieneVerdict.Clean:
+            default:
+                break;
         }
 
         await RunGitOrThrowAsync(

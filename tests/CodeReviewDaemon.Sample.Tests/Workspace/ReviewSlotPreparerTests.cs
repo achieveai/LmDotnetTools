@@ -196,7 +196,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
 
         var act = async () => await preparer.RecloneStoreAsync(storeRoot, StoreUrl, CancellationToken.None);
 
-        _ = await act.Should().ThrowAsync<SlotHostPathRefusedException>();
+        _ = await act.Should().ThrowAsync<SlotAddressUnusableException>();
         File.GetAttributes(victim).HasFlag(FileAttributes.ReadOnly).Should().BeTrue(
             "clearing read-only THROUGH the root is the same write outside the store the child check refuses");
         HostPathGuard.Check(storeRoot).Should().Be(
@@ -234,7 +234,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
             slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
             CancellationToken.None);
 
-        _ = await act.Should().ThrowAsync<SlotHostPathRefusedException>();
+        _ = await act.Should().ThrowAsync<SlotAddressUnusableException>();
         File.GetAttributes(victim).HasFlag(FileAttributes.ReadOnly).Should().BeTrue();
         HostPathGuard.Check(slot.ScratchPath).Should().Be(
             new HostPathRefusal(slot.ScratchPath, HostPathVerdict.Redirected),
@@ -265,7 +265,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
 
         var act = async () => await preparer.RecloneStoreAsync(storeRoot, StoreUrl, CancellationToken.None);
 
-        _ = await act.Should().ThrowAsync<SlotHostPathRefusedException>();
+        _ = await act.Should().ThrowAsync<SlotAddressUnusableException>();
         runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
             command => command.Contains(" clone ", StringComparison.Ordinal),
             "a root that reads as absent is still a root that redirects, and cloning onto it writes outside");
@@ -293,7 +293,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
 
         var act = async () => await preparer.RecloneStoreAsync(denied.Path, StoreUrl, CancellationToken.None);
 
-        _ = await act.Should().ThrowAsync<SlotHostPathRefusedException>();
+        _ = await act.Should().ThrowAsync<SlotAddressUnusableException>();
         runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
             command => command.Contains(" clone ", StringComparison.Ordinal),
             "cloning onto a path the daemon could not inspect is the write the whole check exists to prevent");
@@ -321,7 +321,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
 
         var act = async () => await preparer.RecloneStoreAsync(slot.StorePath, StoreUrl, CancellationToken.None);
 
-        var refusal = await act.Should().ThrowAsync<SlotHostPathRefusedException>();
+        var refusal = await act.Should().ThrowAsync<SlotAddressUnusableException>();
         refusal.Which.Message.Should().Contain(opaque, "the message is the operator's only account of what stopped");
         refusal.Which.InnerException.Should().BeOfType<UnauthorizedAccessException>(
             "a denial and a failing device produce the same refusal but not the same operator response");
@@ -336,7 +336,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     {
         // The walk's answer to a redirected entry is to unlink it, and that unlink can be DENIED. Nothing caught
         // it, so the raw I/O exception left the wipe untyped — and the pooled caller routes on TYPE: only
-        // SlotHostPathRefusedException sets refused=true and retires, everything else returns the slot to a free
+        // SlotAddressUnusableException sets refused=true and retires, everything else returns the slot to a free
         // list that is a STACK. The next run takes the same index, meets the same entry, and is denied again. An
         // entry the daemon is not PERMITTED to remove is not a transient failure the way a busy file is: it fails
         // identically on every lease, forever, which is the exact loop the retire path exists to break.
@@ -359,7 +359,7 @@ public sealed class ReviewSlotPreparerTests : IDisposable
 
         var act = async () => await preparer.RecloneStoreAsync(slot.StorePath, StoreUrl, CancellationToken.None);
 
-        var refusal = await act.Should().ThrowAsync<SlotHostPathRefusedException>(
+        var refusal = await act.Should().ThrowAsync<SlotAddressUnusableException>(
             "an ordinary I/O exception here is returned to the pool and leased again forever");
         refusal.Which.Message.Should().Contain(planted, "the message is the operator's only account of what stopped");
         refusal.Which.Message.Should().Contain(
@@ -619,6 +619,39 @@ public sealed class ReviewSlotPreparerTests : IDisposable
             slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
 
         await act.Should().ThrowAsync<SlotNeedsRecloneException>("a structurally broken store must escalate to re-clone");
+    }
+
+    [RequiresUnreadableEntryFact("a listable directory cannot show the difference between empty and un-listable")]
+    public async Task PrepareAsync_HostPreparer_StoreCleanupUnreadable_RaisesTheRefusalTypeNotReclone()
+    {
+        // Issue #276. Clean-on-entry's sweep cannot walk this store: a directory under .git will not list, so
+        // it stops at an UNREADABLE entry. That is NOT a re-clone case — the re-clone begins by wiping the
+        // store, and the wipe refuses on the same unreadable entry, so escalating there names a repair that
+        // cannot run. The preparer must therefore surface the REFUSAL type directly (whose consumers retire the
+        // slot), not SlotNeedsRecloneException (which the executor turns into that impossible re-clone). Before
+        // the fix, hygiene reported the unreadable sweep as NeedsReclone and this threw the reclone type; the
+        // retirement then only happened later, by the wipe's exception escaping a catch filter downstream.
+        var slot = CreateSlot();
+        var opaque = Path.Combine(slot.StorePath, ".git", "modules");
+        _ = Directory.CreateDirectory(opaque);
+        using var denied = UnreadableEntry.UnlistableDirectory(opaque);
+        await File.WriteAllTextAsync(
+            Path.Combine(slot.StorePath, ".gitmodules"),
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n"
+                + "\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(new FakeSandboxCommandRunner()), new HostFileSystem(), "github",
+            NullLoggerFactory.Instance);
+
+        var act = async () => await preparer.PrepareAsync(
+            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
+            CancellationToken.None);
+
+        // A single typed assertion is the whole decision: SlotAddressUnusableException and
+        // SlotNeedsRecloneException are unrelated sealed types, so before the fix (which threw the reclone type)
+        // this line fails, and after it passes.
+        await act.Should().ThrowAsync<SlotAddressUnusableException>(
+            "an unreadable store cleanup retires the slot; re-cloning it walks the wipe into the same wall");
     }
 
     [Fact]

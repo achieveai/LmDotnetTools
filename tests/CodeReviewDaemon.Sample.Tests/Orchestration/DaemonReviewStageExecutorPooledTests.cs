@@ -142,12 +142,12 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // of one — so returning the index to a free list that is a STACK hands it to the very next run, which
         // refuses again, forever. Retiring costs one directory name; the permit is released either way.
         fixture.Preparer.ThrowThenSucceed.Enqueue(
-            new SlotHostPathRefusedException("Refusing to wipe host directory 'store': '.git/objects' — unreadable."));
+            new SlotAddressUnusableException("Refusing to wipe host directory 'store': '.git/objects' — unreadable."));
         var run = fixture.SeedRun();
 
         var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
 
-        await act.Should().ThrowAsync<SlotHostPathRefusedException>();
+        await act.Should().ThrowAsync<SlotAddressUnusableException>();
         fixture.Preparer.RecloneCount.Should().Be(0,
             "the re-clone starts by wiping the store, which is the walk that just refused — escalating there is "
                 + "the redirected write, so the recovery ladder must filter by TYPE and not by 'prepare failed'");
