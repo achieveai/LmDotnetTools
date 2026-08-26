@@ -145,6 +145,46 @@ public class MultiTurnAgentPoolHandoffTests
     }
 
     [Fact]
+    public async Task TheGraceMeasuresContinuousIdleness_NotTimeSinceTheAccept()
+    {
+        // The clause the grace's own remarks claim, pinned by the one sequence that can distinguish
+        // it. A run that has a run id but is not running is a state this pool already names (see
+        // GetRunStateInfo's IsStale), and a run that resumes under the SAME id does not retire the
+        // marker - a new id is the only evidence the input channel drained. So an entry can be
+        // observed idle, then observed busy again, with the accepted input still queued behind that
+        // same run the whole time.
+        //
+        // If the clock were left running across the busy stretch, the marker would expire while the
+        // agent was demonstrably working and the queued turn would be released out from under it.
+        var time = new FakeTimeProvider(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        await using var pool = CreatePool(time);
+        var agent = CreateOwnedAgent(pool, "thread-resumed", Alice);
+        agent.CurrentRunId = "run_1";
+        agent.IsRunning = false;
+
+        pool.NoteInputAccepted("thread-resumed");
+
+        // Observed idle: the grace clock starts here.
+        pool.TryGetHandoffState("thread-resumed", out var whileIdle).Should().BeTrue();
+        whileIdle.IsBusy.Should().BeTrue();
+
+        // run_1 resumes under its own id, and is observed doing so.
+        agent.IsRunning = true;
+        pool.TryGetHandoffState("thread-resumed", out var whileBusy).Should().BeTrue();
+        whileBusy.IsBusy.Should().BeTrue();
+
+        time.Advance(MultiTurnAgentPool.AcceptedInputGrace + TimeSpan.FromSeconds(1));
+
+        // run_1 ends. The queued turn has still not started, and the grace has not been running.
+        agent.IsRunning = false;
+        pool.TryGetHandoffState("thread-resumed", out var afterwards).Should().BeTrue();
+        afterwards.IsBusy.Should().BeTrue(
+            "the entry was working for that whole stretch, so none of it counts against the grace");
+        (await pool.TryReleaseIdleAgentAsync("thread-resumed", afterwards))
+            .Should().Be(MultiTurnAgentPool.AgentReleaseOutcome.Busy);
+    }
+
+    [Fact]
     public async Task ARunStartingAfterTheLook_IsNotAbortedByTheRelease()
     {
         // The window. The caller read an idle entry and is about to act on it; a run starts in
