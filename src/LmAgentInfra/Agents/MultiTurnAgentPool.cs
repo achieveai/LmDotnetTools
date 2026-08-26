@@ -124,6 +124,54 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     }
 
     /// <summary>
+    /// Everything a grantee handoff needs to decide, read from ONE entry under ONE lock (#418).
+    /// </summary>
+    /// <param name="OwnerUserId">The user the pooled entry is frozen to, or null.</param>
+    /// <param name="CallerAppId">The app the pooled entry is frozen to, or null.</param>
+    /// <param name="IsBusy">
+    /// Whether the entry has work in hand: a run in progress, OR an input that has been accepted and
+    /// not yet started. The second disjunct is the whole reason this is not
+    /// <see cref="IsRunInProgress"/>.
+    /// </param>
+    /// <param name="EntryToken">
+    /// Opaque identity of the entry these facts came from. Hand it back to
+    /// <see cref="TryReleaseIdleAgentAsync"/> unchanged; nothing else may interpret it.
+    /// </param>
+    /// <remarks>
+    /// A single value rather than three accessors because the three answers only mean anything
+    /// together. The handoff used to take them as separate unlocked lookups, and an entry replaced
+    /// between two of them produced a view of the thread that never existed - most sharply a null app
+    /// id, which is indistinguishable from "never frozen" and is how the cross-app freeze got
+    /// dropped.
+    /// </remarks>
+    public sealed record AgentHandoffState(
+        string? OwnerUserId,
+        string? CallerAppId,
+        bool IsBusy,
+        object EntryToken
+    );
+
+    /// <summary>What <see cref="TryReleaseIdleAgentAsync"/> actually did.</summary>
+    public enum AgentReleaseOutcome
+    {
+        /// <summary>The observed entry was idle and has been removed and disposed.</summary>
+        Released,
+
+        /// <summary>No entry is pooled for the thread. Nothing was disposed.</summary>
+        NotPooled,
+
+        /// <summary>
+        /// A DIFFERENT entry is pooled for the thread now, so the decision the caller made no longer
+        /// applies to it. It is left alone - releasing it would destroy a live agent nobody decided
+        /// anything about.
+        /// </summary>
+        Replaced,
+
+        /// <summary>The entry has work in hand: a run in progress, or an accepted-but-unstarted input.</summary>
+        Busy,
+    }
+
+    /// <summary>
     /// Wrapper to track agent and its background task.
     /// </summary>
     private sealed class AgentEntry : IAsyncDisposable
@@ -165,6 +213,26 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         /// (non-workspace target, leaving the prior binding untouched).
         /// </summary>
         public SandboxEstablishedBinding? EstablishedBinding { get; init; }
+
+        /// <summary>
+        /// The accepted-input ledger (#418). MUTABLE, and every read and write of these three fields
+        /// happens under the entry's per-thread lock - unlike everything above them, which is frozen
+        /// at creation. They exist because "is this entry idle?" cannot be answered from
+        /// <see cref="IMultiTurnAgent"/> alone: an input that has been accepted and not yet started
+        /// leaves <see cref="IMultiTurnAgent.CurrentRunId"/> null and <c>IsRunning</c> false, which is
+        /// indistinguishable from having nothing to do.
+        /// </summary>
+        public bool HasAcceptedInput;
+
+        /// <summary>The run id the agent was on when the input was accepted, or null if it was idle.</summary>
+        public string? RunIdAtAccept;
+
+        /// <summary>
+        /// When this entry was first OBSERVED not-in-progress while holding an accepted input, or null
+        /// while it is in progress. Restarted on every in-progress observation, so the grace measures
+        /// continuous idleness rather than time since the accept.
+        /// </summary>
+        public DateTimeOffset? IdleSinceUtc;
 
         public async ValueTask DisposeAsync()
         {
@@ -1233,6 +1301,277 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             RunTaskCompleted: runTaskCompleted,
             IsStale: isStale
         );
+    }
+
+    /// <summary>
+    /// Clock behind <see cref="AcceptedInputGrace"/>. Injectable so a test can advance it rather than
+    /// wait it out; production never sets it.
+    /// </summary>
+    internal TimeProvider TimeProvider { get; init; } = TimeProvider.System;
+
+    /// <summary>
+    /// How long an accepted-but-unstarted input keeps an otherwise idle entry from being released.
+    /// </summary>
+    /// <remarks>
+    /// A backstop, not the mechanism. The marker normally retires on evidence - a run id the agent
+    /// did not have when the input was accepted, which can only mean the input channel was drained.
+    /// This covers the one case that evidence never arrives for: an agent that accepted an input and
+    /// then wedged. Without it that conversation's every future handoff answers <c>409</c> forever,
+    /// which trades a lost turn for a permanently unusable thread. The clock runs only while the
+    /// entry is observed NOT in progress (see <see cref="IsBusyUnderLock"/>), so a turn queued behind
+    /// a long-running one is never timed out by it however long that run takes.
+    /// </remarks>
+    internal static readonly TimeSpan AcceptedInputGrace = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Records that an input has been accepted for <paramref name="threadId"/> and not yet started,
+    /// so a concurrent handoff does not read the entry as idle and discard the turn (#418).
+    /// </summary>
+    /// <param name="threadId">The conversation whose agent took the input.</param>
+    /// <remarks>
+    /// <para>
+    /// Call this AFTER the send has been accepted - once the sender is owed an answer - and from
+    /// every transport that can accept one. There are two: the REST send and the WebSocket send. A
+    /// ledger maintained on one of them is a ledger with a hole in it exactly the size of the other.
+    /// </para>
+    /// <para>
+    /// The pool has to keep this itself because the fact it needs is not on
+    /// <see cref="IMultiTurnAgent"/>: an agent exposes <see cref="IMultiTurnAgent.CurrentRunId"/>,
+    /// which is null precisely while an input sits queued, and its pending-input count is not part of
+    /// the interface. So the pool records the accept and retires the record on the first evidence the
+    /// queue moved.
+    /// </para>
+    /// <para>
+    /// A no-op for a thread with no pooled entry: there is nothing to protect and nothing to
+    /// remember. An entry created later starts with a clean ledger, which is correct - an input
+    /// accepted by an agent that has since been replaced is not work the replacement holds.
+    /// </para>
+    /// </remarks>
+    public void NoteInputAccepted(string threadId)
+    {
+        if (string.IsNullOrEmpty(threadId))
+        {
+            return;
+        }
+
+        var lockObj = _creationLocks.GetOrAdd(threadId, static _ => new object());
+        lock (lockObj)
+        {
+            if (!_agents.TryGetValue(threadId, out var entry))
+            {
+                return;
+            }
+
+            entry.HasAcceptedInput = true;
+            entry.RunIdAtAccept = entry.Agent.CurrentRunId;
+            entry.IdleSinceUtc = null;
+        }
+    }
+
+    /// <summary>
+    /// Reads everything a grantee handoff decides on - owner, frozen app id, and whether the entry has
+    /// work in hand - from ONE entry under ONE lock (#418).
+    /// </summary>
+    /// <param name="threadId">The conversation.</param>
+    /// <param name="state">The facts, valid only as the input to <see cref="TryReleaseIdleAgentAsync"/>.</param>
+    /// <returns><see langword="true"/> when an entry is pooled for the thread.</returns>
+    /// <remarks>
+    /// Returning <see langword="false"/> for an absent entry is load-bearing and is not the same as
+    /// returning a state with a null app id. The accessors this replaces
+    /// (<see cref="GetAgentOwnerUserId"/>, <see cref="GetAgentCallerAppId"/>) answer null for both
+    /// "no entry" and "no credential", so a caller could not tell a thread that vanished from one
+    /// created by an interactive caller - and the cross-app compare then either admitted a handoff it
+    /// should have refused or refused one it should have admitted.
+    /// </remarks>
+    public bool TryGetHandoffState(string threadId, out AgentHandoffState state)
+    {
+        state = null!;
+        if (string.IsNullOrEmpty(threadId))
+        {
+            return false;
+        }
+
+        var lockObj = _creationLocks.GetOrAdd(threadId, static _ => new object());
+        lock (lockObj)
+        {
+            if (!_agents.TryGetValue(threadId, out var entry))
+            {
+                return false;
+            }
+
+            state = new AgentHandoffState(
+                entry.OwnerUserId,
+                entry.CallerCredential?.AppId,
+                IsBusyUnderLock(entry),
+                entry
+            );
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Removes and disposes the entry <paramref name="observed"/> describes, but ONLY if that same
+    /// entry is still pooled and still idle - and says which of those it found (#418).
+    /// </summary>
+    /// <param name="threadId">The conversation.</param>
+    /// <param name="observed">The state <see cref="TryGetHandoffState"/> returned for this thread.</param>
+    /// <returns>What was actually done, which the caller answers on instead of on its own stale read.</returns>
+    /// <remarks>
+    /// <para>
+    /// This exists because the decision and the removal used to be two steps with nothing holding the
+    /// entry between them: a caller asked <see cref="IsRunInProgress"/>, and
+    /// <see cref="RemoveAgentAsync"/> then disposed whatever the dictionary held, re-checking nothing.
+    /// A run that started in the gap was aborted anyway - the outcome the check exists to prevent -
+    /// and an entry that had been REPLACED in the gap was destroyed although nobody had decided
+    /// anything about it.
+    /// </para>
+    /// <para>
+    /// The re-validation compares entry IDENTITY and nothing else, deliberately. An entry's owner and
+    /// caller credential are frozen at creation and never reassigned, so re-comparing them here would
+    /// be a second conjunct that can never independently fail - and two conjuncts that cannot fail
+    /// apart make each other's mutations pass.
+    /// </para>
+    /// <para>
+    /// Disposal happens outside the lock, because it awaits. What the lock covers is the decision and
+    /// the removal, which is what makes them one step: after the removal commits, a concurrent
+    /// creation observes an empty slot and builds a fresh entry rather than handing out one that is
+    /// being torn down.
+    /// </para>
+    /// </remarks>
+    public async ValueTask<AgentReleaseOutcome> TryReleaseIdleAgentAsync(
+        string threadId,
+        AgentHandoffState observed
+    )
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrEmpty(threadId);
+        ArgumentNullException.ThrowIfNull(observed);
+
+        AgentEntry removed;
+        var lockObj = _creationLocks.GetOrAdd(threadId, static _ => new object());
+        lock (lockObj)
+        {
+            if (!_agents.TryGetValue(threadId, out var entry))
+            {
+                return AgentReleaseOutcome.NotPooled;
+            }
+
+            if (!ReferenceEquals(entry, observed.EntryToken))
+            {
+                return AgentReleaseOutcome.Replaced;
+            }
+
+            if (IsBusyUnderLock(entry))
+            {
+                return AgentReleaseOutcome.Busy;
+            }
+
+            // The keyed overload, so a removal that lost a race to a concurrent RemoveAgentAsync
+            // takes nothing with it.
+            if (!_agents.TryRemove(new KeyValuePair<string, AgentEntry>(threadId, entry)))
+            {
+                return AgentReleaseOutcome.Replaced;
+            }
+
+            removed = entry;
+        }
+
+        _logger.LogInformation(
+            "Released the idle pooled agent for thread {ThreadId} to an authorized caller",
+            threadId
+        );
+
+        try
+        {
+            await removed.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            // Same compare-and-clear RemoveAgentAsync does, and for the same reason: a concurrent
+            // creation that republished a binding while this was disposing must keep it.
+            lock (lockObj)
+            {
+                if (!_agents.ContainsKey(threadId))
+                {
+                    _bindingSink?.ClearEstablishedBinding(threadId);
+                }
+            }
+        }
+
+        RaiseThreadRemoved(threadId);
+        return AgentReleaseOutcome.Released;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="entry"/> has work in hand. MUST be called under the entry's per-thread
+    /// lock: it both reads and retires the accepted-input ledger.
+    /// </summary>
+    private bool IsBusyUnderLock(AgentEntry entry)
+    {
+        RetireAcceptedInputIfDrained(entry);
+
+        if (IsEntryInProgress(entry))
+        {
+            // The grace clock measures continuous idleness, so an observation that finds a run
+            // running restarts it. Without this a turn queued behind a ten-minute run would have its
+            // marker expire during that run and the hole would reopen the moment the run ended.
+            entry.IdleSinceUtc = null;
+            return true;
+        }
+
+        if (!entry.HasAcceptedInput)
+        {
+            return false;
+        }
+
+        var now = TimeProvider.GetUtcNow();
+        entry.IdleSinceUtc ??= now;
+        if (now - entry.IdleSinceUtc.Value < AcceptedInputGrace)
+        {
+            return true;
+        }
+
+        _logger.LogWarning(
+            "Thread {ThreadId} accepted an input that never started a run within {Grace}; releasing the "
+                + "entry rather than refusing every future handoff for it",
+            entry.Agent.ThreadId,
+            AcceptedInputGrace
+        );
+        ClearAcceptedInput(entry);
+        return false;
+    }
+
+    /// <summary>
+    /// Retires the accepted-input marker once a run the agent was NOT on at accept time exists.
+    /// </summary>
+    /// <remarks>
+    /// A different run id is the evidence, and it is sound in both directions. The agent consumes its
+    /// input channel in order, so a run that started after the accept necessarily took the accepted
+    /// input off it; and while the accepted input is still queued the agent is either idle (null) or
+    /// still on the run it was on at accept time, so no such id can appear early.
+    /// </remarks>
+    private static void RetireAcceptedInputIfDrained(AgentEntry entry)
+    {
+        if (!entry.HasAcceptedInput)
+        {
+            return;
+        }
+
+        var currentRunId = entry.Agent.CurrentRunId;
+        if (
+            !string.IsNullOrWhiteSpace(currentRunId)
+            && !string.Equals(currentRunId, entry.RunIdAtAccept, StringComparison.Ordinal)
+        )
+        {
+            ClearAcceptedInput(entry);
+        }
+    }
+
+    private static void ClearAcceptedInput(AgentEntry entry)
+    {
+        entry.HasAcceptedInput = false;
+        entry.RunIdAtAccept = null;
+        entry.IdleSinceUtc = null;
     }
 
     /// <summary>

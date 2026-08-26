@@ -994,6 +994,11 @@ public sealed class ChatWebSocketManager
                 inputId: Guid.NewGuid().ToString(),
                 ct: ct);
 
+            // The sibling of the REST send's own call (#418). This transport accepts turns on exactly
+            // the same pooled entry, so a ledger kept only on the REST path would leave the hole open
+            // for every message typed into the UI - which is most of them.
+            _agentPool.NoteInputAccepted(threadId);
+
             _logger.LogDebug(
                 "Message queued for thread {ThreadId}, receipt: {InputId}",
                 threadId,

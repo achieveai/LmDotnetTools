@@ -947,6 +947,12 @@ public class ConversationsController(
                 new { error = "queue_full", code = "queue_full", threadId });
         }
 
+        // A receipt exists, so this caller is owed an answer. Until the agent picks the input up it has
+        // no run id and is not running, which is exactly what a concurrent grantee handoff reads as
+        // "idle" - and the entry, with this turn still on it, was disposed (#418). Recorded on the
+        // success path only: a queue-full return and a thrown write failure both leave nothing queued.
+        agentPool.NoteInputAccepted(threadId);
+
         // The capability check got the request this far; the RECEIPT is what says this particular input will
         // actually be enforced. An agent that claims the capability but does not stamp the receipt cannot
         // make this host advertise a guarantee — and the negative is RECORDED, not just returned, so a retry
@@ -1835,16 +1841,23 @@ public class ConversationsController(
     /// product decision tracked in #417; this releases the agent, never the sandbox.
     /// </para>
     /// <para>
-    /// Every read below is BEST-EFFORT and none of them is atomic with the removal that follows. Two
-    /// consequences, both tracked in #418. First, a run in progress is left alone: this returns without
-    /// releasing, the pool's guard raises its conflict as before, and the caller gets the same
-    /// <c>409</c> - but the check and the removal are not one step, and a turn that is queued and not
-    /// yet started reads as not-in-progress, so a handoff arriving in that window can drop it. Second,
-    /// the owner read and the app-id read are two separate unlocked lookups: an entry that disappears
-    /// between them makes the app id read as null, which either refuses a caller who should have been
-    /// let through or lets one through who should have been refused.
-    /// Evicting a genuinely streaming turn would abort the answer of whoever is mid-answer - the wrong
-    /// party to punish for a handoff, and a race any second caller could trigger at will.
+    /// The reads below are ONE look at one entry, and the release re-validates that same entry under
+    /// the pool's per-thread lock before it removes anything (#418). Three things follow, and none of
+    /// them is best-effort any more. A run in progress is left in place, and so is an input that has
+    /// been accepted and not yet started - both count as work in hand, so a turn a sender already holds
+    /// a receipt for is not discarded by a handoff. An entry that was REPLACED between the look and the
+    /// release is left alone rather than disposed, because the decision made here no longer describes
+    /// it. And the owner and the app id come from one entry, so the cross-app compare can no longer be
+    /// decided against a thread state that never existed - a vanished entry now reports absence rather
+    /// than a null app id indistinguishable from "never frozen".
+    /// </para>
+    /// <para>
+    /// What is still not guaranteed, stated so the paragraph above is not read as more: the pool
+    /// answers what it DID, and this method acts on that answer, but a handoff refused as busy is
+    /// refused for as long as work keeps arriving on that thread. The accepted-input marker is also
+    /// bounded (<c>MultiTurnAgentPool.AcceptedInputGrace</c>): an agent that accepts an input and then
+    /// wedges stops pinning the entry once the grace elapses, because refusing every future handoff for
+    /// that conversation forever is a worse failure than the one being prevented.
     /// </para>
     /// <para>
     /// The app-id freeze (<see cref="SandboxCredentialConflictException"/>) is NOT released alongside
@@ -1887,15 +1900,23 @@ public class ConversationsController(
             return;
         }
 
-        var boundTo = agentPool.GetAgentOwnerUserId(threadId);
+        // ONE look, and every fact this method decides on comes out of it (#418). Absence is its own
+        // answer here: previously the owner and the app id were two unlocked lookups that both
+        // answered null for a thread with no entry, so a vanished entry read as "frozen to no app".
+        if (!agentPool.TryGetHandoffState(threadId, out var handoff))
+        {
+            return;
+        }
+
+        var boundTo = handoff.OwnerUserId;
         if (boundTo is null || string.Equals(boundTo, callerUserId, StringComparison.Ordinal))
         {
             return;
         }
 
-        // Before anything is torn down, and before the run-in-progress exit below: the app-id refusal
-        // is unconditional, so it must not depend on whether someone happens to be streaming.
-        var frozenAppId = agentPool.GetAgentCallerAppId(threadId);
+        // Before anything is torn down, and before the busy exit below: the app-id refusal is
+        // unconditional, so it must not depend on whether someone happens to be streaming.
+        var frozenAppId = handoff.CallerAppId;
         var requestedAppId = callerCredential?.AppId;
         if (!string.Equals(frozenAppId, requestedAppId, StringComparison.Ordinal))
         {
@@ -1908,21 +1929,38 @@ public class ConversationsController(
             throw new SandboxCredentialConflictException(threadId, frozenAppId, requestedAppId);
         }
 
-        if (agentPool.IsRunInProgress(threadId))
+        // The pool decides and acts in one step. Answering on this outcome rather than on the read
+        // above is the point: a run that started in between, or an entry that was replaced in
+        // between, is reported as such instead of being torn down anyway.
+        var outcome = await agentPool.TryReleaseIdleAgentAsync(threadId, handoff);
+        switch (outcome)
         {
-            logger.LogInformation(
-                "{Operation} for thread {ThreadId} left the agent bound to another user in place: a run is in progress",
-                operation,
-                threadId);
-            return;
+            case MultiTurnAgentPool.AgentReleaseOutcome.Released:
+                logger.LogInformation(
+                    "{Operation} for thread {ThreadId} released the agent bound to another user so an authorized caller gets their own",
+                    operation,
+                    threadId);
+                break;
+
+            case MultiTurnAgentPool.AgentReleaseOutcome.Busy:
+                logger.LogInformation(
+                    "{Operation} for thread {ThreadId} left the agent bound to another user in place: it has work in hand",
+                    operation,
+                    threadId);
+                break;
+
+            case MultiTurnAgentPool.AgentReleaseOutcome.NotPooled:
+            case MultiTurnAgentPool.AgentReleaseOutcome.Replaced:
+            default:
+                // Either way the entry this method reasoned about is gone, and the next caller through
+                // gets its own look at whatever is there now.
+                logger.LogInformation(
+                    "{Operation} for thread {ThreadId} released nothing: the entry it read was {Outcome}",
+                    operation,
+                    threadId,
+                    outcome);
+                break;
         }
-
-        logger.LogInformation(
-            "{Operation} for thread {ThreadId} released the agent bound to another user so an authorized caller gets their own",
-            operation,
-            threadId);
-
-        await agentPool.RemoveAgentAsync(threadId);
     }
 
     /// <summary>Lists the grants on a conversation. Reading the roster is a read of the resource.</summary>

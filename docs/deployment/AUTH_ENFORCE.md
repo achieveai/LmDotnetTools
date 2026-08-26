@@ -515,20 +515,39 @@ Whether that sharing is the RIGHT behaviour is an open product question, tracked
 grantees get their own session key, or the sharing stays and is documented as intentional. This
 runbook states what ships today.
 
-A run **in progress** is left alone on a **best-effort** basis: the release checks for an active run
-and skips if it finds one, and the second caller still gets `409 principal_conflict`. Treat it as
-best-effort literally — the check and the removal are not one atomic step, and a turn that is queued
-but has not started reads as "not in progress", so it can be dropped by a handoff that arrives in
-that window (**#418**). Evicting a genuinely streaming turn would abort the answer of whoever is mid-answer —
-the wrong party to punish for someone else's handoff — which is why the check exists at all. Retry
-once the run ends.
+**An entry with work in hand is not released** (**#418**). The release is a compare-and-remove inside
+the pool: `TryGetHandoffState` returns the owner, the frozen app id, and a busy flag from one entry
+under one per-thread lock, and `TryReleaseIdleAgentAsync` re-validates that same entry under that
+same lock before it removes anything. The second caller still gets `409 principal_conflict`, and now
+gets it on what the pool actually did rather than on a read that may already be stale. Retry once the
+work in hand finishes.
 
-Same caveat, same issue, one layer down: the release reads the thread's owning user and then its
-frozen app id as two separate unlocked lookups. An entry that disappears between them makes the app id
-read as absent, which can refuse a caller who should have been allowed or allow one who should have
-been refused. Neither is a privilege escalation — the authorization decision has already been made
-above, and both outcomes land inside it — but it is why the whole helper is documented as best-effort
-rather than as a guard.
+"Work in hand" is deliberately wider than "a run is streaming". An input that has been **accepted and
+not yet started** has no run id and is not running, so an in-progress check alone reads it as idle —
+and the turn was discarded with the agent after its sender had already been handed a receipt. Both
+transports that can accept a turn (the REST send and the WebSocket send) record the accept, and the
+record retires on the first evidence the queue moved: a run id the agent did not have when the input
+was accepted, which can only mean the input channel was drained.
+
+Two bounds on that guarantee, both deliberate:
+
+- **A wedged agent does not pin the conversation forever.** An accepted input that never starts a run
+  stops counting as work in hand after a bounded grace (`MultiTurnAgentPool.AcceptedInputGrace`,
+  30 seconds of *continuous* observed idleness — a turn queued behind a long run is never timed out by
+  it). Refusing every future handoff for that thread indefinitely is a worse failure than the one
+  being prevented.
+- **A replaced entry is preserved, not released.** If the entry the caller reasoned about was swapped
+  out in between — a session refresh, a mode switch, a second caller's create — the release reports
+  `Replaced` and leaves the new entry alone, where the previous unconditional removal destroyed a live
+  agent nobody had decided anything about.
+
+The owner and the frozen app id now come from that same single look. They used to be two separate
+unlocked lookups, and both answer null for a thread with no entry at all — so an entry that vanished
+between them made the app id read as absent, which is indistinguishable from "created by a caller with
+no credential". That could refuse a caller who should have been allowed or allow one who should have
+been refused. Neither was a privilege escalation (the authorization decision is made before this
+helper runs, and both outcomes land inside it), and neither is reachable now: absence is reported as
+absence, and there is no second lookup to disagree with the first.
 
 The app-id freeze (`caller_credential_conflict`) is **not** released alongside it. That is the
 boundary between services rather than between people: an app-only S2S caller has no
