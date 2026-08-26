@@ -158,11 +158,54 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
         metadata?.OwnerUserId.Should().BeNull();
     }
 
+    [Fact]
+    public async Task Spawn_ProvenanceAwareStoreFactory_ResolvesFromThisManagersOwnParentAndRoster()
+    {
+        // #275: the provenance a child's store is stamped with must be resolved from the SPAWNING
+        // manager, never captured once at the root. A manager whose own parent is itself a sub-agent —
+        // the exact shape a grandchild's spawning manager has — must attribute the children IT spawns to
+        // ITS OWN parent thread and resolve their snapshots from ITS OWN roster. A root-captured factory
+        // would ignore both, which is why grandchildren were misattributed to the root and never resolved.
+        const string nestedParentThread = "subagent-child-not-root";
+        string? capturedChildThread = null;
+        string? capturedParentThread = null;
+        Func<string, SubAgentSnapshot?>? capturedDescribe = null;
+        var childStore = new InMemoryConversationStore();
+
+        var manager = CreateManager(
+            nestedParentThread,
+            provenanceFactory: (childThread, parentThread, describe) =>
+            {
+                capturedChildThread = childThread;
+                capturedParentThread = parentThread;
+                capturedDescribe = describe;
+                return childStore;
+            });
+
+        var agentId = ParseAgentId(
+            await manager.SpawnAsync("worker", "do work", name: "a", runInBackground: true));
+
+        capturedParentThread.Should().Be(
+            nestedParentThread,
+            "the child is attributed to THIS manager's own parent thread, not a root captured elsewhere");
+        capturedChildThread.Should().Be($"subagent-{agentId}");
+
+        capturedDescribe.Should().NotBeNull("the manager must hand the factory a live describe callback");
+        var resolved = capturedDescribe!($"subagent-{agentId}");
+        resolved.Should().NotBeNull(
+            "the child's snapshot resolves against THIS manager's live roster, so a grandchild is no "
+                + "longer a null snapshot on a manager it does not live in");
+        resolved!.AgentId.Should().Be(agentId);
+    }
+
     private static string GuidOf(string agentId) => agentId.Split('-')[0];
 
     private static string TagOf(string agentId) => agentId.Split('-')[1];
 
-    private SubAgentManager CreateManager(string parentThreadId, IConversationStore? store = null)
+    private SubAgentManager CreateManager(
+        string parentThreadId,
+        IConversationStore? store = null,
+        Func<string, string?, Func<string, SubAgentSnapshot?>, IConversationStore>? provenanceFactory = null)
     {
         var parentMock = new Mock<IMultiTurnAgent>();
         parentMock.Setup(p => p.ThreadId).Returns(parentThreadId);
@@ -195,6 +238,7 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
             },
             MaxConcurrentSubAgents = 5,
             DefaultConversationStoreFactory = store is null ? null : _ => store,
+            ProvenanceAwareConversationStoreFactory = provenanceFactory,
         };
 
         var manager = new SubAgentManager(

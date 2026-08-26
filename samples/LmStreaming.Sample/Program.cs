@@ -1932,16 +1932,13 @@ subAgentFactory,
                     // template-specified store still wins.
                     if (subAgentOptions is not null)
                     {
+                        // stampProvenance: the child's parent thread and roster snapshot are resolved by
+                        // the SPAWNING manager (#275), not captured here at the root — so a grandchild is
+                        // attributed to its real parent instead of this root conversation.
                         subAgentOptions = ApplyDefaultSubAgentStore(
                             subAgentOptions,
                             conversationStore,
-                            parentThreadId: threadId,
-                            describeChild: childThreadId => agent?.SubAgentManager
-                                ?.ListAgents()
-                                .FirstOrDefault(s => string.Equals(
-                                    s.ThreadId,
-                                    childThreadId,
-                                    StringComparison.Ordinal)));
+                            stampProvenance: true);
                     }
 
                     agent = new MultiTurnAgentLoop(
@@ -3040,34 +3037,57 @@ public partial class Program
     /// never dispose it: <see cref="SubAgentManager"/> disposes a child store that is
     /// <see cref="IAsyncDisposable"/>, and every child shares this one application-wide store.
     /// </para>
+    /// <para>
+    /// When <paramref name="stampProvenance"/> is set, the fallback is installed as a
+    /// <see cref="SubAgentOptions.ProvenanceAwareConversationStoreFactory"/> instead (#275): the
+    /// SPAWNING manager — not this root call — hands the factory the child's ACTUAL parent thread and
+    /// a describe over ITS OWN roster, so a grandchild (an agent whose spawning manager's own parent is
+    /// itself a sub-agent) is stamped with its real parent and its live snapshot resolves. The previous
+    /// shape captured a single (parentThreadId, describeChild) pair here at the root, which mislabelled
+    /// every agent below the first level and left its snapshot null.
+    /// </para>
     /// </summary>
     public static SubAgentOptions ApplyDefaultSubAgentStore(
         SubAgentOptions options,
         IConversationStore store,
-        string? parentThreadId = null,
-        Func<string, SubAgentSnapshot?>? describeChild = null)
+        bool stampProvenance = false)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(store);
+
+        // Only supply the fallback: a store already resolved for a child (either factory) still wins.
+        if (options.DefaultConversationStoreFactory is not null
+            || options.ProvenanceAwareConversationStoreFactory is not null)
+        {
+            return options;
+        }
 
         // Wrap the shared store in a non-owning decorator so a child can NEVER dispose it: SubAgentManager
         // disposes a child store that is IAsyncDisposable during spawn-cleanup/restart/completion/rollback,
         // and every child shares this one application-wide store. The wrapper implements neither
         // IDisposable nor IAsyncDisposable, so those ownership checks all skip it.
-        return options.DefaultConversationStoreFactory is not null
-            ? options
-            : options with
+        if (!stampProvenance)
+        {
+            return options with
             {
-                DefaultConversationStoreFactory = childThreadId =>
-                    new NonOwningConversationStore(
-                        store,
-                        provenanceThreadId: parentThreadId is null ? null : childThreadId,
-                        provenance: parentThreadId is null
-                            ? null
-                            : () => SubAgentProvenance.Build(
-                                parentThreadId,
-                                describeChild?.Invoke(childThreadId))),
+                DefaultConversationStoreFactory = _ => new NonOwningConversationStore(store),
             };
+        }
+
+        // #275: provenance is resolved per SPAWNING manager, never captured once here at the root. The
+        // manager supplies the child's real parent thread and a describe over its own live roster, so a
+        // grandchild's stamp names its actual parent and its snapshot resolves (activating the terminal /
+        // RemovalMarker merge path in SubAgentProvenance.Build for the first time on those agents).
+        return options with
+        {
+            ProvenanceAwareConversationStoreFactory = (childThreadId, parentThreadId, describeChild) =>
+                new NonOwningConversationStore(
+                    store,
+                    provenanceThreadId: string.IsNullOrWhiteSpace(parentThreadId) ? null : childThreadId,
+                    provenance: string.IsNullOrWhiteSpace(parentThreadId)
+                        ? null
+                        : () => SubAgentProvenance.Build(parentThreadId, describeChild(childThreadId))),
+        };
     }
 
     /// <summary>

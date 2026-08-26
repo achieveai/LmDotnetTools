@@ -168,8 +168,11 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         await Wait.UntilAsync(
             () =>
             {
-                try { return _manager!.Peek(agentId).Contains("\"completed\""); }
-                catch { return false; }
+                // TryPeek returns false only for the not-yet-registered case; any real fault
+                // (a disposed manager, an NRE while serializing status) now propagates and surfaces
+                // on timeout instead of being swallowed into an indistinguishable "not yet" (#403).
+                return _manager!.TryPeek(agentId, out var status)
+                    && status.Contains("\"completed\"", StringComparison.Ordinal);
             },
             "the sub-agent reported completed",
             TimeSpan.FromSeconds(10));
@@ -394,8 +397,11 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         await Wait.UntilAsync(
             () =>
             {
-                try { return _manager!.Peek(agentId).Contains("\"completed\""); }
-                catch { return false; }
+                // TryPeek returns false only for the not-yet-registered case; any real fault
+                // (a disposed manager, an NRE while serializing status) now propagates and surfaces
+                // on timeout instead of being swallowed into an indistinguishable "not yet" (#403).
+                return _manager!.TryPeek(agentId, out var status)
+                    && status.Contains("\"completed\"", StringComparison.Ordinal);
             },
             "the sub-agent reported completed",
             TimeSpan.FromSeconds(10));
@@ -587,15 +593,12 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         await Wait.UntilAsync(
             () =>
             {
-                try
-                {
-                    return JsonDocument.Parse(_manager!.Peek(agentId)).RootElement.GetProperty("status").GetString()
+                // TryPeek returns false only for the not-yet-registered case; a status whose JSON shape
+                // regressed (a missing "status" property, a non-JSON payload) now throws out of the
+                // condition and surfaces on timeout rather than being swallowed into "not yet" (#403).
+                return _manager!.TryPeek(agentId, out var status)
+                    && JsonDocument.Parse(status).RootElement.GetProperty("status").GetString()
                         == "completed";
-                }
-                catch
-                {
-                    return false;
-                }
             },
             "the sub-agent reported completed",
             TimeSpan.FromSeconds(10));
@@ -607,15 +610,10 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         await Wait.UntilAsync(
             () =>
             {
-                try
-                {
-                    return JsonDocument.Parse(_manager!.Peek(agentId)).RootElement.GetProperty("status").GetString()
+                // See the #403 note above: a real JSON-shape fault propagates instead of masking.
+                return _manager!.TryPeek(agentId, out var status)
+                    && JsonDocument.Parse(status).RootElement.GetProperty("status").GetString()
                         == "error";
-                }
-                catch
-                {
-                    return false;
-                }
             },
             "the restarted sub-agent reported error",
             TimeSpan.FromSeconds(10));
@@ -741,8 +739,9 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         await Wait.UntilAsync(
             () =>
             {
-                try { return _manager!.Peek(pendingAgentId).Contains("\"completed\""); }
-                catch { return false; }
+                // See the #403 note above: a genuine fault propagates instead of masking as "not yet".
+                return _manager!.TryPeek(pendingAgentId, out var status)
+                    && status.Contains("\"completed\"", StringComparison.Ordinal);
             },
             "the pending-message sub-agent reported completed",
             TimeSpan.FromSeconds(10));
@@ -750,8 +749,9 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         await Wait.UntilAsync(
             () =>
             {
-                try { return _manager!.Peek(queuedAgentId).Contains("\"running\""); }
-                catch { return false; }
+                // See the #403 note above: a genuine fault propagates instead of masking as "not yet".
+                return _manager!.TryPeek(queuedAgentId, out var status)
+                    && status.Contains("\"running\"", StringComparison.Ordinal);
             },
             "the queued sub-agent reported running",
             TimeSpan.FromSeconds(10));
@@ -917,6 +917,117 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
             "a RunTask that finishes shortly after cancellation -- well within the per-agent ceiling -- "
                 + "must actually be awaited to completion during disposal, not abandoned the instant "
                 + "cancellation is requested");
+    }
+
+    [Fact]
+    public async Task RestartRun_BoundsAFinishedRunsTokenIgnoringRunTask_RatherThanHangingForever()
+    {
+        // #404: RestartRunAsync cancels the finished run's CTS and then awaits its old
+        // RunTask/MonitorTask BEFORE rebuilding the pipeline. That await used to be unbounded, unlike
+        // every sibling teardown path (DisposeAsync, CleanupFailedSpawnAsync) that #373/#396 bounded via
+        // AwaitBoundedTaskAsync. A RunTask that ignores its token (simulated via RunImpl) would wedge the
+        // restart -- and SendMessageAsync awaiting it -- forever. The short ceiling keeps this fast
+        // without weakening what it proves: production is the same code path, larger number.
+        var manager = CreateManagerWithTemplates(1, new Dictionary<string, SubAgentTemplate>
+        {
+            ["owned"] = DummyTemplate("owned"),
+        });
+        manager.TestPerAgentBackgroundTaskDisposeCeiling = TimeSpan.FromMilliseconds(200);
+        manager.TestAgentFactoryOverride = (agentId, _) => new FakeMultiTurnAgent
+        {
+            ThreadId = $"subagent-{agentId}",
+            // Reaches terminal completion so the follow-up is a RESTART (not an inject into a live run).
+            SubscribeImpl = (_, ct) => FakeMultiTurnAgent.CompleteOnceThenWaitForeverStream("run-1", ct),
+            // But the run itself ignores cancellation: this is the exact task RestartRunAsync's
+            // pre-rebuild await must be bounded against.
+            RunImpl = _ => Task.Delay(Timeout.InfiniteTimeSpan, CancellationToken.None),
+        };
+        // Owned provider so terminal completion disposes it, forcing the follow-up down the rebuild path.
+        manager.TestOwnedProviderOverride = (_, _) => new Mock<IStreamingAgent>().Object;
+        _manager = manager;
+
+        var spawnJson = await manager.SpawnAsync("owned", "task", runInBackground: true);
+        using var spawnDoc = JsonDocument.Parse(spawnJson);
+        var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
+
+        await Wait.UntilAsync(
+            () => manager.TryPeek(agentId, out var status)
+                && status.Contains("\"completed\"", StringComparison.Ordinal),
+            "the sub-agent reported completed",
+            TimeSpan.FromSeconds(10));
+
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        await manager
+            .SendMessageAsync(agentId, "continue", runInBackground: true)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+        elapsed.Stop();
+
+        elapsed.Elapsed.Should().BeLessThan(
+            TimeSpan.FromSeconds(2),
+            "the restart must abandon the finished run's token-ignoring RunTask at the per-agent ceiling, "
+                + "not await it forever");
+    }
+
+    [Fact]
+    public async Task RestartRun_BoundsAFailureCleanupStuckOnATokenIgnoringRunTask_RatherThanHangingForever()
+    {
+        // #404 (second unbounded await): when a restart's own SendAsync throws AFTER the replacement
+        // run/monitor have already started, RestartRunAsync's catch cancels and awaits those new tasks
+        // to avoid leaking them. That cleanup await used to be unbounded too, so a replacement RunTask
+        // that ignores its token wedged the failing restart (and the exception it is trying to surface)
+        // forever. Bounding it lets the InvalidOperationException propagate at the ceiling instead.
+        var manager = CreateManagerWithTemplates(1, new Dictionary<string, SubAgentTemplate>
+        {
+            ["owned"] = DummyTemplate("owned"),
+        });
+        manager.TestPerAgentBackgroundTaskDisposeCeiling = TimeSpan.FromMilliseconds(200);
+
+        var instances = 0;
+        manager.TestAgentFactoryOverride = (agentId, _) =>
+        {
+            var idx = Interlocked.Increment(ref instances);
+            return idx == 1
+                ? new FakeMultiTurnAgent
+                {
+                    ThreadId = $"subagent-{agentId}",
+                    // Epoch 1 finishes so the follow-up restarts it; its RunTask honours cancellation so
+                    // the PRE-rebuild await returns cleanly and the test reaches the failure-cleanup path.
+                    SubscribeImpl = (_, ct) => FakeMultiTurnAgent.CompleteOnceThenWaitForeverStream("run-1", ct),
+                }
+                : new FakeMultiTurnAgent
+                {
+                    ThreadId = $"subagent-{agentId}",
+                    // Epoch 2 (the replacement): its SendAsync throws, driving RestartRunAsync into the
+                    // catch, while its RunTask ignores cancellation -- the task the cleanup await bounds.
+                    SendImpl = _ => ValueTask.FromException<SendReceipt>(
+                        new InvalidOperationException("restart send failed")),
+                    RunImpl = _ => Task.Delay(Timeout.InfiniteTimeSpan, CancellationToken.None),
+                };
+        };
+        manager.TestOwnedProviderOverride = (_, _) => new Mock<IStreamingAgent>().Object;
+        _manager = manager;
+
+        var spawnJson = await manager.SpawnAsync("owned", "task", runInBackground: true);
+        using var spawnDoc = JsonDocument.Parse(spawnJson);
+        var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
+
+        await Wait.UntilAsync(
+            () => manager.TryPeek(agentId, out var status)
+                && status.Contains("\"completed\"", StringComparison.Ordinal),
+            "the sub-agent reported completed",
+            TimeSpan.FromSeconds(10));
+
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        var act = () => manager
+            .SendMessageAsync(agentId, "continue", runInBackground: true)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("restart send failed");
+        elapsed.Stop();
+
+        elapsed.Elapsed.Should().BeLessThan(
+            TimeSpan.FromSeconds(2),
+            "the restart-failure cleanup must abandon the replacement run's token-ignoring RunTask at the "
+                + "per-agent ceiling so the failure surfaces, not hang on it forever");
     }
 
     #region Helpers

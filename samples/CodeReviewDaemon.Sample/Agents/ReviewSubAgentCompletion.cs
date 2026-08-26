@@ -292,7 +292,41 @@ internal sealed class ReviewSubAgentCompletionBarrier
             }
 
             ct.ThrowIfCancellationRequested();
-            var snapshot = await _source.GetSnapshotAsync(run, parentThreadId, ct).ConfigureAwait(false);
+
+            // #280: the snapshot is a round trip to the review host, and this barrier's contract is a
+            // single ABSOLUTE deadline. Awaiting the call on the stage token alone would let it run until
+            // whatever timeout the source's transport happens to carry — a framework default, or, for a
+            // long-poll client configured with Timeout.InfiniteTimeSpan, none — overrunning the deadline
+            // by that much or hanging outright. So the barrier bounds the call by its OWN remaining
+            // budget instead of inheriting an incidental one: a deadline-linked token so a well-behaved
+            // source tears its request down at the HTTP layer, AND WaitAsync so a source that ignores its
+            // token still cannot hold the barrier past its deadline. Either firing loops back so the
+            // top-of-loop check throws ReviewBarrierDeadlineException with the roster logged; a stage-token
+            // (ct) cancellation still propagates as cancellation.
+            var remaining = deadlineUtc - now;
+            using var deadlineCts = new CancellationTokenSource(remaining, _timeProvider);
+            using var budgetCts = CancellationTokenSource.CreateLinkedTokenSource(ct, deadlineCts.Token);
+            var snapshotTask = _source.GetSnapshotAsync(run, parentThreadId, budgetCts.Token);
+            ReviewSubAgentTreeSnapshot snapshot;
+            try
+            {
+                snapshot = await snapshotTask.WaitAsync(remaining, _timeProvider, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+                when (deadlineCts.IsCancellationRequested && !ct.IsCancellationRequested)
+            {
+                // The deadline-linked token cancelled the round trip; loop so the top throws with the roster.
+                ObserveAbandonedSnapshot(snapshotTask, run, parentThreadId);
+                continue;
+            }
+            catch (TimeoutException)
+            {
+                // A source that ignored its token could not be cancelled, so WaitAsync abandoned the call at
+                // the budget; loop so the top throws with the roster rather than hanging on it.
+                ObserveAbandonedSnapshot(snapshotTask, run, parentThreadId);
+                continue;
+            }
+
             var canonical = Canonicalize(snapshot.Nodes);
             lastObserved = canonical;
 
@@ -503,4 +537,38 @@ internal sealed class ReviewSubAgentCompletionBarrier
 
     private Task DelayAsync(TimeSpan delay, CancellationToken ct) =>
         delay <= TimeSpan.Zero ? Task.CompletedTask : Task.Delay(delay, _timeProvider, ct);
+
+    /// <summary>
+    /// Observes a snapshot round trip that <see cref="WaitAsync"/> abandoned at its deadline budget (#280),
+    /// so a later fault on that still-running call cannot surface as an unobserved-task exception attributed
+    /// to unrelated code. A cancellation is expected and ignored; a real fault is logged at debug — the
+    /// barrier has already moved on to throw its deadline exception, so this is diagnostic only.
+    /// </summary>
+    private void ObserveAbandonedSnapshot(
+        Task<ReviewSubAgentTreeSnapshot> snapshotTask,
+        ReviewRun run,
+        string parentThreadId
+    ) =>
+        _ = snapshotTask.ContinueWith(
+            (t, state) =>
+            {
+                if (t.Exception is not { } fault)
+                {
+                    return;
+                }
+
+                var (logger, runId, threadId) = ((ILogger, long, string))state!;
+                logger.LogDebug(
+                    fault,
+                    "Run {RunId}: an abandoned sub-agent snapshot call for thread {ThreadId} faulted after "
+                        + "the barrier had already passed its deadline",
+                    runId,
+                    threadId
+                );
+            },
+            (_logger, run.Id, parentThreadId),
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default
+        );
 }

@@ -467,6 +467,95 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task WaitAsync_SnapshotCallBlocksButHonorsCancellation_ThrowsAtDeadlineNotOneTransportTimeoutLater()
+    {
+        // #280: the snapshot round trip used to be awaited on the stage token alone, so its duration was
+        // bounded only by whatever timeout the source's transport happened to carry — a framework default,
+        // or nothing at all for a long-poll client. A call that outlives the barrier's own absolute deadline
+        // must be cut at the deadline. Here the source blocks but DOES observe its token, so the barrier's
+        // deadline-linked token is what must end it — then the top-of-loop check throws.
+        var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
+        var run = TestRun();
+        var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
+        var source = new BlockingCompletionSource(honorsCancellation: true);
+        var barrier = CreateBarrier(
+            source, clock, TimeSpan.Zero, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+
+        var task = barrier.WaitAsync(run, "root", deadline, NoopValidator, CancellationToken.None);
+
+        // A single step larger than the whole budget: if the call were bounded only by an incidental
+        // transport timeout (or unbounded), crossing the deadline mid-call would not end it and the barrier
+        // would never throw.
+        var act = () => PumpUntilSettledAsync(task, clock, TimeSpan.FromMinutes(31));
+        _ = await act.Should().ThrowAsync<ReviewBarrierDeadlineException>();
+        source.CallCount.Should().Be(1, "the single blocked call is cut at the deadline, not retried past it");
+
+        // The deadline-linked token — not just WaitAsync abandoning the await — is what ends the call:
+        // the source observed ITS OWN token cancel, which is the "cancellation reaches the transport"
+        // property #280 asks for (a WaitAsync-only bound would leave this request running, un-cancelled).
+        (await source.ObservedCancellation.WaitAsync(TimeSpan.FromSeconds(5)))
+            .Should()
+            .BeTrue("the barrier's deadline-linked token must cancel the in-flight snapshot call, not merely abandon it");
+    }
+
+    [Fact]
+    public async Task WaitAsync_SnapshotCallIgnoresCancellation_StillThrowsAtDeadlineRatherThanHangingForever()
+    {
+        // #280, the harder half: the bound must not DEPEND on the source honoring cancellation. A transport
+        // that ignores its token (or a client configured with Timeout.InfiniteTimeSpan) would leave a
+        // deadline-linked token powerless — WaitAsync is what still guarantees the barrier abandons the call
+        // at its budget and throws, instead of hanging behind a round trip that never returns.
+        var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
+        var run = TestRun();
+        var deadline = clock.GetUtcNow() + TimeSpan.FromMinutes(30);
+        var source = new BlockingCompletionSource(honorsCancellation: false);
+        var barrier = CreateBarrier(
+            source, clock, TimeSpan.Zero, new CapturingLogger<ReviewSubAgentCompletionBarrier>());
+
+        var task = barrier.WaitAsync(run, "root", deadline, NoopValidator, CancellationToken.None);
+
+        var act = () => PumpUntilSettledAsync(task, clock, TimeSpan.FromMinutes(31));
+        _ = await act.Should().ThrowAsync<ReviewBarrierDeadlineException>();
+        source.CallCount.Should().Be(1, "the single token-ignoring call is abandoned at the deadline, not retried past it");
+    }
+
+    /// <summary>
+    /// A completion source whose <see cref="GetSnapshotAsync"/> never returns a snapshot, so the ONLY thing
+    /// that can bound the call is the barrier itself. <paramref name="honorsCancellation"/> chooses whether
+    /// it parks on its token (a well-behaved transport the deadline-linked token can cancel) or ignores it
+    /// entirely (a transport only WaitAsync can bound).
+    /// </summary>
+    private sealed class BlockingCompletionSource(bool honorsCancellation) : IReviewSubAgentCompletionSource
+    {
+        private readonly TaskCompletionSource<bool> _observedCancellation =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int CallCount { get; private set; }
+
+        /// <summary>Completes with <c>true</c> once <see cref="GetSnapshotAsync"/> has seen ITS OWN token
+        /// cancel — the evidence that the barrier's deadline-linked token reached the transport, rather
+        /// than the call merely being abandoned by WaitAsync.</summary>
+        public Task<bool> ObservedCancellation => _observedCancellation.Task;
+
+        public async Task<ReviewSubAgentTreeSnapshot> GetSnapshotAsync(
+            ReviewRun run, string parentThreadId, CancellationToken ct)
+        {
+            CallCount++;
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, honorsCancellation ? ct : CancellationToken.None);
+            }
+            catch (OperationCanceledException)
+            {
+                _ = _observedCancellation.TrySetResult(true);
+                throw;
+            }
+
+            throw new InvalidOperationException("A blocking completion source never returns a snapshot.");
+        }
+    }
+
+    [Fact]
     public async Task WaitAsync_LifecycleValidatorFailure_AbortsBeforeBarrierOpens()
     {
         // Brief bullet 7: lifecycle/head validation runs right before a confirmed terminal candidate is
