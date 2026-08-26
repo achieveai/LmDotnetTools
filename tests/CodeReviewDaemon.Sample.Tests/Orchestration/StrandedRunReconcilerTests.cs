@@ -542,6 +542,14 @@ public sealed class StrandedRunReconcilerTests
     {
         // "Off" has to be representable, because it is the documented meaning of 0 and the value that leaves
         // RetryPending draining on the abandonment window exactly as it did before #429.
+        //
+        // THE NEGATIVE ROW IS THE ONE THAT PROVES ANYTHING — keep it. Zero is refused twice over: the guard
+        // returns early, and without the guard TimeSpan.FromMinutes(0) is Zero and Math.Min(0, positive) is
+        // still 0. So a zero-only theory goes GREEN against "<= 0" rewritten as "< 0", and green against the
+        // guard being deleted outright. Verified by mutation, not assumed. A negative minutes value is what
+        // distinguishes them: deleting the guard resolves -1 to a NEGATIVE window, which the reconciler's
+        // constructor then rejects, turning a knob an operator merely typed a sign into at a boot failure.
+        // Same shape as #431's NaN rows, in the same codebase, for the same reason.
         StrandedRunReconciler.ResolveRetryPendingGrace(minutes, Grace).Should().Be(TimeSpan.Zero);
     }
 
