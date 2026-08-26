@@ -265,6 +265,60 @@ public sealed class AdoPrProviderTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task GetCurrentHeadSha_reads_the_source_branch_commit_the_poll_also_records()
+    {
+        // MockPrProvider proves the guard's LOGIC and never touches the payload. If
+        // `lastMergeSourceCommit.commitId` stopped being read, this parser would return null, the guard would
+        // read that as INDETERMINATE, and every ADO review would sail through unchecked with every existing
+        // test still green — the #331 defect, silently restored.
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/pullrequests/42",
+            """{ "pullRequestId": 42, "lastMergeSourceCommit": { "commitId": "ad0c0ffee" } }""");
+
+        var head = await Provider(handler).GetCurrentHeadShaAsync(Repo, "42", CancellationToken.None);
+
+        // Deliberately the SAME field ListOpenPullRequestsAsync records as HeadSha: comparing two different
+        // notions of "head" would manufacture disagreements out of field semantics rather than out of a push.
+        head.Should().Be("ad0c0ffee");
+    }
+
+    [Theory]
+    [InlineData("""{ "pullRequestId": 42 }""")]
+    [InlineData("""{ "pullRequestId": 42, "lastMergeSourceCommit": {} }""")]
+    [InlineData("""{ "pullRequestId": 42, "lastMergeSourceCommit": { "commitId": "" } }""")]
+    [InlineData("""{ "pullRequestId": 42, "lastMergeSourceCommit": { "commitId": "  " } }""")]
+    [InlineData("""{ "pullRequestId": 42, "lastMergeSourceCommit": { "commitId": null } }""")]
+    public async Task GetCurrentHeadSha_is_null_when_the_payload_carries_no_commit_rather_than_throwing(
+        string payload)
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/pullrequests/42", payload);
+
+        var head = await Provider(handler).GetCurrentHeadShaAsync(Repo, "42", CancellationToken.None);
+
+        // Reachable in practice: ADO refreshes lastMergeSourceCommit on merge evaluation, so a freshly
+        // created PR can genuinely carry none yet. That is indeterminate, not an error.
+        head.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.NotFound)]
+    public async Task GetCurrentHeadSha_propagates_a_non_success_response_rather_than_flattening_it_to_null(
+        HttpStatusCode status)
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get, "/pullrequests/42", """{ "message": "nope" }""", status);
+
+        var act = () => Provider(handler).GetCurrentHeadShaAsync(Repo, "42", CancellationToken.None);
+
+        // "Unreachable" must never be reported as "nothing contradicts the recorded head". The executor owns
+        // the decision to treat an outage as indeterminate; pre-making it here would erase the distinction.
+        _ = await act.Should().ThrowAsync<HttpRequestException>();
+    }
+
+    [Fact]
     public async Task GetPrState_maps_a_completed_pr_to_merged()
     {
         var handler = new FakeHttpMessageHandler().OnJson(

@@ -6,6 +6,7 @@ using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
+using CodeReviewDaemon.Sample.Workspace;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -153,6 +154,207 @@ public sealed class StaleHeadGuardTests
         provider.HeadShaCalls.Should().BeGreaterThan(0, "the injected provider must be the one consulted");
     }
 
+    [Fact]
+    public async Task AnUncancelledTimeoutReadingTheHead_IsIndeterminate_NotAFaultedReview()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        using var logs = new CapturingLoggerFactory();
+        var provider = new TimingOutPrProvider("github");
+        var executor = BuildExecutor(store, new FakeReviewAgentLoopFactory(), [provider], logs);
+        var run = SeedRunWithContext(store, prId: "325", headSha: "head-325");
+
+        await executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        // A slow host is an unreachable host, not a moved head. Classifying by EXCEPTION TYPE instead of by
+        // caller-token state sends this TaskCanceledException straight past the catch, and the review the
+        // guard promises to continue is discarded over a transport blip.
+        provider.HeadShaCalls.Should().Be(1, "the site under test is only reached if the host is consulted");
+        logs.Capturing.WarningCount(TimedOutHeadReadLog).Should().Be(1);
+        store.GetArtifacts(run.Id)
+            .Should().Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+    }
+
+    [Fact]
+    public async Task CallerRequestedCancellationDuringTheHeadRead_Propagates_RatherThanReadingAsAnOutage()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        using var cts = new CancellationTokenSource();
+        using var logs = new CapturingLoggerFactory();
+        var provider = new CancellingPrProvider("github", cts);
+        var executor = BuildExecutor(store, new FakeReviewAgentLoopFactory(), [provider], logs);
+        var run = SeedRunWithContext(store, prId: "325", headSha: "head-325");
+
+        var act = () => executor.ExecuteStageAsync(ReviewStage.Reviewed, run, cts.Token);
+
+        // The other half of the same rule: shutdown must not be swallowed as "no head" and allowed to run a
+        // whole review during a cancel.
+        _ = await act.Should().ThrowAsync<OperationCanceledException>();
+        provider.HeadShaCalls.Should()
+            .Be(1, "a pre-cancelled token is refused before the read, which would pass this test vacuously");
+        // The throw alone proves nothing: once the token is cancelled, a filter that swallowed this
+        // cancellation still ends in an OperationCanceledException raised a few lines later, and still writes
+        // no artifact. The SWALLOW's own log line is the only observable that tells the two apart.
+        logs.Capturing.WarningCount(TimedOutHeadReadLog)
+            .Should().Be(0, "a caller-requested cancel is not a timeout and must not be reported as one");
+        store.GetArtifacts(run.Id)
+            .Should().NotContain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+    }
+
+    /// <summary>The head-read swallow's own log line — the observable that separates it from a real cancel.</summary>
+    private const string TimedOutHeadReadLog = "current head from github timed out while the daemon was not";
+
+    [Fact]
+    public async Task HeadMovesBetweenReviewedAndPosted_PublishesNothing_AndStillCleansUp()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        // The residual window #414 accepted: synthesis passed the guard, then the branch was force-pushed
+        // before the terminal stage ran. Publishing now attributes findings to code the PR no longer contains.
+        var provider = new MockPrProvider("github", [], Cursor()) { CurrentHeadSha = "head-after-force-push" };
+        var publisher = new FakeReviewCommentPublisher("github");
+        var provisioner = new RecordingProvisioner();
+        var executor = BuildPostingExecutor(store, publisher, [provider], provisioner);
+        var run = SeedRunReadyToPost(store, headSha: "head-before-force-push");
+
+        await executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        provider.HeadShaCalls.Should().Be(1, "only the host can contradict the recorded head at this boundary");
+        publisher.PostCount.Should().Be(0, "the publisher is the last thing between a stale review and the author");
+        store.GetOutboxForRun(run.Id)
+            .Should().NotContain(
+                o => o.Operation == ReviewPoster.PostReviewCommentOperation,
+                "a refusal must not leave a delivery row claiming the review reached the PR");
+        // A refusal that leaked the sandbox session would trade a stale comment for a stuck pooled slot.
+        provisioner.DestroyCalls.Should().Contain(r => r.Id == run.Id, "cleanup runs on the refusal path too");
+    }
+
+    [Fact]
+    public async Task HeadUnchangedAtThePostingBoundary_PostsExactlyOnce()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var provider = new MockPrProvider("github", [], Cursor()) { CurrentHeadSha = "head-118" };
+        var publisher = new FakeReviewCommentPublisher("github");
+        var executor = BuildPostingExecutor(store, publisher, [provider], new RecordingProvisioner());
+        var run = SeedRunReadyToPost(store, headSha: "head-118");
+
+        await executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        // The re-check must not cost a legitimate delivery, and must not double-post by running the poster twice.
+        provider.HeadShaCalls.Should().Be(1);
+        publisher.PostCount.Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task AnIndeterminateAnswerAtThePostingBoundary_StillPosts(bool hostUnreachable)
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        // Two indeterminate answers, one rule: a failed read is not evidence of a move. Narrowing that at the
+        // NEW site would silently discard correct reviews over a transport blip — the rule most easily lost
+        // when a guard is copied to a second boundary.
+        IPrProvider provider = hostUnreachable
+            ? new UnreachablePrProvider("github")
+            : new MockPrProvider("github", [], Cursor()) { CurrentHeadSha = null };
+        var publisher = new FakeReviewCommentPublisher("github");
+        var executor = BuildPostingExecutor(store, publisher, [provider], new RecordingProvisioner());
+        var run = SeedRunReadyToPost(store, headSha: "head-118");
+
+        await executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        publisher.PostCount.Should().Be(1);
+    }
+
+    private static DaemonReviewStageExecutor BuildPostingExecutor(
+        ReviewStore store,
+        FakeReviewCommentPublisher publisher,
+        IReadOnlyList<IPrProvider> prProviders,
+        IReviewSessionProvisioner provisioner) =>
+        new(
+            store,
+            new FakeReviewAgentLoopFactory(),
+            new FakeSandboxCommandRunner(),
+            new FakeSandboxFileSystem(),
+            // EnableHostSummaryFallback is what makes the terminal stage post at all; without it the
+            // publisher is never called and "posted nothing" would be true for the wrong reason.
+            new CodeReviewDaemonOptions
+            {
+                EnableCommentPosting = true,
+                EnableHostSummaryFallback = true,
+                EnableToolAssistedReview = true,
+            },
+            [publisher],
+            NullLoggerFactory.Instance,
+            provisioner,
+            prProviders: prProviders);
+
+    /// <summary>Seeds a run plus the <c>review</c> artifact the Posted stage reads, so that stage can be driven
+    /// directly. <c>mode: "post"</c> is what authorizes a live delivery — a collect-only run posts nothing
+    /// whatever the head says, and would prove nothing here.</summary>
+    private static ReviewRun SeedRunReadyToPost(ReviewStore store, string headSha)
+    {
+        var repoId = store.EnsureRepo(new RepoIdentity
+        {
+            Provider = "github",
+            OrgOrOwner = "achieveai",
+            RepoName = "LmDotnetTools",
+            RepoStableId = "repo-stable-1",
+        });
+        var run = store.CreateOrGetReviewRun(new ReviewRun
+        {
+            RepoId = repoId,
+            PrId = "118",
+            HeadSha = headSha,
+            BaseSha = "base-118",
+            TriggerWatermark = "wm-118",
+            ReviewKind = "full",
+            VariantId = "primary",
+            Mode = "post",
+            Stage = ReviewStage.Judged,
+            WorkflowStatus = WorkflowStatus.Running,
+            PrLifecycleState = PrLifecycleState.Open,
+        });
+
+        _ = store.AddArtifact(new ReviewArtifact
+        {
+            ReviewRunId = run.Id,
+            ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
+            ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
+            Provider = "github",
+            Payload = JsonSerializer.Serialize(new ReviewArtifactPayload("Found one thing.", "run-1", "primary")),
+        });
+
+        return run;
+    }
+
+    /// <summary>Records terminal-cleanup calls, so a refusal can be shown not to leak the session.</summary>
+    private sealed class RecordingProvisioner : IReviewSessionProvisioner
+    {
+        public List<ReviewRun> DestroyCalls { get; } = [];
+
+        public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct) =>
+            Task.FromResult<ReviewRunSession?>(new ReviewRunSession(
+                $"session-{run.Id}",
+                $"/workspace/review-run-{run.Id}",
+                new FakeSandboxCommandRunner(),
+                new FakeSandboxFileSystem()));
+
+        public Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct) =>
+            GetOrCreateAsync(run, ct);
+
+        public Task DestroyAsync(ReviewRun run, CancellationToken ct)
+        {
+            DestroyCalls.Add(run);
+            return Task.CompletedTask;
+        }
+
+        public Task DestroyAsync(long runId, CancellationToken ct) => Task.CompletedTask;
+    }
+
     private static OpaqueCursor Cursor() => new()
     {
         Provider = "github",
@@ -164,7 +366,8 @@ public sealed class StaleHeadGuardTests
     private static DaemonReviewStageExecutor BuildExecutor(
         ReviewStore store,
         FakeReviewAgentLoopFactory factory,
-        IReadOnlyList<IPrProvider> prProviders) =>
+        IReadOnlyList<IPrProvider> prProviders,
+        ILoggerFactory? loggerFactory = null) =>
         new(
             store,
             factory,
@@ -172,7 +375,7 @@ public sealed class StaleHeadGuardTests
             new FakeSandboxFileSystem(),
             new CodeReviewDaemonOptions(),
             [new FakeReviewCommentPublisher("github")],
-            NullLoggerFactory.Instance,
+            loggerFactory ?? NullLoggerFactory.Instance,
             prProviders: prProviders);
 
     /// <summary>Seeds a run plus the <c>review-context</c> artifact the Reviewed stage reads, so the stage
@@ -230,5 +433,65 @@ public sealed class StaleHeadGuardTests
         public Task<string?> GetCurrentHeadShaAsync(
             RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
             throw new HttpRequestException("simulated provider outage");
+    }
+
+    /// <summary>
+    /// A host that is merely SLOW. Both real providers reach it through <c>HttpClient</c>, which raises a
+    /// <see cref="TaskCanceledException"/> — a subclass of <see cref="OperationCanceledException"/> — on its
+    /// own <c>Timeout</c> while the caller's token is still uncancelled. Nobody asked for a cancel, so this
+    /// is an outage wearing a cancellation's clothes.
+    /// </summary>
+    private sealed class TimingOutPrProvider(string provider) : IPrProvider
+    {
+        public string Provider { get; } = provider;
+
+        public int HeadShaCalls { get; private set; }
+
+        public Task<PullRequestPage> ListOpenPullRequestsAsync(
+            PrPollRequest request, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("not part of this test");
+
+        public Task<PrLifecycle> GetPrStateAsync(
+            RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
+            Task.FromResult(PrLifecycle.Open);
+
+        public Task<string?> GetCurrentHeadShaAsync(
+            RepoIdentity repo, string prId, CancellationToken cancellationToken)
+        {
+            HeadShaCalls++;
+            throw new TaskCanceledException(
+                "The request was canceled due to the configured HttpClient.Timeout elapsing.",
+                new TimeoutException());
+        }
+    }
+
+    /// <summary>
+    /// A host read that is interrupted by the CALLER — daemon shutdown, not a slow API. The cancel is raised
+    /// from inside the read rather than before the stage, because
+    /// <c>ValidateReviewStillCurrentAsync</c> opens with <c>ThrowIfCancellationRequested</c>: a pre-cancelled
+    /// token never reaches the catch these tests exist to pin.
+    /// </summary>
+    private sealed class CancellingPrProvider(string provider, CancellationTokenSource cts) : IPrProvider
+    {
+        public string Provider { get; } = provider;
+
+        public int HeadShaCalls { get; private set; }
+
+        public Task<PullRequestPage> ListOpenPullRequestsAsync(
+            PrPollRequest request, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("not part of this test");
+
+        public Task<PrLifecycle> GetPrStateAsync(
+            RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
+            Task.FromResult(PrLifecycle.Open);
+
+        public Task<string?> GetCurrentHeadShaAsync(
+            RepoIdentity repo, string prId, CancellationToken cancellationToken)
+        {
+            HeadShaCalls++;
+            cts.Cancel();
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult<string?>(null);
+        }
     }
 }

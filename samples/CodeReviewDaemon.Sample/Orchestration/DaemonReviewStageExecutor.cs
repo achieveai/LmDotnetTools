@@ -560,6 +560,23 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                     BuildToolingState.Absent,
                     "no .NET SDK is installed in this container.");
         }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            // A cancellation NOBODY ASKED FOR is a timeout, and a timeout is a failed read like any other.
+            // Classifying by exception TYPE would let this one past — the production adapter converts its own
+            // timeout into TimeoutException (CommandTimedOut), but that is a property of one
+            // ISandboxCommandRunner, not of the port, and a runner built on Task.WaitAsync or HttpClient
+            // raises TaskCanceledException here instead. Same disposition as the catch below; logged apart so
+            // an operator can tell a slow gateway from a broken one.
+            _logger.LogWarning(
+                ex,
+                "The .NET SDK probe timed out while the daemon was not shutting down; the reviewer will be "
+                    + "told the fact is unknown rather than told the SDK is absent, and the next review "
+                    + "re-probes.");
+            return new BuildToolingFacts(
+                BuildToolingState.Indeterminate,
+                "the daemon could not determine whether a .NET SDK is installed in this container.");
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(
@@ -3040,13 +3057,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// read as an outage.
     /// </para>
     /// <para>
-    /// <b>Residual window, accepted.</b> This is a check-then-act, not a lock: synthesis and
-    /// <c>PostAsync</c> run after the last call here with no further re-check, so a force-push landing inside
-    /// that window still produces a review of the superseded head. The window is seconds-to-minutes wide
-    /// against the hours-wide one the poll snapshot opened, which is the gap that actually produced #325.
-    /// Closing it completely would mean re-reading the host immediately before the write and treating the
-    /// posted review as a compare-and-swap on the head — worth doing only if a review is ever observed to
-    /// slip through this narrower window.
+    /// <b>Residual window, and where it ends</b> (#421). This is a check-then-act, not a lock, so a
+    /// force-push landing after the last call here still produces a review of the superseded head. What that
+    /// costs is now bounded: <see cref="HeadMovedSinceReviewAsync"/> re-reads the host in <c>PostAsync</c>,
+    /// immediately before the only call that can reach the PR author, and a review of a superseded head is
+    /// withheld there rather than published. Synthesis can still be spent on a head that has moved — nothing
+    /// short of a lock prevents that — but the wasted work stays inside the daemon.
     /// </para>
     /// </summary>
     private async Task ValidateReviewStillCurrentAsync(ReviewRun run, CancellationToken cancellationToken)
@@ -3075,8 +3091,14 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// <summary>
     /// Asks the PR host for this run's CURRENT head SHA, or returns <c>null</c> when the answer is
     /// indeterminate — no provider registered for the run's namespace, a payload carrying no head, or a
-    /// failed read. The three are logged apart but collapse to the same disposition on purpose: the caller
+    /// failed read. The four are logged apart but collapse to the same disposition on purpose: a caller
     /// may only refuse a review on a head the host positively reported, never on the absence of one.
+    /// <para>
+    /// Shared by both boundaries this guard stands at — synthesis
+    /// (<see cref="ValidateReviewStillCurrentAsync"/>) and delivery
+    /// (<see cref="HeadMovedSinceReviewAsync"/>). Keeping one reader is what stops the indeterminate rule from
+    /// being restated, and quietly narrowed, at the second site.
+    /// </para>
     /// </summary>
     private async Task<string?> ReadHostHeadShaAsync(ReviewRun run, CancellationToken cancellationToken)
     {
@@ -3087,7 +3109,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         {
             _logger.LogWarning(
                 "Run {RunId}: no IPrProvider registered for '{Provider}', so PR {PrId} head could not be "
-                    + "re-checked before synthesis; proceeding on the recorded head {HeadSha}.",
+                    + "re-checked; proceeding on the recorded head {HeadSha}.",
                 run.Id, provider, run.PrId, run.HeadSha);
             return null;
         }
@@ -3097,6 +3119,21 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return await prProvider
                 .GetCurrentHeadShaAsync(repo, run.PrId, cancellationToken)
                 .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            // A slow host, not a shutdown. Both real providers reach the PR host through HttpClient, which
+            // raises TaskCanceledException — an OperationCanceledException subclass — on its own Timeout with
+            // the caller's token still uncancelled. Classifying by exception TYPE rather than by caller-token
+            // state let that one propagate and abandoned the review, which is exactly the outcome this method
+            // exists to prevent. Same disposition as the catch below; logged apart so an operator can tell a
+            // slow host from an unreachable one.
+            _logger.LogWarning(
+                ex, "Run {RunId}: reading PR {PrId} current head from {Provider} timed out while the daemon "
+                    + "was not shutting down; proceeding on the recorded head {HeadSha} rather than treating "
+                    + "a slow host as a moved one.",
+                run.Id, run.PrId, provider, run.HeadSha);
+            return null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -3260,6 +3297,43 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         reviewText is not null
         && reviewText.TrimStart().StartsWith("No new findings", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// True ONLY when the host positively reports a head different from the one this run reviewed. Every other
+    /// answer — no provider registered, a payload carrying no head, an unreachable or slow host — is
+    /// INDETERMINATE and answers false, because a failed read is not evidence of a move. That asymmetry is
+    /// the whole rule, and it is the one most easily narrowed by accident when a guard is copied to a second
+    /// boundary: a re-check that refused on "could not tell" would discard correct reviews on every blip.
+    /// <para>
+    /// Refusing does NOT fail the stage. The head has moved, so the poll's next round creates a new run for
+    /// the new head (<c>head_sha</c> is part of a run's identity), and this one has nothing left to deliver;
+    /// throwing would spin the terminal stage forever waiting for a head that is never coming back. The caller
+    /// therefore skips only the publisher call and runs the rest of the stage — teardown, retention, slot
+    /// return — so a refusal trades a stale comment for nothing at all.
+    /// </para>
+    /// <para>
+    /// ADO caveat, already recorded on <c>AdoPrProvider.GetCurrentHeadShaAsync</c>: that provider reads
+    /// <c>lastMergeSourceCommit</c>, which refreshes on merge evaluation rather than on push. A lagging field
+    /// can only produce a FALSE NEGATIVE — the guard agrees with an equally old recorded head and lets a stale
+    /// review through — never a false positive. That is what makes re-checking safe to add at a delivery
+    /// boundary at all.
+    /// </para>
+    /// </summary>
+    private async Task<bool> HeadMovedSinceReviewAsync(ReviewRun run, CancellationToken cancellationToken)
+    {
+        var hostHead = await ReadHostHeadShaAsync(run, cancellationToken).ConfigureAwait(false);
+        if (hostHead is null || string.Equals(hostHead, run.HeadSha, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        _logger.LogWarning(
+            "Run {RunId}: PR {PrId} moved from {HeadSha} to {HostHead} between synthesis and posting; the "
+                + "review describes commits the PR no longer contains, so it is NOT being posted. The next "
+                + "poll discovers the new head as its own run.",
+            run.Id, run.PrId, run.HeadSha, hostHead);
+        return true;
+    }
+
     private async Task PostAsync(ReviewRun run, CancellationToken cancellationToken)
     {
         var (repo, provider) = ResolveRepo(run);
@@ -3299,8 +3373,18 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // Posts one PR-level summary comment via ReviewPoster (exactly-once via the outbox + backstop scan). It
         // runs BEFORE DestroyAsync but the publisher uses its own DI HttpClient/token, not the sandbox session.
         var postHostSide = _options.UseS2SReviewAgent || _options.EnableHostSummaryFallback;
+        var wouldPost = hasContent && !IsNoNewFindingsSentinel(reviewText) && postHostSide;
+
+        // #421: the head-currency guard, again, at the DELIVERY boundary. ValidateReviewStillCurrentAsync runs
+        // in the Reviewed stage; this post happens in a separate stage, minutes later, and a force-push landing
+        // in between still published the stale artifact — the same externally visible failure as #331 in a
+        // narrower window. The read is deliberately gated on `wouldPost`: a run that was never going to publish
+        // must not spend a request asking about a head it will not act on.
+        var headMoved = wouldPost
+            && await HeadMovedSinceReviewAsync(run, cancellationToken).ConfigureAwait(false);
+
         PostOutcome? postOutcome = null;
-        if (hasContent && !IsNoNewFindingsSentinel(reviewText) && postHostSide)
+        if (wouldPost && !headMoved)
         {
             var deepLink = BuildDeepLink(reviewArtifact.ThreadId);
             postOutcome = await PostReviewCommentHostSideAsync(

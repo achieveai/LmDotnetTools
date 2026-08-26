@@ -5,6 +5,7 @@ using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Orchestration;
@@ -203,10 +204,63 @@ public sealed class SandboxBuildToolingTests
             .Should().Be(1);
     }
 
+    [Fact]
+    public async Task AnUncancelledTimeoutProbing_IsIndeterminate_NotAFaultedReview()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        using var logs = new CapturingLoggerFactory();
+        var runner = new TimingOutCommandRunner();
+        var factory = new FakeReviewAgentLoopFactory();
+        var executor = BuildExecutor(store, factory, runner, logs);
+        var run = SeedRunWithContext(store, "270");
+
+        await executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        logs.Capturing.WarningCount(TimedOutProbeLog).Should().Be(1);
+
+        // The production ISandboxCommandRunner converts its OWN timeout into TimeoutException, so this site is
+        // correct only by accident of one implementation. The port permits any runner, and a runner that lets a
+        // timeout-shaped TaskCanceledException out faults a review the probe promises never to cost.
+        runner.ProbeAttempts.Should().Be(1, "the site under test is only reached if the probe actually ran");
+        factory.CreatedProfiles[0].SystemPrompt.Should().Contain("could not determine");
+        store.GetArtifacts(run.Id)
+            .Should().Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+    }
+
+    [Fact]
+    public async Task CallerRequestedCancellationDuringTheProbe_Propagates_RatherThanReadingAsAnUnknownSdk()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        using var cts = new CancellationTokenSource();
+        using var logs = new CapturingLoggerFactory();
+        var runner = new CancellingCommandRunner(cts);
+        var executor = BuildExecutor(store, new FakeReviewAgentLoopFactory(), runner, logs);
+        var run = SeedRunWithContext(store, "270");
+
+        var act = () => executor.ExecuteStageAsync(ReviewStage.Reviewed, run, cts.Token);
+
+        // Shutdown must not be swallowed as "SDK unknown" and allowed to run a whole review during a cancel.
+        _ = await act.Should().ThrowAsync<OperationCanceledException>();
+        runner.ProbeAttempts.Should().Be(1, "a pre-cancelled token would pass this test without reaching the site");
+        // The throw alone proves nothing: a filter that swallowed this cancellation still ends in an
+        // OperationCanceledException raised a few lines later, and still writes no artifact. The SWALLOW's own
+        // log line is the only observable that tells the two apart.
+        logs.Capturing.WarningCount(TimedOutProbeLog)
+            .Should().Be(0, "a caller-requested cancel is not a timeout and must not be reported as one");
+        store.GetArtifacts(run.Id)
+            .Should().NotContain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+    }
+
+    /// <summary>The probe swallow's own log line — the observable that separates it from a real cancel.</summary>
+    private const string TimedOutProbeLog = "SDK probe timed out while the daemon was not shutting down";
+
     private static DaemonReviewStageExecutor BuildExecutor(
         ReviewStore store,
         FakeReviewAgentLoopFactory factory,
-        ISandboxCommandRunner runner) =>
+        ISandboxCommandRunner runner,
+        ILoggerFactory? loggerFactory = null) =>
         new(
             store,
             factory,
@@ -214,7 +268,7 @@ public sealed class SandboxBuildToolingTests
             new FakeSandboxFileSystem(),
             new CodeReviewDaemonOptions(),
             [new FakeReviewCommentPublisher("github")],
-            NullLoggerFactory.Instance);
+            loggerFactory ?? NullLoggerFactory.Instance);
 
     /// <summary>
     /// Seeds a run plus the 'review-context' artifact the Reviewed stage reads, so a test can drive that stage
@@ -278,6 +332,54 @@ public sealed class SandboxBuildToolingTests
 
             ProbeAttempts++;
             throw new InvalidOperationException("gateway session unavailable");
+        }
+    }
+
+    /// <summary>
+    /// A runner whose probe merely times out, surfacing it the way <c>HttpClient</c> and
+    /// <c>Task.WaitAsync</c> both do — a <see cref="TaskCanceledException"/> raised with the caller's token
+    /// still uncancelled. The production adapter happens to convert its own timeout into
+    /// <c>TimeoutException</c> instead, but that is a property of one implementation, not of the port.
+    /// </summary>
+    private sealed class TimingOutCommandRunner : ISandboxCommandRunner
+    {
+        private readonly FakeSandboxCommandRunner _inner = new();
+
+        public int ProbeAttempts { get; private set; }
+
+        public Task<SandboxCommandResult> RunAsync(SandboxCommand command, CancellationToken cancellationToken)
+        {
+            if (!string.Join(' ', command.Argv).Contains("dotnet --version", StringComparison.Ordinal))
+            {
+                return _inner.RunAsync(command, cancellationToken);
+            }
+
+            ProbeAttempts++;
+            throw new TaskCanceledException("the probe exceeded its own timeout", new TimeoutException());
+        }
+    }
+
+    /// <summary>
+    /// A probe interrupted by the CALLER — daemon shutdown. The cancel is raised from inside the run so the
+    /// catch under test is actually reached; a pre-cancelled token is refused earlier in the stage.
+    /// </summary>
+    private sealed class CancellingCommandRunner(CancellationTokenSource cts) : ISandboxCommandRunner
+    {
+        private readonly FakeSandboxCommandRunner _inner = new();
+
+        public int ProbeAttempts { get; private set; }
+
+        public Task<SandboxCommandResult> RunAsync(SandboxCommand command, CancellationToken cancellationToken)
+        {
+            if (!string.Join(' ', command.Argv).Contains("dotnet --version", StringComparison.Ordinal))
+            {
+                return _inner.RunAsync(command, cancellationToken);
+            }
+
+            ProbeAttempts++;
+            cts.Cancel();
+            cancellationToken.ThrowIfCancellationRequested();
+            return _inner.RunAsync(command, cancellationToken);
         }
     }
 }

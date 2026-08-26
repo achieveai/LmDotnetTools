@@ -1,4 +1,7 @@
+using System.Text;
 using System.Text.Json;
+using CodeReviewDaemon.Sample.Configuration;
+using Microsoft.Extensions.Configuration;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
@@ -19,6 +22,46 @@ public sealed class DaemonProfileConfigurationTests
             webhook.GetLeftPart(UriPartial.Authority),
             "sandbox auth callbacks must return to the same daemon that minted each per-session secret");
         listener.Port.Should().Be(5082, "the GitHub daemon owns 5081 and cannot validate MCQdb session secrets");
+    }
+
+    [Fact]
+    public void The_shipped_settings_state_the_stranded_run_knobs_at_their_defaults()
+    {
+        using var document = JsonDocument.Parse(File.ReadAllText(LocateProfile("appsettings.json")));
+        var daemon = document.RootElement.GetProperty("CodeReviewDaemon");
+
+        // #317's mechanism (StrandedRunReconciler, delivered by #274) has always been configurable and has
+        // never been visible: no shipped settings file named these keys, so every deploy ran on class
+        // defaults an operator had to read the source to discover. Stating them changes no behaviour and
+        // makes the resume policy an operator can actually tune.
+        daemon.GetProperty("StrandedRunGraceHours").GetDouble().Should().Be(new CodeReviewDaemonOptions().StrandedRunGraceHours);
+        daemon.GetProperty("StrandedRunScanLimit").GetInt32().Should().Be(new CodeReviewDaemonOptions().StrandedRunScanLimit);
+        daemon.GetProperty("StrandedRunMaxResumesPerSweep").GetInt32().Should().Be(
+            new CodeReviewDaemonOptions().StrandedRunMaxResumesPerSweep);
+    }
+
+    [Fact]
+    public void The_stranded_run_keys_in_the_shipped_settings_actually_bind()
+    {
+        // Asserting the bound value equals the shipped one would pass over a MISSPELLED key: a key that binds
+        // nothing leaves exactly the class default the file states. So each value is rewritten to a distinct
+        // one first — a key whose spelling the binder does not read cannot carry the rewrite through.
+        var json = File.ReadAllText(LocateProfile("appsettings.json"))
+            .Replace("\"StrandedRunGraceHours\": 6", "\"StrandedRunGraceHours\": 11", StringComparison.Ordinal)
+            .Replace("\"StrandedRunScanLimit\": 50", "\"StrandedRunScanLimit\": 77", StringComparison.Ordinal)
+            .Replace(
+                "\"StrandedRunMaxResumesPerSweep\": 2",
+                "\"StrandedRunMaxResumesPerSweep\": 9",
+                StringComparison.Ordinal);
+        using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
+
+        var options = new ConfigurationBuilder().AddJsonStream(stream).Build()
+            .GetSection(CodeReviewDaemonOptions.SectionName).Get<CodeReviewDaemonOptions>();
+
+        options.Should().NotBeNull();
+        options!.StrandedRunGraceHours.Should().Be(11);
+        options.StrandedRunScanLimit.Should().Be(77);
+        options.StrandedRunMaxResumesPerSweep.Should().Be(9);
     }
 
     /// <summary>
