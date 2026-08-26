@@ -1427,12 +1427,17 @@ public class SubAgentManagerTests : IAsyncLifetime
     {
         // Arrange (#262, the production ordering): the sibling test waits for the descendant-question
         // notification before answering, which proves the monitor had already classified the parked run —
-        // the SAFE ordering. The race the issue describes is the other one: a client answers the instant
-        // the question is visible, so the resolution empties the deferred-call registry BEFORE the monitor
-        // reaches the parked completion and probes it. That probe then reports "no question pending" for a
-        // parked run, and the latch is the only thing that still knows better.
+        // the SAFE ordering. The race the issue describes is the other one: the answer lands BEFORE the
+        // monitor classifies the parked run's completion, so the resolution empties the deferred-call
+        // registry before the probe reads it. The probe then reports "no question pending" for a run that
+        // very much did park one, and the latch is the only thing that still knows better.
         //
-        // Answering as soon as the registry shows the call is what reproduces that ordering.
+        // This ordering is FORCED, not raced. Resolving as soon as the registry shows the call — the
+        // obvious way to write this — loses the race nearly every time: the registry is populated before
+        // the deferred placeholder is even published, so the monitor is free to classify first and the
+        // test then exercises the safe path while appearing to prove the dangerous one. The seam below
+        // fires inside the exact window the bug lives in, and the assertion at the end fails loudly if it
+        // never fired, so this test cannot silently go vacuous.
         var askArgs = AskColorArgs();
 
         const string RealAnswer = "Final answer: chose Blue.";
@@ -1447,7 +1452,6 @@ public class SubAgentManagerTests : IAsyncLifetime
                 List<IMessage> reply = Interlocked.Increment(ref providerCalls) switch
                 {
                     1 => [StreamingAskUserQuestionCall("tc_color", askArgs, opts.GenerationId)],
-                    2 => [],
                     _ => [new TextMessage { Text = RealAnswer, Role = Role.Assistant }],
                 };
 
@@ -1456,54 +1460,44 @@ public class SubAgentManagerTests : IAsyncLifetime
 
         _manager = CreateManager(maxConcurrent: 1);
 
+        // Resolve the question INSIDE the classification window, exactly once, and only for a completion
+        // that still has the call parked. Recording the outcome rather than asserting on it here keeps the
+        // failure attributable: an exception thrown on the monitor's thread would surface as a timeout
+        // somewhere else entirely.
+        ResolveToolCallOutcome? resolvedInsideWindow = null;
+        var hookFired = 0;
+        _manager.BeforeClassifyingRunCompletionForTest = async (state, _) =>
+        {
+            if (state.Agent is not MultiTurnAgentLoop l
+                || Interlocked.Exchange(ref hookFired, 1) != 0)
+            {
+                return;
+            }
+
+            resolvedInsideWindow = await l.TryResolveToolCallAsync("tc_color", "Blue");
+        };
+
         var foregroundTask = _manager.SpawnAsync(
             "test-agent", "Pick a color", name: "color-agent", runInBackground: false);
 
-        MultiTurnAgentLoop? loop = null;
-        IReadOnlyList<DeferredToolCallInfo> deferred = [];
-        await Wait.UntilAsync(
-            async () =>
-            {
-                if (_manager!.TryGetAgent("color-agent", out var agent) && agent is MultiTurnAgentLoop l)
-                {
-                    loop = l;
-                    deferred = await l.GetDeferredToolCallsAsync();
-                    return deferred.Any(d => d.ToolCallId == "tc_color");
-                }
-
-                return false;
-            },
-            "the child registered as a MultiTurnAgentLoop and parked tc_color",
-            TimeSpan.FromSeconds(10),
-            TimeSpan.FromMilliseconds(50),
-            observed: () => loop is null
-                ? "no MultiTurnAgentLoop registered yet for 'color-agent'"
-                : $"deferred tool calls: [{string.Join(", ", deferred.Select(d => d.ToolCallId))}], "
-                    + $"provider calls: {Volatile.Read(ref providerCalls)}");
-
-        // Act: answer immediately — deliberately NOT waiting for the descendant-question notification, so
-        // the resolution races the monitor's classification of the parked completion.
-        var agentId = _manager!.ListAgents().Single(a => a.Name == "color-agent").AgentId;
-        var outcome = await loop!.TryResolveToolCallAsync("tc_color", "Blue");
-        outcome.Should().Be(ResolveToolCallOutcome.Resolved);
-
-        // Let the resolution's own child run land before nudging, so the nudge cannot be what carries the
-        // answer — the run under test is the zero-turn one the monitor must not mistake for a result.
-        await Wait.UntilAsync(
-            () => Volatile.Read(ref providerCalls) >= 2,
-            "the resolution triggered its child run",
-            TimeSpan.FromSeconds(10),
-            TimeSpan.FromMilliseconds(25),
-            observed: () => $"provider calls: {Volatile.Read(ref providerCalls)}");
-
-        _ = await _manager.SendMessageAsync(agentId, "continue", runInBackground: true);
-
-        // Assert: whichever side won, the caller gets the answer — never the placeholder.
+        // Assert: the caller gets the answer, not the placeholder. Without the `latchedThisRun` arm this
+        // fails here with #262's exact signature — the parked run emitted a tool call, so the "did the
+        // model speak" veto calls its own completion terminal the moment the probe comes back empty.
         var result = await foregroundTask.WaitAsync(TimeSpan.FromSeconds(10));
         result.Should().Be(
             RealAnswer,
             "the latch survives the resolution, so the monitor still knows the run was parked even when "
                 + "the answer emptied the deferred-call registry before it looked");
+
+        // Non-vacuity: prove the dangerous ordering is what actually ran. A pass with the hook unfired, or
+        // with nothing there to resolve, would mean the safe ordering carried the test instead.
+        Volatile.Read(ref hookFired).Should().Be(
+            1, "the classification seam must have fired, or this test proved nothing about the race");
+        resolvedInsideWindow.Should().Be(
+            ResolveToolCallOutcome.Resolved,
+            "the answer must have been applied INSIDE the classification window — that is the whole "
+                + "ordering under test; anything else means the call was already gone and the monitor "
+                + "had classified the parked run first");
     }
 
     [Fact]

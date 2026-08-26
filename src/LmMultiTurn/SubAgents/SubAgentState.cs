@@ -633,12 +633,14 @@ internal class SubAgentState
     ///
     /// <para>
     /// Deliberately per-state rather than per-run-generation, unlike most bookkeeping on this type. The
-    /// latch is armed by an observed deferred <c>AskUserQuestion</c> placeholder and consumed by the very
-    /// next completion that reaches a decision — either one settling the caller, or the single text-free
-    /// run the monitor absorbs after an answer. It therefore cannot outlive the generation that set it by
-    /// more than that one completion, which is exactly the span it is meant to cover. Stamping it with a
-    /// generation would add a second thing to keep in sync (and a second way to get it wrong) to buy
-    /// precision this bound already provides.
+    /// latch is armed by an observed deferred <c>AskUserQuestion</c> placeholder, and the monitor absorbs
+    /// at most two completions before a decision is reached: the asking run's OWN completion, which keeps
+    /// the latch armed because a resolution always enqueues the follow-on run that carries the answer, and
+    /// then at most one further run that never reached the model, which consumes it. Any other completion
+    /// settles the caller and consumes it. Only one run per parking can arm the latch, so it cannot
+    /// outlive the generation that set it by more than those two completions — exactly the span it is
+    /// meant to cover. Stamping it with a generation would add a second thing to keep in sync (and a
+    /// second way to get it wrong) to buy precision this bound already provides.
     /// </para>
     /// </remarks>
     public bool ParkedOnQuestion => Volatile.Read(ref _parkedOnQuestion) != 0;
@@ -651,8 +653,9 @@ internal class SubAgentState
 
     /// <summary>
     /// Consumes the parked latch. Called from the completion that settles the caller (with text or with
-    /// an error) AND from the single text-free post-answer completion the monitor absorbs — so the latch
-    /// spans the interval between parking and the real answer-derived result, but can never span more
+    /// an error) AND from a text-free post-answer completion the monitor absorbs that did not itself ask
+    /// the question — so the latch spans the interval between parking and the real answer-derived result,
+    /// but can never span more
     /// than one absorbed run. That bound is what keeps a legitimately text-free final run from wedging
     /// the caller forever; see the <c>awaitingAnswerText</c> branch in <c>SubAgentManager</c>.
     /// </summary>
