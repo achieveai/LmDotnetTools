@@ -706,6 +706,63 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
     private static Func<Task<T>> ExpireSettleBudgetAsync<T>(Task<T> inFlight, FakeTimeProvider clock) =>
         () => SettleUnderExpiredBudgetAsync(inFlight, clock);
 
+    /// <summary>
+    /// A reserve whose thread directory is deleted out from under it must keep yielding, not spin. The retry
+    /// arm reached when the create is REFUSED and the record turns out not to be there is the arm that
+    /// handles an ordinary collision-then-retraction, and it re-attempts with nothing to wait on — but
+    /// <see cref="DirectoryNotFoundException"/> derives from <see cref="IOException"/>, so it is also the arm
+    /// a vanished directory lands in, on every attempt, with the read answering "nothing here" synchronously
+    /// and the directory never being recreated (it is made once, before the loop). Without a yield that is a
+    /// tight synchronous loop holding a core for the entire settle budget and never looking at its
+    /// cancellation token — a starvation source inside the very code path that exists to remove one.
+    /// <para>
+    /// Cancellation is the observable that separates the two: a loop that yields sees the token at its next
+    /// delay and stops; a loop that spins cannot see it at all and runs until the budget throws. The store is
+    /// held in that loop first by a record name it can never win — the arm above this one, which already
+    /// yields — and the tree is then deleted to flip it into the arm under test, so the interleave is
+    /// arranged rather than raced.
+    /// </para>
+    /// <para>
+    /// The arrangement is Windows-shaped, which is where the .NET suite runs: an exclusive create against a
+    /// name held by a directory is refused there as an access failure. Elsewhere it can be refused as a
+    /// collision instead, which parks the call in the reader's own yield — still cancelled promptly, so the
+    /// test stands, but pinning the spin is a Windows run.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task AReserveWhoseDirectoryVanishes_KeepsYieldingRatherThanSpinningUncancellably()
+    {
+        const string Backing = "vanishing-directory";
+        var store = CreateStore(StoreKind.File, Backing);
+        var admission = Admission();
+
+        // Take and give back the id purely to learn the record's name, then put a DIRECTORY there: the
+        // exclusive create can now never succeed, so the call is pinned in the retry loop and cannot settle
+        // on its own before the tree is pulled out from under it.
+        (await store.TryReserveAcceptanceAsync(admission)).Should().BeNull();
+        var recordFile = SoleAcceptanceRecordFile(Backing);
+        (await store.TryReleaseAcceptanceAsync(
+                admission.ThreadId,
+                admission.InputId,
+                admission.ReservationId))
+            .Should().BeTrue();
+        _ = Directory.CreateDirectory(recordFile);
+
+        using var cancel = new CancellationTokenSource();
+        var reserve = store.TryReserveAcceptanceAsync(Admission(), cancel.Token);
+
+        await Task.Delay(100);
+        reserve.IsCompleted.Should().BeFalse("the call must still be retrying, or nothing is being tested");
+        Directory.Delete(Path.Combine(_root, Backing, "thread-1"), recursive: true);
+        await Task.Delay(100);
+
+        cancel.Cancel();
+        var settle = async () => await reserve;
+
+        _ = await settle.Should().ThrowAsync<OperationCanceledException>(
+            "a retry loop with nothing to wait on must still yield, and a yield is what sees the token");
+    }
+
     /// <summary>The one admission record under a file-backed store, located without assuming its name.</summary>
     private string SoleAcceptanceRecordFile(string backingName) =>
         Directory.EnumerateFiles(

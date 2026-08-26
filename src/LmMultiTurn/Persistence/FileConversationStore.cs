@@ -1108,6 +1108,16 @@ public sealed class FileConversationStore
                     throw;
                 }
 
+                // Yield before re-attempting, exactly as the sibling arm below does. Reaching here means the
+                // create was refused AND the read found nothing, and the read answers "nothing" immediately —
+                // synchronously — when the directory or the name is simply gone. DirectoryNotFoundException
+                // derives from IOException, so a thread directory deleted out from under a reserve in flight
+                // (DeleteThreadAsync takes no lock this path honours, and the directory is created once above
+                // rather than per attempt) lands here every single time with nothing to wait on: without this
+                // delay the loop is a tight synchronous spin that pegs a core for the whole budget and never
+                // observes cancellation. The budget still bounds it, and the refusal is still rethrown as
+                // itself once spent.
+                await Task.Delay(AcceptanceSettlePoll, _time, ct);
                 continue;
             }
             catch (UnauthorizedAccessException)
