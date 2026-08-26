@@ -38,7 +38,14 @@ internal sealed class MockPrProvider : IPrProvider
     public PrLifecycle PrState { get; set; } = PrLifecycle.Open;
 
     /// <summary>Head SHA returned by <see cref="GetCurrentHeadShaAsync"/>; null models a host whose payload
-    /// carries no head for this PR.</summary>
+    /// carries no head for this PR.
+    /// <para>
+    /// NOTE for anyone driving a review through this double: the default of null is INDETERMINATE, which the
+    /// head-currency guard deliberately lets through. So a test that does not set this exercises a review with
+    /// the guard effectively disabled — fine when the guard is not what the test is about, and silently
+    /// guard-blind when it is. Set it to the run's own head to model an unchanged PR.
+    /// </para>
+    /// </summary>
     public string? CurrentHeadSha { get; set; }
 
     public Task<PullRequestPage> ListOpenPullRequestsAsync(PrPollRequest request, CancellationToken cancellationToken)

@@ -1,9 +1,14 @@
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
+using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
+using CodeReviewDaemon.Sample.Workspace.Sandbox;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Orchestration;
@@ -111,6 +116,41 @@ public sealed class StaleHeadGuardTests
         ado.HeadShaCalls.Should().Be(0);
         store.GetArtifacts(run.Id)
             .Should().Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+    }
+
+    [Fact]
+    public async Task TheCompositionRootActuallyInjectsTheProviders_NotJustTheOptionalDefault()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var provider = new MockPrProvider("github", [], Cursor()) { CurrentHeadSha = "head-after-force-push" };
+        var services = new ServiceCollection();
+        _ = services.AddSingleton(store);
+        _ = services.AddSingleton<IReviewAgentLoopFactory>(new FakeReviewAgentLoopFactory());
+        _ = services.AddSingleton<ISandboxCommandRunner>(new FakeSandboxCommandRunner());
+        _ = services.AddSingleton<ISandboxFileSystem>(new FakeSandboxFileSystem());
+        _ = services.AddSingleton(new CodeReviewDaemonOptions());
+        _ = services.AddSingleton<IReviewCommentPublisher>(new FakeReviewCommentPublisher("github"));
+        _ = services.AddSingleton<ILoggerFactory>(NullLoggerFactory.Instance);
+        // The registration Program.cs makes at its own IPrProvider lines — the thing under test is whether it
+        // REACHES the executor.
+        _ = services.AddSingleton<IPrProvider>(provider);
+        using var sp = services.BuildServiceProvider();
+
+        // Exactly how Program.cs builds it: ActivatorUtilities with the credential + gateway url passed
+        // explicitly and everything else resolved from DI.
+        var executor = ActivatorUtilities.CreateInstance<DaemonReviewStageExecutor>(
+            sp, default(SandboxCredential), "http://localhost:5051");
+        var run = SeedRunWithContext(store, prId: "325", headSha: "head-before-force-push");
+
+        var act = () => executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        // `prProviders` is an OPTIONAL constructor parameter defaulting to an empty list, so a DI change that
+        // stopped filling it would leave the guard silently vacuous again — compiling, passing every other
+        // test in this file (they all hand the list in directly), and reviewing stale heads in production.
+        // This is the only test that exercises the wiring rather than the logic.
+        _ = await act.Should().ThrowAsync<InvalidOperationException>();
+        provider.HeadShaCalls.Should().BeGreaterThan(0, "the injected provider must be the one consulted");
     }
 
     private static OpaqueCursor Cursor() => new()

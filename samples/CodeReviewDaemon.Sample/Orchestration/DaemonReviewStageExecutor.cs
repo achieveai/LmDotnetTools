@@ -227,19 +227,42 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private volatile bool _gatewaySkillsVerified;
 
     /// <summary>
-    /// What the review container can do about verifying a finding by building it (#272), established once and
-    /// then stated to the reviewer in its prompt. <see cref="HasSdk"/> is true ONLY on a positive detection, so
-    /// an indeterminate probe reads as "no, you cannot rely on it" for the purpose of choosing instructions,
-    /// while <see cref="Statement"/> still says which of the two it was.
+    /// Whether the review container can build (#272). Three states rather than a bool, because the prompt has
+    /// to branch three ways: a probe that could not RUN is a different instruction from one that ran and found
+    /// nothing. Folding <see cref="Indeterminate"/> into <see cref="Absent"/> would state "unknown" in the
+    /// status sentence and then issue the absent branch's order right underneath it — a contradiction the
+    /// reviewer resolves by obeying the order, losing the verification on every container that could have built.
     /// </summary>
-    private sealed record BuildToolingFacts(bool HasSdk, string Statement);
+    private enum BuildToolingState
+    {
+        /// <summary>The probe ran and reported a version.</summary>
+        Present,
+
+        /// <summary>The probe ran and there is no usable SDK behind it.</summary>
+        Absent,
+
+        /// <summary>The probe could not be run at all — no evidence either way.</summary>
+        Indeterminate,
+    }
+
+    /// <summary>
+    /// What the review container can do about verifying a finding by building it, established by
+    /// <see cref="ProbeBuildToolingAsync"/> and stated to the reviewer in its prompt: <see cref="State"/>
+    /// selects the instruction, <see cref="Statement"/> is the sentence of fact printed above it.
+    /// </summary>
+    private sealed record BuildToolingFacts(BuildToolingState State, string Statement);
 
     /// <summary>
     /// The cached verdict of <see cref="ProbeBuildToolingAsync"/>. The image is process-lifetime configuration
     /// of the gateway, exactly like the marketplace catalog behind <see cref="_gatewaySkillsVerified"/>, so one
-    /// probe answers for every review this process runs. Unlike that flag, the INDETERMINATE outcome is cached
-    /// too: it costs nothing to be wrong about (the reviewer is merely told the fact is unknown), and leaving it
-    /// uncached would re-pay a failing gateway round-trip on every single run.
+    /// DETECTION answers for every review this process runs.
+    /// <para>
+    /// An indeterminate outcome is deliberately NOT cached, for the same reason
+    /// <see cref="EnsureGatewaySkillSupportAsync"/> does not cache an unreadable catalog: a failed read is not a
+    /// verdict. Caching it would let one transient gateway hiccup disable build-verification for every review
+    /// this process runs afterwards, and the process is long-lived. The cost is one failing round-trip per
+    /// review while the gateway is genuinely unreachable — during which the reviews are in trouble anyway.
+    /// </para>
     /// </summary>
     private volatile BuildToolingFacts? _buildTooling;
 
@@ -528,13 +551,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 .RunAsync(new SandboxCommand(["dotnet", "--version"]), cancellationToken)
                 .ConfigureAwait(false);
 
-            var version = result.Stdout.Trim();
+            var version = VersionLine(result.Stdout);
             facts = result.Succeeded && version.Length > 0
                 ? new BuildToolingFacts(
-                    true,
+                    BuildToolingState.Present,
                     $"a .NET SDK is available in this container (dotnet {version}).")
                 : new BuildToolingFacts(
-                    false,
+                    BuildToolingState.Absent,
                     "no .NET SDK is installed in this container.");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -542,14 +565,39 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             _logger.LogWarning(
                 ex,
                 "Could not probe the review container for a .NET SDK; the reviewer will be told the fact is "
-                    + "unknown rather than told the SDK is absent.");
-            facts = new BuildToolingFacts(
-                false,
+                    + "unknown rather than told the SDK is absent, and the next review re-probes.");
+            // Returned WITHOUT caching — see the field's remarks. A failed read is not a verdict.
+            return new BuildToolingFacts(
+                BuildToolingState.Indeterminate,
                 "the daemon could not determine whether a .NET SDK is installed in this container.");
         }
 
         _buildTooling = facts;
         return facts;
+    }
+
+    /// <summary>
+    /// The version line of a probe's stdout, length-capped. This value is interpolated verbatim into the review
+    /// prompt, and <c>dotnet --version</c> does NOT reliably print one line: the first run in a fresh container
+    /// emits the .NET first-use banner (welcome text, telemetry notice, rule lines) and prints the version
+    /// AFTER it. Pasting that whole block into the prompt would spend the reviewer's context on a banner and
+    /// bury the one fact it is meant to carry — so the LAST non-empty line is taken, not the first, which is
+    /// the version in both the banner case and the ordinary single-line one.
+    /// </summary>
+    private static string VersionLine(string stdout)
+    {
+        const int maxLength = 64;
+        var lines = stdout.Split('\n');
+        for (var i = lines.Length - 1; i >= 0; i--)
+        {
+            var trimmed = lines[i].Trim();
+            if (trimmed.Length > 0)
+            {
+                return trimmed.Length <= maxLength ? trimmed : trimmed[..maxLength];
+            }
+        }
+
+        return string.Empty;
     }
 
     public Task ExecuteStageAsync(ReviewStage stage, ReviewRun run, CancellationToken cancellationToken)
@@ -1526,9 +1574,14 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             ["prior_files"] = string.Join('\n', priorNotesFiles),
             // #272. Two variables rather than one because the prompt needs both halves: the FACT (stated
             // verbatim, including the "could not determine" case, so the reviewer is never told something
-            // stronger than the daemon actually established) and the CONSEQUENCE, which branches on whether
-            // building is available at all.
-            ["has_dotnet_sdk"] = buildTooling.HasSdk,
+            // stronger than the daemon actually established) and the CONSEQUENCE, which branches THREE ways —
+            // a probe that could not run must not be handed the instruction for a container known to lack an SDK.
+            ["dotnet_sdk_state"] = buildTooling.State switch
+            {
+                BuildToolingState.Present => "present",
+                BuildToolingState.Absent => "absent",
+                _ => "indeterminate",
+            },
             ["dotnet_sdk_status"] = buildTooling.Statement,
         };
     }
@@ -2985,6 +3038,15 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// minutes-long review over a transient API blip — for every run, for as long as the blip lasted. Only a
     /// head the host actually reports, and that differs, refuses. Cancellation propagates rather than being
     /// read as an outage.
+    /// </para>
+    /// <para>
+    /// <b>Residual window, accepted.</b> This is a check-then-act, not a lock: synthesis and
+    /// <c>PostAsync</c> run after the last call here with no further re-check, so a force-push landing inside
+    /// that window still produces a review of the superseded head. The window is seconds-to-minutes wide
+    /// against the hours-wide one the poll snapshot opened, which is the gap that actually produced #325.
+    /// Closing it completely would mean re-reading the host immediately before the write and treating the
+    /// posted review as a compare-and-swap on the head — worth doing only if a review is ever observed to
+    /// slip through this narrower window.
     /// </para>
     /// </summary>
     private async Task ValidateReviewStillCurrentAsync(ReviewRun run, CancellationToken cancellationToken)

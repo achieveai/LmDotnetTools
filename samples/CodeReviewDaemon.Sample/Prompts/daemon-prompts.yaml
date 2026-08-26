@@ -60,14 +60,20 @@ review:
       keep your working notes there and nowhere else; everything above stays read-only.
     {{ end ~}}
     - Build/test tooling: {{ dotnet_sdk_status }}
-    {{ if has_dotnet_sdk ~}}
+    {{ if dotnet_sdk_state == "present" ~}}
       So where building or a focused `dotnet test --filter` would settle a finding, RUN IT before you write
       that finding, and say in the finding that you did.
-    {{ else ~}}
+    {{ else if dotnet_sdk_state == "absent" ~}}
       So do NOT spend turns on `dotnet build` or `dotnet test` here — they will not get you an answer.
       Reason from the code instead, and mark every finding you could not execute as unverified, in the
       finding itself. A finding you reasoned your way to and one you actually reproduced must not read the
       same to whoever has to act on them.
+    {{ else ~}}
+      Nobody has established either way, so try the build once on the first finding it would settle. If it
+      works, verify that finding and say in it that you did. If it fails for want of a toolchain, stop there
+      and spend no further turns on it. Either way, mark every finding you could not execute as unverified,
+      in the finding itself — a finding you reasoned your way to and one you actually reproduced must not
+      read the same to whoever has to act on them.
     {{ end ~}}
     {{ if is_rereview ~}}
     This is a RE-REVIEW (round {{ review_round }}) of this PR. It was last reviewed at commit
@@ -194,14 +200,20 @@ review:
       keep your working notes there and nowhere else; everything above stays read-only.
     {{ end ~}}
     - Build/test tooling: {{ dotnet_sdk_status }}
-    {{ if has_dotnet_sdk ~}}
+    {{ if dotnet_sdk_state == "present" ~}}
       So where building or a focused `dotnet test --filter` would settle a finding, RUN IT before you write
       that finding, and say in the finding that you did.
-    {{ else ~}}
+    {{ else if dotnet_sdk_state == "absent" ~}}
       So do NOT spend turns on `dotnet build` or `dotnet test` here — they will not get you an answer.
       Reason from the code instead, and mark every finding you could not execute as unverified, in the
       finding itself. A finding you reasoned your way to and one you actually reproduced must not read the
       same to whoever has to act on them.
+    {{ else ~}}
+      Nobody has established either way, so try the build once on the first finding it would settle. If it
+      works, verify that finding and say in it that you did. If it fails for want of a toolchain, stop there
+      and spend no further turns on it. Either way, mark every finding you could not execute as unverified,
+      in the finding itself — a finding you reasoned your way to and one you actually reproduced must not
+      read the same to whoever has to act on them.
     {{ end ~}}
     {{ if is_rereview ~}}
     This is a RE-REVIEW (round {{ review_round }}) of this PR. It was last reviewed at commit

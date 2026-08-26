@@ -380,6 +380,15 @@ internal sealed class AdoPrProvider : IPrProvider
     /// <see cref="GetPrStateAsync"/> uses. Returns <c>null</c> only when the payload carries no such commit;
     /// a transport or auth failure throws, because "unreachable" must never be reported as "nothing
     /// contradicts the recorded head".
+    /// <para>
+    /// <b>Freshness.</b> Azure DevOps refreshes <c>lastMergeSourceCommit</c> when it re-evaluates the merge,
+    /// not synchronously on push, so this field can lag a just-pushed head by the length of that evaluation.
+    /// The lag can only produce a FALSE NEGATIVE — the guard sees the old commit, agrees with the equally old
+    /// recorded head, and lets a review through that a moment later would have been refused. It cannot produce
+    /// a false positive, so no review is abandoned over a stale field. Reading the SAME field the poll records
+    /// at <see cref="ListOpenPullRequestsAsync"/> is deliberate: comparing two different notions of "head"
+    /// would manufacture disagreements out of field semantics rather than out of the branch actually moving.
+    /// </para>
     /// </summary>
     public async Task<string?> GetCurrentHeadShaAsync(
         RepoIdentity repo, string prId, CancellationToken cancellationToken)

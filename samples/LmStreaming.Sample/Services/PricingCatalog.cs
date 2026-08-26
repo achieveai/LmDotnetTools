@@ -58,9 +58,12 @@ namespace LmStreaming.Sample.Services;
 ///         why the authoritative resolver is registered here rather than left to that call's <c>TryAdd</c>.
 ///     </para>
 ///     <para>
-///         Caveat worth carrying: partial pricing across a conversation currently folds to a confident
-///         under-count rather than a null or a marker (<c>ConversationUsageAggregate.SumKnown</c>). A
-///         conversation that mixes priced and unpriced models reports less than it cost.
+///         What a partly-priced catalog does downstream: a conversation total is a STRICT fold
+///         (<c>ConversationUsageAggregate</c> line 146, #377), so a single unpriced model nulls the whole
+///         conversation's cost rather than under-reporting it. Per-model subtotals keep the lenient fold,
+///         since pricing is uniform within one model. The practical consequence for this section is that
+///         pricing SOME of the models a host runs still leaves conversation totals null — an all-or-nothing
+///         boundary, and the honest one.
 ///     </para>
 /// </remarks>
 public static class PricingCatalog
@@ -90,6 +93,16 @@ public static class PricingCatalog
         var catalog = BuildCatalog(configuration);
         var version = ReadVersion(configuration);
 
+        // AddLmConfig registers MORE than pricing, and the extra registrations are the reason to read this
+        // comment before adding a second caller. It also fills in IAgent/IStreamingAgent (a UnifiedAgent over
+        // this catalog), IModelResolver, IProviderAgentFactory, OpenRouterModelService, and an
+        // IHttpHandlerBuilder rewrite. Over an EMPTY or pricing-only catalog those resolve to an agent that
+        // throws on first use rather than one that works — a method named for pricing quietly supplying a
+        // broken default agent.
+        // Inert as wired today: nothing in src/ or samples/ resolves IAgent, IStreamingAgent, IModelResolver,
+        // IProviderAgentFactory or IHttpHandlerBuilder from this host's container — it builds its agents through
+        // its own provider path. If that ever stops being true, the fix is to register the pricing pieces
+        // directly rather than to widen this catalog into a real agent catalog by accident.
         _ = services.AddLmConfig(catalog);
         _ = services.AddSingleton<IPricingResolver>(_ =>
             PricingConfigResolver.FromAppConfig(catalog, Source, version));

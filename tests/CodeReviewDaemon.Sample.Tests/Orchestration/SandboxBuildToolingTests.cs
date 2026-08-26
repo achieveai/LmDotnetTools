@@ -63,6 +63,41 @@ public sealed class SandboxBuildToolingTests
     }
 
     [Fact]
+    public async Task AFirstRunBanner_DoesNotLandInThePrompt_OnlyTheVersionBehindIt()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        // What `dotnet --version` actually prints the FIRST time it runs in a fresh container: the version is
+        // the last line, after the whole first-use banner.
+        const string firstRun = """
+            Welcome to .NET 9.0!
+            ---------------------
+            SDK Version: 9.0.100
+
+            Telemetry
+            ---------
+            The .NET tools collect usage data in order to help us improve your experience.
+
+            --------------------------------------------------------------------------------
+            9.0.100
+            """;
+        var runner = new FakeSandboxCommandRunner()
+            .OnArgvContainsFirst("dotnet --version", new SandboxCommandResult(0, firstRun, ""));
+        var factory = new FakeReviewAgentLoopFactory();
+        var executor = BuildExecutor(store, factory, runner);
+
+        await executor.ExecuteStageAsync(
+            ReviewStage.Reviewed, SeedRunWithContext(store, "270"), CancellationToken.None);
+
+        // The status sentence is interpolated verbatim into the reviewer's system prompt, so an unfiltered
+        // stdout spends its context on a telemetry notice and buries the one fact the line exists to carry.
+        var prompt = factory.CreatedProfiles[0].SystemPrompt;
+        prompt.Should().Contain("dotnet 9.0.100");
+        prompt.Should().NotContain("Telemetry");
+        prompt.Should().NotContain("Welcome to .NET");
+    }
+
+    [Fact]
     public async Task AFailedProbeThatStillPrinted_IsAbsence_NotAVersionMadeOfItsErrorText()
     {
         using var db = new TempSqliteDatabase();
@@ -118,9 +153,33 @@ public sealed class SandboxBuildToolingTests
         var prompt = factory.CreatedProfiles[0].SystemPrompt;
         prompt.Should().Contain("could not determine");
         prompt.Should().NotContain("no .NET SDK is installed");
+        // And the INSTRUCTION has to be indeterminate too, not merely the sentence above it. Stating "unknown"
+        // and then issuing the absent branch's order is a contradiction the reviewer resolves by obeying the
+        // order — which loses the verification on every container that could in fact have built.
+        prompt.Should().NotContain("do NOT spend turns");
+        prompt.Should().Contain("try the build once");
         // And a probe that cannot run must never cost the review.
         store.GetArtifacts(run.Id)
             .Should().Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+    }
+
+    [Fact]
+    public async Task AnIndeterminateProbe_IsRetriedOnTheNextReview_NotCachedForTheProcessLifetime()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var runner = new UnprobeableCommandRunner();
+        var executor = BuildExecutor(store, new FakeReviewAgentLoopFactory(), runner);
+
+        await executor.ExecuteStageAsync(
+            ReviewStage.Reviewed, SeedRunWithContext(store, "270"), CancellationToken.None);
+        await executor.ExecuteStageAsync(
+            ReviewStage.Reviewed, SeedRunWithContext(store, "271"), CancellationToken.None);
+
+        // A detected verdict is process-lifetime configuration and is cached. A FAILED READ is not a verdict:
+        // caching it lets one transient gateway hiccup disable build-verification for every review this
+        // process runs afterwards. Same rule the gateway skill probe already follows.
+        runner.ProbeAttempts.Should().Be(2, "a read failure must not be cached as a verdict");
     }
 
     [Fact]
@@ -207,9 +266,18 @@ public sealed class SandboxBuildToolingTests
     {
         private readonly FakeSandboxCommandRunner _inner = new();
 
-        public Task<SandboxCommandResult> RunAsync(SandboxCommand command, CancellationToken cancellationToken) =>
-            string.Join(' ', command.Argv).Contains("dotnet --version", StringComparison.Ordinal)
-                ? throw new InvalidOperationException("gateway session unavailable")
-                : _inner.RunAsync(command, cancellationToken);
+        /// <summary>How many times the SDK probe was attempted — the retry-vs-cache discriminator.</summary>
+        public int ProbeAttempts { get; private set; }
+
+        public Task<SandboxCommandResult> RunAsync(SandboxCommand command, CancellationToken cancellationToken)
+        {
+            if (!string.Join(' ', command.Argv).Contains("dotnet --version", StringComparison.Ordinal))
+            {
+                return _inner.RunAsync(command, cancellationToken);
+            }
+
+            ProbeAttempts++;
+            throw new InvalidOperationException("gateway session unavailable");
+        }
     }
 }
