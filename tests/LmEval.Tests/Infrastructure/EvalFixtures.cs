@@ -171,27 +171,41 @@ internal sealed class CancellingGate : IGate, IConfigurationFingerprint
 }
 
 /// <summary>
-/// A gate whose environment is gone: it throws on <b>every</b> candidate, the way a gate reaching a
-/// deleted checkout or an undeployed schema file does.
+/// A gate that reads something outside itself — a checkout, a deployed schema file. When that thing
+/// is gone it throws on <b>every</b> candidate, which is the environmental fault #401 is about: it
+/// is only visible across the whole corpus, because every gate goes inconclusive on every item,
+/// every item still scores a clean pass, and no aggregate that existed before moves at all.
 /// <para>
 /// Distinct from <see cref="MarkerGate"/>'s <c>throwOnCandidateId</c>, which is the one-flaky-item
-/// case #352 contained. The environmental fault is the one #401 is about, and it is only visible
-/// across the whole corpus: every gate goes inconclusive on every item, every item still scores a
-/// clean pass, and no aggregate that existed before moves at all.
+/// case #352 contained.
+/// </para>
+/// <para>
+/// <paramref name="checkoutPresent"/> switches the <b>environment</b> and nothing else, and the
+/// fingerprint deliberately does not mention it: a fingerprint states how a gate was
+/// <i>configured</i>, and whether the checkout it reads happens to exist on this machine is not a
+/// configuration. So the healthy run and the outage run hash identically — which is the real
+/// pairing (one deploy, one run before the checkout went missing and one after) and the only shape
+/// in which a baseline can be frozen from the healthy run and the outage run refused against it
+/// with no other refusal reachable.
 /// </para>
 /// </summary>
-internal sealed class BrokenGate(string gateId) : IGate, IConfigurationFingerprint
+internal sealed class CheckoutGate(string gateId, bool checkoutPresent = false)
+    : IGate,
+        IConfigurationFingerprint
 {
     public string GateId { get; } = gateId;
 
     public IReadOnlySet<string> AppliesTo { get; } = new HashSet<string>(StringComparer.Ordinal);
 
-    public string? ConfigurationFingerprint { get; } = $"broken={gateId}";
+    public string? ConfigurationFingerprint { get; } = $"reads-checkout={gateId}";
 
     public ValueTask<GateDecision> EvaluateAsync(
         Candidate candidate,
         CancellationToken cancellationToken
-    ) => throw new IOException("the checkout this gate reads is gone");
+    ) =>
+        checkoutPresent
+            ? ValueTask.FromResult(GateDecision.Pass(GateId, "the checkout resolved"))
+            : throw new IOException("the checkout this gate reads is gone");
 }
 
 /// <summary>A gate that declares no configuration, for the refusal path.</summary>

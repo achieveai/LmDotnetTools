@@ -45,6 +45,13 @@ internal sealed class DaemonCorpusReader : ICorpusReader
     /// <summary>The task type every candidate this reader produces carries.</summary>
     public const string CodeReviewTaskType = "code-review";
 
+    /// <summary>
+    /// The <see cref="Candidate.Metadata"/> key carrying the review run a candidate came from — the
+    /// join back to the daemon's own rows. A named constant because a consumer has to read it, and
+    /// the same string in two files is the one that drifts.
+    /// </summary>
+    public const string ReviewRunIdMetadataKey = "reviewRunId";
+
     /// <summary>Variant label for the primary arm when the run recorded none.</summary>
     private const string PrimaryVariantFallback = "primary";
 
@@ -53,50 +60,48 @@ internal sealed class DaemonCorpusReader : ICorpusReader
 
     private readonly ReviewStore _store;
     private readonly ModelFamilyResolver _familyResolver;
-    private readonly int _limit;
-    private readonly long _afterRunId;
     private readonly ILogger<DaemonCorpusReader>? _logger;
 
     /// <summary>Builds a reader over the daemon's store.</summary>
     /// <param name="store">The daemon's review store.</param>
     /// <param name="familyResolver">Maps a model id to its family; may return null for unknown.</param>
-    /// <param name="limit">Most runs to consider.</param>
-    /// <param name="afterRunId">
-    /// Exclusive lower bound on the review run id to consider — the lower edge of an explicit
-    /// selection window. Zero (the default) starts at the beginning of the table, which is what the
-    /// store did unconditionally: <c>ORDER BY id LIMIT n</c> takes the OLDEST n rows, so once the
-    /// store held more than <paramref name="limit"/> qualifying runs every snapshot was identical to
-    /// the last, drawn entirely from the earliest history, and silently so — the snapshot hash stays
-    /// stable, and the comparability refusal that would otherwise say "you are not measuring what
-    /// you think you are measuring" is perfectly happy, because the corpus genuinely has not
-    /// changed.
-    /// </param>
     /// <param name="logger">Optional diagnostics.</param>
+    /// <remarks>
+    /// The window is <b>not</b> a constructor argument. It used to be, and that shape is what made
+    /// the original freeze possible: <c>ORDER BY id LIMIT n</c> takes the OLDEST n rows, so a reader
+    /// holding one fixed lower edge returned the same earliest history on every load once the store
+    /// held more than <c>limit</c> qualifying runs — silently, because the snapshot hash stays
+    /// stable and the comparability refusal that would otherwise say "you are not measuring what you
+    /// think you are measuring" is perfectly happy: the corpus genuinely has not changed. A window
+    /// stated per call has no such state to go stale.
+    /// </remarks>
     public DaemonCorpusReader(
         ReviewStore store,
         ModelFamilyResolver familyResolver,
-        int limit = 1000,
-        long afterRunId = 0,
         ILogger<DaemonCorpusReader>? logger = null
     )
     {
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _familyResolver =
             familyResolver ?? throw new ArgumentNullException(nameof(familyResolver));
-        _limit = limit;
-        _afterRunId = afterRunId;
         _logger = logger;
     }
 
     /// <inheritdoc />
-    public Task<CorpusSnapshot> LoadAsync(string corpusId, CancellationToken cancellationToken)
+    public Task<CorpusPage> LoadAsync(
+        string corpusId,
+        long afterCursor,
+        int limit,
+        CancellationToken cancellationToken
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(corpusId);
+        ArgumentOutOfRangeException.ThrowIfNegative(afterCursor);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
         cancellationToken.ThrowIfCancellationRequested();
 
         var candidates = new List<Candidate>();
-        var runs = _store.ListReviewRuns(ReviewStage.Reviewed, _limit, _afterRunId);
+        var runs = _store.ListReviewRuns(ReviewStage.Reviewed, limit, afterCursor);
 
         foreach (var run in runs)
         {
@@ -165,34 +170,57 @@ internal sealed class DaemonCorpusReader : ICorpusReader
             }
         }
 
-        if (runs.Count == _limit)
+        var truncated = runs.Count == limit;
+
+        // The upper edge REACHED, not the edge of what yielded candidates. A run the reader looked
+        // at and rejected — no recorded diff, an unparseable payload — is still a run it will never
+        // learn anything new about, so leaving the cursor behind it would make the next window
+        // re-read it for ever and never reach what came after.
+        var nextCursor = runs.Count > 0 ? runs[^1].Id : afterCursor;
+
+        if (truncated)
         {
-            // The condition under which the corpus stops accumulating, said out loud. The ordering
-            // only decides which end it freezes at; the silence is what made this invisible.
+            // The condition under which one window stops short, said out loud as well as returned.
+            // The caller acts on CorpusPage.Truncated; this line is for the operator reading logs.
             _logger?.LogWarning(
                 "Corpus '{CorpusId}' filled its limit of {Limit} review runs and did not reach the "
-                    + "end of its window: it covers ids ({AfterRunId}, {LastRunId}] and every run "
-                    + "recorded later is outside it. Advance afterRunId or raise the limit, or this "
-                    + "corpus will not change again.",
+                    + "end of its window: it covers ids ({AfterCursor}, {NextCursor}] and every run "
+                    + "recorded later is outside it. The next load must resume from that edge, or "
+                    + "this corpus will not change again.",
                 corpusId,
-                _limit,
-                _afterRunId,
-                runs[^1].Id
+                limit,
+                afterCursor,
+                nextCursor
             );
         }
         else
         {
             _logger?.LogInformation(
-                "Corpus '{CorpusId}' read {RunCount} review runs from window ({AfterRunId}, end] "
-                    + "and built {CandidateCount} candidates.",
+                "Corpus '{CorpusId}' read {RunCount} review runs from window ({AfterCursor}, end] "
+                    + "and built {CandidateCount} candidates; the next window starts after "
+                    + "{NextCursor}.",
                 corpusId,
                 runs.Count,
-                _afterRunId,
-                candidates.Count
+                afterCursor,
+                candidates.Count,
+                nextCursor
             );
         }
 
-        return Task.FromResult(CorpusSnapshot.Create(corpusId, candidates));
+        return Task.FromResult(
+            new CorpusPage
+            {
+                // Null, not an empty snapshot: CorpusSnapshot.Create refuses an empty item list
+                // because an empty denominator makes every rate over it undefined rather than zero,
+                // and a window in which nothing new was recorded is the normal outcome of a
+                // scheduled sweep rather than an error.
+                Snapshot = candidates.Count > 0
+                    ? CorpusSnapshot.Create(corpusId, candidates)
+                    : null,
+                NextCursor = nextCursor,
+                Truncated = truncated,
+            }
+        );
     }
 
     private Candidate Build(
@@ -217,7 +245,9 @@ internal sealed class DaemonCorpusReader : ICorpusReader
             GeneratorFamily = _familyResolver(modelId),
             Metadata = new Dictionary<string, string>(StringComparer.Ordinal)
             {
-                ["reviewRunId"] = run.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                [ReviewRunIdMetadataKey] = run.Id.ToString(
+                    System.Globalization.CultureInfo.InvariantCulture
+                ),
                 ["prId"] = run.PrId,
                 ["headSha"] = run.HeadSha,
                 ["baseSha"] = run.BaseSha,

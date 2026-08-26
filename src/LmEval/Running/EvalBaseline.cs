@@ -220,13 +220,18 @@ public sealed record EvalBaseline
     /// </param>
     /// <param name="maxInconclusiveGateRate">
     /// The inconclusive-gate bound to impose on future candidate runs, in [0,1]. Defaults to
-    /// <see cref="DefaultMaxInconclusiveGateRate"/>. Checked by
-    /// <see cref="MaxInconclusiveGateRate"/>'s own accessor on the way in rather than a second time
-    /// here: the accessor is the check that cannot be walked past, and the two bounds above
-    /// duplicate it only because their explicit checks predate it.
+    /// <see cref="DefaultMaxInconclusiveGateRate"/>. Validated <b>here</b>, before anything reads it,
+    /// because this method now uses it as a predicate against <paramref name="run"/> and not only as
+    /// a value to store: leaving it to <see cref="MaxInconclusiveGateRate"/>'s accessor would let a
+    /// negative bound refuse a perfectly clean source run and report it as a gate outage, naming the
+    /// run for what is wrong with the argument. The accessor check stays — it is the one a
+    /// <c>with</c> expression cannot walk past — and this one runs first.
     /// </param>
     /// <exception cref="ArgumentOutOfRangeException">A bound is outside [0,1].</exception>
-    /// <exception cref="ArgumentException">The run scored nothing, so it has no conditional metrics.</exception>
+    /// <exception cref="ArgumentException">
+    /// The run's inconclusive-gate rate is above <paramref name="maxInconclusiveGateRate"/>, or it
+    /// scored nothing and so has no conditional metrics.
+    /// </exception>
     public static EvalBaseline From(
         string baselineId,
         EvalRun run,
@@ -253,6 +258,54 @@ public sealed record EvalBaseline
                 nameof(maxFaultRate),
                 maxFaultRate,
                 "A fault-rate bound is a fraction of the corpus and must be in [0,1]."
+            );
+        }
+
+        // Validated before it is READ, not merely before it is stored. Every other bound here is
+        // only carried, so leaving it to MaxInconclusiveGateRate's accessor was enough; this one is
+        // used as a predicate against the run three lines down, and a bound outside [0,1] would
+        // otherwise decide that comparison first — a negative bound refusing a perfectly clean
+        // source run and reporting it as a gate outage, naming the run for what is wrong with the
+        // argument. The accessor check stays: it is the one a `with` expression cannot walk past.
+        maxInconclusiveGateRate = Fraction(
+            maxInconclusiveGateRate,
+            nameof(maxInconclusiveGateRate),
+            "An inconclusive-gate bound"
+        );
+
+        // The source run is held to the same bound this baseline will hold every candidate to, and
+        // it is checked HERE rather than left to the comparison, because the comparison never sees
+        // this side. An inconclusive gate does not block, so an outage run scores every item: it
+        // walks past the "scored nothing" check below with a full pass rate, a full coverage and a
+        // zero fault rate, and freezes a pass rate measured with the gates off as the number every
+        // later run is judged against. A poisoned baseline is strictly worse than a poisoned
+        // candidate — the candidate distorts one comparison and is refused, the baseline distorts
+        // every comparison after it and is refused by nothing.
+        //
+        // Ahead of the scored-nothing check, mirroring BaselineComparer.Refuse, where this bound
+        // sits ahead of the coverage floor and of the "scored no items at all" arm that shares its
+        // refusal. Freezing a run and comparing it then name the same cause, and a reader is never
+        // told "this run scored nothing" about a run whose gates were the reason.
+        //
+        // A null rate is the run that recorded no gate decision at all, and it is deliberately NOT
+        // refused, exactly as at comparison: a harness with no gates configured is a real
+        // configuration, and refusing every baseline it could mint would make the bound unusable
+        // rather than safe. The pattern match is what keeps that case from silently comparing false
+        // the way a NaN would.
+        if (
+            run.InconclusiveGateRate is { } inconclusiveRate
+            && inconclusiveRate > maxInconclusiveGateRate
+        )
+        {
+            throw new ArgumentException(
+                $"Run '{run.RunId}' has an inconclusive-gate rate of {inconclusiveRate:F4}, above "
+                    + $"the {maxInconclusiveGateRate:F4} bound this baseline would impose; "
+                    + $"{run.InconclusiveGateCount} of {run.CorpusSize} items had a gate that could "
+                    + $"not run ({string.Join(", ", run.InconclusiveGateIds)}). The deterministic "
+                    + "layer was off, so this run's pass rate is a pass rate measured with the "
+                    + "gates off and must not be frozen as the number every later run is compared "
+                    + "against.",
+                nameof(run)
             );
         }
 

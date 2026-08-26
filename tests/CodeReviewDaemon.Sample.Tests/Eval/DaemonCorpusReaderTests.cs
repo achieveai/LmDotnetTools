@@ -99,10 +99,28 @@ public sealed class DaemonCorpusReaderTests : IDisposable
             new ReviewArtifactPayload(text, "run-1", variantId)
         );
 
-    private static Task<CorpusSnapshot> LoadAsync(
+    private static Task<CorpusPage> LoadAsync(
         DaemonCorpusReader reader,
+        long afterCursor = 0,
+        int limit = 1000,
         string corpusId = "daemon-corpus"
-    ) => reader.LoadAsync(corpusId, CancellationToken.None);
+    ) => reader.LoadAsync(corpusId, afterCursor, limit, CancellationToken.None);
+
+    /// <summary>
+    /// The snapshot a load produced, asserting first that it produced one. Every case below that
+    /// reads items expects a non-empty corpus, and a null snapshot there is a different failure from
+    /// a wrong one.
+    /// </summary>
+    private static async Task<CorpusSnapshot> SnapshotAsync(
+        DaemonCorpusReader reader,
+        long afterCursor = 0,
+        int limit = 1000
+    )
+    {
+        var page = await LoadAsync(reader, afterCursor, limit);
+        page.Snapshot.Should().NotBeNull("the window held candidates");
+        return page.Snapshot!;
+    }
 
     private DaemonCorpusReader Reader(ModelFamilyResolver? resolver = null) =>
         new(_store, resolver ?? (_ => null));
@@ -114,7 +132,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
         AddContext(runId, "diff --git a/Foo.cs b/Foo.cs");
         AddReview(runId, "[Blocker] src/Foo.cs:1 is wrong.");
 
-        var snapshot = await LoadAsync(Reader());
+        var snapshot = await SnapshotAsync(Reader());
 
         var candidate = Assert.Single(snapshot.Items);
         candidate.TaskInput.Should().Be("diff --git a/Foo.cs b/Foo.cs");
@@ -139,7 +157,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
             new VariantReviewArtifactPayload("b", "anthropic/claude", "the B review", "run-2")
         );
 
-        var snapshot = await LoadAsync(Reader());
+        var snapshot = await SnapshotAsync(Reader());
 
         snapshot.Items.Should().HaveCount(2);
         snapshot.Items.Should().OnlyContain(c => c.TaskInput == "the shared diff");
@@ -161,7 +179,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
         var orphan = CreateRun("119");
         AddReview(orphan, "a review with no diff behind it");
 
-        var snapshot = await LoadAsync(Reader());
+        var snapshot = await SnapshotAsync(Reader());
 
         Assert.Single(snapshot.Items).Content.Should().Be("a review");
     }
@@ -181,7 +199,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
         AddContext(pending, "another diff");
         AddReview(pending, "a review the run never committed to");
 
-        var snapshot = await LoadAsync(Reader());
+        var snapshot = await SnapshotAsync(Reader());
 
         Assert.Single(snapshot.Items).TaskInput.Should().Be("a diff");
     }
@@ -195,7 +213,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
         AddContext(runId, "a diff");
         AddReview(runId, "a review");
 
-        var snapshot = await LoadAsync(Reader(_ => null));
+        var snapshot = await SnapshotAsync(Reader(_ => null));
 
         Assert.Single(snapshot.Items).GeneratorFamily.Should().BeNull();
     }
@@ -207,9 +225,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
         AddContext(runId, "a diff");
         AddReview(runId, "a review");
 
-        var snapshot = await LoadAsync(
-            Reader(modelId => modelId?.Split('/')[0])
-        );
+        var snapshot = await SnapshotAsync(Reader(modelId => modelId?.Split('/')[0]));
 
         Assert.Single(snapshot.Items).GeneratorFamily.Should().Be("openai");
     }
@@ -224,7 +240,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
         AddContext(runId, "a diff");
         AddReview(runId, "a review");
 
-        Assert.Single((await LoadAsync(Reader())).Items).Reference.Should().BeNull();
+        Assert.Single((await SnapshotAsync(Reader())).Items).Reference.Should().BeNull();
     }
 
     [Fact]
@@ -235,7 +251,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
         AddReview(runId, "the first pass");
         AddReview(runId, "the re-review");
 
-        Assert.Single((await LoadAsync(Reader())).Items).Content.Should().Be("the re-review");
+        Assert.Single((await SnapshotAsync(Reader())).Items).Content.Should().Be("the re-review");
     }
 
     [Fact]
@@ -258,7 +274,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
             }
         );
 
-        var snapshot = await LoadAsync(Reader());
+        var snapshot = await SnapshotAsync(Reader());
 
         Assert.Single(snapshot.Items).Content.Should().Be("a review");
     }
@@ -270,8 +286,8 @@ public sealed class DaemonCorpusReaderTests : IDisposable
         AddContext(runId, "a diff");
         AddReview(runId, "a review");
 
-        var first = await LoadAsync(Reader());
-        var second = await LoadAsync(Reader());
+        var first = await SnapshotAsync(Reader());
+        var second = await SnapshotAsync(Reader());
 
         second.SnapshotHash.Should().Be(first.SnapshotHash);
     }
@@ -283,13 +299,13 @@ public sealed class DaemonCorpusReaderTests : IDisposable
         AddContext(first, "a diff");
         AddReview(first, "a review");
 
-        var before = await LoadAsync(Reader());
+        var before = await SnapshotAsync(Reader());
 
         var second = CreateRun("119");
         AddContext(second, "another diff");
         AddReview(second, "another review");
 
-        (await LoadAsync(Reader())).SnapshotHash.Should().NotBe(before.SnapshotHash);
+        (await SnapshotAsync(Reader())).SnapshotHash.Should().NotBe(before.SnapshotHash);
     }
 
     /// <summary>
@@ -315,14 +331,21 @@ public sealed class DaemonCorpusReaderTests : IDisposable
             ids.Add(id);
         }
 
-        var snapshot = await LoadAsync(
-            new DaemonCorpusReader(_store, _ => "openai", limit: 10, afterRunId: ids[1])
+        var page = await LoadAsync(
+            new DaemonCorpusReader(_store, _ => "openai"),
+            afterCursor: ids[1],
+            limit: 10
         );
 
-        snapshot
-            .Items.Select(i => i.CandidateId)
+        page.Snapshot.Should().NotBeNull();
+        page.Snapshot!.Items.Select(i => i.CandidateId)
             .Should()
             .BeEquivalentTo([$"{ids[2]}:primary", $"{ids[3]}:primary"]);
+
+        page.Truncated.Should().BeFalse("the window reached the end of the history");
+        page.NextCursor
+            .Should()
+            .Be(ids[3], "the caller must be told the edge it reached, not left to derive it");
     }
 
     /// <summary>
@@ -342,11 +365,141 @@ public sealed class DaemonCorpusReaderTests : IDisposable
 
         var logger = new CapturingLogger<DaemonCorpusReader>();
 
-        var snapshot = await LoadAsync(
-            new DaemonCorpusReader(_store, _ => "openai", limit: 2, logger: logger)
+        var page = await LoadAsync(
+            new DaemonCorpusReader(_store, _ => "openai", logger),
+            limit: 2
         );
 
-        snapshot.Size.Should().Be(2);
+        page.Snapshot.Should().NotBeNull();
+        page.Snapshot!.Size.Should().Be(2);
+        page.Truncated
+            .Should()
+            .BeTrue("truncation is returned to the caller, not only written to a log nobody reads");
         logger.CountAtLevel(LogLevel.Warning, "did not reach the end").Should().Be(1);
+    }
+
+    /// <summary>
+    /// A window in which nothing new was recorded is the normal outcome of a scheduled sweep, and it
+    /// must not rewind the cursor. Returning <c>0</c> — or anything below the incoming edge — would
+    /// make the next window re-read history the caller has already covered, for ever, on every
+    /// sweep that happened to find nothing.
+    /// </summary>
+    [Fact]
+    public async Task An_empty_window_holds_the_cursor_where_it_was()
+    {
+        var runId = CreateRun("118");
+        AddContext(runId, "a diff");
+        AddReview(runId, "a review");
+
+        var page = await LoadAsync(Reader(), afterCursor: runId);
+
+        page.NextCursor.Should().Be(runId, "an empty sweep must not rewind the window");
+        page.Truncated.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The corpus is null rather than empty when the window yielded no candidate.
+    /// <see cref="CorpusSnapshot.Create"/> refuses an empty item list because an empty denominator
+    /// makes every rate over it undefined rather than zero — so "nothing to evaluate" has to be
+    /// representable as something other than a corpus.
+    /// </summary>
+    [Fact]
+    public async Task A_window_with_no_candidates_yields_no_corpus_rather_than_an_empty_one()
+    {
+        (await LoadAsync(Reader())).Snapshot.Should().BeNull("the store holds no reviewed run");
+    }
+
+    /// <summary>
+    /// The cursor tracks the runs the reader <b>looked at</b>, not the ones that yielded candidates.
+    /// A run with a review and no recorded diff forms no pair and never will — leaving the cursor
+    /// behind it would make every later window start by re-reading it and stop before reaching
+    /// anything new.
+    /// </summary>
+    [Fact]
+    public async Task The_cursor_advances_past_a_run_that_yielded_no_candidate()
+    {
+        var paired = CreateRun("118");
+        AddContext(paired, "a diff");
+        AddReview(paired, "a review");
+
+        var orphan = CreateRun("119");
+        AddReview(orphan, "a review with no diff behind it");
+
+        var page = await LoadAsync(Reader());
+
+        page.Snapshot.Should().NotBeNull();
+        page.Snapshot!.Size.Should().Be(1, "only one run formed a pair");
+        page.NextCursor
+            .Should()
+            .Be(orphan, "the reader reached the orphan and will learn nothing new from it");
+    }
+
+    /// <summary>
+    /// The case that distinguishes "the edge reached" from "the edge of what yielded candidates":
+    /// a window in which <b>nothing</b> paired. When even one run in the window forms a candidate
+    /// the two readings coincide — the last run's id is the answer either way — so only a window
+    /// that produced no corpus at all can tell them apart. Reading the yield instead of the reach
+    /// parks the cursor on these rows for ever: every later sweep re-reads the same unusable runs,
+    /// never reaches what came after them, and reports an empty corpus while the store fills up.
+    /// </summary>
+    [Fact]
+    public async Task A_window_in_which_nothing_paired_still_advances_the_cursor()
+    {
+        var firstOrphan = CreateRun("118");
+        AddReview(firstOrphan, "a review with no diff behind it");
+
+        var lastOrphan = CreateRun("119");
+        AddReview(lastOrphan, "another review with no diff behind it");
+
+        var page = await LoadAsync(Reader());
+
+        page.Snapshot.Should().BeNull("no run in the window formed a pair");
+        page.NextCursor
+            .Should()
+            .Be(
+                lastOrphan,
+                "the reader read both runs and will learn nothing new from either; leaving the "
+                    + "cursor behind them re-reads them for ever and never reaches what came after"
+            );
+    }
+
+    /// <summary>
+    /// The window is stated per call, so two loads from a reader that has been held across both
+    /// cover different rows. That is the whole reason the window left the constructor: a reader
+    /// built around one fixed lower edge returns the same oldest history for ever, and the snapshot
+    /// hash staying stable makes every comparability refusal downstream agree with it.
+    /// </summary>
+    [Fact]
+    public async Task Resuming_from_the_returned_cursor_covers_rows_the_first_load_did_not()
+    {
+        var first = CreateRun("118");
+        AddContext(first, "a diff");
+        AddReview(first, "a review");
+
+        var reader = Reader();
+        var firstPage = await LoadAsync(reader);
+
+        var second = CreateRun("119");
+        AddContext(second, "another diff");
+        AddReview(second, "another review");
+
+        var secondPage = await LoadAsync(reader, afterCursor: firstPage.NextCursor);
+
+        secondPage.Snapshot.Should().NotBeNull();
+        secondPage
+            .Snapshot!.Items.Select(i => i.CandidateId)
+            .Should()
+            .BeEquivalentTo([$"{second}:primary"], "the first load's rows are behind the cursor");
+    }
+
+    [Fact]
+    public async Task A_negative_cursor_or_a_non_positive_limit_is_refused()
+    {
+        var reader = Reader();
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => LoadAsync(reader, afterCursor: -1)
+        );
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => LoadAsync(reader, limit: 0));
     }
 }

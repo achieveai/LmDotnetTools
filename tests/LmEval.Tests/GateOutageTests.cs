@@ -457,6 +457,14 @@ public class GateOutageTests
     /// hand-built runs: a gate whose environment is gone throws on every item, the gauntlet contains
     /// each throw into an inconclusive decision (#352), every item scores a clean pass — and the
     /// comparison refuses.
+    /// <para>
+    /// The baseline is frozen from a run of the <b>same configuration</b> with its checkout intact,
+    /// not from the outage run itself. Both runs therefore agree on every identity hash and no other
+    /// refusal is reachable — the strongest form of the claim, since nothing but the gate signal can
+    /// be doing the work — and it is the pairing that actually occurs: one deploy, one run before
+    /// the checkout went missing and one after. #427: freezing the outage run instead would now be
+    /// refused at construction, and relying on that gap was what made it visible.
+    /// </para>
     /// </summary>
     [Fact]
     public async Task An_environmental_gate_failure_reaches_the_comparison_as_a_refusal()
@@ -465,23 +473,184 @@ public class GateOutageTests
             [.. Enumerable.Range(0, 10).Select(i => EvalFixtures.Item($"i{i}"))]
         );
 
-        var run = await EvalFixtures.RunAsync(
-            EvalFixtures.Config([new BrokenGate("checkout")]),
+        var healthy = await EvalFixtures.RunAsync(
+            EvalFixtures.Config([new CheckoutGate("checkout", checkoutPresent: true)]),
             snapshot
         );
 
-        run.PassRate.Should().Be(1.0, "an inconclusive gate does not stop the item scoring");
-        run.FaultedCount.Should().Be(0);
-        run.InconclusiveGateCount.Should().Be(10);
-        run.InconclusiveGateRate.Should().Be(1.0);
-        run.InconclusiveGateIds.Should().Equal("checkout");
+        var outage = await EvalFixtures.RunAsync(
+            EvalFixtures.Config([new CheckoutGate("checkout")]),
+            snapshot
+        );
 
-        // Frozen from the outage run itself, so every identity hash matches and no other refusal is
-        // even reachable. The run is refused against a baseline it agrees with on everything else,
-        // which is the strongest form of the claim: nothing but the gate signal is doing the work.
-        var comparison = BaselineComparer.Compare(run, EvalBaseline.From("base-1", run, 0.5));
+        healthy
+            .EvaluatorConfigHash.Should()
+            .Be(
+                outage.EvaluatorConfigHash,
+                "the two runs differ in their environment and not in their configuration, so "
+                    + "EvaluatorConfigDiffers cannot be the refusal under test"
+            );
+        healthy.CorpusSnapshotHash.Should().Be(outage.CorpusSnapshotHash);
+        healthy.InconclusiveGateRate.Should().Be(0.0, "the checkout resolved on every item");
+
+        outage.PassRate.Should().Be(1.0, "an inconclusive gate does not stop the item scoring");
+        outage.FaultedCount.Should().Be(0);
+        outage.InconclusiveGateCount.Should().Be(10);
+        outage.InconclusiveGateRate.Should().Be(1.0);
+        outage.InconclusiveGateIds.Should().Equal("checkout");
+
+        var comparison = BaselineComparer.Compare(
+            outage,
+            EvalBaseline.From("base-1", healthy, 0.5)
+        );
 
         comparison.Refusal.Should().Be(ComparisonRefusal.InconclusiveGateRateAboveMaximum);
         comparison.RefusalDetail.Should().Contain("checkout");
+    }
+
+    // ---- the baseline the outage would otherwise have frozen (#427) -----------------------------
+
+    /// <summary>
+    /// The comparison refusal above protects the <i>candidate</i> side only.
+    /// <see cref="EvalBaseline.From"/> refused a run that scored nothing and nothing else — and an
+    /// outage run scores <b>everything</b>, so it walked straight through and froze a pass rate
+    /// measured with the gates off as the number every later run is judged against.
+    /// <para>
+    /// A poisoned baseline is strictly worse than a poisoned candidate: the candidate distorts one
+    /// comparison and is refused, the baseline distorts every comparison after it and is refused by
+    /// nothing. Same class as a8369cc0 — refuse at construction, not downstream.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void A_baseline_is_not_frozen_from_a_run_whose_gates_were_off()
+    {
+        var outage = Run(
+            [.. Enumerable.Range(0, 20).Select(i => Scored($"i{i}", Inconclusive("schema")))]
+        );
+
+        // Every number a reader would sanity-check the source run on looks pristine. That is why
+        // nothing downstream could have caught this.
+        outage.PassRate.Should().Be(1.0);
+        outage.Coverage.Should().Be(1.0);
+        outage.FaultRate.Should().Be(0.0);
+        outage.MeanScore.Should().NotBeNull("the run scored every item, so the old check passes it");
+
+        var freeze = () => EvalBaseline.From("base-1", outage, 0.5);
+
+        freeze
+            .Should()
+            .Throw<ArgumentException>()
+            .WithMessage(
+                "*schema*",
+                "the refusal names the gate that broke, as the comparison refusal does"
+            );
+    }
+
+    /// <summary>
+    /// The null sentinel is respected on the way in as it is at comparison: a harness with no gates
+    /// configured is a real configuration, and refusing every baseline it could ever mint would make
+    /// the bound unusable rather than safe.
+    /// </summary>
+    [Fact]
+    public void A_gateless_run_is_still_a_legitimate_baseline_source()
+    {
+        var ungated = Run([.. Enumerable.Range(0, 20).Select(i => Scored($"i{i}"))]);
+
+        ungated.InconclusiveGateRate.Should().BeNull("no gate decision exists to be clean");
+
+        EvalBaseline.From("base-1", ungated, 0.5).PassRate.Should().Be(1.0);
+    }
+
+    /// <summary>A run whose gates all ran to a conclusion is untouched by the refusal.</summary>
+    [Fact]
+    public void A_run_whose_gates_all_concluded_still_freezes()
+    {
+        EvalBaseline.From("base-1", GatedRun(20), 0.5).PassRate.Should().Be(1.0);
+    }
+
+    /// <summary>
+    /// The construction check is the same predicate as the comparison one, boundary included: a rate
+    /// <b>at</b> the bound is not above it. Without this case the check could tighten to
+    /// <c>&gt;=</c> and turn the one-flaky-gate run that
+    /// <see cref="One_flaky_gate_on_one_item_still_compares"/> insists on comparing into a run that
+    /// can never be frozen.
+    /// </summary>
+    [Fact]
+    public void A_run_at_exactly_the_bound_still_freezes()
+    {
+        var flaky = Run(
+            [
+                .. Enumerable.Range(0, 19).Select(i => Scored($"i{i}", Passed("schema"))),
+                Scored("i19", Inconclusive("schema")),
+            ]
+        );
+
+        flaky
+            .InconclusiveGateRate.Should()
+            .BeApproximately(
+                EvalBaseline.DefaultMaxInconclusiveGateRate,
+                1e-9,
+                "the rate must sit exactly on the bound or this proves nothing about the boundary"
+            );
+
+        EvalBaseline.From("base-1", flaky, 0.5).PassRate.Should().Be(1.0);
+    }
+
+    /// <summary>
+    /// The bound refused against is the one <i>this</i> baseline will impose, not the constant
+    /// default — so a caller who deliberately widens the bound is not refused a baseline it would
+    /// then have accepted at comparison, and a caller who tightens it cannot freeze a source run its
+    /// own bound would reject.
+    /// </summary>
+    [Fact]
+    public void The_construction_bound_is_the_one_the_baseline_will_enforce()
+    {
+        var impaired = Run(
+            [
+                .. Enumerable.Range(0, 10).Select(i => Scored($"i{i}", Inconclusive("schema"))),
+                .. Enumerable.Range(10, 10).Select(i => Scored($"i{i}", Passed("schema"))),
+            ]
+        );
+
+        impaired.InconclusiveGateRate.Should().BeApproximately(0.5, 1e-9);
+
+        var widened = EvalBaseline.From("base-1", impaired, 0.5, maxInconclusiveGateRate: 0.6);
+        widened.MaxInconclusiveGateRate.Should().Be(0.6);
+
+        var atDefault = () => EvalBaseline.From("base-1", impaired, 0.5);
+        atDefault.Should().Throw<ArgumentException>();
+
+        var tightened = () =>
+            EvalBaseline.From("base-1", impaired, 0.5, maxInconclusiveGateRate: 0.49);
+        tightened.Should().Throw<ArgumentException>();
+    }
+
+    /// <summary>
+    /// A source run that breaches the gate bound <b>and</b> scored nothing is refused for the
+    /// outage, mirroring the comparer's ordering — where the gate bound is checked ahead of the
+    /// coverage floor and ahead of the "scored no items at all" arm that shares its refusal. Freezing
+    /// a run and comparing it therefore name the same cause, and a reader is never told "this run
+    /// scored nothing" about a run whose gates were the reason.
+    /// <para>
+    /// Order is the whole of the behaviour here, so it needs the input that can tell the two
+    /// orderings apart: both conditions must genuinely hold, which the guards below assert.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void A_gate_outage_that_also_scored_nothing_is_refused_for_the_outage()
+    {
+        var both = Run(
+            [.. Enumerable.Range(0, 20).Select(i => Undecided($"i{i}", Inconclusive("schema")))]
+        );
+
+        both.MeanScore.Should().BeNull("the scored-nothing arm must genuinely apply too");
+        both.InconclusiveGateRate.Should().Be(1.0);
+
+        var freeze = () => EvalBaseline.From("base-1", both, 0.5);
+
+        freeze
+            .Should()
+            .Throw<ArgumentException>()
+            .WithMessage("*schema*", "the outage is the cause; scoring nothing is a consequence");
     }
 }
