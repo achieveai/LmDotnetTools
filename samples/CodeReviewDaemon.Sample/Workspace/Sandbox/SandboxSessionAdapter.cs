@@ -89,6 +89,13 @@ internal sealed class SandboxSessionAdapter : ISandboxCommandRunner, ISandboxFil
         _testTransport = testTransport;
     }
 
+    /// <summary>
+    /// The gateway base URL this adapter talks to, exactly as it was constructed. Exposed so a test can
+    /// assert the boot wiring hands every gateway consumer the SAME resolved URL — the daemon must have one
+    /// source of truth for the gateway address, not a per-consumer env lookup with its own default.
+    /// </summary>
+    internal string GatewayBaseUrl => _gatewayBaseUrl;
+
     public async Task<SandboxCommandResult> RunAsync(SandboxCommand command, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(command);

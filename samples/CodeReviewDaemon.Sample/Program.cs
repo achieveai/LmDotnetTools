@@ -193,8 +193,12 @@ builder.Services.AddSingleton(_ => new ReviewStore(dbConnectionString));
 // One combined adapter serves BOTH ports over the typed SandboxClient SDK (issue #192): register it
 // once and alias each interface to that single instance, so the runner and filesystem share one
 // borrowed gateway session exactly as the old SandboxOrchestrator + SandboxFileSystem pair did.
+// The gateway URL comes from the single `gatewayBaseUrl` resolved above (env → SandboxGateway:BaseUrl →
+// :3000), NOT from a second env lookup here. This adapter used to resolve CRD_SANDBOX_GATEWAY itself with
+// its own :8080 default, which made a profile-only SandboxGateway:BaseUrl invisible to it: every other
+// gateway consumer talked to the configured gateway while this one talked to :8080 (issue #218 item 10).
 builder.Services.AddSingleton(sp => new SandboxSessionAdapter(
-    Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:8080",
+    gatewayBaseUrl,
     Environment.GetEnvironmentVariable("CRD_SANDBOX_SESSION") ?? Guid.NewGuid().ToString("N"),
     sp.GetRequiredService<ILogger<SandboxSessionAdapter>>(),
     daemonCredential,
