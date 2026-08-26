@@ -32,6 +32,18 @@ public enum ComparisonRefusal
     /// infrastructure fact about the run and not a fact about the candidate.
     /// </summary>
     FaultRateAboveMaximum,
+
+    /// <summary>
+    /// Too much of the run had a gate that could not run. The deterministic layer was off, which is
+    /// an infrastructure fact about the run and not a fact about the candidate.
+    /// <para>
+    /// The gate path's counterpart to <see cref="FaultRateAboveMaximum"/>. An inconclusive gate does
+    /// not block, so the item proceeds to the judges and scores normally — the reported pass rate
+    /// silently becomes "pass rate with the gates off", and unlike a judge outage it moves no other
+    /// aggregate at all.
+    /// </para>
+    /// </summary>
+    InconclusiveGateRateAboveMaximum,
 }
 
 /// <summary>Which regression trigger fired.</summary>
@@ -289,6 +301,31 @@ public static class BaselineComparer
                     + $"{baseline.MaxFaultRate:F4}; {run.FaultedCount} of {run.CorpusSize} items "
                     + "hold no verdict at all, so the harness could not reach its judges and this "
                     + "must not read as a candidate regression"
+            );
+        }
+
+        // After the fault bound and ahead of the coverage floor. After, because a faulted item holds
+        // no verdict at all where a gate-impaired item still produced one, so when both bounds break
+        // the judge outage is the strictly larger loss and the cause worth naming. Ahead, because
+        // the floor cannot see this failure at ANY severity: an inconclusive gate does not block, so
+        // every impaired item still scores and coverage never moves. That makes the bound less
+        // subsumed by the floor than the fault bound is, not more.
+        //
+        // A null rate is the run that recorded no gate decision at all, and it is deliberately NOT
+        // refused: a harness with no gates configured is a real configuration. The pattern match is
+        // what keeps that case from silently comparing false against the bound the way a NaN would.
+        if (
+            run.InconclusiveGateRate is { } inconclusiveRate
+            && inconclusiveRate > baseline.MaxInconclusiveGateRate
+        )
+        {
+            return Refused(
+                ComparisonRefusal.InconclusiveGateRateAboveMaximum,
+                $"run inconclusive-gate rate {inconclusiveRate:F4} is above the baseline's bound "
+                    + $"{baseline.MaxInconclusiveGateRate:F4}; {run.InconclusiveGateCount} of "
+                    + $"{run.CorpusSize} items had a gate that could not run "
+                    + $"({string.Join(", ", run.InconclusiveGateIds)}), so the deterministic layer "
+                    + "was off and this run's pass rate must not read as a candidate result"
             );
         }
 

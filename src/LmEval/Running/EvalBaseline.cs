@@ -142,8 +142,32 @@ public sealed record EvalBaseline
         init => _maxFaultRate = Fraction(value, nameof(MaxFaultRate), "A fault-rate bound");
     }
 
+    /// <summary>
+    /// Most of the corpus a candidate run may have impaired gates on and still be compared, in
+    /// [0,1]. It lives on the baseline for the reason <see cref="MaxFaultRate"/> does: the run being
+    /// judged must not be able to relax the bar it is judged against.
+    /// <para>
+    /// The gate path's counterpart to <see cref="MaxFaultRate"/>, and #380's argument for that bound
+    /// applies here unchanged — an outage must not read as a candidate regression. It is <b>not</b>
+    /// subsumed by <see cref="MinCoverage"/>, and less so than the fault bound is: a faulted item at
+    /// least leaves coverage, where an inconclusive gate does not block, so the item scores normally
+    /// and coverage never moves at all. The floor cannot see this failure at any severity.
+    /// </para>
+    /// </summary>
+    public double MaxInconclusiveGateRate
+    {
+        get => _maxInconclusiveGateRate;
+        init =>
+            _maxInconclusiveGateRate = Fraction(
+                value,
+                nameof(MaxInconclusiveGateRate),
+                "An inconclusive-gate bound"
+            );
+    }
+
     private readonly double _minCoverage;
     private readonly double _maxFaultRate = DefaultMaxFaultRate;
+    private readonly double _maxInconclusiveGateRate = DefaultMaxInconclusiveGateRate;
 
     /// <summary>
     /// A bound in [0,1], refused at the accessor rather than only in <see cref="From"/>. A record
@@ -175,6 +199,14 @@ public sealed record EvalBaseline
     public const double DefaultMaxFaultRate = 0.05;
 
     /// <summary>
+    /// The default inconclusive-gate bound. Low, and for the same reason
+    /// <see cref="DefaultMaxFaultRate"/> is: one flaky gate on one item is normal and refusing on it
+    /// would make the comparison unusable, while a rate in the tens of percent means the gates are
+    /// not running — and every item then scores a clean pass with no aggregate moving at all.
+    /// </summary>
+    public const double DefaultMaxInconclusiveGateRate = 0.05;
+
+    /// <summary>
     /// Freezes a completed run as the baseline for its task type. This is the only supported way to
     /// mint one from measurement: every metric is copied from the run that produced it, so a
     /// baseline can never claim a coverage or a hash belonging to some other run.
@@ -186,13 +218,21 @@ public sealed record EvalBaseline
     /// The fault-rate bound to impose on future candidate runs, in [0,1]. Defaults to
     /// <see cref="DefaultMaxFaultRate"/>.
     /// </param>
+    /// <param name="maxInconclusiveGateRate">
+    /// The inconclusive-gate bound to impose on future candidate runs, in [0,1]. Defaults to
+    /// <see cref="DefaultMaxInconclusiveGateRate"/>. Checked by
+    /// <see cref="MaxInconclusiveGateRate"/>'s own accessor on the way in rather than a second time
+    /// here: the accessor is the check that cannot be walked past, and the two bounds above
+    /// duplicate it only because their explicit checks predate it.
+    /// </param>
     /// <exception cref="ArgumentOutOfRangeException">A bound is outside [0,1].</exception>
     /// <exception cref="ArgumentException">The run scored nothing, so it has no conditional metrics.</exception>
     public static EvalBaseline From(
         string baselineId,
         EvalRun run,
         double minCoverage,
-        double maxFaultRate = DefaultMaxFaultRate
+        double maxFaultRate = DefaultMaxFaultRate,
+        double maxInconclusiveGateRate = DefaultMaxInconclusiveGateRate
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(baselineId);
@@ -243,6 +283,7 @@ public sealed record EvalBaseline
             EvaluatorConfigHash = run.EvaluatorConfigHash,
             MinCoverage = minCoverage,
             MaxFaultRate = maxFaultRate,
+            MaxInconclusiveGateRate = maxInconclusiveGateRate,
         };
     }
 }

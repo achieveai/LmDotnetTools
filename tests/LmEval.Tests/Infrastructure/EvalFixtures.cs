@@ -170,6 +170,30 @@ internal sealed class CancellingGate : IGate, IConfigurationFingerprint
     }
 }
 
+/// <summary>
+/// A gate whose environment is gone: it throws on <b>every</b> candidate, the way a gate reaching a
+/// deleted checkout or an undeployed schema file does.
+/// <para>
+/// Distinct from <see cref="MarkerGate"/>'s <c>throwOnCandidateId</c>, which is the one-flaky-item
+/// case #352 contained. The environmental fault is the one #401 is about, and it is only visible
+/// across the whole corpus: every gate goes inconclusive on every item, every item still scores a
+/// clean pass, and no aggregate that existed before moves at all.
+/// </para>
+/// </summary>
+internal sealed class BrokenGate(string gateId) : IGate, IConfigurationFingerprint
+{
+    public string GateId { get; } = gateId;
+
+    public IReadOnlySet<string> AppliesTo { get; } = new HashSet<string>(StringComparer.Ordinal);
+
+    public string? ConfigurationFingerprint { get; } = $"broken={gateId}";
+
+    public ValueTask<GateDecision> EvaluateAsync(
+        Candidate candidate,
+        CancellationToken cancellationToken
+    ) => throw new IOException("the checkout this gate reads is gone");
+}
+
 /// <summary>A gate that declares no configuration, for the refusal path.</summary>
 internal sealed class OpaqueGate : IGate
 {

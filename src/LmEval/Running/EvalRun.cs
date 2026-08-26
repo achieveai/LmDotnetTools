@@ -286,6 +286,68 @@ public sealed record EvalRun
     /// <summary>Rows a gate short-circuited before any judge ran.</summary>
     public int GateRejectedCount => Items.Count(i => i.Exclusion == ScoreExclusion.GateRejected);
 
+    /// <summary>
+    /// Items on which at least one gate could not run, counted over
+    /// <see cref="Verdict.GateDecisions"/> directly and therefore <b>independent</b> of which
+    /// exclusion arm the row matched — the same construction, and the same reason, as
+    /// <see cref="DegradedVerdictCount"/>.
+    /// <para>
+    /// Counted <b>per item</b>, not per gate execution, so it is comparable with
+    /// <see cref="FaultedCount"/>: three inconclusive gates on one item is one impaired item, and a
+    /// per-execution count would exceed <see cref="CorpusSize"/> and put
+    /// <see cref="InconclusiveGateRate"/> above 1.
+    /// </para>
+    /// </summary>
+    public int InconclusiveGateCount =>
+        Items.Count(i =>
+            i.Verdict?.GateDecisions.Any(g => g.Outcome == GateOutcome.Inconclusive) == true
+        );
+
+    /// <summary>
+    /// The impaired-item count as a fraction of the corpus — the gate path's counterpart to
+    /// <see cref="FaultRate"/>, and the signal that separates "the candidate cleared the gates" from
+    /// "the gates were off".
+    /// <para>
+    /// <b>Null when the run recorded no gate decision at all</b>, and this is the whole point of the
+    /// property's shape. An inconclusive gate does not block, so the item proceeds to the judges and
+    /// scores normally: an environmental fault — the checkout is gone, a path template is wrong, a
+    /// schema file did not deploy — takes every gate out on every item while pass rate, coverage and
+    /// fault rate all stay exactly where they were. Reporting <c>0.0</c> for a run in which no gate
+    /// ever ran would answer "did a gate go inconclusive" with "no", which a reader takes as "the
+    /// gates checked this run and it was clean" — silently widening <i>unknown</i> into <i>fine</i>,
+    /// which is the one reading this signal exists to prevent. Null says the signal is absent, the
+    /// way <see cref="MeanScore"/> is null rather than zero when nothing was scored.
+    /// </para>
+    /// <para>
+    /// Null is <b>not</b> a refusal: a harness with no gates configured is a real configuration, and
+    /// refusing every one of its runs would make the bound unusable. It is a value the reader cannot
+    /// mistake for a measurement. Over <see cref="CorpusSize"/> like every other rate here, so that
+    /// a run cannot look intact by gating fewer items.
+    /// </para>
+    /// </summary>
+    public double? InconclusiveGateRate =>
+        Items.All(i => i.Verdict is null || i.Verdict.GateDecisions.Count == 0)
+            ? null
+            : (double)InconclusiveGateCount / CorpusSize;
+
+    /// <summary>
+    /// The distinct gates that went inconclusive at least once, in the order first seen.
+    /// <para>
+    /// A refusal that says only "some gates were inconclusive" leaves nothing to act on: the
+    /// environmental faults this catches are each identified by <i>which</i> gate stopped working,
+    /// so the refusal names them. Gate ids only — a <see cref="GateDecision.Reason"/> is held to a
+    /// stable, non-sensitive rail but an id is the part that identifies the broken thing.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<string> InconclusiveGateIds =>
+        [
+            .. Items
+                .SelectMany(i => i.Verdict?.GateDecisions ?? [])
+                .Where(g => g.Outcome == GateOutcome.Inconclusive)
+                .Select(g => g.GateId)
+                .Distinct(StringComparer.Ordinal),
+        ];
+
     /// <summary>Items that faulted, so the run holds no verdict for them.</summary>
     public int FaultedCount => Items.Count(i => i.Exclusion == ScoreExclusion.Faulted);
 
