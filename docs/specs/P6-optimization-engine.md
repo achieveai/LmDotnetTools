@@ -1058,6 +1058,16 @@ public sealed record EvalBaseline
     /// <summary>Least coverage a candidate run may have and still be compared (§5.3). It lives on
     /// the baseline so the run being judged cannot relax the bar it is judged against.</summary>
     public required double MinCoverage { get; init; }
+    /// <summary>Most of the corpus a candidate run may lose to faults and still be compared (§5.4).
+    /// Defaults to 0.05. On the baseline for the reason MinCoverage is: the run being judged must
+    /// not be able to relax the bar it is judged against. Not subsumed by the floor — a floor of 0.9
+    /// lets a 10% fault rate through untouched, and the floor cannot say *why* the run is thin.</summary>
+    public double MaxFaultRate { get; init; }
+    /// <summary>Most of the corpus a candidate run may have impaired gates on and still be compared
+    /// (§5.4). Defaults to 0.05. The gate path's counterpart to MaxFaultRate, and *less* subsumed by
+    /// MinCoverage than that bound is: an inconclusive gate does not block, so every impaired item
+    /// still scores and coverage never moves at all.</summary>
+    public double MaxInconclusiveGateRate { get; init; }
 }
 ```
 
@@ -1099,6 +1109,28 @@ the experiment record (§6). A run emits:
   `generator_family IS NULL`, which was never eligibility-checked (§2.12.1). Both are reported,
   neither is pooled with clean rows. **Excluded means excluded from the scored set and from the
   numerator — never from the denominator below.**
+- `InconclusiveGateCount` and `InconclusiveGateRate` — items on which at least one gate could not
+  run (§2.4), counted **per item** so the number is comparable with `FaultedCount` rather than being
+  a count of gate executions, and named by `InconclusiveGateIds`. An inconclusive gate does not
+  short-circuit, so the item proceeds to the judges and scores normally: an environmental fault — a
+  missing checkout, a wrong path template, an undeployed schema file — takes every gate out on every
+  item while `PassRate`, `Coverage` and `FaultRate` all stay exactly where they were. Without this
+  count the reported pass rate silently becomes "pass rate with the gates off", which no other
+  aggregate here can distinguish from a run whose candidates genuinely cleared the gates.
+
+  `InconclusiveGateRate` is **null**, not `0.0`, when the run recorded no gate decision at all.
+  Zero would answer "did a gate go inconclusive" with "no", which a reader takes as "the gates
+  checked this run and it was clean" — widening *unknown* into *fine*. Null is not a refusal: a
+  harness with no gates configured is a real configuration.
+
+  **What this deliberately does not do**, recorded because it was considered and rejected: a fully
+  inconclusive gate set does *not* set `Degradation` on the verdict and does *not* take a
+  `ScoreExclusion` arm. `PanelDegradation` names what the **judge panel** ended up with, and
+  `DegradedVerdictCount` is what answers §5.3's "was the panel down" — reusing either for a gate
+  outage would silently change the meaning of a number the spec already relies on. Excluding the row
+  from the scored set would also overturn #352's contained-fault contract, under which one flaky
+  gate must not cost the item its score. The gate outage is therefore surfaced at the **run** level,
+  where the failure actually lives, and enforced by the refusal in §5.4.
 
 **The denominator, stated once, because omitting it is how a variant games this.** Every rate above,
 and `PassRate`, is over **`CorpusSize`** — the item count of the named corpus snapshot, not the
@@ -1130,6 +1162,22 @@ number, so each is a hard error rather than a warning. The coverage bound and tr
 same failure at different ranges — the bound rejects a single thin run outright, the trigger
 catches a coverage slide that stays inside it. A refusal is recorded on the run with the failing
 condition named; it is not a regression and it is not a pass.
+
+**Two further refusals name an outage rather than a candidate result.** A run whose `FaultRate`
+exceeds the baseline's `MaxFaultRate` is refused: a faulted item leaves `PassRate`'s numerator and
+stays in its denominator, so a bad hour at the judge provider reads as a pass-rate collapse with a
+flat `NoDecision` rate — a candidate regression's exact signature. A run whose
+`InconclusiveGateRate` exceeds the baseline's `MaxInconclusiveGateRate` is refused for the same
+reason on the gate path, and the refusal names the gates that went inconclusive so the reader has
+the broken thing rather than only the symptom. Both bounds default low (`0.05`): one flaky gate or
+one transport failure is normal, and refusing on it would make the comparison unusable.
+
+Ordering matters, because only the refusal reported is the one acted on. The fault bound is checked
+**before** the gate bound: a faulted item holds no verdict at all where a gate-impaired item still
+produced one, so when both break the judge outage is the strictly larger loss. Both are checked
+**before** `MinCoverage`, which names only the symptom ("too thin to compare", equally true of a
+genuinely hard corpus). The coverage floor cannot stand in for the gate bound at any severity: an
+inconclusive gate does not block, so every impaired item still scores and coverage never moves.
 
 ## 6. Experiment record (#321)
 
