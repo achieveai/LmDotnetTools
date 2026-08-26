@@ -233,7 +233,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// status sentence and then issue the absent branch's order right underneath it — a contradiction the
     /// reviewer resolves by obeying the order, losing the verification on every container that could have built.
     /// </summary>
-    private enum BuildToolingState
+    internal enum BuildToolingState
     {
         /// <summary>The probe ran and reported a version.</summary>
         Present,
@@ -250,7 +250,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// <see cref="ProbeBuildToolingAsync"/> and stated to the reviewer in its prompt: <see cref="State"/>
     /// selects the instruction, <see cref="Statement"/> is the sentence of fact printed above it.
     /// </summary>
-    private sealed record BuildToolingFacts(BuildToolingState State, string Statement);
+    internal sealed record BuildToolingFacts(BuildToolingState State, string Statement);
 
     /// <summary>
     /// The cached verdict of <see cref="ProbeBuildToolingAsync"/>. The image is process-lifetime configuration
@@ -1542,7 +1542,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// store/file-system access of its own.
     /// </para>
     /// </summary>
-    private static Dictionary<string, object> BuildPromptVariables(
+    internal static Dictionary<string, object> BuildPromptVariables(
         string botName,
         RepoIdentity repo,
         string prId,
@@ -1573,11 +1573,17 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             // Provider + identity pieces the agent uses to build inline-posting REST calls (step 5). GitHub uses
             // the pulls/reviews + review-comment-replies APIs; Azure DevOps uses the pullRequests/threads API.
             ["is_ado"] = string.Equals(repo.Provider, "azure-devops", StringComparison.OrdinalIgnoreCase),
-            ["gh_owner"] = repo.OrgOrOwner,
-            ["gh_repo"] = repo.RepoName,
-            ["ado_org"] = repo.OrgOrOwner,
-            ["ado_project"] = repo.Project ?? string.Empty,
-            ["ado_repo"] = repo.RepoName,
+            // URL-ENCODED, because these five are interpolated into REST URLs the agent runs through `curl`
+            // (see the posting contract in daemon-prompts.yaml) — a shell, not a URI builder. An ADO project
+            // or repository name may contain a space; raw, curl rejects the argument (exit 3) and the review
+            // is never posted while the run still completes. Encoding also keeps each value ONE path segment,
+            // so a name carrying a separator stays data instead of re-pointing the URL (issue #218 item 9).
+            // The C# HTTP callers need no equivalent: Uri escapes the path when the request is built.
+            ["gh_owner"] = Uri.EscapeDataString(repo.OrgOrOwner),
+            ["gh_repo"] = Uri.EscapeDataString(repo.RepoName),
+            ["ado_org"] = Uri.EscapeDataString(repo.OrgOrOwner),
+            ["ado_project"] = Uri.EscapeDataString(repo.Project ?? string.Empty),
+            ["ado_repo"] = Uri.EscapeDataString(repo.RepoName),
             ["checkout_root"] = checkoutRoot ?? TargetRoot,
             ["has_store"] = !string.IsNullOrWhiteSpace(storeRoot),
             ["store_root"] = storeRoot ?? string.Empty,
