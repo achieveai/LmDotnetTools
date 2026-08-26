@@ -991,6 +991,49 @@ public sealed class ChatWebSocketManager
             );
             await SendSandboxUnavailableErrorAsync(connection, ex, recordWriter: null, ct);
         }
+        catch (PrincipalConflictException ex)
+        {
+            // The per-message refresh above began asserting this connection's user (#399), which made
+            // the pool's principal guard reachable HERE and not only during connection setup. It fires
+            // on an already-open socket when the thread's agent changed hands underneath it: an
+            // authorized editor grantee releases the owner's pooled entry and the pool recreates it
+            // owned by them (#376), and the owner's next typed message then addresses an entry that is
+            // no longer hers. Unhandled, that escapes the receive pump into the host and the socket is
+            // aborted with no frame - the same silent disconnect the handshake refusal was added to
+            // remove, arriving one layer later.
+            //
+            // Answered with the SAME frame the handshake path sends, deliberately: one condition must
+            // not grow a second name because it was reached from a different direction, and the frame
+            // omits the other user's id for the same reason it does there.
+            _logger.LogWarning(
+                ex,
+                "Principal conflict on an open socket for thread {ThreadId}: the agent is now bound to a different user",
+                threadId
+            );
+            await SendPrincipalConflictErrorAsync(connection, ex, recordWriter: null, ct);
+        }
+        catch (AgentNotPooledException ex)
+        {
+            // The other half of the same handoff, and the reason catching only the conflict above would
+            // leave a hole: releasing and recreating are two steps, and a message arriving BETWEEN them
+            // finds no entry at all. Same client outcome as a refreshed sandbox session - the socket is
+            // closed normally so the UI reconnects and gets whatever agent the thread now has - rather
+            // than an abort that tells it nothing.
+            _logger.LogInformation(
+                ex,
+                "Message for thread {ThreadId} arrived while its pooled agent was being handed off; closing so the client reconnects",
+                threadId
+            );
+            var released = JsonSerializer.Serialize(new Dictionary<string, string>
+            {
+                ["$type"] = "sandbox_session_refresh",
+            });
+            _ = await connection.TrySendTextAsync(released, ct).ConfigureAwait(false);
+            await connection.TryCloseAsync(
+                WebSocketCloseStatus.NormalClosure,
+                "Agent released",
+                ct).ConfigureAwait(false);
+        }
         catch (JsonException ex)
         {
             _logger.LogWarning(ex, "Invalid JSON from thread {ThreadId}: {Json}", threadId, json);

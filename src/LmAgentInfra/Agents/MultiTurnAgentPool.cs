@@ -1004,6 +1004,25 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     }
 
     /// <summary>
+    /// The app id this thread's live agent is frozen to, or null when no agent is pooled for it or the
+    /// entry was created by a caller with no sandbox credential (every interactive UI caller).
+    /// </summary>
+    /// <remarks>
+    /// The app-id sibling of <see cref="GetAgentOwnerUserId"/>, and a READ of the freeze for the same
+    /// reason: <see cref="EnsureCallerMatches"/> stays the only thing that refuses. It exists because
+    /// releasing a pooled entry for an authorized grantee (#376) removes the entry - and with it the
+    /// <see cref="AgentEntry.CallerCredential"/> the app-id compare reads - so a caller that intends to
+    /// release must be able to ask what the thread is frozen to BEFORE the removal makes the answer
+    /// unavailable. Reading it afterwards would always answer null, which is indistinguishable from
+    /// "never frozen" and is precisely how the freeze got dropped (#153).
+    /// </remarks>
+    /// <param name="threadId">The thread identifier.</param>
+    public string? GetAgentCallerAppId(string threadId)
+    {
+        return _agents.TryGetValue(threadId, out var entry) ? entry.CallerCredential?.AppId : null;
+    }
+
+    /// <summary>
     /// Ensures a sandbox-backed pooled agent still targets the registry's live session before a new
     /// message is dispatched. A replaced session rebuilds an idle entry transactionally; an active run
     /// is never interrupted and will be checked again before the next message.
@@ -1025,7 +1044,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         {
             if (!_agents.TryGetValue(threadId, out observed!))
             {
-                throw new InvalidOperationException($"No pooled agent exists for thread '{threadId}'.");
+                throw new AgentNotPooledException(threadId);
             }
 
             EnsureCallerMatches(threadId, observed, callerCredential);
@@ -1052,7 +1071,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         {
             if (!_agents.TryGetValue(threadId, out current!))
             {
-                throw new InvalidOperationException($"No pooled agent exists for thread '{threadId}'.");
+                throw new AgentNotPooledException(threadId);
             }
 
             EnsureCallerMatches(threadId, current, callerCredential);
