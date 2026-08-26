@@ -161,8 +161,73 @@ public sealed class SubmoduleInitializerTests : LoggingTestBase
 
         outcome.InitializedPaths.Should().BeEmpty();
         outcome.Denied.Should().ContainSingle();
-        runner.Commands.Should().BeEmpty("a denied submodule must never be init'd");
+        Argv(runner).Should().NotContain(
+            argv => argv.Contains("--init", StringComparison.Ordinal),
+            "a denied submodule must never be init'd");
     }
+
+    /// <summary>
+    /// Issue #218 item 12 — hygiene runs BEFORE this run's policy is known, and it deliberately restores
+    /// every registered submodule's checkout to the recorded gitlink. So a submodule a PRIOR lease was
+    /// allowed to initialize arrives here already populated. Recording the denial and moving on leaves that
+    /// content on disk and inside the review's checkout: the reviewer reads a repository this run's policy
+    /// says it may not see. Denying must therefore REMOVE the worktree, not merely decline to create it.
+    /// </summary>
+    [Fact]
+    public async Task Deinits_a_denied_submodule_so_a_prior_leases_checkout_cannot_cross_into_the_review()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        var fs = new FakeSandboxFileSystem();
+        fs.Files[$"{RepoRoot}/.gitmodules"] = """
+            [submodule "vendor/shared-lib"]
+            	path = vendor/shared-lib
+            	url = https://github.com/attacker/shared-lib.git
+            """;
+
+        var outcome = await CreateInitializer(runner, fs)
+            .InitializeAsync(RepoRoot, RepoRemote, CancellationToken.None);
+
+        outcome.Denied.Should().ContainSingle();
+        var deinit = runner.Commands.Should().ContainSingle(
+            command => string.Join(' ', command.Argv).Contains("submodule deinit", StringComparison.Ordinal))
+            .Subject;
+        string.Join(' ', deinit.Argv).Should().EndWith(
+            "submodule deinit --force -- vendor/shared-lib",
+            "--force is required: the leftover checkout is dirty relative to a policy that now denies it");
+        deinit.WorkingDirectory.Should().Be(RepoRoot);
+    }
+
+    /// <summary>
+    /// The removal is the enforcement, so a failure to remove must not be silent. It cannot abort the walk
+    /// (the remaining submodules still need deciding), but it must reach the outcome the caller reports —
+    /// otherwise a denial that did not actually take effect is indistinguishable from one that did.
+    /// </summary>
+    [Fact]
+    public async Task Says_so_in_the_denial_when_a_denied_submodules_worktree_could_not_be_removed()
+    {
+        var runner = new FakeSandboxCommandRunner()
+            .OnArgvContains("submodule deinit", new SandboxCommandResult(1, string.Empty, "fatal: no such path"));
+        var fs = new FakeSandboxFileSystem();
+        var logger = new CapturingLogger<SubmoduleInitializer>();
+        fs.Files[$"{RepoRoot}/.gitmodules"] = """
+            [submodule "vendor/shared-lib"]
+            	path = vendor/shared-lib
+            	url = https://github.com/attacker/shared-lib.git
+            """;
+
+        var outcome = await CreateInitializer(runner, fs, logger)
+            .InitializeAsync(RepoRoot, RepoRemote, CancellationToken.None);
+
+        var denied = outcome.Denied.Should().ContainSingle().Subject;
+        denied.Path.Should().Be("vendor/shared-lib");
+        denied.Reason.Should().Contain(
+            "fatal: no such path", "the caller can only classify a failed removal if it carries git's reason");
+        logger.CountAtLevel(LogLevel.Error, "worktree could not be removed").Should().Be(
+            1, "a denial that did not take effect on disk is an enforcement failure, not a warning");
+    }
+
+    private static List<string> Argv(FakeSandboxCommandRunner runner) =>
+        [.. runner.Commands.Select(command => string.Join(' ', command.Argv))];
 
     [Fact]
     public async Task Denies_a_relative_url_that_resolves_outside_the_allowed_scope()
@@ -202,7 +267,9 @@ public sealed class SubmoduleInitializerTests : LoggingTestBase
 
         outcome.InitializedPaths.Should().BeEmpty();
         outcome.Denied.Should().ContainSingle();
-        runner.Commands.Should().BeEmpty();
+        Argv(runner).Should().NotContain(
+            argv => argv.Contains("--init", StringComparison.Ordinal),
+            "a denied transport must never be init'd");
     }
 
     [Fact]

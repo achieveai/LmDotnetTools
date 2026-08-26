@@ -130,7 +130,28 @@ internal sealed class SubmoduleInitializer
                     submodulePath,
                     entry.Url,
                     decision.Reason);
-                denied.Add(new SubmoduleDenied(submodulePath, entry.Url, decision.Reason));
+
+                // Declining to init is not enough on a POOLED slot. SlotHygiene runs before this run's policy
+                // exists and deliberately restores EVERY registered submodule's checkout to the recorded
+                // gitlink, so a submodule a prior lease was allowed to initialize arrives here already
+                // populated. Leaving it would put a repository this run's policy denies inside the reviewed
+                // checkout (issue #218 item 12). Remove the worktree so the denial is enforced on disk, not
+                // just recorded. Local-only: deinit touches no remote, so it is safe under any policy.
+                var removal = await DeinitAsync(levelDir, entry.Path, cancellationToken).ConfigureAwait(false);
+                var reason = decision.Reason;
+                if (removal is { } failure)
+                {
+                    // Logged at Error, not Warning: the removal IS the enforcement, so a denial that did not
+                    // take effect on disk is a security-relevant outcome an operator must be able to find.
+                    _logger.LogError(
+                        "Submodule '{Path}' was denied but its worktree could not be removed: {Failure}. Any "
+                            + "checkout a prior lease left there is still present in this review.",
+                        submodulePath,
+                        failure);
+                    reason = $"{decision.Reason}; deinit failed: {failure}";
+                }
+
+                denied.Add(new SubmoduleDenied(submodulePath, entry.Url, reason));
                 continue;
             }
 
@@ -163,6 +184,35 @@ internal sealed class SubmoduleInitializer
                     cancellationToken)
                 .ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// Removes the worktree of a submodule this run's policy denies, so content a PRIOR lease checked out
+    /// under a different policy cannot cross into this review. Returns <c>null</c> on success, else the
+    /// failure text to carry into the denial reason.
+    /// <para>
+    /// <c>--force</c> is required rather than incidental: the leftover checkout is, by construction, one this
+    /// run never asked for, so git's refusal to discard local content is exactly the refusal to override.
+    /// The call is unconditional because <c>deinit</c> on a submodule that was never initialized is already a
+    /// no-op — cheaper and more reliable than parsing <c>git submodule status</c> prefixes to find out first.
+    /// </para>
+    /// </summary>
+    private async Task<string?> DeinitAsync(
+        string levelDir,
+        string entryPath,
+        CancellationToken cancellationToken
+    )
+    {
+        var result = await _git
+            .RunAsync(["submodule", "deinit", "--force", "--", entryPath], levelDir, cancellationToken)
+            .ConfigureAwait(false);
+        if (result.Succeeded)
+        {
+            return null;
+        }
+
+        var stderr = string.IsNullOrWhiteSpace(result.Stderr) ? "(no stderr)" : result.Stderr.Trim();
+        return $"exit {result.ExitCode}: {stderr}";
     }
 
     /// <summary>
