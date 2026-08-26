@@ -1996,6 +1996,28 @@ Behaviour:
   tenant is never re-stamped, so a repeated call is idempotent rather than destructive.
 - Each adopted row gets `tenant_id = {tenantId}` and, when `ownerUserId` was supplied,
   `owner_user_id = ownerUserId`.
+- **A `resourceIds` subset is expanded to the whole conversation tree each named id belongs to
+  (#405).** Adoption moves trees, not rows. The sub-agent roster scan scopes by the *root* row's
+  tenant and admits only that tenant or an untenanted row (8.4a, #388a/#395), so a root adopted
+  while its sub-agents stay in quarantine loses them from its roster silently, and the incomplete
+  roster is then cached for the life of the process. Naming a sub-agent instead of a root produces
+  the same disclosure from the other end of the same edge, so the expansion follows
+  `sample.subAgentOf` in **both** directions over one bounded scan of the quarantine tenant - the
+  connected component, not just the descendants.
+
+  Two bounds are deliberate. The walk never leaves quarantine: a descendant already in a real
+  tenant stays there, and the walk does not continue *through* such a parent to reach its other
+  children, because adopting a conversation must not become a way to move somebody else's by
+  claiming to be its child. And when the quarantine tenant holds more rows than one bounded scan
+  can read, a subset adoption is **refused** (`503 adoption_scan_truncated`) rather than performed
+  on a tree it could not finish walking - a truncated scan cannot see the parent links past the
+  cap, and proceeding would split trees again only on the installs large enough that nobody would
+  notice. Adopting the whole tenant (no `resourceIds`) needs no walk and is unaffected.
+
+  *Decision, versus the alternative:* broadening the roster scan to admit the quarantine tenant
+  alongside the root's own was rejected. It re-enlarges the candidate set the scan's cap orders
+  over - the ordering hazard of #388a - and re-introduces cross-tenant candidates the projection
+  then has to discard. Fixing the write path keeps the scan's single-tenant scope true.
 - **`ownerUserId` is validated before any write**: it must parse as `{tid}:{oid}`, and its `tid`
   must equal the `entra_tenant_id` of `{tenantId}`. A user id from a different Entra tenant is
   `400 owner_tenant_mismatch` - accepting it would write a row that 7.4 step 2 then denies to

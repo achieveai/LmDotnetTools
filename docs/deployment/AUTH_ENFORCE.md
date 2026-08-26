@@ -351,6 +351,23 @@ claimed first. Two mechanisms do this, and both are needed:
      still writes an audit record.
    - An **omitted** `resourceIds` means "every quarantined conversation". An **empty array** means
      "none". They are not the same, and the route does not conflate them.
+   - **Naming ids adopts whole conversation trees, not just the ids you named (#405).** A
+     conversation's sub-agent roster is read within the tenant of the conversation it hangs off, so
+     a root adopted without its sub-agents loses them from its roster — silently, and for the life
+     of the process, because the short roster is then cached. Naming a sub-agent instead of a root
+     has the same effect from the other side. So the route follows the parent/child links in both
+     directions and moves the whole tree. Expect the count to exceed the number of ids you
+     submitted, and use `dryRun` to see the real blast radius first — the rehearsal reports the
+     expanded set, not the submitted one.
+   - Two limits on that expansion, both intentional:
+     - It only ever moves conversations **out of the quarantine tenant**. A sub-agent already living
+       in a real tenant is left alone, so adoption cannot be used to pull another tenant's
+       conversation across by adopting something that claims to be its parent. A tree already split
+       across two real tenants is not repaired by this route.
+     - If the quarantine tenant holds more than 2,000 conversations, a call that names `resourceIds`
+       is refused with `503 adoption_scan_truncated` rather than run on a tree it could not finish
+       walking. Adopting the **whole** tenant (omit `resourceIds`) needs no walk and still works —
+       that is the way through.
    - `ownerUserId` must belong to the target tenant's Entra directory or the call is refused with
      `owner_tenant_mismatch` before anything is written.
    - Re-running adopts nothing the first run already moved: the selection is on the SOURCE tenant,
