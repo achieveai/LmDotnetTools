@@ -38,6 +38,8 @@ public sealed class DaemonProfileConfigurationTests
         daemon.GetProperty("StrandedRunScanLimit").GetInt32().Should().Be(new CodeReviewDaemonOptions().StrandedRunScanLimit);
         daemon.GetProperty("StrandedRunMaxResumesPerSweep").GetInt32().Should().Be(
             new CodeReviewDaemonOptions().StrandedRunMaxResumesPerSweep);
+        daemon.GetProperty("StrandedRunRetryPendingGraceMinutes").GetDouble().Should().Be(
+            new CodeReviewDaemonOptions().StrandedRunRetryPendingGraceMinutes);
     }
 
     [Fact]
@@ -52,6 +54,14 @@ public sealed class DaemonProfileConfigurationTests
             .Replace(
                 "\"StrandedRunMaxResumesPerSweep\": 2",
                 "\"StrandedRunMaxResumesPerSweep\": 9",
+                StringComparison.Ordinal)
+            // The rewrite matches "\"Key\": value", not the bare key name, because the same name also appears
+            // in the neighbouring "_comment_StrandedRunRetryPendingGraceMinutes" documentation key — a
+            // name-only replace would rewrite the comment key and leave the real one untouched, which is the
+            // very failure this test exists to catch, inverted.
+            .Replace(
+                "\"StrandedRunRetryPendingGraceMinutes\": 45",
+                "\"StrandedRunRetryPendingGraceMinutes\": 23",
                 StringComparison.Ordinal);
         using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
 
@@ -62,6 +72,7 @@ public sealed class DaemonProfileConfigurationTests
         options!.StrandedRunGraceHours.Should().Be(11);
         options.StrandedRunScanLimit.Should().Be(77);
         options.StrandedRunMaxResumesPerSweep.Should().Be(9);
+        options.StrandedRunRetryPendingGraceMinutes.Should().Be(23);
     }
 
     /// <summary>
