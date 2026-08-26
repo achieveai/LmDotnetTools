@@ -1,5 +1,4 @@
 using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using FluentAssertions;
@@ -252,70 +251,10 @@ public class InputAcceptanceObserverTests
 
     #region Doubles
 
-    /// <summary>Records every acceptance report, in order, with the agent that made it.</summary>
-    private sealed class RecordingObserver : IInputAcceptanceObserver
-    {
-        private readonly object _gate = new();
-
-        public List<(string ThreadId, string InputId)> Accepted { get; } = [];
-
-        public List<(string ThreadId, string InputId)> Rescinded { get; } = [];
-
-        public List<IMultiTurnAgent> AcceptedBy { get; } = [];
-
-        public void OnInputAccepted(string threadId, string inputId, IMultiTurnAgent acceptedBy)
-        {
-            lock (_gate)
-            {
-                Accepted.Add((threadId, inputId));
-                AcceptedBy.Add(acceptedBy);
-            }
-        }
-
-        public void OnInputAcceptanceRescinded(string threadId, string inputId, IMultiTurnAgent acceptedBy)
-        {
-            _ = acceptedBy;
-            lock (_gate)
-            {
-                Rescinded.Add((threadId, inputId));
-            }
-        }
-    }
-
-    private sealed class ThrowingObserver : IInputAcceptanceObserver
-    {
-        public void OnInputAccepted(string threadId, string inputId, IMultiTurnAgent acceptedBy) =>
-            throw new InvalidOperationException("simulated observer failure");
-
-        public void OnInputAcceptanceRescinded(string threadId, string inputId, IMultiTurnAgent acceptedBy) =>
-            throw new InvalidOperationException("simulated observer failure");
-    }
-
-    /// <summary>
-    /// A real <see cref="MultiTurnAgentBase"/> whose run loop is never started, so every accepted
-    /// input stays in the channel — the accepted-but-unstarted state the ledger exists for.
-    /// <see cref="QueuedInputCount"/> reads the channel directly so a test can prove an enqueue did
-    /// or did not happen without draining it.
-    /// </summary>
-    private sealed class ObservedTestAgent : MultiTurnAgentBase
-    {
-        public ObservedTestAgent(
-            string threadId,
-            IConversationStore? store = null,
-            bool persistRunLedger = false,
-            int inputChannelCapacity = 100)
-            : base(
-                threadId,
-                store: store,
-                inputChannelCapacity: inputChannelCapacity,
-                persistRunLedger: persistRunLedger)
-        {
-        }
-
-        public int QueuedInputCount => InputReader.Count;
-
-        protected override Task RunLoopAsync(CancellationToken ct) => Task.Delay(Timeout.InfiniteTimeSpan, ct);
-    }
+    // RecordingObserver, ThrowingObserver and ObservedTestAgent live in
+    // TestDoubles/InputAcceptanceDoubles.cs: the per-site relay guards in
+    // SubAgents/SubAgentParentRelayObserverTests.cs need the same three, and two copies of a
+    // recording observer are two things that can drift apart.
 
     /// <summary>A run-ledger store whose accepted-input write always fails.</summary>
     private sealed class ThrowingLedgerStore : IConversationStore, IRunLedgerStore
