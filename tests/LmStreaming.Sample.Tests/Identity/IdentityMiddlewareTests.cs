@@ -295,16 +295,32 @@ public sealed class IdentityMiddlewareTests
             .Should().Be(IdentityMiddleware.WebSocketSubProtocol);
     }
 
+    /// <summary>
+    /// Precedence and stripping are two separate promises, and the header check used to answer both
+    /// with one early return: a request that already carried <c>Authorization</c> kept its
+    /// <c>Authorization</c> - correct - and ALSO kept the offered <c>lm.bearer.&lt;token&gt;</c> in
+    /// <c>Sec-WebSocket-Protocol</c> for the rest of the pipeline, which the method's own remark says
+    /// never happens. Stripping is unconditional; only the promotion defers.
+    /// </summary>
     [Fact]
-    public void AnAuthorizationHeaderAlreadyOnTheRequest_IsNeverOverwrittenByASubprotocol()
+    public void AnAuthorizationHeaderAlreadyOnTheRequest_IsNeverOverwrittenByASubprotocol_AndTheTokenIsStillStripped()
     {
         var request = WebSocketRequest(
             "/ws",
-            $"{IdentityMiddleware.WebSocketCredentialSubProtocolPrefix}attacker-token");
+            $"{IdentityMiddleware.WebSocketCredentialSubProtocolPrefix}attacker-token, "
+                + IdentityMiddleware.WebSocketSubProtocol);
         request.Headers.Authorization = "Bearer real-token";
 
         _ = IdentityMiddleware.PromoteWebSocketCredential(request).Should().BeFalse();
         _ = request.Headers.Authorization.ToString().Should().Be("Bearer real-token");
+
+        // The credential is gone from the offered list even though it was not promoted. Whether a
+        // token is honoured and whether it travels onward into logs, diagnostics and the accept's
+        // echo are unrelated questions, and the second answer must not depend on the first.
+        _ = request.Headers["Sec-WebSocket-Protocol"].ToString()
+            .Should().Be(IdentityMiddleware.WebSocketSubProtocol);
+        _ = request.Headers["Sec-WebSocket-Protocol"].ToString()
+            .Should().NotContain("attacker-token");
     }
 
     [Fact]

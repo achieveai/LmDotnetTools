@@ -388,15 +388,24 @@ public sealed class IdentityMiddleware
     /// let the most client-controllable field on the handshake overwrite the one the caller actually
     /// authenticated with.
     /// </para>
+    /// <para>
+    /// That precedence defers the PROMOTION only. Stripping happens either way: whether a token is
+    /// honoured and whether it travels onward - into request logs, diagnostic dumps, and the accept's
+    /// subprotocol echo - are unrelated questions, and answering both with one early return left the
+    /// token in the offered list for the whole pipeline whenever the header was already present.
+    /// </para>
     /// </remarks>
     /// <param name="request">The inbound request.</param>
-    /// <returns>True when a credential was promoted.</returns>
+    /// <returns>
+    /// True when a credential was promoted into <c>Authorization</c>. False when there was none to
+    /// promote, when the path is not a transport, or when an existing header took precedence - in
+    /// which case the credential has still been stripped from the offered list.
+    /// </returns>
     public static bool PromoteWebSocketCredential(HttpRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        if (!IsGuardedWebSocketPath(request.Path)
-            || request.Headers.ContainsKey(HeaderNames.Authorization))
+        if (!IsGuardedWebSocketPath(request.Path))
         {
             return false;
         }
@@ -432,8 +441,8 @@ public sealed class IdentityMiddleware
             return false;
         }
 
-        request.Headers.Authorization = $"Bearer {credential}";
-
+        // Strip BEFORE the precedence check below, never after: the whole point is that the token
+        // leaves the request regardless of whether anything ends up using it.
         if (kept.Count == 0)
         {
             _ = request.Headers.Remove(HeaderNames.SecWebSocketProtocol);
@@ -443,6 +452,12 @@ public sealed class IdentityMiddleware
             request.Headers[HeaderNames.SecWebSocketProtocol] = string.Join(", ", kept);
         }
 
+        if (request.Headers.ContainsKey(HeaderNames.Authorization))
+        {
+            return false;
+        }
+
+        request.Headers.Authorization = $"Bearer {credential}";
         return true;
     }
 
