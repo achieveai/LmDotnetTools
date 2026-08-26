@@ -211,7 +211,14 @@ export class ConversationApiError extends Error {
   }
 }
 
-async function toConversationApiError(response: Response, fallbackMessage: string): Promise<ConversationApiError> {
+/**
+ * Reads the controller's refusal body into a {@link ConversationApiError}, preserving the `code`.
+ *
+ * Exported because every route on `ConversationsController` shares one refusal vocabulary — the
+ * byte-identical `unknown_thread` 404 above all — and a second mapper written alongside a second
+ * client is how that vocabulary drifts.
+ */
+export async function toConversationApiError(response: Response, fallbackMessage: string): Promise<ConversationApiError> {
   let code: string | undefined;
   let error: string | undefined;
   try {

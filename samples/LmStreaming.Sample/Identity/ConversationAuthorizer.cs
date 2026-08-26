@@ -29,13 +29,12 @@ public sealed record ConversationAccessResult(bool Allowed, string Reason, bool 
 /// resolves through <see cref="AuthorizeAsync"/> or <see cref="CreateListScopeAsync"/>.
 /// </para>
 /// <para>
-/// The REST surface is not the whole surface. The WebSocket transports <c>/ws</c> and
-/// <c>/ws/subagent</c> are AUTHENTICATED - they are inside <c>IdentityMiddleware</c>'s boundary and
-/// the pooled agent they create is owned by the connecting user (#342, #399) - but they do NOT pass
-/// through here, so they perform no per-conversation authorization at all. That remaining gap is
-/// recorded under "Known gaps" in <c>docs/deployment/AUTH_ENFORCE.md</c>. Anyone reading this type
-/// as "the single seam" should read it as "the single seam for the REST routes", which is what it
-/// currently is.
+/// The WebSocket transports <c>/ws</c> and <c>/ws/subagent</c> reach the same decision through
+/// <see cref="WebSocketConversationGate"/> (#419), which calls <see cref="AuthorizeAsync"/> before the
+/// handshake is accepted rather than reimplementing anything. They used to be AUTHENTICATED and
+/// nothing more - inside <c>IdentityMiddleware</c>'s boundary, with the pooled agent owned by the
+/// connecting user (#342, #399), but with no per-conversation check at all - so "the single seam"
+/// meant "the single seam for the REST routes". It no longer does.
 /// </para>
 /// <para>
 /// Note what this does NOT do: it never decides on its own contents. Every allow and every deny

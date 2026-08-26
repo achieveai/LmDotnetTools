@@ -340,6 +340,32 @@ public sealed class LifecycleSubscriptionsControllerTests
     }
 
     [Fact]
+    public async Task A_signed_in_human_may_not_register_a_subscription_or_obtain_a_secret()
+    {
+        // #433. A bearer handler with inbound claim mapping on puts the token's `sub` on
+        // ClaimTypes.NameIdentifier, so while this action read that claim EVERY signed-in user
+        // satisfied it: they registered a callback under an owner key that was their own subject id
+        // and were handed a signing secret in the 201 body. The refusal must survive the caller also
+        // carrying a display name — Identity.Name was the second half of the old fallback, so a test
+        // forging only a name identifier would go green on half a fix.
+        var harness = new Harness();
+
+        var result = await harness.AsSignedInHuman("dir-a:alice").Register(Registration());
+
+        var body = ShouldRespond(result, StatusCodes.Status403Forbidden);
+        body.SigningSecret.Should().BeNull("a refused caller is never handed signing material");
+        harness.Resolver.Asked.Should().BeEmpty("a human principal never reaches owner resolution");
+        harness.Subscriptions.ForOwner(LifecycleOwnerKey.ForAppId("dir-a:alice")).Should().BeEmpty(
+            "nothing may be filed under a human's subject id as though it were an app");
+
+        // Non-vacuity: the same registration succeeds for a caller that really does name an app, so
+        // the 403 above is about who asked rather than about the registration being unacceptable.
+        _ = ShouldRespond(
+            await harness.As(AppA).Register(Registration()),
+            StatusCodes.Status201Created);
+    }
+
+    [Fact]
     public async Task An_authenticated_caller_the_host_cannot_place_is_refused()
     {
         var harness = new Harness();
@@ -479,7 +505,28 @@ public sealed class LifecycleSubscriptionsControllerTests
         public LifecycleSubscriptionsController As(string appId) =>
             WithPrincipal(
                 new ClaimsPrincipal(
-                    new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, appId)], "test")
+                    new ClaimsIdentity(
+                        [new Claim(LifecycleAppIdentity.AppIdClaimType, appId)],
+                        "test"
+                    )
+                )
+            );
+
+        /// <summary>
+        /// A controller reached by a signed-in <em>human</em>: authenticated by a bearer scheme, with
+        /// the token's <c>sub</c> mapped onto <see cref="ClaimTypes.NameIdentifier"/> and a display
+        /// name, and no app-id claim anywhere. This is the shape #433 was about.
+        /// </summary>
+        public LifecycleSubscriptionsController AsSignedInHuman(string subject) =>
+            WithPrincipal(
+                new ClaimsPrincipal(
+                    new ClaimsIdentity(
+                        [
+                            new Claim(ClaimTypes.NameIdentifier, subject),
+                            new Claim(ClaimTypes.Name, subject),
+                        ],
+                        "Bearer"
+                    )
                 )
             );
 

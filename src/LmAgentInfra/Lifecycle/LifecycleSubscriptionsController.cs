@@ -367,6 +367,14 @@ public sealed class LifecycleSubscriptionsController(
     /// principal only — a request header naming an app is not used, because this controller cannot
     /// tell whether anything upstream verified one.
     /// </summary>
+    /// <remarks>
+    /// <see cref="LifecycleAppIdentity.AppIdClaimType"/> is the EXCLUSIVE source, with no fallback to
+    /// <c>ClaimTypes.NameIdentifier</c> or <c>Identity.Name</c>. Those are claims a signed-in human
+    /// satisfies — a bearer handler maps the token's <c>sub</c> onto the name identifier — so reading
+    /// them made any signed-in user an "app" here, able to register a callback and take a signing
+    /// secret (#433). "Authenticated" is therefore no longer the operative rule at this endpoint;
+    /// "carries the app-id claim" is.
+    /// </remarks>
     private string? AuthenticatedAppId()
     {
         if (User?.Identity?.IsAuthenticated != true)
@@ -374,7 +382,7 @@ public sealed class LifecycleSubscriptionsController(
             return null;
         }
 
-        var appId = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.Identity.Name;
+        var appId = User.FindFirstValue(LifecycleAppIdentity.AppIdClaimType);
         return string.IsNullOrWhiteSpace(appId) ? null : appId;
     }
 

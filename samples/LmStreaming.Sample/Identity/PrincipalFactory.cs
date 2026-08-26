@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Lifecycle;
 using AchieveAi.LmDotnetTools.LmCore.Identity;
 using Microsoft.Extensions.Options;
 
@@ -151,12 +152,23 @@ public sealed class PrincipalFactory
     /// <para>
     /// The consumers are <c>LifecycleSubscriptionsController</c> and <c>LifecycleApprovalController</c>,
     /// which live in <c>LmAgentInfra</c> and therefore cannot reference <see cref="Principal"/> at
-    /// all. Both authenticate by asking whether <c>User</c> is authenticated and reading
-    /// <see cref="ClaimTypes.NameIdentifier"/> off it, so those are the two facts this projection
-    /// exists to carry - and the name identifier is the caller's <b>app id</b>, because that is what
-    /// <c>ILifecycleOwnerResolver.ResolveCallerAsync</c> turns into an owner key. A projection that
-    /// carried anything else there would still authenticate and would file every app's subscriptions
-    /// under the wrong owner.
+    /// all. Both authenticate by asking whether <c>User</c> is authenticated and reading the caller's
+    /// <b>app id</b> off it, because that is what <c>ILifecycleOwnerResolver.ResolveCallerAsync</c>
+    /// turns into an owner key. A projection that carried anything else there would still
+    /// authenticate and would file every app's subscriptions under the wrong owner.
+    /// </para>
+    /// <para>
+    /// <b><see cref="LifecycleAppIdentity.AppIdClaimType"/> is what those two controllers read, and
+    /// this is the only place it is stamped (#433).</b> They used to read
+    /// <see cref="ClaimTypes.NameIdentifier"/>, which a signed-in human satisfies - a bearer handler
+    /// with inbound claim mapping on puts the token's <c>sub</c> there - so this projection was never
+    /// the only way to reach them, and any signed-in user could register a callback and take a signing
+    /// secret. The dedicated claim is in no inbound claim map and is minted by no authentication
+    /// handler, so a token cannot carry it in; "the principal names an app" is now true by
+    /// construction rather than by enumerating which principals happen not to carry a name identifier.
+    /// The <see cref="ClaimTypes.NameIdentifier"/> and <see cref="ClaimTypes.Name"/> claims stay for
+    /// readers that want a conventional display identity off a bridged principal; nothing authorizes
+    /// on them any more.
     /// </para>
     /// <para>
     /// <b>Null for an app-less principal, and that narrowness is the point for the development
@@ -191,6 +203,7 @@ public sealed class PrincipalFactory
 
         var identity = new ClaimsIdentity(
             [
+                new Claim(LifecycleAppIdentity.AppIdClaimType, principal.AppId),
                 new Claim(ClaimTypes.NameIdentifier, principal.AppId),
                 new Claim(ClaimTypes.Name, principal.AppId),
                 new Claim(TenantIdClaimType, principal.TenantId),

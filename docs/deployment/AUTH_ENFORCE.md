@@ -188,6 +188,15 @@ enforcing?".
 Leaving `AzureAd:ClientId` empty is a second, independent off switch: with no client id, no JWT
 bearer handler is registered at all and no token can be presented.
 
+> **Client precondition — do not flip this flag with the bundled SPA as it ships (#435).** Under
+> enforcement the WebSocket transports refuse a `threadId` that has no metadata row, so a client must
+> provision the conversation through `POST /api/conversations` before opening its socket. The SPA
+> still mints its own `thread-{timestamp}-{random}` id locally and connects straight away, so a
+> **brand-new conversation cannot start** while the flag is on. Existing conversations are unaffected.
+> This is a client change that must ship with the flip, exactly as #342's subprotocol change had to.
+> See "The WebSocket transports did no per-conversation authorization (#419)" below for why the
+> server deliberately does not mint the row for you.
+
 ### Tenants are provisioned explicitly, before anyone signs in
 
 A first sign-in from an unknown Entra directory is a **rejection**, never an implicit new tenant.
@@ -484,16 +493,28 @@ response. CORS is skipped entirely only when `LmStreaming:EnableCors` is set to 
 7. **If a browser on another origin calls this host**, set `LmStreaming:AllowedOrigins` to that
    origin. Refusals are answered before the endpoint runs, so a cross-origin client can only read
    the refusal code if this host is configured to allow its origin.
-8. Set `Identity:Enforce` true. Anonymous `/api` requests now get `401`.
+8. **Ship a client that provisions before it connects (#435), then** set `Identity:Enforce` true.
+   Anonymous `/api` requests now get `401`, and the WebSocket transports refuse any `threadId` with
+   no metadata row. The bundled SPA as it ships mints its thread id locally and connects straight
+   away, so **flipping the flag without that client change stops any brand-new conversation from
+   starting** (existing ones are unaffected). See the client precondition under "`Identity:Enforce`
+   is global" above.
 
-Steps 1 through 7 are reversible and can sit in production for as long as you like. Only step 8
-changes what any caller sees.
+Steps 1 through 7 are reversible and can sit in production for as long as you like. Step 8 is the
+only one that changes what any caller sees — and it changes it in two ways, not one: anonymous `/api`
+requests start getting `401`, and a client that has not been updated to provision first can no longer
+start a conversation over the socket.
 
 ### Known gaps
 
-One thing `Identity:Enforce` still does not do that its name suggests it might, plus three that used
-to be listed here and are now fixed. The list is exhaustive over the REST surface: every other `/api`
-route that names a conversation goes through the authorizer.
+Four gaps that used to be listed here, all now fixed — none of them is still open. The list is
+exhaustive over the REST surface: every other `/api` route that names a conversation goes through the
+authorizer.
+
+Two things `Identity:Enforce` still does not do are recorded inside the #419 section below rather
+than as gaps of their own, because both are consequences of that fix rather than holes left in it:
+the `auth/{providerId}` sign-in **side effect** (the information leak is closed; an anonymous `GET`
+can still start the host operator's own sign-in), and the **client-side provisioning** #435 tracks.
 
 #### Service callers used to be refused (#345, fixed)
 
@@ -646,33 +667,59 @@ subprotocol and its socket is refused. Ship the client change with the flip, or 
 to connect for anyone holding a stale bundle. With enforcement **off** nothing changes: no token is
 offered, the handshake is admitted exactly as before, and the development principal is used.
 
-#### The WebSocket transports do no per-conversation authorization
+#### The WebSocket transports did no per-conversation authorization (#419, fixed)
 
-Still open, and it is a **login wall, not an authorization check**. `/ws` and `/ws/subagent` now
-establish **who** the caller is (#342, #399), and the pooled agent `/ws` creates is owned by that
-user — so a second user cannot resume someone else's live agent over the socket. What neither
-transport does is ask `ConversationAuthorizer` whether this user may open *this* conversation: the
-REST routes' grant and tenant checks have no equivalent here. What #342 changed is who may try: it
-went from anyone to any signed-in principal in the deployment. Do not read it as closed.
+`/ws` and `/ws/subagent` were a **login wall, not an authorization check**. #342 and #399 established
+*who* the caller is and made the pooled agent `/ws` creates owned by that user — but neither transport
+asked `ConversationAuthorizer` whether this user may open *this* conversation. What #342 changed was
+who may try: from anyone to any signed-in principal in the deployment. Sub-agent transcripts were
+readable by any of them, and naming a `threadId` with no live pooled entry created an agent primed on
+that conversation's durable transcript and froze it to the caller as owner.
 
-State the consequences plainly, because the paragraph that used to sit here understated them:
+Both transports now resolve through `WebSocketConversationGate`, which calls the **same**
+`ConversationAuthorizer` the REST routes call, **before** the handshake is accepted — so a refusal
+creates nothing, touches no pooled entry, and never reaches `AcceptWebSocketAsync`.
 
-- **Sub-agent transcripts are readable by any signed-in principal.** `/ws/subagent` threads no
-  principal into its handler at all — the endpoint gates on "is this a WebSocket request" plus two
-  non-empty query strings, and nothing else. On a cache miss it reads the persisted content for
-  `subagent-{agentId}` straight out of the store, so a caller who knows (or guesses) an `agentId`
-  reads another user's sub-agent output.
-- **Socket rehydration hands out ownership of primed history.** A caller who names a `threadId` with
-  no live pooled entry does not get an empty agent: the socket creates one, primed on that
-  conversation's durable transcript, and freezes it to the caller as its owner. Knowing the id is
-  enough to become the owner of an agent seeded with the victim's conversation.
-- **`auth/{providerId}` answers unauthenticated GETs.** The route is outside the boundary by design
-  (a provider redirect carries no bearer token), but an unauthenticated request to it starts a
-  sign-in, and for a request that IS signed in the page renders the account and its scopes.
+- **`/ws` authorizes the thread for `Write`.** Write, not read, because the socket accepts user turns
+  and takes ownership of the pooled agent. A **viewer**-role grantee therefore cannot open the chat
+  socket and reads the conversation over REST; an **editor** grantee can, and then meets #399's owner
+  freeze exactly as before.
+- **`/ws/subagent` authorizes the parent for `Read`,** matching what
+  `GET /api/conversations/{threadId}/subagents` already demands, and then checks that the named child
+  is actually that parent's, using the durable link `SubAgentProvenance` stamps. Without the second
+  check the first is a formality: a caller passes their own parent id with someone else's `agentId`,
+  the parent-scoped live lookups miss, and the handler replays `subagent-{agentId}` out of the store.
+- **A child whose provenance does not check out does not refuse the handshake.** It loses the
+  persisted replay and the socket answers `subagent_unavailable` — byte for byte what an `agentId`
+  that names nothing answers. Refusing the handshake instead would make the two tell apart, which is
+  an existence oracle over sub-agent ids. "Does not check out" covers **both** a row stamped with a
+  different parent **and a child with no metadata row at all**: a row is not evidence that nothing was
+  persisted, because the agent appends messages during a run and writes metadata only at completion,
+  so a child running now — or killed mid-run — has a transcript and no row, permanently, and no
+  repair pass synthesizes one (both `StampUnownedThreadsAsync` implementations only `UPDATE` rows that
+  already exist). The cost is that an owner's own child killed mid-run no longer replays its partial
+  transcript over the socket; that transcript has no row, so nothing else under enforcement can
+  authorize it either.
+- **An existence-hiding refusal is a `404` whose body is identical to the REST surface's**
+  `unknown_thread`. A never-minted id and another tenant's id answer the same; a refusal that already
+  admits the id names something keeps its `403`, and never a `401` (same reasoning as #342).
 
-The reason per-conversation authorization is not simply added is that the client mints a `threadId`
-and opens the socket before any metadata row exists, so an authorizer call at handshake time would
-refuse every brand-new conversation as unknown. Closing it needs the socket to distinguish "not
-yours" from "not yet minted" — which is a design change, not a missing call. Until then, treat the
-socket surface as authenticated-but-unauthorized, and do not deploy a multi-tenant host on the
-assumption that REST's grant checks cover it. Tracked in **#419**.
+**`auth/{providerId}`: decided, and half of it closed.** The signed-in page no longer renders the
+account, the granted scopes or the token expiry. `IOAuthTokenProvider` is a process-wide singleton, so
+that account was never the caller's — it was the host operator's, handed to anyone who could reach the
+port on a route that sits outside the boundary. The operator's own view of it is
+`GET /api/auth/{providerId}/status`, which is inside the boundary. What **remains open** is the side
+effect: an unauthenticated GET still calls `BeginSignInAsync` and opens a browser window on the host.
+That is accepted for now — the route is the operator's manual sign-in entry point, it can only start a
+sign-in for the host's own singleton provider and never for the caller, and gating it needs an
+operator-secret door the redirect flow has not been designed for.
+
+**Operational consequence when you flip `Identity:Enforce` on:** the socket now refuses a `threadId`
+that has no metadata row, identically to one belonging to someone else — deliberately, because minting
+a row for an unknown id would make unknown ids succeed while taken ones refused, which is the oracle
+the `404` exists to close. A client must therefore **provision the conversation first**, through
+`POST /api/conversations`, and open the socket on the id the server mints. The bundled SPA does not yet
+do this: it mints a `thread-{timestamp}-{random}` id locally in three places
+(`useConversations.ts`, `useChat.ts`, `wsClient.ts`) and connects straight away, so under enforcement
+a brand-new conversation cannot start. Tracked in **#435** — ship it with the flip, exactly as #342's
+subprotocol change had to be. With enforcement **off** the gate short-circuits and nothing changes.
