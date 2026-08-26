@@ -21,12 +21,16 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn;
 /// </para>
 /// <para>
 /// <b>Why this is reported from the agent and not from each caller.</b> Every accept, on every path,
-/// mints its receipt id in exactly two places — the two send methods on
+/// mints its receipt id in exactly two places on the public send path — the two send methods on
 /// <see cref="MultiTurnAgentBase"/>. Reporting from there covers each of them by construction. The
 /// alternative — having every caller that sends to a pooled agent record the accept itself — is a
 /// list that has to stay complete, and the paths that most need covering (a sub-agent relaying a
 /// question to its parent, a completion notification, a peer's collaboration message) are precisely
-/// the ones that live in this assembly and cannot reach the pool at all.
+/// the ones that live in this assembly and cannot reach the pool at all. A derived loop's internal
+/// raw enqueues bypass both mint sites and this observer: the loop wake sentinel (inert — empty
+/// payload, no run content, nothing to record) and the trigger notify (a real turn, and so genuinely
+/// unobserved, but unreachable in production — it is gated behind trigger options only test mode
+/// supplies, and #161 tracks enabling it).
 /// </para>
 /// <para>
 /// Implementations must be safe to call from any thread and must not block: both methods run inline

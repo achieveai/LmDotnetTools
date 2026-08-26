@@ -196,10 +196,14 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// <remarks>
     /// <para>
     /// Reported to from the two send methods below and nowhere else, because those two are where an
-    /// accept's receipt id is minted — so every accept on every path is covered by construction,
-    /// including the ones that reach a pooled agent from inside this assembly and could never call a
-    /// host's pool directly (a sub-agent relaying a descendant's question to its parent, a sub-agent
-    /// completion notification, a peer's collaboration message).
+    /// accept's receipt id is minted on the public send path — so every accept that arrives that way
+    /// is covered by construction, including the ones that reach a pooled agent from inside this
+    /// assembly and could never call a host's pool directly (a sub-agent relaying a descendant's
+    /// question to its parent, a sub-agent completion notification, a peer's collaboration message).
+    /// A derived loop's internal raw enqueues bypass both mint sites and this observer: the loop wake
+    /// sentinel (inert — empty payload, no run content, nothing to record) and the trigger notify (a
+    /// real turn, and so genuinely unobserved, but unreachable in production — it is gated behind
+    /// trigger options only test mode supplies, and #161 tracks enabling it).
     /// </para>
     /// <para>
     /// A throwing observer FAILS THE SEND. It is reported to after the durable accepted-input write

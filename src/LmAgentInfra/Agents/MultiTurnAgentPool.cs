@@ -1355,13 +1355,16 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// this ledger - the same hole this exists to close, only narrower.
     /// </para>
     /// <para>
-    /// FOUR paths record: the REST send, the WebSocket send, the context-discovery fan-out, and the
-    /// workflow completion notifier - the last three send straight to a pooled agent rather than
-    /// through a transport. A ledger maintained on some of them is a ledger with a hole in it exactly
-    /// the size of the rest. A further family does NOT record and cannot from here: the collaboration
-    /// write endpoint and <c>SubAgentManager</c>'s relays all live in <c>LmMultiTurn</c>, which this
-    /// assembly depends on, so reaching the pool from them would close a circular assembly
-    /// dependency. Tracked as issue #434 rather than left silent.
+    /// FOUR paths call this method explicitly: the REST send, the WebSocket send, the
+    /// context-discovery fan-out, and the workflow completion notifier - the last three send straight
+    /// to a pooled agent rather than through a transport. A ledger maintained on some of them is a
+    /// ledger with a hole in it exactly the size of the rest. A further family - the collaboration
+    /// write endpoint and <c>SubAgentManager</c>'s relays - still cannot call it from where they live:
+    /// they are all in <c>LmMultiTurn</c>, which this assembly depends on, so reaching the pool from
+    /// them would close a circular assembly dependency. They record all the same, via
+    /// <see cref="IInputAcceptanceObserver"/> - the agent reports its own accept and the pool, which
+    /// implements that interface and attaches itself in <see cref="CreateAgentEntry"/>, writes the
+    /// very same entry (#434).
     /// </para>
     /// <para>
     /// The pool has to keep this itself because the fact it needs is not on
