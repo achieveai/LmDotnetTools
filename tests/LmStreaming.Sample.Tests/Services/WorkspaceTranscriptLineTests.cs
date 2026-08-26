@@ -178,6 +178,12 @@ public sealed class WorkspaceTranscriptLineTests
             "role",
             "id",
             "message_json",
+
+            // #254. Joined the pinned set rather than being emitted only when populated: a key that
+            // appears on some lines and not others is two schemas in one file, which is the exact thing
+            // this test exists to prevent. It is null on every line here, because none of the five kinds
+            // is a tool result over the sidecar threshold.
+            "message_json_ref",
         };
 
         foreach (var line in lines)

@@ -179,8 +179,37 @@ public sealed record WorkspaceTranscriptLine
 
     /// <summary>
     ///     The serialized message, as an OPAQUE STRING. Message lines only. See the type remarks.
+    ///     Null when the payload was externalised — see <see cref="MessageJsonRef"/>.
     /// </summary>
     public string? MessageJson { get; init; }
+
+    /// <summary>
+    ///     Where this line's payload lives when it was too large to inline (#254): a path RELATIVE to
+    ///     <c>.conversations/</c>, of the form <c>{leaf}_blobs/{uid}.json</c>. Null — the overwhelmingly
+    ///     common case — means the payload is on the line in <see cref="MessageJson"/>.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///     <b>A SIBLING field, never a wrapper inside <see cref="MessageJson"/>.</b> That field is
+    ///     documented as opaque and is emitted with <c>WriteString</c> precisely so it can never become
+    ///     an object; putting a reference inside it would make every reader parse the payload just to
+    ///     discover whether it IS the payload, and would break the one guarantee the opacity buys.
+    ///     </para>
+    ///     <para>
+    ///     <b>No schema bump.</b> The rule on <see cref="CurrentSchemaVersion"/> is that a new NULLABLE
+    ///     field does not bump, because a reader that ignores unknown keys keeps working — which is the
+    ///     whole point of versioning per line. This is that case exactly. What such a reader loses is the
+    ///     content of the externalised lines, not the ability to parse them; the alternative on offer was
+    ///     never "the reader sees the blob inline", it was "the blob is not written at all".
+    ///     </para>
+    ///     <para>
+    ///     <b>Relative to <c>.conversations/</c>, not to the workspace root.</b> The transcript is
+    ///     designed to be read by whatever can reach the workspace, and a reader that has the transcript
+    ///     file in hand has its directory too. An absolute path would additionally bake the container's
+    ///     mount point into a durable artifact that outlives the container.
+    ///     </para>
+    /// </remarks>
+    public string? MessageJsonRef { get; init; }
 
     /// <summary>
     ///     Builds a message line from a persisted row. <paramref name="parentUid"/> is the previous
@@ -289,6 +318,11 @@ public sealed record WorkspaceTranscriptLine
             WriteNullableString(writer, "role", line.Role);
             WriteNullableString(writer, "id", line.Id);
             WriteNullableString(writer, "message_json", line.MessageJson);
+
+            // Always emitted, null when the payload is inline. Omitting it when unpopulated would give a
+            // columnar reader two schemas for one file, which is exactly what the pinned key SET exists
+            // to prevent — see this method's remarks.
+            WriteNullableString(writer, "message_json_ref", line.MessageJsonRef);
 
             writer.WriteEndObject();
         }

@@ -173,6 +173,41 @@ public sealed class ConversationTranscriptWriter
     /// <summary>Suffix appended to the main file leaf to form the sibling sub-agent directory.</summary>
     public const string AgentsDirectorySuffix = "_agents";
 
+    /// <summary>
+    ///     Suffix appended to the main file leaf to form the sibling directory that externalised tool-result
+    ///     payloads live in (#254). One per conversation, shared by the main file and every sub-agent file.
+    /// </summary>
+    /// <remarks>
+    ///     Shared rather than per-file because sidecars are keyed by <c>uid</c>, which is derived from the
+    ///     persisted row id and so is already unique across the conversation's whole file set. A directory
+    ///     per sub-agent would multiply what a retitle has to move without making a single name safer.
+    /// </remarks>
+    public const string BlobsDirectorySuffix = "_blobs";
+
+    /// <summary>
+    ///     Payload size, in bytes, at or above which a TOOL RESULT's content is written to a sidecar and
+    ///     referenced from the line instead of being inlined (#254).
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///     <b>A fixed byte count, not a proportion of the line.</b> Both costs being controlled are
+    ///     absolute. A reader streaming the file line-by-line must materialise the largest line whatever
+    ///     the rest of the conversation weighs, and the mirror's failure model - a failed append means the
+    ///     next flush recomputes and rewrites the same suffix - makes the re-send cost proportional to the
+    ///     bytes, not to their share of anything. A relative threshold would also make one row's treatment
+    ///     depend on its neighbours, so the same tool result would externalise or not depending on what
+    ///     else happened that turn, and a reader could not predict either.
+    ///     </para>
+    ///     <para>
+    ///     64 KiB is chosen to sit well above ordinary tool output - a shell exit, a small file read, a
+    ///     search result - and well below the blobs the issue names, so the common conversation writes no
+    ///     sidecars at all and pays nothing. It is deliberately not configurable: a threshold that varies
+    ///     by deployment makes a durable artifact's shape depend on the host that happened to write it,
+    ///     and a reader cannot tell "small enough to inline" from "written by a host with a higher bar".
+    ///     </para>
+    /// </remarks>
+    public const int ToolResultSidecarThresholdBytes = 64 * 1024;
+
     /// <summary>Extension of the staged temp file the splice consumes.</summary>
     public const string TempExtension = ".part";
 
@@ -700,6 +735,16 @@ public sealed class ConversationTranscriptWriter
     private bool _transcriptExists;
 
     private bool _agentsDirectoryTouched;
+
+    /// <summary>
+    ///     Whether a <c>_blobs</c> directory exists for this conversation that a retitle has to move
+    ///     (#254). Exactly parallel to <see cref="_agentsDirectoryTouched"/>, including the cold-start
+    ///     recovery: a restart forgets it, so <see cref="AdoptExistingLeafAsync"/> re-derives it from the
+    ///     directory listing. Without that, the first retitle after a restart moves the file and orphans
+    ///     the sidecars - worse than the <c>_agents</c> version of the same bug, because every
+    ///     externalised line in the renamed transcript then points at a path that no longer exists.
+    /// </summary>
+    private bool _blobsDirectoryTouched;
     private int _subAgentCursor;
     private int _sawSubAgentActivity;
     private int _sweepRestartRequested;
@@ -1108,7 +1153,8 @@ public sealed class ConversationTranscriptWriter
             return true;
         }
 
-        if (await MoveLeafAsync(sessionId, _leaf, leaf, _agentsDirectoryTouched, ct).ConfigureAwait(false))
+        if (await MoveLeafAsync(sessionId, _leaf, leaf, _agentsDirectoryTouched, _blobsDirectoryTouched, ct)
+            .ConfigureAwait(false))
         {
             _leaf = leaf;
         }
@@ -1201,6 +1247,16 @@ public sealed class ConversationTranscriptWriter
                 && IsAddressableName(entry)
                 && string.Equals(entry.Name, subject + AgentsDirectorySuffix, StringComparison.Ordinal));
 
+        // Same recovery for the sidecar directory (#254), and it matters more: an orphaned _agents
+        // directory is a stray folder, whereas an orphaned _blobs directory breaks every
+        // message_json_ref in the file that just moved away from it.
+        _blobsDirectoryTouched =
+            _blobsDirectoryTouched
+            || entries.Any(entry =>
+                entry.Type == SandboxEntryType.Directory
+                && IsAddressableName(entry)
+                && string.Equals(entry.Name, subject + BlobsDirectorySuffix, StringComparison.Ordinal));
+
         if (stale is null)
         {
             return (true, null);
@@ -1215,7 +1271,8 @@ public sealed class ConversationTranscriptWriter
 
         return (
             true,
-            await MoveLeafAsync(sessionId, stale, leaf, _agentsDirectoryTouched, ct).ConfigureAwait(false)
+            await MoveLeafAsync(sessionId, stale, leaf, _agentsDirectoryTouched, _blobsDirectoryTouched, ct)
+                .ConfigureAwait(false)
                 ? leaf
                 : stale);
     }
@@ -1271,13 +1328,23 @@ public sealed class ConversationTranscriptWriter
         && !string.Equals(entry.Name, ".", StringComparison.Ordinal)
         && !string.Equals(entry.Name, "..", StringComparison.Ordinal);
 
-    /// <summary>Renames one transcript file and, when asked, its sibling sub-agent directory.</summary>
+    /// <summary>
+    ///     Renames one transcript file and, when asked, its sibling sub-agent and sidecar directories.
+    /// </summary>
     /// <returns>Whether the FILE moved — the only condition under which the new leaf may be adopted.</returns>
+    /// <remarks>
+    ///     A failed <c>_blobs</c> move is logged and the retitle continues, because the outcome is benign
+    ///     in the direction that matters: the directory stays put under the old name, and every
+    ///     <c>message_json_ref</c> already written points at that old name, so those references still
+    ///     resolve. What is lost is future tidiness, not a past record — and refusing the whole retitle
+    ///     over it would leave the FILE under a name the conversation no longer has.
+    /// </remarks>
     private async Task<bool> MoveLeafAsync(
         string sessionId,
         string from,
         string to,
         bool moveAgents,
+        bool moveBlobs,
         CancellationToken ct)
     {
         if (!await TryMoveAsync(
@@ -1299,6 +1366,23 @@ public sealed class ConversationTranscriptWriter
             ).ConfigureAwait(false))
         {
             DropSubAgentState();
+        }
+
+        if (moveBlobs
+            && !await TryMoveAsync(
+                sessionId,
+                $"{TranscriptDirectory}/{from}{BlobsDirectorySuffix}",
+                $"{TranscriptDirectory}/{to}{BlobsDirectorySuffix}",
+                ct
+            ).ConfigureAwait(false))
+        {
+            _logger.LogWarning(
+                "The transcript sidecar directory of thread {ThreadId} stayed at {From}{Suffix} while the file "
+                    + "moved to {To}; already-written references still resolve there",
+                ThreadId,
+                from,
+                BlobsDirectorySuffix,
+                to);
         }
 
         return true;
@@ -1500,6 +1584,93 @@ public sealed class ConversationTranscriptWriter
         public static WatermarkProbe Absent => new(Settled: true, HadContent: false, Uid: null);
     }
 
+    /// <summary>
+    ///     The message types whose payload may be externalised to a sidecar (#254).
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///     <b>Type, not size alone.</b> A tool result is the one payload kind whose bulk carries no
+    ///     structure a reader of the transcript needs in line: it is an opaque body the tool produced,
+    ///     already addressed by the row that requested it. Every other large payload - a long assistant
+    ///     turn, a reasoning block, a user paste - is the conversation itself, and a reader scanning the
+    ///     file expects to see it there. Externalising by size alone would hollow out exactly the lines
+    ///     the transcript exists to record.
+    ///     </para>
+    ///     <para>
+    ///     Both spellings are listed because both reach this writer: the aggregate result message and the
+    ///     single-call one. The names are matched as strings for the same reason the line carries a string
+    ///     - this writer never deserialises <c>message_json</c>, and gaining a type dependency here to
+    ///     recognise two names would be a worse trade than restating them.
+    ///     </para>
+    /// </remarks>
+    private static readonly HashSet<string> ExternalizableMessageTypes = new(StringComparer.Ordinal)
+    {
+        "ToolsCallResultMessage",
+        "ToolCallResultMessage",
+    };
+
+    /// <summary>
+    ///     Writes an oversized tool-result payload to a sidecar file and returns the line with
+    ///     <c>message_json</c> replaced by a <c>message_json_ref</c> pointing at it (#254).
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///     <b>Every failure inlines.</b> A transcript that records the payload is strictly better than one
+    ///     that records a reference to a file that was never written, so an unsafe path, a missing leaf, or
+    ///     a failed PUT all return the line untouched rather than propagating. The externalisation is an
+    ///     optimisation of the record's shape; the record itself is the point.
+    ///     </para>
+    ///     <para>
+    ///     The sidecar PUT goes through the same <see cref="IsPathSafeAsync"/> guard as every other write
+    ///     in this class, so a symlink planted at the sidecar name is REFUSED - the payload inlines - and
+    ///     never followed and never repaired, which is the invariant the rest of the writer holds to.
+    ///     </para>
+    /// </remarks>
+    private async Task<WorkspaceTranscriptLine> ExternalizeIfOversizedAsync(
+        string sessionId,
+        WorkspaceTranscriptLine line,
+        CancellationToken ct)
+    {
+        if (line.MessageJson is not { } content
+            || line.MessageType is not { } messageType
+            || !ExternalizableMessageTypes.Contains(messageType)
+            || Encoding.UTF8.GetByteCount(content) < ToolResultSidecarThresholdBytes)
+        {
+            return line;
+        }
+
+        if (_leaf is null)
+        {
+            return line;
+        }
+
+        var reference = $"{_leaf}{BlobsDirectorySuffix}/{line.Uid}.json";
+        var path = $"{TranscriptDirectory}/{reference}";
+        if (!await IsPathSafeAsync(sessionId, path, ct).ConfigureAwait(false))
+        {
+            return line;
+        }
+
+        try
+        {
+            await _fileBrowser
+                .WriteWorkspaceFileBytesAsync(sessionId, path, Encoding.UTF8.GetBytes(content), ct)
+                .ConfigureAwait(false);
+        }
+        catch (SandboxException ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Writing the transcript sidecar {Path} for thread {ThreadId} failed; the payload is inlined instead",
+                path,
+                ThreadId);
+            return line;
+        }
+
+        _blobsDirectoryTouched = true;
+        return line with { MessageJson = null, MessageJsonRef = reference };
+    }
+
     private async Task<AppendResult> AppendAsync(
         string sessionId,
         string directory,
@@ -1540,7 +1711,8 @@ public sealed class ConversationTranscriptWriter
         var payload = new StringBuilder();
         for (var i = start; i < lines.Count; i++)
         {
-            _ = payload.Append(WorkspaceTranscriptLine.Serialize(lines[i])).Append('\n');
+            var line = await ExternalizeIfOversizedAsync(sessionId, lines[i], ct).ConfigureAwait(false);
+            _ = payload.Append(WorkspaceTranscriptLine.Serialize(line)).Append('\n');
         }
 
         // The staging path is guarded for the same reason the destination is, and it cannot be guarded by

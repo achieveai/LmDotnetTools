@@ -1809,6 +1809,191 @@ public sealed class ConversationTranscriptWriterTests
                     + "root resolves its children must be mirrored too");
     }
 
+    // ---------------------------------------------------------------- #254: externalized tool results
+
+    /// <summary>A tool result whose payload is comfortably over the sidecar threshold.</summary>
+    private static PersistedMessage BigToolResult(string id, long timestamp) =>
+        Msg(
+            id,
+            timestamp,
+            role: "Tool",
+            messageType: nameof(ToolsCallResultMessage),
+            messageJson: "\"" + new string('x', ConversationTranscriptWriter.ToolResultSidecarThresholdBytes + 100) + "\"");
+
+    /// <summary>Reads one field off the n-th line of a staged payload.</summary>
+    private static string? Field(string payload, int lineIndex, string field)
+    {
+        var line = payload.Split('\n', StringSplitOptions.RemoveEmptyEntries)[lineIndex];
+        var property = JsonSerializer.Deserialize<JsonElement>(line).GetProperty(field);
+        return property.ValueKind == JsonValueKind.Null ? null : property.GetString();
+    }
+
+    /// <summary>
+    /// #254. A tool result can return a blob that dwarfs the rest of the conversation — a file read, a
+    /// big HTTP response, a directory listing of a real repo — and inlining it costs twice: every
+    /// line-by-line reader carries the whole blob in memory just to reach the next line, and the
+    /// mirror's "duplicated tail on retry" failure model means a failed append re-writes that suffix,
+    /// blob included.
+    /// </summary>
+    [Fact]
+    public async Task ALargeToolResult_IsWrittenToASidecar_AndReferencedFromTheLine()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        var big = BigToolResult("m1", 1);
+        await store.AppendMessagesAsync(ThreadId, [big]);
+
+        var browser = new FakeFileBrowser();
+        var writer = CreateWriter(store, browser);
+
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var payload = Written(browser, 0);
+        var uid = WorkspaceTranscriptLine.DeriveUid(big.Id);
+        var expectedRef = $"{WorkspaceTranscriptLine.MainFileLeaf(Title, ShortThreadId)}"
+            + $"{ConversationTranscriptWriter.BlobsDirectorySuffix}/{uid}.json";
+
+        // The content left the line...
+        _ = Field(payload, 0, "message_json").Should().BeNull();
+        _ = Field(payload, 0, "message_json_ref").Should().Be(expectedRef);
+
+        // ...and landed in the sidecar, whole.
+        var sidecar = browser.Writes.Should()
+            .ContainSingle(w => w.Path == $"{ConversationTranscriptWriter.TranscriptDirectory}/{expectedRef}")
+            .Which;
+        _ = Encoding.UTF8.GetString(sidecar.Bytes).Should().Be(big.MessageJson);
+
+        // The point of the exercise: the line itself is now small.
+        _ = payload.Length.Should().BeLessThan(ConversationTranscriptWriter.ToolResultSidecarThresholdBytes);
+    }
+
+    /// <summary>
+    /// The threshold is a threshold, not a switch. An ordinary tool result stays inline, because
+    /// externalising everything would turn a conversation with fifty small tool calls into fifty extra
+    /// files and fifty extra gateway writes for no benefit.
+    /// </summary>
+    [Fact]
+    public async Task AnOrdinaryToolResult_StaysInline_AndCarriesANullRef()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        var small = Msg("m1", 1, role: "Tool", messageType: nameof(ToolsCallResultMessage));
+        await store.AppendMessagesAsync(ThreadId, [small]);
+
+        var browser = new FakeFileBrowser();
+        var writer = CreateWriter(store, browser);
+
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var payload = Written(browser, 0);
+        _ = Field(payload, 0, "message_json").Should().Be(small.MessageJson);
+        _ = Field(payload, 0, "message_json_ref").Should().BeNull();
+        _ = browser.Writes.Should().NotContain(w =>
+            w.Path.Contains(ConversationTranscriptWriter.BlobsDirectorySuffix, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Scope, pinned. #254 is about TOOL RESULTS, and the scope is not incidental: a long assistant turn
+    /// or a big reasoning block is the conversation's own substance and a reader expects to find it on
+    /// the line. A tool result's blob is machine output the conversation merely carried. Externalising
+    /// by size alone would move the former as readily as the latter.
+    /// </summary>
+    [Fact]
+    public async Task ALargeMessageThatIsNotAToolResult_StaysInline()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        var wordy = Msg(
+            "m1",
+            1,
+            messageType: "TextMessage",
+            messageJson: "\"" + new string('y', ConversationTranscriptWriter.ToolResultSidecarThresholdBytes + 100) + "\"");
+        await store.AppendMessagesAsync(ThreadId, [wordy]);
+
+        var browser = new FakeFileBrowser();
+        var writer = CreateWriter(store, browser);
+
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var payload = Written(browser, 0);
+        _ = Field(payload, 0, "message_json").Should().Be(wordy.MessageJson);
+        _ = Field(payload, 0, "message_json_ref").Should().BeNull();
+    }
+
+    /// <summary>
+    /// The compatibility clause of #254: "a reader that ignores the new field still parses every line".
+    /// The key set is PINNED — every line carries every key, absent values as JSON null — so this also
+    /// pins that <c>message_json_ref</c> joined that set rather than being emitted only when populated,
+    /// which would give a columnar reader two schemas for one file.
+    /// </summary>
+    [Fact]
+    public async Task EveryLine_ParsesAndCarriesTheRefKey_WhetherOrNotItIsPopulated()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(
+            ThreadId,
+            [Msg("m1", 1, "User"), BigToolResult("m2", 2), Msg("m3", 3)]);
+
+        var browser = new FakeFileBrowser();
+        var writer = CreateWriter(store, browser);
+
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var lines = Written(browser, 0).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        _ = lines.Should().HaveCount(3);
+
+        foreach (var line in lines)
+        {
+            // Parses at all - the clause a reader that ignores the new field depends on.
+            var element = JsonSerializer.Deserialize<JsonElement>(line);
+            _ = element.TryGetProperty("message_json_ref", out _).Should().BeTrue();
+
+            // And the ordering guarantee the whole file rests on is untouched by the new field.
+            _ = element.TryGetProperty("uid", out _).Should().BeTrue();
+            _ = element.TryGetProperty("parent_uid", out _).Should().BeTrue();
+        }
+
+        // Non-vacuity: exactly one of the three was actually externalised.
+        _ = lines.Count(l => JsonSerializer.Deserialize<JsonElement>(l)
+            .GetProperty("message_json_ref").ValueKind != JsonValueKind.Null)
+            .Should().Be(1);
+    }
+
+    /// <summary>
+    /// The retention clause: "retitle and delete treat sidecars the same way they treat the
+    /// <c>_agents/</c> directory". Retitle used to move two paths; it moves three now. A sidecar left
+    /// behind under the old leaf is worse than an orphaned file — every externalised line in the renamed
+    /// transcript would point at a path that no longer exists, so the retitle would silently hollow out
+    /// the record rather than merely litter.
+    /// </summary>
+    [Fact]
+    public async Task Retitle_MovesTheBlobsDirectory_AlongsideTheFileAndTheAgentsDirectory()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [BigToolResult("m1", 1)]);
+
+        var browser = new FakeFileBrowser();
+        var writer = CreateWriter(store, browser);
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        await SeedConversationAsync(store, title: RetitledTo);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m2", 2)]);
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var from = WorkspaceTranscriptLine.MainFileLeaf(Title, ShortThreadId);
+        var to = WorkspaceTranscriptLine.MainFileLeaf(RetitledTo, ShortThreadId);
+        var moves = browser.Commands.Where(c => IsMove(c)).ToList();
+
+        var movedBlobs = moves.Any(c =>
+            c.Arguments[^2] == $"{ConversationTranscriptWriter.TranscriptDirectory}/{from}{ConversationTranscriptWriter.BlobsDirectorySuffix}"
+            && c.Arguments[^1] == $"{ConversationTranscriptWriter.TranscriptDirectory}/{to}{ConversationTranscriptWriter.BlobsDirectorySuffix}");
+
+        _ = movedBlobs.Should().BeTrue(
+            "a renamed transcript whose sidecars stayed behind references paths that no longer exist");
+    }
+
     // ---------------------------------------------------------------- read until stable
 
     /// <summary>
