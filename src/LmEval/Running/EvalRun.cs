@@ -324,6 +324,15 @@ public sealed record EvalRun
     /// mistake for a measurement. Over <see cref="CorpusSize"/> like every other rate here, so that
     /// a run cannot look intact by gating fewer items.
     /// </para>
+    /// <para>
+    /// <b>Why not refusing is safe</b>, which is the load-bearing half of the argument: the gate
+    /// list and each gate's <c>AppliesTo</c> are inside <see cref="EvaluatorConfigHash"/>. A run
+    /// that quietly lost its gates therefore hashes differently from the baseline that had them and
+    /// is refused as <see cref="ComparisonRefusal.EvaluatorConfigDiffers"/> before this bound is
+    /// ever reached. Null reaches the comparison only when the baseline was <i>also</i> gateless —
+    /// two runs that agree there were no gates, which is a comparison of like with like and not a
+    /// silent one.
+    /// </para>
     /// </summary>
     public double? InconclusiveGateRate =>
         Items.All(i => i.Verdict is null || i.Verdict.GateDecisions.Count == 0)

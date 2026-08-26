@@ -45,6 +45,58 @@ public class GateOutageTests
             },
         };
 
+    /// <summary>
+    /// An item the panel could not decide — it holds a verdict, so it is not a fault, but it yields
+    /// no score and therefore leaves coverage. Carries whatever the gates did, so a run can breach
+    /// the coverage floor and the gate bound at the same time.
+    /// </summary>
+    private static EvalItemResult Undecided(string id, params GateDecision[] gates) =>
+        new()
+        {
+            CandidateId = id,
+            Exclusion = ScoreExclusion.NoDecision,
+            Verdict = new Verdict
+            {
+                CandidateId = id,
+                Outcome = VerdictOutcome.NoDecision,
+                Score = null,
+                GateDecisions = gates,
+                Ballots = [],
+                ExcludedBallots = [],
+                RubricId = "test-rubric",
+                RubricVersion = "1.0",
+                TieBreakRule = TieBreakRules.NoDecision,
+                Degradation = PanelDegradation.None,
+            },
+        };
+
+    /// <summary>
+    /// An item the panel could neither decide nor fully staff, carrying whatever the gates did. Its
+    /// exclusion arm is <see cref="ScoreExclusion.NoDecision"/> — outcome-first ordering — and its
+    /// degradation is set, so it is the row that distinguishes a count over
+    /// <see cref="Verdict.GateDecisions"/> from one that also reads the exclusion.
+    /// </summary>
+    private static EvalItemResult UndecidedAndDegraded(string id, params GateDecision[] gates) =>
+        new()
+        {
+            CandidateId = id,
+            Exclusion = ScoreExclusion.NoDecision,
+            Verdict = new Verdict
+            {
+                CandidateId = id,
+                Outcome = VerdictOutcome.NoDecision,
+                Score = null,
+                GateDecisions = gates,
+                Ballots = [],
+                ExcludedBallots = [],
+                RubricId = "test-rubric",
+                RubricVersion = "1.0",
+                TieBreakRule = TieBreakRules.NoDecision,
+                Degradation = PanelDegradation.PanelUnavailable,
+                DegradationReason = "judge-faulted:openai:HttpRequestException",
+            },
+        };
+
     /// <summary>An item the run holds no verdict for at all — a judge-provider outage.</summary>
     private static EvalItemResult Faulted(string id) =>
         new()
@@ -95,6 +147,43 @@ public class GateOutageTests
 
         run.InconclusiveGateCount.Should().Be(1, "one item was impaired, not three gates");
         run.InconclusiveGateRate.Should().BeApproximately(0.5, 1e-9);
+    }
+
+    /// <summary>
+    /// The count reads <see cref="Verdict.GateDecisions"/> and nothing else, so it is
+    /// <b>independent</b> of which <see cref="ScoreExclusion"/> arm the row matched. This is the
+    /// counterpart of
+    /// <c>A_no_decision_that_was_also_a_panel_outage_is_visible_to_the_degradation_segment</c>, and
+    /// it exists for the same reason: the exclusion arms are ordered outcome-first, so a compound
+    /// failure — the gates were down AND the panel could not decide, which is exactly what a bad
+    /// deploy produces — matches an earlier arm and would vanish from a count that also read the
+    /// exclusion. The gate outage must stay visible in precisely the case where it coincides with
+    /// another one.
+    /// <para>
+    /// Every other test here scores its items, so all of them leave <c>Exclusion</c> at
+    /// <see cref="ScoreExclusion.None"/> and none of them can tell the two constructions apart.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void An_impaired_gate_is_counted_whatever_exclusion_arm_the_row_matched()
+    {
+        var run = Run(
+            [
+                Scored("scored", Inconclusive("schema")),
+                Undecided("undecided", Inconclusive("schema")),
+                UndecidedAndDegraded("degraded", Inconclusive("schema")),
+                Scored("clean", Passed("schema")),
+            ]
+        );
+
+        run.Items.Where(i => i.Exclusion != ScoreExclusion.None)
+            .Should()
+            .HaveCount(2, "two rows matched a non-None arm — otherwise this proves nothing");
+
+        run.InconclusiveGateCount
+            .Should()
+            .Be(3, "the count reads the gate decisions, not the exclusion");
+        run.InconclusiveGateRate.Should().BeApproximately(0.75, 1e-9);
     }
 
     /// <summary>
@@ -242,10 +331,8 @@ public class GateOutageTests
     }
 
     /// <summary>
-    /// The gate bound is refused ahead of the coverage floor for the reason the fault bound is: the
-    /// floor names only the symptom ("too thin to compare", equally true of a genuinely hard
-    /// corpus), while the bound names the cause. Here the floor does not even fire — a gate outage
-    /// leaves coverage untouched, which is exactly why the floor cannot stand in for this bound.
+    /// A gate outage on its own leaves coverage untouched — an inconclusive gate does not stop the
+    /// item scoring — so the coverage floor cannot stand in for this bound at any severity.
     /// </summary>
     [Fact]
     public void The_gate_bound_catches_what_the_coverage_floor_cannot_see()
@@ -257,9 +344,48 @@ public class GateOutageTests
         );
 
         outage.Coverage.Should().Be(1.0, "an inconclusive gate does not stop the item scoring");
-        outage.Coverage.Should().BeGreaterThan(baseline.MinCoverage);
 
         BaselineComparer.Compare(outage, baseline).Refusal
+            .Should()
+            .Be(ComparisonRefusal.InconclusiveGateRateAboveMaximum);
+    }
+
+    /// <summary>
+    /// The gate bound is refused <b>ahead of</b> the coverage floor, for the reason the fault bound
+    /// is: the floor names only the symptom ("too thin to compare", equally true of a genuinely hard
+    /// corpus), while the bound names the cause a reader can act on.
+    /// <para>
+    /// Order is the whole of the behaviour, so it needs an input that can tell the two orderings
+    /// apart — and the test above cannot, because a gate outage alone leaves coverage at 1.0 and the
+    /// floor never fires whichever way round the two checks sit. This is the sibling case that
+    /// <c>A_run_breaching_both_bounds_is_refused_for_the_cause_not_the_symptom</c> warns about on
+    /// the fault path. It is reachable because the two conditions are independent: an inconclusive
+    /// gate does not move coverage, but the <i>judge</i> side of other items in the same run does.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void A_run_breaching_the_gate_bound_and_the_coverage_floor_is_refused_for_the_cause()
+    {
+        var baseline = Baseline(GatedRun(20), minCoverage: 0.8);
+
+        // 12 impaired-but-scored items and 8 the panel could not decide: coverage 0.6 (under the
+        // 0.8 floor) AND gate rate 0.6 (over the 0.05 default). Both refusals apply; only the one
+        // naming the cause is worth reporting.
+        var both = Run(
+            [
+                .. Enumerable
+                    .Range(0, 12)
+                    .Select(i => Scored($"i{i}", Inconclusive("schema"))),
+                .. Enumerable.Range(12, 8).Select(i => Undecided($"i{i}")),
+            ]
+        );
+
+        both.FaultRate.Should().Be(0.0, "no item faulted, so the fault refusal cannot preempt");
+        both.Coverage.Should().BeApproximately(0.6, 1e-9);
+        both.Coverage.Should().BeLessThan(baseline.MinCoverage, "the floor is genuinely breached");
+        both.InconclusiveGateRate.Should().BeApproximately(0.6, 1e-9);
+
+        BaselineComparer.Compare(both, baseline).Refusal
             .Should()
             .Be(ComparisonRefusal.InconclusiveGateRateAboveMaximum);
     }

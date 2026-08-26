@@ -1058,6 +1058,16 @@ public sealed record EvalBaseline
     /// <summary>Least coverage a candidate run may have and still be compared (§5.3). It lives on
     /// the baseline so the run being judged cannot relax the bar it is judged against.</summary>
     public required double MinCoverage { get; init; }
+    /// <summary>Most of the corpus a candidate run may lose to faults and still be compared (§5.4).
+    /// Defaults to 0.05. On the baseline for the reason MinCoverage is: the run being judged must
+    /// not be able to relax the bar it is judged against. Not subsumed by the floor — a floor of 0.9
+    /// lets a 10% fault rate through untouched, and the floor cannot say *why* the run is thin.</summary>
+    public double MaxFaultRate { get; init; }
+    /// <summary>Most of the corpus a candidate run may have impaired gates on and still be compared
+    /// (§5.4). Defaults to 0.05. The gate path's counterpart to MaxFaultRate, and *less* subsumed by
+    /// MinCoverage than that bound is: an inconclusive gate does not block, so every impaired item
+    /// still scores and coverage never moves at all.</summary>
+    public double MaxInconclusiveGateRate { get; init; }
 }
 ```
 
