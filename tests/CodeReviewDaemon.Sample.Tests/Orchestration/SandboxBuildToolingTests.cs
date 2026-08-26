@@ -5,6 +5,7 @@ using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Orchestration;
@@ -208,12 +209,15 @@ public sealed class SandboxBuildToolingTests
     {
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
+        using var logs = new CapturingLoggerFactory();
         var runner = new TimingOutCommandRunner();
         var factory = new FakeReviewAgentLoopFactory();
-        var executor = BuildExecutor(store, factory, runner);
+        var executor = BuildExecutor(store, factory, runner, logs);
         var run = SeedRunWithContext(store, "270");
 
         await executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        logs.Capturing.WarningCount(TimedOutProbeLog).Should().Be(1);
 
         // The production ISandboxCommandRunner converts its OWN timeout into TimeoutException, so this site is
         // correct only by accident of one implementation. The port permits any runner, and a runner that lets a
@@ -230,8 +234,9 @@ public sealed class SandboxBuildToolingTests
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
         using var cts = new CancellationTokenSource();
+        using var logs = new CapturingLoggerFactory();
         var runner = new CancellingCommandRunner(cts);
-        var executor = BuildExecutor(store, new FakeReviewAgentLoopFactory(), runner);
+        var executor = BuildExecutor(store, new FakeReviewAgentLoopFactory(), runner, logs);
         var run = SeedRunWithContext(store, "270");
 
         var act = () => executor.ExecuteStageAsync(ReviewStage.Reviewed, run, cts.Token);
@@ -239,14 +244,23 @@ public sealed class SandboxBuildToolingTests
         // Shutdown must not be swallowed as "SDK unknown" and allowed to run a whole review during a cancel.
         _ = await act.Should().ThrowAsync<OperationCanceledException>();
         runner.ProbeAttempts.Should().Be(1, "a pre-cancelled token would pass this test without reaching the site");
+        // The throw alone proves nothing: a filter that swallowed this cancellation still ends in an
+        // OperationCanceledException raised a few lines later, and still writes no artifact. The SWALLOW's own
+        // log line is the only observable that tells the two apart.
+        logs.Capturing.WarningCount(TimedOutProbeLog)
+            .Should().Be(0, "a caller-requested cancel is not a timeout and must not be reported as one");
         store.GetArtifacts(run.Id)
             .Should().NotContain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
     }
 
+    /// <summary>The probe swallow's own log line — the observable that separates it from a real cancel.</summary>
+    private const string TimedOutProbeLog = "SDK probe timed out while the daemon was not shutting down";
+
     private static DaemonReviewStageExecutor BuildExecutor(
         ReviewStore store,
         FakeReviewAgentLoopFactory factory,
-        ISandboxCommandRunner runner) =>
+        ISandboxCommandRunner runner,
+        ILoggerFactory? loggerFactory = null) =>
         new(
             store,
             factory,
@@ -254,7 +268,7 @@ public sealed class SandboxBuildToolingTests
             new FakeSandboxFileSystem(),
             new CodeReviewDaemonOptions(),
             [new FakeReviewCommentPublisher("github")],
-            NullLoggerFactory.Instance);
+            loggerFactory ?? NullLoggerFactory.Instance);
 
     /// <summary>
     /// Seeds a run plus the 'review-context' artifact the Reviewed stage reads, so a test can drive that stage

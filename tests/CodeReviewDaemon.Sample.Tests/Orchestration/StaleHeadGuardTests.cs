@@ -158,8 +158,9 @@ public sealed class StaleHeadGuardTests
     {
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
+        using var logs = new CapturingLoggerFactory();
         var provider = new TimingOutPrProvider("github");
-        var executor = BuildExecutor(store, new FakeReviewAgentLoopFactory(), [provider]);
+        var executor = BuildExecutor(store, new FakeReviewAgentLoopFactory(), [provider], logs);
         var run = SeedRunWithContext(store, prId: "325", headSha: "head-325");
 
         await executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
@@ -168,6 +169,7 @@ public sealed class StaleHeadGuardTests
         // caller-token state sends this TaskCanceledException straight past the catch, and the review the
         // guard promises to continue is discarded over a transport blip.
         provider.HeadShaCalls.Should().Be(1, "the site under test is only reached if the host is consulted");
+        logs.Capturing.WarningCount(TimedOutHeadReadLog).Should().Be(1);
         store.GetArtifacts(run.Id)
             .Should().Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
     }
@@ -178,8 +180,9 @@ public sealed class StaleHeadGuardTests
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
         using var cts = new CancellationTokenSource();
+        using var logs = new CapturingLoggerFactory();
         var provider = new CancellingPrProvider("github", cts);
-        var executor = BuildExecutor(store, new FakeReviewAgentLoopFactory(), [provider]);
+        var executor = BuildExecutor(store, new FakeReviewAgentLoopFactory(), [provider], logs);
         var run = SeedRunWithContext(store, prId: "325", headSha: "head-325");
 
         var act = () => executor.ExecuteStageAsync(ReviewStage.Reviewed, run, cts.Token);
@@ -189,9 +192,17 @@ public sealed class StaleHeadGuardTests
         _ = await act.Should().ThrowAsync<OperationCanceledException>();
         provider.HeadShaCalls.Should()
             .Be(1, "a pre-cancelled token is refused before the read, which would pass this test vacuously");
+        // The throw alone proves nothing: once the token is cancelled, a filter that swallowed this
+        // cancellation still ends in an OperationCanceledException raised a few lines later, and still writes
+        // no artifact. The SWALLOW's own log line is the only observable that tells the two apart.
+        logs.Capturing.WarningCount(TimedOutHeadReadLog)
+            .Should().Be(0, "a caller-requested cancel is not a timeout and must not be reported as one");
         store.GetArtifacts(run.Id)
             .Should().NotContain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
     }
+
+    /// <summary>The head-read swallow's own log line — the observable that separates it from a real cancel.</summary>
+    private const string TimedOutHeadReadLog = "current head from github timed out while the daemon was not";
 
     private static OpaqueCursor Cursor() => new()
     {
@@ -204,7 +215,8 @@ public sealed class StaleHeadGuardTests
     private static DaemonReviewStageExecutor BuildExecutor(
         ReviewStore store,
         FakeReviewAgentLoopFactory factory,
-        IReadOnlyList<IPrProvider> prProviders) =>
+        IReadOnlyList<IPrProvider> prProviders,
+        ILoggerFactory? loggerFactory = null) =>
         new(
             store,
             factory,
@@ -212,7 +224,7 @@ public sealed class StaleHeadGuardTests
             new FakeSandboxFileSystem(),
             new CodeReviewDaemonOptions(),
             [new FakeReviewCommentPublisher("github")],
-            NullLoggerFactory.Instance,
+            loggerFactory ?? NullLoggerFactory.Instance,
             prProviders: prProviders);
 
     /// <summary>Seeds a run plus the <c>review-context</c> artifact the Reviewed stage reads, so the stage
