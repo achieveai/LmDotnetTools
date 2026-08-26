@@ -119,11 +119,14 @@ public class MultiTurnAgentPoolHandoffTests
         agent.CompleteRun();
         agent.IsRunning = false;
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        // The BUDGET is the timeout argument, not a cancellation token: Wait.UntilAsync defaults to
+        // 10s and a token only bounds the wait from outside, so passing a token alone leaves the real
+        // deadline at the default. 30s is safe here only because the clock is frozen - the grace can
+        // never fire during the wait, so a pass cannot mean the backstop cleared the ledger.
         await Wait.UntilAsync(
             () => pool.TryGetHandoffState("thread-drained", out var s) && !s.IsBusy,
             "the run assignment naming input-1 retires it from the ledger",
-            cancellationToken: cts.Token);
+            timeout: TimeSpan.FromSeconds(30));
 
         // The clock never moved, so what cleared the ledger is the evidence and not the backstop.
         pool.TryGetHandoffState("thread-drained", out var state).Should().BeTrue();

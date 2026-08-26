@@ -181,11 +181,12 @@ public class MultiTurnAgentPoolSandboxRefreshTests
         original.CompleteRun();
         original.IsRunning = false;
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        // The budget is the timeout argument; a token alone would leave the real deadline at
+        // Wait.UntilAsync's 10s default. Safe at 30s only because the clock above is frozen.
         await Wait.UntilAsync(
             () => pool.TryGetHandoffState("thread-queued-refresh", out var state) && !state.IsBusy,
             "the assignment echoing the accepted input retires it from the ledger",
-            cancellationToken: cts.Token);
+            timeout: TimeSpan.FromSeconds(30));
 
         var onceDrained = await pool.EnsureCurrentAgentAsync("thread-queued-refresh", credential);
         onceDrained.Status.Should().Be(MultiTurnAgentPool.AgentRefreshStatus.Replaced);
