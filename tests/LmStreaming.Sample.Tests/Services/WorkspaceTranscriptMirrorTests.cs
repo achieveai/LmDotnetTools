@@ -1250,11 +1250,6 @@ public sealed class WorkspaceTranscriptMirrorTests
     }
 
     /// <summary>
-    /// Eviction stops the mirror and RETAINS the transcript. Deleting it would defeat the feature: a record
-    /// written into the workspace is meant to outlive the conversation that produced it, which is exactly
-    /// the moment the pool raises <c>ThreadRemoved</c>.
-    /// </summary>
-    /// <summary>
     /// #253 at the level the issue's acceptance clause asks for: the mirror, not the writer. An
     /// S2S-created conversation with a workspace must produce a transcript, driven the same way a UI
     /// conversation is — attach, publish a run completion, expect the file.
@@ -1299,6 +1294,11 @@ public sealed class WorkspaceTranscriptMirrorTests
         _ = LastPayload(browser).Should().Be(ExpectedAppend(only));
     }
 
+    /// <summary>
+    /// Eviction stops the mirror and RETAINS the transcript. Deleting it would defeat the feature: a record
+    /// written into the workspace is meant to outlive the conversation that produced it, which is exactly
+    /// the moment the pool raises <c>ThreadRemoved</c>.
+    /// </summary>
     [Fact]
     public async Task Evict_StopsMirroring_AndNeverDeletesTheTranscript()
     {

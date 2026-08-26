@@ -1812,13 +1812,35 @@ public sealed class ConversationTranscriptWriterTests
     // ---------------------------------------------------------------- #254: externalized tool results
 
     /// <summary>A tool result whose payload is comfortably over the sidecar threshold.</summary>
-    private static PersistedMessage BigToolResult(string id, long timestamp) =>
+    private static PersistedMessage BigToolResult(string id, long timestamp, string threadId = ThreadId) =>
+        ToolResultOfExactly(
+            id,
+            timestamp,
+            ConversationTranscriptWriter.ToolResultSidecarThresholdBytes + 100,
+            threadId);
+
+    /// <summary>
+    /// A tool result whose <c>message_json</c> is EXACTLY <paramref name="bytes"/> UTF-8 bytes. The two
+    /// quotes are ASCII and so are the filler characters, so the length of the string is the length of
+    /// the encoding — the boundary tests assert that rather than assume it.
+    /// </summary>
+    private static PersistedMessage ToolResultOfExactly(
+        string id,
+        long timestamp,
+        int bytes,
+        string threadId = ThreadId) =>
         Msg(
             id,
             timestamp,
             role: "Tool",
+            threadId: threadId,
             messageType: nameof(ToolsCallResultMessage),
-            messageJson: "\"" + new string('x', ConversationTranscriptWriter.ToolResultSidecarThresholdBytes + 100) + "\"");
+            messageJson: "\"" + new string('x', bytes - 2) + "\"");
+
+    /// <summary>The sidecar directory that sits beside the transcript file of <paramref name="title"/>.</summary>
+    private static string BlobsDirectory(string? title) =>
+        $"{ConversationTranscriptWriter.TranscriptDirectory}/"
+        + $"{WorkspaceTranscriptLine.MainFileLeaf(title, ShortThreadId)}{ConversationTranscriptWriter.BlobsDirectorySuffix}";
 
     /// <summary>Reads one field off the n-th line of a staged payload.</summary>
     private static string? Field(string payload, int lineIndex, string field)
@@ -1992,6 +2014,158 @@ public sealed class ConversationTranscriptWriterTests
 
         _ = movedBlobs.Should().BeTrue(
             "a renamed transcript whose sidecars stayed behind references paths that no longer exist");
+    }
+
+    /// <summary>
+    /// The boundary itself. #254 says a tool result "at or above 64 KiB" is externalised, so the row
+    /// weighing EXACTLY the threshold belongs on the sidecar side of the line — and that is the one case
+    /// no other test in this section reaches, because they all use the threshold plus a comfortable
+    /// margin. A comparison that drifted by one place (<c>&lt;</c> to <c>&lt;=</c>) leaves every one of
+    /// them green while the documented boundary means the opposite of what it says.
+    /// </summary>
+    [Fact]
+    public async Task AToolResultOfExactlyTheThreshold_IsExternalised()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        var exact = ToolResultOfExactly("m1", 1, ConversationTranscriptWriter.ToolResultSidecarThresholdBytes);
+        await store.AppendMessagesAsync(ThreadId, [exact]);
+
+        // The fixture IS the assertion's premise, so it is measured rather than assumed.
+        _ = Encoding.UTF8.GetByteCount(exact.MessageJson).Should()
+            .Be(ConversationTranscriptWriter.ToolResultSidecarThresholdBytes);
+
+        var browser = new FakeFileBrowser();
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var expectedRef = $"{WorkspaceTranscriptLine.MainFileLeaf(Title, ShortThreadId)}"
+            + $"{ConversationTranscriptWriter.BlobsDirectorySuffix}"
+            + $"/{WorkspaceTranscriptLine.DeriveUid(exact.Id)}.json";
+
+        var payload = Written(browser, 0);
+        _ = Field(payload, 0, "message_json_ref").Should().Be(
+            expectedRef,
+            "\"at or above\" puts the row that weighs exactly the threshold on the sidecar side");
+        _ = Field(payload, 0, "message_json").Should().BeNull();
+
+        var sidecar = browser.Writes.Should()
+            .ContainSingle(w => w.Path == $"{ConversationTranscriptWriter.TranscriptDirectory}/{expectedRef}")
+            .Which;
+        _ = Encoding.UTF8.GetString(sidecar.Bytes).Should().Be(exact.MessageJson);
+    }
+
+    /// <summary>
+    /// The same retitle, reached the way it actually happens in production: the host restarted, so the
+    /// writer that renames is NOT the writer that wrote the sidecars. Its <c>_blobs</c> flag starts false
+    /// and its only route to "there is a sidecar directory to move" is the directory listing it adopts
+    /// the stale leaf from.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="Retitle_MovesTheBlobsDirectory_AlongsideTheFileAndTheAgentsDirectory"/> cannot see this:
+    /// it drives both flushes through ONE writer, so the flag is already true in-process and the
+    /// re-derivation never decides anything. Deleting that re-derivation outright leaves that test green.
+    /// A cold start is exactly when it matters — an orphaned <c>_agents</c> directory is litter, whereas
+    /// sidecars left under a name the transcript no longer has are payloads nothing addresses.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task AColdWriter_MovesTheBlobsDirectoryOnRetitle_FromTheDirectoryListingAlone()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        var big = BigToolResult("m1", 1);
+        await store.AppendMessagesAsync(ThreadId, [big]);
+
+        // The process that is about to die: it leaves a transcript and a sidecar directory on disk.
+        var browser = new FakeFileBrowser();
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var stale = WorkspaceTranscriptLine.MainFileLeaf(Title, ShortThreadId);
+        var uid = WorkspaceTranscriptLine.DeriveUid(big.Id);
+        _ = browser.Writes.Select(w => w.Path).Should().Contain(
+            $"{BlobsDirectory(Title)}/{uid}.json",
+            "the fixture is only a cold start if there is really a sidecar directory to rediscover");
+
+        // What that process left behind, as the listing a fresh writer sees it through.
+        browser.Listings[ConversationTranscriptWriter.TranscriptDirectory] =
+        [
+            new SandboxDirectoryEntry(
+                $"{stale}{ConversationTranscriptWriter.TranscriptExtension}",
+                SandboxEntryType.File,
+                128,
+                NameLossy: false
+            ),
+            new SandboxDirectoryEntry(
+                $"{stale}{ConversationTranscriptWriter.BlobsDirectorySuffix}",
+                SandboxEntryType.Directory,
+                null,
+                NameLossy: false
+            ),
+        ];
+
+        // The conversation was retitled while nothing was mirroring it.
+        await SeedConversationAsync(store, title: RetitledTo);
+        browser.Commands.Clear();
+        browser.Writes.Clear();
+
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var moves = browser.Commands.Where(IsMove)
+            .Select(c => (From: c.Arguments[^2], To: c.Arguments[^1]))
+            .ToList();
+
+        _ = moves.Should().Contain(
+            (MainPath(Title), MainPath(RetitledTo)),
+            "the adoption this whole path exists for");
+        _ = moves.Should().Contain(
+            (BlobsDirectory(Title), BlobsDirectory(RetitledTo)),
+            "a writer that forgot the sidecar directory across a restart strands it under the old name");
+
+        // And the sidecars this writer goes on to write address the directory it just moved.
+        _ = Field(Written(browser, 0), 0, "message_json_ref").Should()
+            .Be($"{WorkspaceTranscriptLine.MainFileLeaf(RetitledTo, ShortThreadId)}"
+                + $"{ConversationTranscriptWriter.BlobsDirectorySuffix}/{uid}.json");
+    }
+
+    /// <summary>
+    /// Where a sub-agent line's <c>message_json_ref</c> is anchored. Sub-agent rows reach the sidecar
+    /// through the same append path as main-file rows, so their refs are built against the CONVERSATION
+    /// ROOT — <c>.conversations/</c> — even though the line itself lives one level down in
+    /// <c>{leaf}_agents/</c>. Concatenating such a ref onto its own file's directory addresses nothing.
+    /// </summary>
+    /// <remarks>
+    /// Pinned rather than left to the doc because the two plausible anchors differ only for these files,
+    /// and a reader that guesses wrong sees a missing payload rather than an error. See the remarks on
+    /// <see cref="WorkspaceTranscriptLine.MessageJsonRef"/>.
+    /// </remarks>
+    [Fact]
+    public async Task ASubAgentSidecarRef_IsRelativeToTheConversationRoot_NotToItsOwnDirectory()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User")]);
+        var big = BigToolResult("a1a", 10, threadId: "subagent-a1");
+        await SeedSubAgentAsync(store, "a1", "alpha", big);
+
+        var browser = new FakeFileBrowser();
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        // The sub-agent's own file is the SECOND staged payload; the main transcript is the first.
+        _ = browser.Commands.Where(IsSplice).Select(c => c.Arguments[6])
+            .Should().Equal(MainPath(Title), AgentPath(Title, "a1", "alpha"));
+
+        var uid = WorkspaceTranscriptLine.DeriveUid(big.Id);
+        var reference = Field(Written(browser, 1), 0, "message_json_ref");
+        _ = reference.Should().Be(
+            $"{WorkspaceTranscriptLine.MainFileLeaf(Title, ShortThreadId)}"
+            + $"{ConversationTranscriptWriter.BlobsDirectorySuffix}/{uid}.json");
+
+        // Resolved from the conversation root it lands on the file that was written; resolved from the
+        // sub-agent file's own directory it lands on nothing.
+        var written = browser.Writes.Select(w => w.Path).ToList();
+        _ = written.Should().Contain($"{ConversationTranscriptWriter.TranscriptDirectory}/{reference}");
+        _ = written.Should().NotContain($"{AgentsDirectory(Title)}/{reference}");
     }
 
     // ---------------------------------------------------------------- read until stable

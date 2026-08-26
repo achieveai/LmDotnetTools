@@ -203,10 +203,19 @@ public sealed record WorkspaceTranscriptLine
     ///     never "the reader sees the blob inline", it was "the blob is not written at all".
     ///     </para>
     ///     <para>
-    ///     <b>Relative to <c>.conversations/</c>, not to the workspace root.</b> The transcript is
-    ///     designed to be read by whatever can reach the workspace, and a reader that has the transcript
-    ///     file in hand has its directory too. An absolute path would additionally bake the container's
-    ///     mount point into a durable artifact that outlives the container.
+    ///     <b>Relative to the CONVERSATION ROOT — <c>.conversations/</c> — not to the workspace root and
+    ///     not to the directory holding the line.</b> An absolute path would bake the container's mount
+    ///     point into a durable artifact that outlives the container, so the reference is relative; the
+    ///     anchor it is relative to is the conversation root, fixed, for every line the writer emits.
+    ///     </para>
+    ///     <para>
+    ///     <b>The anchor is not the containing file's directory, and for sub-agent lines the two differ.</b>
+    ///     Sub-agent rows are appended through the same path as main-file rows and their references are
+    ///     built the same way, but their FILE lives one level down in <c>{leaf}_agents/</c>. So a reference
+    ///     read off a line in <c>.conversations/{leaf}_agents/{agent}.jsonl</c> resolves against
+    ///     <c>.conversations/</c> and NOT against <c>.conversations/{leaf}_agents/</c> — joining it to its
+    ///     own file's directory addresses nothing. A reader must anchor on the conversation root it walked
+    ///     down from rather than on the file it happens to be holding.
     ///     </para>
     /// </remarks>
     public string? MessageJsonRef { get; init; }
