@@ -69,16 +69,50 @@ public sealed class ConversationScopingTests
             (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(threadId)),
             NullLogger<MultiTurnAgentPool>.Instance);
 
+    /// <summary>
+    /// An app-only caller: a service credential with an app id and no user behind it. The shape the
+    /// S2S provisioning path actually mints, and the one <c>ResourceAccessPolicy</c> resolves down
+    /// its <c>OwnerAppId</c> branch rather than its owner/grant/role branches.
+    /// </summary>
+    private static Principal AppOnly(string appId, string tenantId = TenantA) =>
+        new()
+        {
+            TenantId = tenantId,
+            Actor = new PrincipalRef(PrincipalKind.App, appId),
+            AppId = appId,
+            Source = PrincipalSource.AppOnly,
+        };
+
+    /// <summary>
+    /// A workspace store that resolves the one id these tests provision against. The default
+    /// <see cref="Mock.Of{T}()"/> answers null, which <c>Provision</c> correctly refuses - so a test
+    /// that needs to reach the create path has to hand it a workspace that exists.
+    /// </summary>
+    private static IWorkspaceStore WorkspaceStoreResolving(string workspaceId)
+    {
+        var workspaces = new Mock<IWorkspaceStore>();
+        _ = workspaces
+            .Setup(w => w.GetAsync(workspaceId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Workspace
+            {
+                Id = workspaceId,
+                Name = workspaceId,
+                DirectoryRelPath = workspaceId,
+            });
+        return workspaces.Object;
+    }
+
     private ConversationsController CreateController(
         Principal? principal,
         MultiTurnAgentPool pool,
         bool enforce = true,
-        IResourceGrantStore? grantsOverride = null) =>
+        IResourceGrantStore? grantsOverride = null,
+        IWorkspaceStore? workspaces = null) =>
         new(
             _store,
             pool,
             ModeStoreResolvingSystemModes(),
-            Mock.Of<IWorkspaceStore>(),
+            workspaces ?? Mock.Of<IWorkspaceStore>(),
             new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal(),
             new ConversationStatusResolver(_store, _store),
             TimeProvider.System,
@@ -399,6 +433,111 @@ public sealed class ConversationScopingTests
         _ = metadata!.TenantId.Should().Be(TenantA);
         _ = metadata.OwnerUserId.Should().Be(Alice);
         _ = metadata.Visibility.Should().Be(Visibility.Private);
+    }
+
+    /// <summary>
+    /// Provisions a conversation as <paramref name="principal"/> and returns the minted thread id.
+    /// </summary>
+    private async Task<string> ProvisionAsAsync(Principal principal, MultiTurnAgentPool pool)
+    {
+        var ok = Assert.IsType<OkObjectResult>(
+            await CreateController(principal, pool, workspaces: WorkspaceStoreResolving("ws")).Provision(
+                new ProvisionConversationRequest
+                {
+                    WorkspaceId = "ws",
+                    ProviderId = "test",
+                    ModeId = SystemChatModes.DefaultModeId,
+                },
+                CancellationToken.None));
+
+        return ((ProvisionConversationResponse)ok.Value!).ThreadId;
+    }
+
+    /// <summary>
+    /// The window #162 named: a conversation an S2S app provisions is owned from that moment, not
+    /// from whenever it first sends. A second app that reaches the thread id before the first
+    /// message is refused, and refused as unknown.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The load-bearing arrangement is what is ABSENT. Every other cross-app test in this repo seeds
+    /// the pool directly, so the refusal they observe comes from the in-memory caller freeze (#153) -
+    /// a binding that only exists once an agent has been created and that a process restart erases.
+    /// Here nothing has ever been pooled for this thread, which is asserted rather than assumed, so
+    /// the only thing that can refuse is the <c>OwnerAppId</c> stamped on the row at provision time.
+    /// A test that let an agent exist first would pass with the stamp removed entirely.
+    /// </para>
+    /// <para>
+    /// <c>404</c>, not the <c>409</c> the issue proposed. A thread id is the credential here: minted
+    /// unguessable and handed only to the provisioning caller. Answering <c>409</c> would confirm the
+    /// id names a real conversation to whoever guessed it, which is the disclosure the rest of this
+    /// file's refusals are shaped to avoid - so the body is compared against the one a never-minted
+    /// id produces rather than merely checked for a status.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task AConversationProvisionedByOneApp_RefusesAnotherAppsFirstMessage_WithNothingEverPooled()
+    {
+        await using var pool = CreatePool();
+
+        var threadId = await ProvisionAsAsync(AppOnly("app-a"), pool);
+
+        // The mechanism, read off the row: an app-only caller leaves no user behind, so OwnerAppId is
+        // the entire durable binding.
+        var stamped = await _store.LoadMetadataAsync(threadId, CancellationToken.None);
+        _ = stamped!.OwnerAppId.Should().Be("app-a");
+        _ = stamped.OwnerUserId.Should().BeNull();
+
+        // Non-vacuity: the in-memory freeze has nothing to freeze, so it cannot be what refuses below.
+        _ = pool.GetAgentCallerAppId(threadId).Should().BeNull();
+
+        var intruder = CreateController(AppOnly("app-b"), pool);
+        var refused = await intruder.SendMessage(
+            threadId,
+            new SendMessageRequest { Text = "not yours" },
+            CancellationToken.None);
+        var neverMinted = await intruder.SendMessage(
+            "thread-never-minted",
+            new SendMessageRequest { Text = "not yours" },
+            CancellationToken.None);
+
+        var denied = Assert.IsType<NotFoundObjectResult>(refused);
+        var missing = Assert.IsType<NotFoundObjectResult>(neverMinted);
+
+        _ = denied.StatusCode.Should().Be(404);
+        _ = System.Text.Json.JsonSerializer.Serialize(denied.Value)
+            .Should().Be(
+                System.Text.Json.JsonSerializer.Serialize(missing.Value)
+                    .Replace("thread-never-minted", threadId, StringComparison.Ordinal),
+                "a refused caller must not be able to tell a real conversation from an imaginary one");
+
+        // Refused BEFORE the pool, not after: a refusal that still minted an agent would leave the
+        // conversation frozen to the intruder for the owner's own first message.
+        _ = pool.GetAgentCallerAppId(threadId).Should().BeNull();
+    }
+
+    /// <summary>
+    /// The other half of the claim above: the refusal is about which app is asking, not about
+    /// provisioning being a state a conversation cannot be sent to out of.
+    /// </summary>
+    /// <remarks>
+    /// Without this, deleting the whole <c>OwnerAppId</c> comparison and refusing every first message
+    /// would satisfy the test above.
+    /// </remarks>
+    [Fact]
+    public async Task TheAppThatProvisionedIt_CanSendItsOwnFirstMessage()
+    {
+        await using var pool = CreatePool();
+
+        var threadId = await ProvisionAsAsync(AppOnly("app-a"), pool);
+
+        var owner = CreateController(AppOnly("app-a"), pool);
+        var accepted = await owner.SendMessage(
+            threadId,
+            new SendMessageRequest { Text = "mine" },
+            CancellationToken.None);
+
+        _ = Assert.IsType<AcceptedResult>(accepted).StatusCode.Should().Be(202);
     }
 
     /// <summary>
