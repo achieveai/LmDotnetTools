@@ -351,9 +351,10 @@ public class WorkspacePluginSelectionServiceTests
         // own catch logged and rethrew. By the time this runs the registry has ALREADY finished disposing
         // (the hook above awaits DisposeAsync to completion before the swap even attempts), which
         // unconditionally clears _sessionsById and disposes the shared HttpClient as part of the
-        // registry's OWN teardown - so TryGetSessionById(candidate) is false and no gateway DELETE is
-        // ever recorded regardless of whether AbortAllAsync runs at all; neither can discriminate this
-        // mutation here. What DOES discriminate: DestroySessionAsync's own attempt to reach the gateway
+        // registry's OWN teardown - so TryGetSessionById(candidate) throws ObjectDisposedException post-
+        // disposal (SandboxSessionRegistry.cs:1992's ThrowIf) rather than returning false, and no gateway
+        // DELETE is ever recorded regardless of whether AbortAllAsync runs at all; neither can discriminate
+        // this mutation here. What DOES discriminate: DestroySessionAsync's own attempt to reach the gateway
         // through the now-disposed transport throws, and that failure is logged by the REGISTRY's logger
         // (captured separately as RegistryLogger, unlike the NullLogger a prior version of this harness
         // used) - a line that can only exist if AbortAllAsync actually invoked the teardown for this
