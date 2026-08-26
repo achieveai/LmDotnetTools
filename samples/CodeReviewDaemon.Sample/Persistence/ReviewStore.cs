@@ -122,14 +122,6 @@ internal sealed class ReviewStore : IDisposable
     // ── review_run (§6) ──────────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Inserts <paramref name="run"/>, or returns the existing row when its identity tuple already
-    /// exists. Idempotent: the same (repo, pr, head/base, kind, variant, mode) tuple never creates a
-    /// second run. <c>trigger_watermark</c> (the PR's <c>updated_at</c>) is stored for diagnostics but is
-    /// deliberately NOT part of the identity — posting a review comment mutates <c>updated_at</c>, so
-    /// keying identity on it would spawn a fresh run (and a duplicate review) on the very next poll. A
-    /// review is scoped to a commit; a new <c>head_sha</c> is what legitimately starts a new run.
-    /// </summary>
-    /// <summary>
     /// Inserts <paramref name="run"/>, or returns the existing row when this reviewed commit already has
     /// one. A run's identity is the COMMIT: <c>(repo, pr, head_sha, base_sha, review_kind, variant_id)</c>.
     /// It deliberately excludes <c>mode</c> and <c>trigger_watermark</c>: <c>mode</c> (post vs collect-only)
