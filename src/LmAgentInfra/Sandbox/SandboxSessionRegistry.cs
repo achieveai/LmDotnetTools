@@ -1248,7 +1248,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
 
     /// <summary>
     /// Evicts EVERY per-session-id-indexed collection for <paramref name="session"/>: the reverse
-    /// session map, sub-agent bindings, thread routing, discovery dedup ledger, the creating credential
+    /// session map, sub-agent bindings, thread routing, discovery dedup ledger, the liveness freshness
+    /// stamp, the creating credential
     /// (releasing its per-credential client refcount), and the persisted webhook secret. Both the
     /// liveness-eviction path (<see cref="InvalidateSessionAsync"/>) and the explicit-teardown path
     /// (<see cref="DestroyWorkspaceSessionAsync"/>) funnel through here so a new per-session collection
@@ -1277,6 +1278,9 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         _ = _subAgentBindings.TryRemove(session.SessionId, out _);
         _ = _sessionThreads.TryRemove(session.SessionId, out _);
         _ = _discoverySeen.TryRemove(session.SessionId, out _);
+        // Unreachable rather than wrong once the session is gone - ids are gateway-allocated and never
+        // reissued, so nothing can consult this entry again. It is removed because the funnel contract
+        // above requires it: a per-session-id map left growing across a long-lived process is a leak.
         _ = _sessionVerifiedAtUtcTicks.TryRemove(session.SessionId, out _);
         // Drop the session's credential and release its client refcount (evicting+disposing the per-
         // credential client when this was its last session). Guarded on the TryRemove so an already-
