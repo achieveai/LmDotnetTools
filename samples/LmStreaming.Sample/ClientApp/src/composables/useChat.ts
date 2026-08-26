@@ -1196,12 +1196,19 @@ export function useChat(options: UseChatOptions = {}) {
       // therefore unconditional; what differs is whether anything ELSE gets to be said about it.
       pendingMessages.value = pendingMessages.value.filter(msg => msg.id !== tempId);
       if (err instanceof ConversationAbandonedError) {
-        // This send belongs to a conversation the user has already left, and every remaining write
-        // below is about the conversation now on screen. The banner would blame it for a prompt it
-        // never carried, and lowering the flags would flash idle through a switch that is still
-        // loading its transcript and resuming its run — the regression those flags are deliberately
-        // not reset in `clearMessages` to avoid.
+        // This send belongs to a conversation the user has already left, so the banner would blame
+        // the conversation now on screen for a prompt it never carried, and `isLoading` would flash
+        // idle through a switch that is still loading its transcript and resuming its run — the
+        // regression `clearMessages` deliberately leaves that flag alone to avoid.
+        //
+        // `isSending` is different, and must still come down. It is per-SEND, not per-conversation,
+        // and this send is over. Nothing else would lower it: `markStreamLoading` raises `isLoading`
+        // alone, `clearMessages` resets neither, and run completion lowers only `isLoading`. Left
+        // raised it wedges the conversation switched into for good — the guard at the top of this
+        // function drops every later send with no banner, and the mode/provider/workspace selectors
+        // stay disabled.
         log.info('Dropping a send whose conversation was left before it started', { tempId });
+        isSending.value = false;
         return;
       }
       // The banner is the user's record of the prompt that was dropped above.

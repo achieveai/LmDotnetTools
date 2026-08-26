@@ -1240,6 +1240,33 @@ describe('useChat first-send reservation vs. navigation (#435)', () => {
     await sending;
 
     expect(chat.isLoading.value).toBe(true);
+    // `isSending` is per-SEND, and this send is over. Only `isLoading` may legitimately survive here,
+    // because the run it describes belongs to the conversation switched into. Nothing on this path
+    // lowers `isSending` afterwards — `markStreamLoading` raises `isLoading` alone, `clearMessages`
+    // resets neither, and run completion lowers only `isLoading` — so leaving it raised wedges the
+    // conversation permanently: see the following case.
+    expect(chat.isSending.value).toBe(false);
+  });
+
+  it('lets the next send through after an abandoned reservation lands mid-resume', async () => {
+    const provision = deferredProvision();
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId: provision.hook });
+
+    const { sending } = await sendAndAwaitReservation(chat, provision);
+    await chat.clearMessages();
+    chat.setThreadId('thread-b');
+    chat.markStreamLoading();
+
+    provision.resolve('thread-abandoned');
+    await sending;
+
+    // The user types into the conversation they switched to. `sendMessage`'s own top guard drops a
+    // send outright while `isSending` is raised, so an abandoned send that never lowered it takes
+    // send-while-streaming away for the rest of the session — silently, with no banner.
+    await chat.sendMessage('a prompt for the conversation I am actually in');
+
+    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledTimes(1);
+    expect(wsMocks.createWebSocketConnection.mock.calls[0]?.[0]?.threadId).toBe('thread-b');
   });
 
   it('still adopts the reservation for a send the user did not abandon', async () => {
