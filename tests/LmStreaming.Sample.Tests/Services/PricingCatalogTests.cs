@@ -4,6 +4,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using LmStreaming.Sample.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace LmStreaming.Sample.Tests.Services;
@@ -118,6 +119,109 @@ public class PricingCatalogTests
             ("Pricing:Models:partial:PromptPerMillion", "2.5")));
 
         resolver.Resolve("partial").Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("-3", "15")]
+    [InlineData("3", "-15")]
+    [InlineData("-3", "-15")]
+    public void ANegativeRate_IsSkipped_RatherThanSummedIntoANegativeCost(string prompt, string completion)
+    {
+        var resolver = ResolverFrom(Config(
+            ("Pricing:Models:typo:PromptPerMillion", prompt),
+            ("Pricing:Models:typo:CompletionPerMillion", completion)));
+
+        // #378 shipped with no rates in the repository precisely so a wrong number can never be summed and
+        // believed. An operator's stray minus sign reintroduces exactly that: a cost that is reported, and
+        // is not merely wrong but the wrong SIGN. Unusable is the same category as absent.
+        resolver.Resolve("typo").Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("NaN", "15")]
+    [InlineData("3", "NaN")]
+    [InlineData("Infinity", "15")]
+    [InlineData("3", "Infinity")]
+    [InlineData("-Infinity", "15")]
+    public void ANonFiniteRate_IsSkipped_RatherThanOverflowingTheConversionToDecimal(
+        string prompt,
+        string completion)
+    {
+        var resolver = ResolverFrom(Config(
+            ("Pricing:Models:stray-e:PromptPerMillion", prompt),
+            ("Pricing:Models:stray-e:CompletionPerMillion", completion)));
+
+        // NaN and infinity have no decimal representation, so PricingConfigResolver's (decimal) cast throws
+        // OverflowException — one mistyped rate takes down pricing for every model the host runs, not just
+        // the mistyped one. Skipping keeps the blast radius at the bad entry.
+        resolver.Resolve("stray-e").Should().BeNull();
+    }
+
+    [Fact]
+    public void AZeroRate_IsAFreeModel_AndMustStillResolve()
+    {
+        var resolver = ResolverFrom(Config(
+            ("Pricing:Models:free-model:PromptPerMillion", "0"),
+            ("Pricing:Models:free-model:CompletionPerMillion", "0")));
+        var ledger = new UsageLedger("conv-1", resolver);
+
+        // The case most likely to be broken by an over-eager "reject falsy rates" fix. Zero is a real,
+        // knowable rate — a free model — and "$0.00, priced" is a different fact from "cost unavailable".
+        var pricing = resolver.Resolve("free-model");
+        pricing.Should().NotBeNull();
+        pricing!.PromptPerMillion.Should().Be(0m);
+
+        var record = ledger.UpsertAttempt(Observation("free-model", 1_000_000, 200_000));
+        record.EstimatedPublicCostMicros.Should().Be(0);
+        record.CostProvenance.Should().Be(CostProvenance.PublicEstimate);
+    }
+
+    [Fact]
+    public void ASkippedEntry_IsLogged_SoAnOperatorLearnsTheirRateWasDropped()
+    {
+        var sink = new CapturingLoggerProvider();
+        var services = new ServiceCollection();
+        _ = services.AddLogging(b => b.AddProvider(sink));
+        _ = services.AddConfiguredPricing(Config(
+            ("Pricing:Models:typo:PromptPerMillion", "-3"),
+            ("Pricing:Models:typo:CompletionPerMillion", "15")));
+
+        _ = services.BuildServiceProvider().GetRequiredService<IPricingResolver>();
+
+        // Silently dropping the entry leaves the operator with null costs and no way to tell a typo from an
+        // unconfigured model — the same indistinguishable state #378 was filed against.
+        sink.Messages.Should().ContainSingle(m => m.Contains("typo", StringComparison.Ordinal));
+    }
+
+    /// <summary>Captures log messages so the operator-facing skip warning can be asserted rather than assumed.</summary>
+    private sealed class CapturingLoggerProvider : ILoggerProvider
+    {
+        public List<string> Messages { get; } = [];
+
+        public ILogger CreateLogger(string categoryName) => new Capturing(Messages);
+
+        public void Dispose() { }
+
+        private sealed class Capturing(List<string> messages) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state)
+                where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(
+                LogLevel logLevel,
+                EventId eventId,
+                TState state,
+                Exception? exception,
+                Func<TState, Exception?, string> formatter)
+            {
+                lock (messages)
+                {
+                    messages.Add(formatter(state, exception));
+                }
+            }
+        }
     }
 
     [Fact]
