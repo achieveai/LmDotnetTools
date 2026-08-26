@@ -116,14 +116,16 @@ public sealed class ConversationTranscriptWriterTests
         + "[ -z \"$end\" ] || exit 43\n";
 
     /// <summary>
-    /// The standalone guard, for the two writes that reach the workspace without a shell — the staged
-    /// payload and the containment file, both PUT directly by the gateway. Duplicated for the same reason:
-    /// nothing else would notice if these writes stopped being checked.
+    /// The standalone guard, for the three writes that reach the workspace without a shell — the staged
+    /// payload, the containment file and the oversized tool-result sidecar (#254), all PUT directly by the
+    /// gateway. Duplicated for the same reason: nothing else would notice if these writes stopped being
+    /// checked.
     /// </summary>
     /// <remarks>
-    /// This is the ONLY place the alias check can defend those two writes: a PUT carries no shell, so an
-    /// in-script check would run after the bytes were already through. The containment file is the sharper
-    /// of the two — it is PUT whole, so an aliased path does not append to a tracked file, it REPLACES one.
+    /// This is the ONLY place the alias check can defend those writes: a PUT carries no shell, so an
+    /// in-script check would run after the bytes were already through. The containment file is the sharpest
+    /// of the three — it is PUT whole, so an aliased path does not append to a tracked file, it REPLACES
+    /// one. The sidecar is the mildest: a refusal there inlines the payload and costs the record nothing.
     /// </remarks>
     private const string ExpectedGuardScript =
         ExpectedGuardPreamble + "guard \"$1\" || exit 44\n" + "solo \"$1\" || exit 46\n";
@@ -322,6 +324,15 @@ public sealed class ConversationTranscriptWriterTests
     /// off the production constant could not notice it drifting onto a value <c>tail</c> or <c>sh</c> also
     /// produces.
     /// </summary>
+    /// <summary>
+    /// What the standalone path guard reports when the path is a symlink or lies under one. The literal 44
+    /// is duplicated here on the same footing as 42 and 43 above: it is the private code that carries
+    /// "refused" back from a script whose other exits mean something else entirely, and a test that read it
+    /// off the production constant could not notice it drifting onto a value <c>sh</c> also produces.
+    /// </summary>
+    private static SandboxCommandResult Refused() =>
+        new() { ExitCode = 44, StandardOutput = "", StandardError = "", OperationId = "op" };
+
     private static SandboxCommandResult Missing() =>
         new() { ExitCode = 42, StandardOutput = "", StandardError = "", OperationId = "op" };
 
@@ -1679,6 +1690,705 @@ public sealed class ConversationTranscriptWriterTests
 
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
         _ = Written(browser, 0).Should().Be(ExpectedAppend(messages));
+    }
+
+    // ---------------------------------------------------------------- #253: S2S-owned threads
+
+    /// <summary>
+    /// #253, and the whole of it. ADR 0011 gap 3 recorded S2S conversations as getting no transcript
+    /// "in v1", and the issue's own framing blames the attach path — but <c>Attach</c> was never the
+    /// problem. <c>Program.cs</c> wraps the ENTIRE pooled agent factory in <c>AttachingToMirror</c>,
+    /// so an S2S-created conversation has always been subscribed and has always scheduled flushes.
+    /// Every one of those flushes then died at step 1.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The mechanism: <c>SandboxSessionRegistry</c> compares the binding's ORIGINAL creating caller
+    /// against the credential this call presents, raw and nullable, null meaning "interactive UI". A
+    /// background flush has no inbound request to borrow a credential from, so it presented null; an
+    /// S2S thread's binding carries the daemon's app id; <c>Equals("review-daemon", null)</c> is
+    /// false; <c>CredentialConflict</c>, every flush, forever. There was no retry that could ever
+    /// win, because nothing about the inputs ever changed.
+    /// </para>
+    /// <para>
+    /// That comparison is a CROSS-ACTOR guard — it stops one app reading another app's session. The
+    /// background mirror is not another actor; it is the host writing this thread's own record into
+    /// this thread's own workspace, and it holds no credential to be checked because it is not a
+    /// caller at all. Presenting null was never "the mirror claiming to be the UI", it was the mirror
+    /// having nothing to say, and the registry read the silence as a foreign claim.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task AnS2SOwnedThread_GetsATranscript_RatherThanConflictingWithItsOwnBindingForever()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        PersistedMessage[] messages = [Msg("m1", 1, "User"), Msg("m2", 2)];
+        await store.AppendMessagesAsync(ThreadId, messages);
+
+        // The thread's sandbox binding was created by an S2S caller, so the registry's provenance
+        // check is armed against that app id and nothing else matches it.
+        var browser = new FakeFileBrowser { OwnerAppId = "review-daemon" };
+        var writer = CreateWriter(store, browser);
+
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+        _ = Written(browser, 0).Should().Be(ExpectedAppend(messages));
+        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
+            .Should().Contain(MainPath(Title));
+    }
+
+    /// <summary>
+    /// Non-vacuity for the test above, and the reason it cannot be satisfied by weakening the guard.
+    /// A FOREIGN app's request — a real caller, presenting a real credential that is not the owner's
+    /// — must still be refused. #253 is about the background mirror having no caller, not about the
+    /// cross-actor check being wrong.
+    /// </summary>
+    [Fact]
+    public async Task TheProvenanceGuardStillRefusesAForeignCaller_SoTheFixIsNotAWeakening()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User")]);
+
+        var browser = new FakeFileBrowser { OwnerAppId = "review-daemon" };
+
+        var refused = await browser.ResolveThreadWorkspaceSessionAsync(
+            ThreadId,
+            WorkspaceId,
+            new SandboxCredential("some-other-app", "key"));
+
+        _ = refused.Outcome.Should().Be(SandboxSessionResolutionOutcome.CredentialConflict);
+        _ = refused.ExistingAppId.Should().Be("review-daemon");
+    }
+
+    /// <summary>
+    /// #253 asks what the title-derived filename should be "when the conversation was never titled by
+    /// a human", which is the ORDINARY case for S2S: a daemon hands work to this host and nobody is
+    /// looking at a UI to type a title.
+    /// </summary>
+    /// <remarks>
+    /// The decision is to change nothing. <c>MainFileLeaf</c> already falls back to the bare
+    /// <c>shortThreadId</c> when the slug is empty — no leading hyphen, no invented "untitled"
+    /// literal — and that fallback is already exercised by titles that slug to nothing. Minting an
+    /// <c>untitled-</c> prefix would collide with a real conversation someone titles "Untitled", and
+    /// <c>IsThisConversation</c>'s adoption predicate already accepts the bare form as this
+    /// conversation's own, so a later retitle moves the file correctly with no extra case. This test
+    /// pins the answer as a decision rather than leaving it to be rediscovered.
+    /// </remarks>
+    [Fact]
+    public async Task AnUntitledS2SThread_WritesUnderItsBareShortId_WithNoLeadingSeparator()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store, title: null);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User")]);
+
+        var browser = new FakeFileBrowser { OwnerAppId = "review-daemon" };
+        var writer = CreateWriter(store, browser);
+
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var expected = $"{ConversationTranscriptWriter.TranscriptDirectory}/{ShortThreadId}"
+            + ConversationTranscriptWriter.TranscriptExtension;
+        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
+            .Should().Contain(expected);
+        _ = expected.Should().NotContain($"/-{ShortThreadId}");
+    }
+
+    /// <summary>
+    /// The issue's second acceptance clause: sub-agents of an S2S root land under
+    /// <c>{leaf}_agents/</c>. <c>ConversationDescendantScanner</c> reads only persisted thread
+    /// metadata and knows nothing about credentials, so it was never itself broken for S2S — but it
+    /// never ran either, because the root's own step-1 failure returns before the fan-out is reached.
+    /// This proves the fan-out is genuinely restored rather than merely unblocked in principle.
+    /// </summary>
+    [Fact]
+    public async Task SubAgentsOfAnS2SRoot_LandUnderTheAgentsDirectory()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User")]);
+        await SeedSubAgentAsync(store, "agent-a", "Explorer", Msg("s1", 1, "User"));
+
+        var browser = new FakeFileBrowser { OwnerAppId = "review-daemon" };
+        var writer = CreateWriter(store, browser);
+
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
+            .Should().Contain(
+                AgentPath(Title, "agent-a", "Explorer"),
+                "the descendant fan-out keys off persisted metadata, not credentials, so once the "
+                    + "root resolves its children must be mirrored too");
+    }
+
+    // ---------------------------------------------------------------- #254: externalized tool results
+
+    /// <summary>A tool result whose payload is comfortably over the sidecar threshold.</summary>
+    private static PersistedMessage BigToolResult(string id, long timestamp, string threadId = ThreadId) =>
+        ToolResultOfExactly(
+            id,
+            timestamp,
+            ConversationTranscriptWriter.ToolResultSidecarThresholdBytes + 100,
+            threadId);
+
+    /// <summary>
+    /// A tool result whose <c>message_json</c> is EXACTLY <paramref name="bytes"/> UTF-8 bytes. The two
+    /// quotes are ASCII and so are the filler characters, so the length of the string is the length of
+    /// the encoding — the boundary tests assert that rather than assume it.
+    /// </summary>
+    private static PersistedMessage ToolResultOfExactly(
+        string id,
+        long timestamp,
+        int bytes,
+        string threadId = ThreadId) =>
+        Msg(
+            id,
+            timestamp,
+            role: "Tool",
+            threadId: threadId,
+            messageType: nameof(ToolsCallResultMessage),
+            messageJson: "\"" + new string('x', bytes - 2) + "\"");
+
+    /// <summary>
+    /// Where <paramref name="path"/> ends up after the directory renames in <paramref name="commands"/>
+    /// are replayed over it, in order. This is the only way to ask a double that MODELS a workspace the
+    /// question that actually matters about a reference — does the path a line names still hold the
+    /// payload — rather than asserting on the argv of the renames and calling that an answer.
+    /// </summary>
+    /// <remarks>
+    /// A rename relocates the subtree, so a path INSIDE the moved directory follows it; that is the case
+    /// the sidecar references live in, and a replay that only matched the directory itself would report
+    /// every reference as intact no matter what the writer did.
+    /// </remarks>
+    private static string AfterRenames(string path, IEnumerable<SandboxCommand> commands)
+    {
+        var current = path;
+        foreach (var move in commands.Where(IsMove))
+        {
+            var from = move.Arguments[^2];
+            var to = move.Arguments[^1];
+            if (string.Equals(current, from, StringComparison.Ordinal))
+            {
+                current = to;
+            }
+            else if (current.StartsWith(from + "/", StringComparison.Ordinal))
+            {
+                current = to + current[from.Length..];
+            }
+        }
+
+        return current;
+    }
+
+    /// <summary>The workspace path a line's <c>message_json_ref</c> names, resolved from the conversation root.</summary>
+    private static string Resolve(string? reference) =>
+        $"{ConversationTranscriptWriter.TranscriptDirectory}/{reference}";
+
+    /// <summary>The sidecar directory that sits beside the transcript file of <paramref name="title"/>.</summary>
+    private static string BlobsDirectory(string? title) =>
+        $"{ConversationTranscriptWriter.TranscriptDirectory}/"
+        + $"{WorkspaceTranscriptLine.MainFileLeaf(title, ShortThreadId)}{ConversationTranscriptWriter.BlobsDirectorySuffix}";
+
+    /// <summary>Reads one field off the n-th line of a staged payload.</summary>
+    private static string? Field(string payload, int lineIndex, string field)
+    {
+        var line = payload.Split('\n', StringSplitOptions.RemoveEmptyEntries)[lineIndex];
+        var property = JsonSerializer.Deserialize<JsonElement>(line).GetProperty(field);
+        return property.ValueKind == JsonValueKind.Null ? null : property.GetString();
+    }
+
+    /// <summary>
+    /// #254. A tool result can return a blob that dwarfs the rest of the conversation — a file read, a
+    /// big HTTP response, a directory listing of a real repo — and inlining it costs twice: every
+    /// line-by-line reader carries the whole blob in memory just to reach the next line, and the
+    /// mirror's "duplicated tail on retry" failure model means a failed append re-writes that suffix,
+    /// blob included.
+    /// </summary>
+    [Fact]
+    public async Task ALargeToolResult_IsWrittenToASidecar_AndReferencedFromTheLine()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        var big = BigToolResult("m1", 1);
+        await store.AppendMessagesAsync(ThreadId, [big]);
+
+        var browser = new FakeFileBrowser();
+        var writer = CreateWriter(store, browser);
+
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var payload = Written(browser, 0);
+        var uid = WorkspaceTranscriptLine.DeriveUid(big.Id);
+        var expectedRef = $"{WorkspaceTranscriptLine.MainFileLeaf(Title, ShortThreadId)}"
+            + $"{ConversationTranscriptWriter.BlobsDirectorySuffix}/{uid}.json";
+
+        // The content left the line...
+        _ = Field(payload, 0, "message_json").Should().BeNull();
+        _ = Field(payload, 0, "message_json_ref").Should().Be(expectedRef);
+
+        // ...and landed in the sidecar, whole.
+        var sidecar = browser.Writes.Should()
+            .ContainSingle(w => w.Path == $"{ConversationTranscriptWriter.TranscriptDirectory}/{expectedRef}")
+            .Which;
+        _ = Encoding.UTF8.GetString(sidecar.Bytes).Should().Be(big.MessageJson);
+
+        // The point of the exercise: the line itself is now small.
+        _ = payload.Length.Should().BeLessThan(ConversationTranscriptWriter.ToolResultSidecarThresholdBytes);
+    }
+
+    /// <summary>
+    /// The threshold is a threshold, not a switch. An ordinary tool result stays inline, because
+    /// externalising everything would turn a conversation with fifty small tool calls into fifty extra
+    /// files and fifty extra gateway writes for no benefit.
+    /// </summary>
+    [Fact]
+    public async Task AnOrdinaryToolResult_StaysInline_AndCarriesANullRef()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        var small = Msg("m1", 1, role: "Tool", messageType: nameof(ToolsCallResultMessage));
+        await store.AppendMessagesAsync(ThreadId, [small]);
+
+        var browser = new FakeFileBrowser();
+        var writer = CreateWriter(store, browser);
+
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var payload = Written(browser, 0);
+        _ = Field(payload, 0, "message_json").Should().Be(small.MessageJson);
+        _ = Field(payload, 0, "message_json_ref").Should().BeNull();
+        _ = browser.Writes.Should().NotContain(w =>
+            w.Path.Contains(ConversationTranscriptWriter.BlobsDirectorySuffix, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Scope, pinned. #254 is about TOOL RESULTS, and the scope is not incidental: a long assistant turn
+    /// or a big reasoning block is the conversation's own substance and a reader expects to find it on
+    /// the line. A tool result's blob is machine output the conversation merely carried. Externalising
+    /// by size alone would move the former as readily as the latter.
+    /// </summary>
+    [Fact]
+    public async Task ALargeMessageThatIsNotAToolResult_StaysInline()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        var wordy = Msg(
+            "m1",
+            1,
+            messageType: "TextMessage",
+            messageJson: "\"" + new string('y', ConversationTranscriptWriter.ToolResultSidecarThresholdBytes + 100) + "\"");
+        await store.AppendMessagesAsync(ThreadId, [wordy]);
+
+        var browser = new FakeFileBrowser();
+        var writer = CreateWriter(store, browser);
+
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var payload = Written(browser, 0);
+        _ = Field(payload, 0, "message_json").Should().Be(wordy.MessageJson);
+        _ = Field(payload, 0, "message_json_ref").Should().BeNull();
+    }
+
+    /// <summary>
+    /// The compatibility clause of #254: "a reader that ignores the new field still parses every line".
+    /// The key set is PINNED — every line carries every key, absent values as JSON null — so this also
+    /// pins that <c>message_json_ref</c> joined that set rather than being emitted only when populated,
+    /// which would give a columnar reader two schemas for one file.
+    /// </summary>
+    [Fact]
+    public async Task EveryLine_ParsesAndCarriesTheRefKey_WhetherOrNotItIsPopulated()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(
+            ThreadId,
+            [Msg("m1", 1, "User"), BigToolResult("m2", 2), Msg("m3", 3)]);
+
+        var browser = new FakeFileBrowser();
+        var writer = CreateWriter(store, browser);
+
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var lines = Written(browser, 0).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        _ = lines.Should().HaveCount(3);
+
+        foreach (var line in lines)
+        {
+            // Parses at all - the clause a reader that ignores the new field depends on.
+            var element = JsonSerializer.Deserialize<JsonElement>(line);
+            _ = element.TryGetProperty("message_json_ref", out _).Should().BeTrue();
+
+            // And the ordering guarantee the whole file rests on is untouched by the new field.
+            _ = element.TryGetProperty("uid", out _).Should().BeTrue();
+            _ = element.TryGetProperty("parent_uid", out _).Should().BeTrue();
+        }
+
+        // Non-vacuity: exactly one of the three was actually externalised.
+        _ = lines.Count(l => JsonSerializer.Deserialize<JsonElement>(l)
+            .GetProperty("message_json_ref").ValueKind != JsonValueKind.Null)
+            .Should().Be(1);
+    }
+
+    /// <summary>
+    /// What a retitle moves, and what it pointedly does not. The file and the <c>_agents/</c> directory
+    /// follow the new slug; <c>{leaf}_blobs</c> does NOT, because its contents are addressed by
+    /// references already written into lines that nothing will rewrite. The asymmetry is the design:
+    /// the sub-agent directory is found by walking to it, so its name is free to change.
+    /// </summary>
+    /// <remarks>
+    /// The stranded-payload consequence of moving it is stated as an invariant in
+    /// <see cref="ARefWrittenBeforeARetitle_StillNamesItsPayloadAfterwards"/>. This test is the
+    /// mechanical half — which paths appear in the argv — and exists to keep the two moves that SHOULD
+    /// happen from being lost along with the one that should not.
+    /// </remarks>
+    [Fact]
+    public async Task Retitle_MovesTheFileAndTheAgentsDirectory_ButNeverTheBlobsDirectory()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [BigToolResult("m1", 1)]);
+        await SeedSubAgentAsync(store, "a1", "alpha", Msg("a1a", 10, threadId: "subagent-a1"));
+
+        var browser = new FakeFileBrowser();
+        var writer = CreateWriter(store, browser);
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        await SeedConversationAsync(store, title: RetitledTo);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m2", 2)]);
+        browser.Commands.Clear();
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var moves = browser.Commands.Where(IsMove)
+            .Select(c => (From: c.Arguments[^2], To: c.Arguments[^1]))
+            .ToList();
+
+        _ = moves.Should().Equal(
+            [
+                (MainPath(Title), MainPath(RetitledTo)),
+                (AgentsDirectory(Title), AgentsDirectory(RetitledTo)),
+            ],
+            "the file and the sub-agent directory follow the slug, and nothing else does");
+
+        // Said again against the suffix itself, so a rename of the helpers cannot hide a third move.
+        _ = browser.Commands.SelectMany(c => c.Arguments).Should().NotContain(
+            argument => argument.Contains(ConversationTranscriptWriter.BlobsDirectorySuffix, StringComparison.Ordinal),
+            "no shell call may touch the sidecar directory during a retitle");
+    }
+
+    /// <summary>
+    /// The invariant every other sidecar test is downstream of: a <c>message_json_ref</c>, once written,
+    /// keeps naming the payload. References are stamped with the leaf in force at WRITE time and nothing
+    /// rewrites a line after it is appended, so any later relocation of <c>{leaf}_blobs</c> silently
+    /// invalidates every reference already in the file — the retitle hollows out the record instead of
+    /// merely littering.
+    /// </summary>
+    /// <remarks>
+    /// Stated as "the path the line names still holds the payload" rather than as an argv assertion,
+    /// because that is the property a reader depends on and it is the one an argv assertion cannot see.
+    /// </remarks>
+    [Fact]
+    public async Task ARefWrittenBeforeARetitle_StillNamesItsPayloadAfterwards()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        var big = BigToolResult("m1", 1);
+        await store.AppendMessagesAsync(ThreadId, [big]);
+
+        var browser = new FakeFileBrowser();
+        var writer = CreateWriter(store, browser);
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        // What the line committed to, and where the bytes went, BEFORE any retitle.
+        var reference = Field(Written(browser, 0), 0, "message_json_ref");
+        _ = reference.Should().NotBeNull("the fixture is only meaningful if this row was externalised");
+        var payloadPath = Resolve(reference);
+        _ = browser.Writes.Select(w => w.Path).Should().Contain(payloadPath);
+
+        await SeedConversationAsync(store, title: RetitledTo);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m2", 2)]);
+        browser.Commands.Clear();
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        // The retitle really happened - otherwise this asserts nothing.
+        _ = browser.Commands.Where(IsMove).Select(c => (c.Arguments[^2], c.Arguments[^1]))
+            .Should().Contain((MainPath(Title), MainPath(RetitledTo)));
+
+        _ = AfterRenames(payloadPath, browser.Commands).Should().Be(
+            payloadPath,
+            "the reference was stamped with the leaf in force when it was written and nothing rewrites "
+                + "a line afterwards, so moving the sidecar out from under it strands the payload");
+    }
+
+    /// <summary>
+    /// The boundary itself. #254 says a tool result "at or above 64 KiB" is externalised, so the row
+    /// weighing EXACTLY the threshold belongs on the sidecar side of the line — and that is the one case
+    /// no other test in this section reaches, because they all use the threshold plus a comfortable
+    /// margin. A comparison that drifted by one place (<c>&lt;</c> to <c>&lt;=</c>) leaves every one of
+    /// them green while the documented boundary means the opposite of what it says.
+    /// </summary>
+    [Fact]
+    public async Task AToolResultOfExactlyTheThreshold_IsExternalised()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        var exact = ToolResultOfExactly("m1", 1, ConversationTranscriptWriter.ToolResultSidecarThresholdBytes);
+        await store.AppendMessagesAsync(ThreadId, [exact]);
+
+        // The fixture IS the assertion's premise, so it is measured rather than assumed.
+        _ = Encoding.UTF8.GetByteCount(exact.MessageJson).Should()
+            .Be(ConversationTranscriptWriter.ToolResultSidecarThresholdBytes);
+
+        var browser = new FakeFileBrowser();
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var expectedRef = $"{WorkspaceTranscriptLine.MainFileLeaf(Title, ShortThreadId)}"
+            + $"{ConversationTranscriptWriter.BlobsDirectorySuffix}"
+            + $"/{WorkspaceTranscriptLine.DeriveUid(exact.Id)}.json";
+
+        var payload = Written(browser, 0);
+        _ = Field(payload, 0, "message_json_ref").Should().Be(
+            expectedRef,
+            "\"at or above\" puts the row that weighs exactly the threshold on the sidecar side");
+        _ = Field(payload, 0, "message_json").Should().BeNull();
+
+        var sidecar = browser.Writes.Should()
+            .ContainSingle(w => w.Path == $"{ConversationTranscriptWriter.TranscriptDirectory}/{expectedRef}")
+            .Which;
+        _ = Encoding.UTF8.GetString(sidecar.Bytes).Should().Be(exact.MessageJson);
+    }
+
+    /// <summary>
+    /// The same invariant reached the way a retitle actually happens in production: the host restarted,
+    /// so the writer that renames is NOT the writer that wrote the sidecars and adopts the stale leaf out
+    /// of a directory listing. A cold writer must leave the sidecar directory alone for the same reason
+    /// a warm one must — the references naming it are in a file nothing rewrites — and it has less to go
+    /// on, since it never saw those references being written.
+    /// </summary>
+    /// <remarks>
+    /// This is the case a suite driving both flushes through ONE writer cannot reach at all, which is why
+    /// it is spelled out separately from
+    /// <see cref="ARefWrittenBeforeARetitle_StillNamesItsPayloadAfterwards"/>. It also pins the second
+    /// half of the design: the post-retitle write mints a reference under the NEW leaf, so the two
+    /// sidecar directories coexist, each addressed by the lines written while its leaf was current.
+    /// </remarks>
+    [Fact]
+    public async Task AColdWriter_AdoptingAStaleLeaf_LeavesTheBlobsDirectoryWhereItWasWritten()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        var big = BigToolResult("m1", 1);
+        await store.AppendMessagesAsync(ThreadId, [big]);
+
+        // The process that is about to die: it leaves a transcript and a sidecar directory on disk.
+        var browser = new FakeFileBrowser();
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var stale = WorkspaceTranscriptLine.MainFileLeaf(Title, ShortThreadId);
+        var uid = WorkspaceTranscriptLine.DeriveUid(big.Id);
+        var oldReference = Field(Written(browser, 0), 0, "message_json_ref");
+        _ = browser.Writes.Select(w => w.Path).Should().Contain(
+            Resolve(oldReference),
+            "the fixture is only a cold start if a sidecar was really left behind");
+
+        // What that process left behind, as the listing a fresh writer sees it through.
+        browser.Listings[ConversationTranscriptWriter.TranscriptDirectory] =
+        [
+            new SandboxDirectoryEntry(
+                $"{stale}{ConversationTranscriptWriter.TranscriptExtension}",
+                SandboxEntryType.File,
+                128,
+                NameLossy: false
+            ),
+            new SandboxDirectoryEntry(
+                $"{stale}{ConversationTranscriptWriter.BlobsDirectorySuffix}",
+                SandboxEntryType.Directory,
+                null,
+                NameLossy: false
+            ),
+        ];
+
+        // The conversation was retitled while nothing was mirroring it.
+        await SeedConversationAsync(store, title: RetitledTo);
+        browser.Commands.Clear();
+        browser.Writes.Clear();
+
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        // The adoption this path exists for really ran...
+        _ = browser.Commands.Where(IsMove).Select(c => (c.Arguments[^2], c.Arguments[^1]))
+            .Should().Contain((MainPath(Title), MainPath(RetitledTo)));
+
+        // ...and the reference the previous process wrote still names its payload.
+        _ = AfterRenames(Resolve(oldReference), browser.Commands).Should().Be(
+            Resolve(oldReference),
+            "a cold writer knows nothing about the references already in the file, so the only safe "
+                + "thing it can do with the sidecar directory is nothing");
+
+        // The other half: what this writer externalises now lands under the CURRENT leaf, so the two
+        // directories coexist rather than one being rewritten into the other.
+        var newReference = Field(Written(browser, 0), 0, "message_json_ref");
+        _ = newReference.Should().Be(
+            $"{WorkspaceTranscriptLine.MainFileLeaf(RetitledTo, ShortThreadId)}"
+            + $"{ConversationTranscriptWriter.BlobsDirectorySuffix}/{uid}.json");
+        _ = browser.Writes.Select(w => w.Path).Should().Contain(Resolve(newReference));
+    }
+
+    /// <summary>
+    /// Where a sub-agent line's <c>message_json_ref</c> is anchored. Sub-agent rows reach the sidecar
+    /// through the same append path as main-file rows, so their refs are built against the CONVERSATION
+    /// ROOT — <c>.conversations/</c> — even though the line itself lives one level down in
+    /// <c>{leaf}_agents/</c>. Concatenating such a ref onto its own file's directory addresses nothing.
+    /// </summary>
+    /// <remarks>
+    /// Pinned rather than left to the doc because the two plausible anchors differ only for these files,
+    /// and a reader that guesses wrong sees a missing payload rather than an error. See the remarks on
+    /// <see cref="WorkspaceTranscriptLine.MessageJsonRef"/>.
+    /// </remarks>
+    [Fact]
+    public async Task ASubAgentSidecarRef_IsRelativeToTheConversationRoot_NotToItsOwnDirectory()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User")]);
+        var big = BigToolResult("a1a", 10, threadId: "subagent-a1");
+        await SeedSubAgentAsync(store, "a1", "alpha", big);
+
+        var browser = new FakeFileBrowser();
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        // The sub-agent's own file is the SECOND staged payload; the main transcript is the first.
+        _ = browser.Commands.Where(IsSplice).Select(c => c.Arguments[6])
+            .Should().Equal(MainPath(Title), AgentPath(Title, "a1", "alpha"));
+
+        var uid = WorkspaceTranscriptLine.DeriveUid(big.Id);
+        var reference = Field(Written(browser, 1), 0, "message_json_ref");
+        _ = reference.Should().Be(
+            $"{WorkspaceTranscriptLine.MainFileLeaf(Title, ShortThreadId)}"
+            + $"{ConversationTranscriptWriter.BlobsDirectorySuffix}/{uid}.json");
+
+        // Resolved from the conversation root it lands on the file that was written; resolved from the
+        // sub-agent file's own directory it lands on nothing.
+        var written = browser.Writes.Select(w => w.Path).ToList();
+        _ = written.Should().Contain($"{ConversationTranscriptWriter.TranscriptDirectory}/{reference}");
+        _ = written.Should().NotContain($"{AgentsDirectory(Title)}/{reference}");
+    }
+
+    /// <summary>
+    /// Both spellings reach this writer, so both must externalise. The aggregate message and the
+    /// single-call one are separate types with separate names, and the gate matches NAMES rather than
+    /// types — so the second entry in the set is load-bearing and nothing else in the suite would notice
+    /// it being dropped: every other sidecar test drives the plural spelling.
+    /// </summary>
+    /// <remarks>
+    /// <c>nameof</c> rather than a string literal on purpose: the production set spells the names out as
+    /// literals precisely to avoid a type dependency, so a test that also used a literal could not notice
+    /// the two drifting apart. Here the compiler checks that this name is still a real type's name.
+    /// </remarks>
+    [Fact]
+    public async Task ASingleCallToolResult_IsExternalisedToo_NotOnlyTheAggregateSpelling()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        var big = Msg(
+            "m1",
+            1,
+            role: "Tool",
+            messageType: nameof(ToolCallResultMessage),
+            messageJson: "\"" + new string('x', ConversationTranscriptWriter.ToolResultSidecarThresholdBytes + 100) + "\"");
+        await store.AppendMessagesAsync(ThreadId, [big]);
+
+        // The premise: this is the OTHER name, not the one every other test in this section uses.
+        _ = nameof(ToolCallResultMessage).Should().NotBe(nameof(ToolsCallResultMessage));
+
+        var browser = new FakeFileBrowser();
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var expectedRef = $"{WorkspaceTranscriptLine.MainFileLeaf(Title, ShortThreadId)}"
+            + $"{ConversationTranscriptWriter.BlobsDirectorySuffix}"
+            + $"/{WorkspaceTranscriptLine.DeriveUid(big.Id)}.json";
+
+        var payload = Written(browser, 0);
+        _ = Field(payload, 0, "message_json_ref").Should().Be(expectedRef);
+        _ = Field(payload, 0, "message_json").Should().BeNull();
+        _ = browser.Writes.Select(w => w.Path).Should()
+            .Contain($"{ConversationTranscriptWriter.TranscriptDirectory}/{expectedRef}");
+    }
+
+    /// <summary>
+    /// The symlink invariant, extended to the surface this feature added. A sidecar PUT carries no shell,
+    /// so an in-script check would run after the bytes were already through — it is guarded by
+    /// <c>IsPathSafeAsync</c> immediately before the write, exactly like the staged payload and the
+    /// <c>.gitignore</c>. A link planted at the sidecar name is REFUSED and the payload inlines: refused,
+    /// never followed, never repaired.
+    /// </summary>
+    /// <remarks>
+    /// The refusal is scoped to the SIDECAR path alone. Refusing every guard would defer the whole flush
+    /// and this test would pass without ever reaching the branch it is about — the transcript would be
+    /// empty for an unrelated reason. Here the flush still succeeds and the row still lands; only its
+    /// shape changes.
+    /// </remarks>
+    [Fact]
+    public async Task AGuardRefusalOnTheSidecarPath_InlinesThePayload_AndWritesNoSidecar()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        var big = BigToolResult("m1", 1);
+        await store.AppendMessagesAsync(ThreadId, [big]);
+
+        var sidecarPath = $"{BlobsDirectory(Title)}/{WorkspaceTranscriptLine.DeriveUid(big.Id)}.json";
+        var browser = new FakeFileBrowser
+        {
+            ExecuteHandler = command =>
+                IsGuard(command) && command.Arguments[^1] == sidecarPath ? Refused() : Ok(),
+        };
+
+        // The flush still succeeds - a refused sidecar costs the record nothing.
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        // The guard really was consulted for this path; without that, the refusal above is inert and the
+        // assertions below would hold for the wrong reason.
+        _ = browser.Commands.Any(c => IsGuard(c) && c.Arguments[^1] == sidecarPath).Should().BeTrue(
+            "the sidecar PUT must be guarded before the bytes go through, not after");
+
+        // The payload stayed on the line, whole.
+        var payload = Written(browser, 0);
+        _ = Field(payload, 0, "message_json").Should().Be(big.MessageJson);
+        _ = Field(payload, 0, "message_json_ref").Should().BeNull(
+            "a reference to a file that was refused would point at nothing");
+
+        // And nothing was written through the refused path - refused, not followed, not repaired.
+        _ = browser.Writes.Select(w => w.Path).Should().NotContain(
+            p => p.Contains(ConversationTranscriptWriter.BlobsDirectorySuffix, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// The same "every failure inlines" clause on the other reachable failure: the PUT itself is rejected
+    /// by the gateway. A transcript holding the payload beats one holding a reference to a file that was
+    /// never written, so the exception is swallowed at this one call site and the line goes out complete.
+    /// </summary>
+    [Fact]
+    public async Task AFailedSidecarWrite_InlinesThePayload_AndStillAppendsTheRow()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        var big = BigToolResult("m1", 1);
+        await store.AppendMessagesAsync(ThreadId, [big]);
+
+        var browser = new FakeFileBrowser
+        {
+            WriteFailure = path =>
+                path.Contains(ConversationTranscriptWriter.BlobsDirectorySuffix, StringComparison.Ordinal)
+                    ? new SandboxException(SandboxErrorKind.Protocol, "gateway said no")
+                    : null,
+        };
+
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var payload = Written(browser, 0);
+        _ = Field(payload, 0, "message_json").Should().Be(big.MessageJson);
+        _ = Field(payload, 0, "message_json_ref").Should().BeNull();
+
+        // The row is still in the file - a failed sidecar must not cost the record the row itself.
+        _ = UidsIn(payload).Should().Equal(WorkspaceTranscriptLine.DeriveUid(big.Id));
     }
 
     // ---------------------------------------------------------------- read until stable

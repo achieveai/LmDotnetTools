@@ -1250,6 +1250,51 @@ public sealed class WorkspaceTranscriptMirrorTests
     }
 
     /// <summary>
+    /// #253 at the level the issue's acceptance clause asks for: the mirror, not the writer. An
+    /// S2S-created conversation with a workspace must produce a transcript, driven the same way a UI
+    /// conversation is — attach, publish a run completion, expect the file.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Worth stating because the issue's framing points somewhere else: <c>Attach</c> was never the
+    /// problem. <c>Program.cs</c> wraps the WHOLE pooled agent factory in <c>AttachingToMirror</c>, so
+    /// an S2S conversation has always been subscribed and has always scheduled flushes. Every flush
+    /// then died at step 1, on a provenance comparison that read the background drain's absent caller
+    /// as the interactive UI and so as a foreign actor against an S2S-owned binding.
+    /// </para>
+    /// <para>
+    /// The fixture's discriminating part is <c>OwnerAppId</c>. Every other test in this file uses a
+    /// double that resolves successfully no matter what credential it is handed, which is exactly why
+    /// this defect survived a suite that otherwise covers the mirror thoroughly — an S2S thread and a
+    /// UI thread were literally the same fixture, so no test here could tell them apart.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Attach_MirrorsAnS2SOwnedConversation_NotOnlyAUiOwnedOne()
+    {
+        var store = new FlushCountingStore(new InMemoryConversationStore());
+        await SeedConversationAsync(store);
+        PersistedMessage[] only = [Msg("m1", 1)];
+        await store.AppendMessagesAsync(ThreadId, only);
+
+        // The conversation's sandbox binding was established by an S2S caller. Before #253 this alone
+        // was enough to guarantee no transcript, forever, with no error anyone would see.
+        var browser = new FakeFileBrowser { OwnerAppId = "review-daemon" };
+        await using var agent = new PublishingAgent(ThreadId);
+        using var mirror = CreateMirror(store, browser, _ => agent);
+
+        mirror.Attach(agent);
+        _ = mirror.IsMirroring(ThreadId).Should().BeTrue(
+            "attach has never been caller-dependent - the gap was at flush time, not here");
+
+        await agent.PublishAsync(RunCompleted());
+        await WaitForAsync(
+            () => SplicedInto(browser, MainPath),
+            "An S2S-created conversation published a completed run and still got no transcript.");
+        _ = LastPayload(browser).Should().Be(ExpectedAppend(only));
+    }
+
+    /// <summary>
     /// Eviction stops the mirror and RETAINS the transcript. Deleting it would defeat the feature: a record
     /// written into the workspace is meant to outlive the conversation that produced it, which is exactly
     /// the moment the pool raises <c>ThreadRemoved</c>.

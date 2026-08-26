@@ -25,6 +25,34 @@ internal sealed class FakeFileBrowser : IWorkspaceFileBrowser
 
     public Exception? ResolveThrows { get; set; }
 
+    /// <summary>
+    /// When set, this double stops echoing <see cref="Resolution"/> and instead models the registry's
+    /// REAL provenance rule: the app id the thread's <c>SandboxEstablishedBinding</c> was created
+    /// under. A caller whose credential does not match it gets
+    /// <see cref="SandboxSessionResolutionOutcome.CredentialConflict"/>, exactly as
+    /// <c>SandboxSessionRegistry.ResolveThreadWorkspaceSessionAsync</c> does. Null (the default)
+    /// leaves every existing test on the old echo behaviour.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This exists because the echo cannot express the defect in #253. Every mirror test resolved
+    /// successfully no matter what credential the writer presented, so the writer's hard-coded
+    /// <c>requestCredential: null</c> was invisible to the whole suite — an S2S-owned thread and a
+    /// UI-owned one were literally the same fixture. A double that answers the same way for both
+    /// cannot fail when the production code confuses them.
+    /// </para>
+    /// <para>
+    /// Set it to a non-null app id to get an S2S-OWNED thread (the daemon created the conversation);
+    /// leave it null for the interactive UI, whose bindings carry a null caller credential. That is
+    /// the registry's own convention — provenance is compared raw and nullable, null meaning
+    /// "interactive UI" — not an invention of this double.
+    /// </para>
+    /// </remarks>
+    public string? OwnerAppId { get; set; }
+
+    /// <summary>Credentials passed to <see cref="ResolveThreadWorkspaceSessionAsync"/>, in order.</summary>
+    public List<SandboxCredential?> ResolveCredentials { get; } = [];
+
     /// <summary>The <c>persistedWorkspaceId</c> the caller passed to the last resolve call (the value
     /// <c>ReadWorkspaceId</c> extracted from metadata) — asserted by the JsonElement regression tests.</summary>
     public string? LastPersistedWorkspaceId { get; private set; }
@@ -64,8 +92,44 @@ internal sealed class FakeFileBrowser : IWorkspaceFileBrowser
     public Task<SandboxSessionResolution> ResolveThreadWorkspaceSessionAsync(string threadId, string persistedWorkspaceId, SandboxCredential? requestCredential, CancellationToken ct = default)
     {
         LastPersistedWorkspaceId = persistedWorkspaceId;
-        return ResolveThrows is not null ? Task.FromException<SandboxSessionResolution>(ResolveThrows) : Task.FromResult(Resolution);
+        ResolveCredentials.Add(requestCredential);
+
+        if (ResolveThrows is not null)
+        {
+            return Task.FromException<SandboxSessionResolution>(ResolveThrows);
+        }
+
+        if (OwnerAppId is not null
+            && !string.Equals(OwnerAppId, requestCredential?.AppId, StringComparison.Ordinal))
+        {
+            return Task.FromResult(new SandboxSessionResolution(
+                SandboxSessionResolutionOutcome.CredentialConflict,
+                null,
+                OwnerAppId,
+                requestCredential?.AppId));
+        }
+
+        return Task.FromResult(Resolution);
     }
+
+    /// <summary>
+    /// The background seam (#253): same resolution, no provenance comparison, because there is no
+    /// caller. Modelled faithfully — <see cref="OwnerAppId"/> is deliberately NOT consulted here, so
+    /// a test can tell the two methods apart. A double that answered both the same way would make
+    /// the whole fix untestable.
+    /// </summary>
+    public Task<SandboxSessionResolution> ResolveThreadWorkspaceSessionForBackgroundAsync(string threadId, string persistedWorkspaceId, CancellationToken ct = default)
+    {
+        LastPersistedWorkspaceId = persistedWorkspaceId;
+        BackgroundResolveCalls++;
+
+        return ResolveThrows is not null
+            ? Task.FromException<SandboxSessionResolution>(ResolveThrows)
+            : Task.FromResult(Resolution);
+    }
+
+    /// <summary>How many times the background seam was used, so a test can assert the writer took it.</summary>
+    public int BackgroundResolveCalls { get; private set; }
 
     public Task<IReadOnlyList<SandboxDirectoryEntry>> ListWorkspaceDirectoryAsync(string sessionId, string relativePath, CancellationToken ct = default)
     {

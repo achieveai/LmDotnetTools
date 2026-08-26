@@ -74,3 +74,4 @@ together with their slugs.
 * [0010 — An ADR's identity is its slug, and colliding numbers are left standing](0010-adr-identity-is-the-slug.md)
 * [0011 — Mirror each conversation's transcript into its own workspace, readable by anyone who can reach the workspace](0011-workspace-transcript-files.md)
 * [0012 — Inventory wall-clock-discriminating tests; convert the narrow-gap cases, justify the rest](0012-wall-clock-discriminating-test-inventory.md)
+* [0013 — A background transcript flush has no caller, so it is resolved without a provenance comparison](0013-background-transcript-flush-has-no-caller.md) (supersedes gap 3 of 0011)

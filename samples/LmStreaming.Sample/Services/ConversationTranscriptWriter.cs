@@ -83,18 +83,21 @@ public enum TranscriptFlushOutcome
 ///     </para>
 ///     <para>
 ///     <b>No path is written to before it has been checked for redirection, and the check is never
-///     cached.</b> Every script guards its own path parameters, and the two writes that bypass the shell
-///     entirely — the staged payload and the <c>.gitignore</c>, both PUT by the gateway — are guarded by
-///     <see cref="IsPathSafeAsync"/> immediately before each PUT. The staging guard in particular runs per
+///     cached.</b> Every script guards its own path parameters, and the three writes that bypass the shell
+///     entirely — the staged payload, the <c>.gitignore</c> and the tool-result sidecar, all PUT by the
+///     gateway — are guarded by <see cref="IsPathSafeAsync"/> immediately before each PUT. The staging
+///     guard in particular runs per
 ///     APPEND rather than per flush: one flush stages the main transcript and every descendant through the
 ///     same path, with a full gateway round trip between consecutive PUTs. A redirected path is refused and
 ///     left alone, never unlinked; see <see cref="UnsafePathExitCode"/>.
 ///     </para>
 ///     <para>
-///     <b>The filesystem surface is a closed set of six calls</b>, listed here so the next reader can check
+///     <b>The filesystem surface is a closed set of seven calls</b>, listed here so the next reader can check
 ///     coverage by enumeration rather than by searching. Four successive review rounds each fixed one
 ///     surface and left another, because nobody had written down how many there were — and the round that
-///     first wrote this list down still recorded a wrong reason for leaving the sixth alone. Members rather
+///     first wrote this list down still recorded a wrong reason for leaving <see cref="TryMoveAsync"/>
+///     alone. Named rather than numbered, because inserting an entry renumbers every ordinal after it and
+///     turns a cross-reference into a pointer at the wrong row. Members rather
 ///     than line numbers: a line-number table is stale by the next commit and reads as authoritative anyway.
 ///     <list type="table">
 ///         <item>
@@ -108,6 +111,14 @@ public enum TranscriptFlushOutcome
 ///             <see cref="IsPathSafeAsync"/> per append, uncached; that guard is also where the staging
 ///             path's link count is checked, because this PUT is the write an in-script check would be
 ///             too late for.</description>
+///         </item>
+///         <item>
+///             <description><see cref="ExternalizeIfOversizedAsync"/> — PUTs an oversized tool result's
+///             sidecar (#254). Guarded by <see cref="IsPathSafeAsync"/> immediately before the PUT, for
+///             the same reason as the staged payload: a PUT carries no shell, so an in-script check would
+///             run after the bytes were already through. A refusal here INLINES the payload rather than
+///             failing the flush — the sidecar is an optimisation of the record's shape, so declining it
+///             costs nothing the record needs.</description>
 ///         </item>
 ///         <item>
 ///             <description><see cref="AppendAsync"/> — runs <see cref="AppendScript"/>. Guards its three
@@ -133,7 +144,7 @@ public enum TranscriptFlushOutcome
 ///     </list>
 ///     </para>
 ///     <para>
-///     <b>What none of the six can cover — and a retracted claim about what they could not.</b> An earlier
+///     <b>What none of the seven can cover — and a retracted claim about what they could not.</b> An earlier
 ///     revision of this paragraph asserted that a HARD link at a transcript's name was undetectable here,
 ///     because <c>[ -L ]</c> cannot see one and "the gateway does not expose <c>st_nlink</c>". The first
 ///     half is true and the second was never checked. A hard link is indeed not a distinguishable KIND of
@@ -172,6 +183,42 @@ public sealed class ConversationTranscriptWriter
 
     /// <summary>Suffix appended to the main file leaf to form the sibling sub-agent directory.</summary>
     public const string AgentsDirectorySuffix = "_agents";
+
+    /// <summary>
+    ///     Suffix appended to the main file leaf to form the sibling directory that externalised tool-result
+    ///     payloads live in (#254). One per conversation, shared by the main file and every sub-agent file.
+    /// </summary>
+    /// <remarks>
+    ///     Shared rather than per-file because sidecars are keyed by <c>uid</c>, which is derived from the
+    ///     persisted row id and so is already unique across the conversation's whole file set. A directory
+    ///     per sub-agent would multiply the directories without making a single name safer.
+    /// </remarks>
+    /// <seealso cref="MoveLeafAsync"/>
+    public const string BlobsDirectorySuffix = "_blobs";
+
+    /// <summary>
+    ///     Payload size, in bytes, at or above which a TOOL RESULT's content is written to a sidecar and
+    ///     referenced from the line instead of being inlined (#254).
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///     <b>A fixed byte count, not a proportion of the line.</b> Both costs being controlled are
+    ///     absolute. A reader streaming the file line-by-line must materialise the largest line whatever
+    ///     the rest of the conversation weighs, and the mirror's failure model - a failed append means the
+    ///     next flush recomputes and rewrites the same suffix - makes the re-send cost proportional to the
+    ///     bytes, not to their share of anything. A relative threshold would also make one row's treatment
+    ///     depend on its neighbours, so the same tool result would externalise or not depending on what
+    ///     else happened that turn, and a reader could not predict either.
+    ///     </para>
+    ///     <para>
+    ///     64 KiB is chosen to sit well above ordinary tool output - a shell exit, a small file read, a
+    ///     search result - and well below the blobs the issue names, so the common conversation writes no
+    ///     sidecars at all and pays nothing. It is deliberately not configurable: a threshold that varies
+    ///     by deployment makes a durable artifact's shape depend on the host that happened to write it,
+    ///     and a reader cannot tell "small enough to inline" from "written by a host with a higher bar".
+    ///     </para>
+    /// </remarks>
+    public const int ToolResultSidecarThresholdBytes = 64 * 1024;
 
     /// <summary>Extension of the staged temp file the splice consumes.</summary>
     public const string TempExtension = ".part";
@@ -445,15 +492,16 @@ public sealed class ConversationTranscriptWriter
         + "\n";
 
     /// <summary>
-    ///     The guards on their own, for the two writes that reach the workspace WITHOUT a shell — the
-    ///     staged payload and the <c>.gitignore</c>, both of which the gateway PUTs directly. <c>$1</c> is
-    ///     the path. Reads nothing, writes nothing. See <see cref="IsPathSafeAsync"/>.
+    ///     The guards on their own, for the three writes that reach the workspace WITHOUT a shell — the
+    ///     staged payload, the <c>.gitignore</c> and the tool-result sidecar (#254), all of which the
+    ///     gateway PUTs directly. <c>$1</c> is the path. Reads nothing, writes nothing. See
+    ///     <see cref="IsPathSafeAsync"/>.
     /// </summary>
     /// <remarks>
-    ///     This is the ONLY place the alias check can defend those two writes, and it is why
+    ///     This is the ONLY place the alias check can defend those writes, and it is why
     ///     <see cref="AliasedPathExitCode"/> belongs here rather than only on the append: a PUT carries no
     ///     shell, so by the time <see cref="AppendScript"/> could look at the staging path the bytes are
-    ///     already through it. The <c>.gitignore</c> is the sharper of the two — it is PUT with the whole
+    ///     already through it. The <c>.gitignore</c> is the sharpest of the three — it is PUT with the whole
     ///     file's content, so an aliased path does not append to a tracked file, it REPLACES one with
     ///     <c>*</c>.
     /// </remarks>
@@ -927,9 +975,26 @@ public sealed class ConversationTranscriptWriter
     ///     flush legitimately has none.
     /// </summary>
     /// <remarks>
-    ///     The credential is always null: a flush has no inbound HTTP request to borrow one from. That is
-    ///     also why an S2S-owned session reports <c>CredentialConflict</c> forever and gets no transcript
-    ///     in v1 — an accepted, recorded gap (ADR 0011), not a bug to retry around.
+    ///     <para>
+    ///     A flush has no inbound HTTP request and therefore no caller credential — so it resolves
+    ///     through the background seam, which skips the registry's cross-actor provenance comparison
+    ///     rather than presenting a null credential to it.
+    ///     </para>
+    ///     <para>
+    ///     <b>That distinction is the whole of #253.</b> Provenance is compared raw and nullable, and
+    ///     <c>null</c> means "the interactive UI" — a provenance, not an absence. Passing null from here
+    ///     therefore did not say "no caller", it said "the UI caller", which conflicts with an S2S-owned
+    ///     binding exactly as a foreign app would. An S2S-created conversation reported
+    ///     <c>CredentialConflict</c> on every flush, forever, with no input that could ever change; ADR
+    ///     0011 recorded the resulting silence as accepted gap 3. The mirror is not a caller at all: it is
+    ///     the host writing this thread's own record into this thread's own workspace, and it holds no
+    ///     credential to be checked. Saying so is what fixed it.
+    ///     </para>
+    ///     <para>
+    ///     <c>CredentialConflict</c> is still handled below, and still reachable: a binding whose owner
+    ///     the registry cannot resolve, or a future caller-bearing path through this method, must not
+    ///     silently fall through to "no session".
+    ///     </para>
     /// </remarks>
     private async Task<string?> ResolveSessionAsync(ThreadMetadata? metadata, CancellationToken ct)
     {
@@ -944,7 +1009,7 @@ public sealed class ConversationTranscriptWriter
         try
         {
             resolution = await _fileBrowser
-                .ResolveThreadWorkspaceSessionAsync(ThreadId, workspaceId, requestCredential: null, ct)
+                .ResolveThreadWorkspaceSessionForBackgroundAsync(ThreadId, workspaceId, ct)
                 .ConfigureAwait(false);
         }
         catch (SandboxSessionUnavailableException ex)
@@ -1091,7 +1156,8 @@ public sealed class ConversationTranscriptWriter
             return true;
         }
 
-        if (await MoveLeafAsync(sessionId, _leaf, leaf, _agentsDirectoryTouched, ct).ConfigureAwait(false))
+        if (await MoveLeafAsync(sessionId, _leaf, leaf, _agentsDirectoryTouched, ct)
+            .ConfigureAwait(false))
         {
             _leaf = leaf;
         }
@@ -1184,6 +1250,9 @@ public sealed class ConversationTranscriptWriter
                 && IsAddressableName(entry)
                 && string.Equals(entry.Name, subject + AgentsDirectorySuffix, StringComparison.Ordinal));
 
+        // Deliberately no equivalent for the sidecar directory (#254): a retitle never moves it, so there
+        // is no flag for a cold start to recover. Its references name the leaf they were written under
+        // and keep resolving from TranscriptDirectory wherever the file goes. See MoveLeafAsync.
         if (stale is null)
         {
             return (true, null);
@@ -1198,7 +1267,8 @@ public sealed class ConversationTranscriptWriter
 
         return (
             true,
-            await MoveLeafAsync(sessionId, stale, leaf, _agentsDirectoryTouched, ct).ConfigureAwait(false)
+            await MoveLeafAsync(sessionId, stale, leaf, _agentsDirectoryTouched, ct)
+                .ConfigureAwait(false)
                 ? leaf
                 : stale);
     }
@@ -1254,8 +1324,37 @@ public sealed class ConversationTranscriptWriter
         && !string.Equals(entry.Name, ".", StringComparison.Ordinal)
         && !string.Equals(entry.Name, "..", StringComparison.Ordinal);
 
-    /// <summary>Renames one transcript file and, when asked, its sibling sub-agent directory.</summary>
+    /// <summary>
+    ///     Renames one transcript file and, when asked, its sibling sub-agent directory. The sidecar
+    ///     directory is deliberately NOT renamed — see the remarks.
+    /// </summary>
     /// <returns>Whether the FILE moved — the only condition under which the new leaf may be adopted.</returns>
+    /// <remarks>
+    ///     <para>
+    ///     <b><c>{leaf}</c><see cref="BlobsDirectorySuffix"/> stays at the name it was written under,
+    ///     permanently.</b> A <c>message_json_ref</c> is stamped with the leaf in force at WRITE time
+    ///     (<see cref="ExternalizeIfOversizedAsync"/>) and is anchored at <see cref="TranscriptDirectory"/>,
+    ///     and nothing ever rewrites a line once it is appended. So renaming the sidecar directory
+    ///     invalidates every reference already in the file — a retitle that hollows out the record rather
+    ///     than merely relocating it. Leaving the directory alone is what keeps those references true, and
+    ///     it is the whole reason the reference embeds a leaf instead of a fixed directory name.
+    ///     </para>
+    ///     <para>
+    ///     What that costs is a directory under a name the conversation no longer has, once per retitle
+    ///     that externalised anything. That is litter and nothing worse: it lives inside
+    ///     <see cref="TranscriptDirectory"/>, which the containment <c>.gitignore</c> covers whole, and it
+    ///     holds payloads that are still addressed by the references that named them. The sub-agent
+    ///     directory moves precisely because it carries no such stamped-in references — the file's rows
+    ///     are found by walking the directory, not by a path written into a line.
+    ///     </para>
+    ///     <para>
+    ///     Oversized writes AFTER a retitle need no repair step: the reference they mint carries the new
+    ///     leaf, and the PUT that follows creates <c>{newLeaf}</c><see cref="BlobsDirectorySuffix"/>
+    ///     through the SDK's one-shot parent-directory self-heal
+    ///     (<c>SandboxSessionRegistry.WriteWorkspaceFileBytesAsync</c>). The two directories simply coexist,
+    ///     each addressed by the references written while its leaf was current.
+    ///     </para>
+    /// </remarks>
     private async Task<bool> MoveLeafAsync(
         string sessionId,
         string from,
@@ -1483,6 +1582,100 @@ public sealed class ConversationTranscriptWriter
         public static WatermarkProbe Absent => new(Settled: true, HadContent: false, Uid: null);
     }
 
+    /// <summary>
+    ///     The message types whose payload may be externalised to a sidecar (#254).
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///     <b>Type, not size alone.</b> A tool result is the one payload kind whose bulk carries no
+    ///     structure a reader of the transcript needs in line: it is an opaque body the tool produced,
+    ///     already addressed by the row that requested it. Every other large payload - a long assistant
+    ///     turn, a reasoning block, a user paste - is the conversation itself, and a reader scanning the
+    ///     file expects to see it there. Externalising by size alone would hollow out exactly the lines
+    ///     the transcript exists to record.
+    ///     </para>
+    ///     <para>
+    ///     Both spellings are listed because both reach this writer: the aggregate result message and the
+    ///     single-call one. The names are matched as strings for the same reason the line carries a string
+    ///     - this writer never deserialises <c>message_json</c>, and gaining a type dependency here to
+    ///     recognise two names would be a worse trade than restating them.
+    ///     </para>
+    /// </remarks>
+    private static readonly HashSet<string> ExternalizableMessageTypes = new(StringComparer.Ordinal)
+    {
+        "ToolsCallResultMessage",
+        "ToolCallResultMessage",
+    };
+
+    /// <summary>
+    ///     Writes an oversized tool-result payload to a sidecar file and returns the line with
+    ///     <c>message_json</c> replaced by a <c>message_json_ref</c> pointing at it (#254).
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///     <b>Every failure inlines.</b> A transcript that records the payload is strictly better than one
+    ///     that records a reference to a file that was never written, so an unsafe path, a missing leaf, or
+    ///     a failed PUT all return the line untouched rather than propagating. The externalisation is an
+    ///     optimisation of the record's shape; the record itself is the point.
+    ///     </para>
+    ///     <para>
+    ///     The sidecar PUT goes through the same <see cref="IsPathSafeAsync"/> guard as every other write
+    ///     in this class, so a symlink planted at the sidecar name is REFUSED - the payload inlines - and
+    ///     never followed and never repaired, which is the invariant the rest of the writer holds to.
+    ///     </para>
+    ///     <para>
+    ///     <b>The reference is stamped with the leaf in force RIGHT NOW, and that stamp is permanent.</b>
+    ///     Nothing rewrites a line once it is appended, so this is the moment the sidecar's address is
+    ///     fixed for good - which is why a retitle must leave <see cref="BlobsDirectorySuffix"/>
+    ///     directories exactly where they are. See <see cref="MoveLeafAsync"/>. A conversation retitled
+    ///     twice therefore accumulates one sidecar directory per leaf that externalised anything, each
+    ///     still addressed by the lines written under it.
+    ///     </para>
+    /// </remarks>
+    private async Task<WorkspaceTranscriptLine> ExternalizeIfOversizedAsync(
+        string sessionId,
+        WorkspaceTranscriptLine line,
+        CancellationToken ct)
+    {
+        if (line.MessageJson is not { } content
+            || line.MessageType is not { } messageType
+            || !ExternalizableMessageTypes.Contains(messageType)
+            || Encoding.UTF8.GetByteCount(content) < ToolResultSidecarThresholdBytes)
+        {
+            return line;
+        }
+
+        if (_leaf is null)
+        {
+            return line;
+        }
+
+        var reference = $"{_leaf}{BlobsDirectorySuffix}/{line.Uid}.json";
+        var path = $"{TranscriptDirectory}/{reference}";
+        if (!await IsPathSafeAsync(sessionId, path, ct).ConfigureAwait(false))
+        {
+            return line;
+        }
+
+        try
+        {
+            await _fileBrowser
+                .WriteWorkspaceFileBytesAsync(sessionId, path, Encoding.UTF8.GetBytes(content), ct)
+                .ConfigureAwait(false);
+        }
+        catch (SandboxException ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Writing the transcript sidecar {Path} for thread {ThreadId} failed; the payload is inlined instead",
+                path,
+                ThreadId);
+            return line;
+        }
+
+        return line with { MessageJson = null, MessageJsonRef = reference };
+    }
+
     private async Task<AppendResult> AppendAsync(
         string sessionId,
         string directory,
@@ -1523,7 +1716,8 @@ public sealed class ConversationTranscriptWriter
         var payload = new StringBuilder();
         for (var i = start; i < lines.Count; i++)
         {
-            _ = payload.Append(WorkspaceTranscriptLine.Serialize(lines[i])).Append('\n');
+            var line = await ExternalizeIfOversizedAsync(sessionId, lines[i], ct).ConfigureAwait(false);
+            _ = payload.Append(WorkspaceTranscriptLine.Serialize(line)).Append('\n');
         }
 
         // The staging path is guarded for the same reason the destination is, and it cannot be guarded by
@@ -1859,17 +2053,17 @@ public sealed class ConversationTranscriptWriter
     /// </summary>
     /// <remarks>
     ///     <para>
-    ///     Only the two writes that reach the workspace WITHOUT a shell need this — the staged payload and
-    ///     the <c>.gitignore</c>. Everything the shell writes carries its guard inside the same script it
-    ///     writes with, which is both cheaper (no extra round trip) and tighter (no gap between the check
-    ///     and the write). See <see cref="UnsafePathExitCode"/> for why the answer is refusal rather than
-    ///     repair.
+    ///     Only the three writes that reach the workspace WITHOUT a shell need this — the staged payload,
+    ///     the <c>.gitignore</c>, and the oversized tool-result sidecar (#254). Everything the shell writes
+    ///     carries its guard inside the same script it writes with, which is both cheaper (no extra round
+    ///     trip) and tighter (no gap between the check and the write). See <see cref="UnsafePathExitCode"/>
+    ///     for why the answer is refusal rather than repair.
     ///     </para>
     ///     <para>
-    ///     This is one of six filesystem entry points, and the six are enumerated ONCE, on the class. Keep
-    ///     them there rather than restating them here: two copies of a coverage table drift, and a drifted
-    ///     coverage table is worse than none, because the reason to enumerate is to be able to trust the
-    ///     count. Anything new that touches <c>_fileBrowser</c> belongs in that list.
+    ///     This is one of seven filesystem entry points, and the seven are enumerated ONCE, on the class.
+    ///     Keep them there rather than restating them here: two copies of a coverage table drift, and a
+    ///     drifted coverage table is worse than none, because the reason to enumerate is to be able to trust
+    ///     the count. Anything new that touches <c>_fileBrowser</c> belongs in that list.
     ///     </para>
     /// </remarks>
     private async Task<bool> IsPathSafeAsync(string sessionId, string path, CancellationToken ct)

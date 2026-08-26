@@ -86,22 +86,24 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
     }
 
     [Fact]
-    public void WithTheLifecycleControlPlaneOn_ItsRoutesAreExemptByDecision_NotByOmission()
+    public void WithTheLifecycleControlPlaneOn_ItsRoutesAreInsideTheIdentityBoundary()
     {
         LogTestStart();
 
         // The partition test above boots a DEFAULT host, on which the lifecycle routes do not exist
-        // (they are config-gated and absent unless both flags are set). So the carve-out for
-        // /api/lifecycle in IdentityMiddleware.InfrastructureApiPaths is invisible to it - the one
-        // route family the enumeration cannot see is the one the enumeration is meant to catch. This
-        // boots the plane ON and pins what the carve-out does: the routes are published AND land
-        // OUTSIDE the identity boundary.
+        // (they are config-gated and absent unless both flags are set). So whatever
+        // IdentityMiddleware does with /api/lifecycle is invisible to it - the one route family the
+        // enumeration cannot see is the one the enumeration is meant to catch. This boots the plane
+        // ON and asks the real predicate about the real, published routes.
         //
-        // That exemption is a deliberate, reviewed decision (a config-gated, signature-checked
-        // service-to-service surface), and whether it should honour tenant refusal under
-        // Identity:Enforce is the subject of follow-up #402. Pinning it here means a change to it has
-        // to defeat this assertion rather than pass unnoticed because no default-boot test enumerates
-        // the plane.
+        // This test used to assert the OPPOSITE, pinning /api/lifecycle as an exempt-by-decision
+        // carve-out. #402 retired that decision. The carve-out's stated basis was that the plane is
+        // "gated behind its own signature check"; it is not. LifecycleApprovalController's own
+        // remarks say it "does not authenticate" and that "no subscriber-to-host signing convention
+        // exists", and the plane's only signing is OUTBOUND in HttpLifecycleDeliverySender. So the
+        // exemption granted no authority and cost tenant refusal: under Identity:Enforce a suspended
+        // or not-provisioned tenant's still-valid token was never answered, reached these
+        // controllers, and satisfied their AuthenticatedAppId() - which reads the raw ClaimsPrincipal.
         var settings = EnforcingSettings();
         settings["Lifecycle:Delivery:Enabled"] = "true";
         settings["Lifecycle:Delivery:AllowedCallbackHosts:0"] = "callbacks.example.com";
@@ -113,16 +115,20 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         LogData("apiRoutes", apiRoutes);
 
         // Non-vacuity: the flags actually published the plane. Without this, a plane that failed to
-        // register would make the exemption assertions below trivially true.
+        // register would make the assertions below trivially true - IsGuarded would be answering
+        // about routes nobody serves.
         _ = apiRoutes.Should().Contain("api/lifecycle/subscriptions");
         _ = apiRoutes.Should().Contain("api/lifecycle/approvals/decisions");
 
-        // The reviewed decision, asked of the real predicate: lifecycle is infrastructure and sits
-        // outside the identity boundary.
-        _ = IsGuarded("api/lifecycle/subscriptions").Should().BeFalse(
-            "the lifecycle control plane is carved out of the identity boundary by decision (#402)");
-        _ = IsGuarded("api/lifecycle/approvals/decisions").Should().BeFalse(
-            "the lifecycle control plane is carved out of the identity boundary by decision (#402)");
+        // The reviewed decision, asked of the real predicate: lifecycle is a service-to-service
+        // surface with a front door that can speak for it (ServiceCallerPrincipalSource), so it is
+        // guarded like every other one.
+        _ = IsGuarded("api/lifecycle/subscriptions").Should().BeTrue(
+            "the lifecycle control plane sits inside the identity boundary and honours tenant "
+                + "refusal (#402)");
+        _ = IsGuarded("api/lifecycle/approvals/decisions").Should().BeTrue(
+            "the lifecycle control plane sits inside the identity boundary and honours tenant "
+                + "refusal (#402)");
     }
 
     [Fact]

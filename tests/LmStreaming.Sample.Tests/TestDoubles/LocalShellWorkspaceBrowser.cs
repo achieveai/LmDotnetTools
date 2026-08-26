@@ -77,6 +77,17 @@ internal sealed class LocalShellWorkspaceBrowser(string root, string shell) : IW
                 "app",
                 null));
 
+    /// <summary>
+    /// The background seam (#253). This double never modelled provenance in the first place — it
+    /// resolves every thread to the one local directory it was handed — so both methods answer
+    /// identically here, and that is faithful rather than lazy: there is no binding to have an owner.
+    /// </summary>
+    public Task<SandboxSessionResolution> ResolveThreadWorkspaceSessionForBackgroundAsync(
+        string threadId,
+        string persistedWorkspaceId,
+        CancellationToken ct = default) =>
+        ResolveThreadWorkspaceSessionAsync(threadId, persistedWorkspaceId, requestCredential: null, ct);
+
     public Task<IReadOnlyList<SandboxDirectoryEntry>> ListWorkspaceDirectoryAsync(
         string sessionId,
         string relativePath,
