@@ -16,7 +16,7 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
 /// Creates agents on-demand and reuses them for the same thread.
 /// Supports mode-aware agent creation with customizable system prompts and tool filtering.
 /// </summary>
-public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProbe
+public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProbe, IInputAcceptanceObserver
 {
     /// <summary>
     /// Property key in <see cref="ThreadMetadata.Properties"/> that stores the provider
@@ -1452,6 +1452,30 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         }
     }
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// The agent's own report of an accept, which is what makes the ledger complete rather than
+    /// merely well-maintained: it fires for EVERY accept on every path, including the three that
+    /// live in <c>LmMultiTurn</c> and cannot reach this pool at all (see
+    /// <see cref="AddOutstandingInput"/>'s remarks). It records exactly what an explicit
+    /// <see cref="AddOutstandingInput"/> records, into the same ledger, under the same reference
+    /// check — the id is idempotent in the set, so an input reported by BOTH a transport that
+    /// recorded it up front and the agent that then accepted it is one entry, not two.
+    /// </remarks>
+    void IInputAcceptanceObserver.OnInputAccepted(string threadId, string inputId, IMultiTurnAgent acceptedBy) =>
+        AddOutstandingInput(threadId, inputId, acceptedBy);
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// The rollback partner of <see cref="IInputAcceptanceObserver.OnInputAccepted"/>, mapping onto
+    /// the same withdrawal a transport performs for a refused send.
+    /// </remarks>
+    void IInputAcceptanceObserver.OnInputAcceptanceRescinded(
+        string threadId,
+        string inputId,
+        IMultiTurnAgent acceptedBy
+    ) => RemoveOutstandingInput(threadId, inputId, acceptedBy);
+
     /// <summary>
     /// Retires accepted-input ids for <paramref name="threadId"/> once the agent reports a run has
     /// picked them up. Runs for the life of one entry; ends when that entry's token is cancelled.
@@ -2130,6 +2154,30 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         // nothing may await it: the watcher takes the per-thread lock, so awaiting it from a caller
         // that holds that lock would deadlock. A field nobody reads would only imply otherwise.
         _ = WatchDrainsAsync(threadId, agent, cts.Token);
+
+        // Attached here, beside the drain watcher and for the same reason: this runs before the entry
+        // is published to _agents, so the agent cannot yet be reached by any sender and therefore
+        // cannot have accepted anything this pool would miss. An agent attached after the fact could
+        // have taken a turn nobody recorded, which is the hole (#434) rather than the fix.
+        //
+        // LOCK ORDER. This runs under the per-thread creation lock (every CreateAgentEntry caller
+        // holds it), and the reports it enables take that SAME lock from the sending caller's thread.
+        // That is safe in one direction only, and the direction holds: no path in this pool calls a
+        // send on an agent, and the two paths that call INTO agent code at all - AgentEntry.DisposeAsync
+        // (StopAsync/DisposeAsync) and the release/swap teardown - both do so OUTSIDE the lock,
+        // precisely because they await. So the only edge is send -> per-thread lock, and there is no
+        // second edge to invert against. The factory below is the one call into foreign code made
+        // while holding the lock; it constructs an agent, and a factory that somehow sent into that
+        // half-built agent would re-enter this lock on its own thread (Monitor is reentrant) and find
+        // no entry published yet, so the report would be a no-op rather than a deadlock.
+        //
+        // Reporting is a capability, not an obligation: an IMultiTurnAgent that is not
+        // IAcceptanceReportingAgent announces nothing, and for such an agent the host's own
+        // AddOutstandingInput calls remain the only ledger there is.
+        if (agent is IAcceptanceReportingAgent reporting)
+        {
+            reporting.InputAcceptanceObserver = this;
+        }
 
         return entry;
     }
