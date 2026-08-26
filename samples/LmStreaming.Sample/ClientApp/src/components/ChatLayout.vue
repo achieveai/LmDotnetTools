@@ -122,12 +122,14 @@ const {
 
 /**
  * The SPA's single source of thread ids (#435): reserve the conversation on the server and use the
- * id it minted. Both entry points go through here — the "New chat" button and the first send in a
- * session that never pressed it — so nothing in the client can produce an id of its own.
+ * id it minted, so nothing in the client can produce an id of its own.
  *
  * Under `Identity:Enforce=true` the `/ws` gate refuses a thread id with no metadata row, and refuses
  * it byte-identically to one owned by somebody else. That refusal is correct, and it means the row
  * has to exist before the socket opens.
+ *
+ * `useChat` calls this the first time a send needs an id — which is also the first moment a
+ * conversation is real. "New chat" deliberately does NOT call it: see `handleNewChat`.
  */
 async function provisionThread(): Promise<string> {
   // Both catalogs are fetched on mount, but the composer is interactive from the first paint — a
@@ -150,13 +152,6 @@ async function provisionThread(): Promise<string> {
   });
 }
 
-/**
- * A provisioning refusal, shown in the same banner as a chat error. Kept separate from useChat's
- * `error` because it is raised before any conversation exists to attach it to.
- */
-const provisionError = ref<string | null>(null);
-const bannerError = computed(() => provisionError.value ?? error.value);
-
 async function handleCancel(): Promise<void> {
   await cancelStream();
 }
@@ -173,9 +168,9 @@ const usageCostDisplay = computed(() => {
   return `${label}: ${prefix}${amount}`;
 });
 
-// A freshly-created thread (New Chat / handleNewChat) gets `chatThreadId` immediately, well before
-// any message is sent — the backend's agent pool has no entry for it yet, so polling /subagents would
-// 404-spam. Gate the sub-agent poll on the conversation having actually STARTED: it has rendered items
+// `chatThreadId` can be set well before the backend's agent pool has an entry for it — the first
+// send reserves the thread and opens the socket in the same breath — so polling /subagents on it
+// alone would 404-spam. Gate the sub-agent poll on the conversation having actually STARTED: it has rendered items
 // (a message was sent or an existing conversation was loaded) OR it already has a sidebar entry. A
 // fresh, empty New Chat matches neither, so the poll stays idle until the first message; every started
 // conversation (including the E2E's scripted send) opens the gate so its sub-agent tabs surface.
@@ -450,7 +445,6 @@ onMounted(async () => {
 // Handle creating a new chat
 async function handleNewChat(): Promise<void> {
   notFoundThreadId.value = null;
-  provisionError.value = null;
 
   // Disconnect current WebSocket and clear state
   await disconnectWebSocket();
@@ -460,19 +454,14 @@ async function handleNewChat(): Promise<void> {
   // flicker; see useChat.markStreamIdle).
   markStreamIdle();
 
-  // Reserve the thread on the server first (#435) and adopt the id it minted — the socket cannot
-  // be opened on anything else once `Identity:Enforce` is on. Not added to the sidebar yet.
-  try {
-    const newThreadId = await provisionThread();
-    setThreadId(newThreadId);
-  } catch (e) {
-    // No fallback to a locally minted id: that would leave a conversation on screen whose socket
-    // connects today and is refused the moment enforcement is flipped on, which is worse than a
-    // conversation that visibly failed to start.
-    provisionError.value =
-      e instanceof Error ? e.message : 'Could not start a new conversation.';
-    setThreadId(null);
-  }
+  // NOTHING is reserved here. Since #435 the id can only come from the server, and reserving one
+  // per click would write a metadata row for every "New chat" the user never types into — rows that
+  // GET /api/conversations lists, so the sidebar fills with empty "New Conversation" entries and a
+  // reload auto-selects the newest of them instead of the conversation the user was reading.
+  // Clearing the selection is what a blank chat IS; the reservation happens on the first send, via
+  // the provisioning hook useChat calls when it needs an id (see `provisionThread`).
+  currentThreadId.value = null;
+  setThreadId(null);
 }
 
 // Handle selecting an existing conversation
@@ -838,8 +827,8 @@ onBeforeUnmount(() => {
 
           <AuthRequiredBanner :requests="pendingAuthRequests" @dismiss="dismissAuthRequest" />
 
-          <div v-if="bannerError" class="error-banner" data-testid="error-banner">
-            {{ bannerError }}
+          <div v-if="error" class="error-banner" data-testid="error-banner">
+            {{ error }}
           </div>
 
           <div

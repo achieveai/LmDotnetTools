@@ -1499,11 +1499,10 @@ describe('ChatLayout new-chat provisioning (#435)', () => {
   });
 
   it('provisions with the current workspace/provider/mode and adopts the server-minted id', async () => {
-    const wrapper = mountLayout();
+    mountLayout();
     await flushPromises();
 
-    await wrapper.get('.new-chat-btn').trigger('click');
-    await flushPromises();
+    const provisioned = await sharedMocks.chatOptions!.provisionThreadId!();
 
     expect(sharedMocks.createNewConversation).toHaveBeenCalledWith({
       workspaceId: 'ws-1',
@@ -1511,28 +1510,42 @@ describe('ChatLayout new-chat provisioning (#435)', () => {
       modeId: 'default',
     });
     // The SERVER's id is what the socket will be opened on.
-    expect(sharedMocks.setThreadId).toHaveBeenCalledWith('thread-provisioned');
+    expect(provisioned).toBe('thread-provisioned');
   });
 
-  it('surfaces a provisioning failure and starts no conversation on a locally minted id', async () => {
+  it('refuses rather than falling back to an id of its own when the server will not reserve one', async () => {
     sharedMocks.createNewConversation.mockRejectedValue(
       new Error('Provider "anthropic" is currently unavailable.')
     );
 
+    mountLayout();
+    await flushPromises();
+
+    // The refusal has to reach useChat, which is what surfaces it and dequeues the pending prompt.
+    // Answering with an id of our own would open a socket that connects today and is refused the
+    // moment enforcement is flipped on — worse than a send that visibly failed.
+    await expect(sharedMocks.chatOptions!.provisionThreadId!()).rejects.toThrow(
+      /currently unavailable/
+    );
+    for (const call of sharedMocks.setThreadId.mock.calls) {
+      expect(call[0]).toBeNull();
+    }
+  });
+
+  // Reserving on click would write a metadata row per "New chat", and GET /api/conversations lists
+  // every row: the sidebar fills with empty "New Conversation" entries, and after a reload the
+  // most-recent-first default selects the newest of THOSE instead of the conversation the user was
+  // reading. A blank chat is a cleared selection, not a reservation.
+  it('reserves nothing when the user opens a new chat', async () => {
     const wrapper = mountLayout();
     await flushPromises();
+    sharedMocks.setThreadId.mockReset();
 
     await wrapper.get('.new-chat-btn').trigger('click');
     await flushPromises();
 
-    const banner = wrapper.find('[data-testid="error-banner"]');
-    expect(banner.exists()).toBe(true);
-    expect(banner.text()).toContain('currently unavailable');
-    // Every id handed on must have come from the server; a fallback would open a socket that
-    // connects today and is refused the moment the flag is flipped.
-    for (const call of sharedMocks.setThreadId.mock.calls) {
-      expect(call[0]).toBeNull();
-    }
+    expect(sharedMocks.createNewConversation).not.toHaveBeenCalled();
+    expect(sharedMocks.setThreadId).toHaveBeenCalledWith(null);
   });
 
   // The regression that took the browser suite down: `/api/providers` is fetched on mount but the
