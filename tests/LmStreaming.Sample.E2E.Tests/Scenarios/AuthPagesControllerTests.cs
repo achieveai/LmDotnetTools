@@ -67,13 +67,21 @@ public sealed class AuthPagesControllerTests : LoggingTestBase
         LogTestEnd();
     }
 
+    /// <summary>
+    /// The decision recorded for #419's third consequence. <c>/auth/{providerId}</c> is not under
+    /// <c>/api</c>, so it is outside the identity boundary and its caller need not be signed in - or
+    /// be anyone at all. <see cref="IOAuthTokenProvider"/> is a process-wide singleton, so the account
+    /// this page used to render was never the caller's; it was the host operator's, handed to whoever
+    /// reached the port along with the exact scopes it holds. The page now renders the provider id and
+    /// nothing else; the operator's own view of that detail is
+    /// <c>GET /api/auth/{providerId}/status</c>, which IS inside the boundary.
+    /// </summary>
     [Fact]
-    public async Task Signed_in_branch_renders_provider_account_scopes_and_expiry()
+    public async Task Signed_in_branch_renders_no_account_scopes_or_expiry()
     {
         // Unit-style: drive the controller directly with a stub provider seeded SignedIn. The
         // integration-test factory cannot easily seed a provider as SignedIn without driving a real
-        // OAuth flow, so this asserts the controller surface itself: when Status.State == SignedIn,
-        // the rendered HTML carries the AC-required fields (provider id, account, scopes, expiry).
+        // OAuth flow, so this asserts the controller surface itself.
         LogTestStart();
         var expiry = new DateTimeOffset(2030, 1, 2, 3, 4, 5, TimeSpan.Zero);
         var stub = new StubOAuthProvider("github")
@@ -90,12 +98,21 @@ public sealed class AuthPagesControllerTests : LoggingTestBase
         var result = await controller.Page("github");
         var content = result.Should().BeOfType<ContentResult>().Subject;
 
+        // Non-vacuity: the branch under test really is the signed-in one. Without this the three
+        // absence assertions below would pass just as happily on the pending page.
         content.ContentType.Should().Be("text/html");
         content.Content.Should().Contain("Signed in to github");
-        content.Content.Should().Contain("ada@example.com");
-        content.Content.Should().Contain("repo read:user");
-        content.Content.Should().Contain("2030-01-02T03:04:05");
         stub.BeginSignInCalls.Should().Be(0, "the signed-in branch must not kick off a fresh sign-in");
+
+        content.Content.Should().NotContain(
+            "ada@example.com",
+            because: "the account belongs to the HOST, and this route answers an anonymous caller");
+        content.Content.Should().NotContain(
+            "repo read:user",
+            because: "the granted scopes describe what the host can do, which is not the caller's to read");
+        content.Content.Should().NotContain(
+            "2030-01-02T03:04:05",
+            because: "the token expiry is a fact about the host's credential");
         LogTestEnd();
     }
 

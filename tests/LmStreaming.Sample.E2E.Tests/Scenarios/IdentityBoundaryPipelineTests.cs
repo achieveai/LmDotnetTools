@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Encodings.Web;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Identity;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
@@ -492,6 +493,10 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         LogTestStart();
         using var factory = NewFactory(EnforcingSettings(), WithTestPrincipalSource);
 
+        // Since #419 the socket also authorizes the CONVERSATION, so the thread has to be Alice's
+        // before this test can be about the credential at all.
+        await ProvisionOwnedThreadAsync(factory, "thread-authenticated", "dir-a:alice");
+
         // The decision recorded for #342: the browser WebSocket API admits no custom headers, but it
         // DOES choose the Sec-WebSocket-Protocol list, so the credential travels there and is
         // promoted into Authorization before UseAuthentication - which is what makes /ws resolve its
@@ -518,6 +523,7 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         LogTestStart();
         using var factory = NewFactory(EnforcingSettings(), WithTestPrincipalSource);
         const string ThreadId = "thread-owned-over-ws";
+        await ProvisionOwnedThreadAsync(factory, ThreadId, "dir-a:alice");
 
         using var socket = await factory.ConnectWebSocketAsync(
             ThreadId,
@@ -560,12 +566,22 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
     /// app-id conflict beside it already uses - rather than as an unhandled exception that aborts the
     /// socket and tells the UI nothing.
     /// </summary>
+    /// <remarks>
+    /// Bob holds an EDITOR grant here, and that is what keeps the test about #399 after #419. Without
+    /// a grant his handshake is now refused a layer earlier, by the conversation gate, and the pool
+    /// guard below would never be reached - the assertion would still pass, on the wrong mechanism.
+    /// The grant is also the only shape in which #399's frame is still reachable at all: two humans
+    /// share a live agent exactly when one of them shared the conversation with the other.
+    /// </remarks>
     [Fact]
     public async Task WithEnforcementOn_ASecondUsersSocket_IsRefusedTheOwnersLiveAgent()
     {
         LogTestStart();
         using var factory = NewFactory(EnforcingSettings(), WithTestPrincipalSource);
         const string ThreadId = "thread-two-humans-one-thread";
+
+        await ProvisionOwnedThreadAsync(factory, ThreadId, "dir-a:alice");
+        await GrantEditorAsync(factory, ThreadId, "dir-b:bob");
 
         using var alicesSocket = await factory.ConnectWebSocketAsync(
             ThreadId,
@@ -809,6 +825,45 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
                     Source = PrincipalSource.Interactive,
                 }));
         }
+    }
+
+    /// <summary>
+    /// Writes the metadata row <c>POST /api/conversations</c> would write, so a WebSocket test can own
+    /// a conversation without driving provisioning through the REST surface it is not testing. Needed
+    /// since #419: <c>/ws</c> now authorizes the conversation, and an unstamped thread id is refused
+    /// exactly as another tenant's is.
+    /// </summary>
+    private static Task ProvisionOwnedThreadAsync(
+        E2EWebAppFactory factory,
+        string threadId,
+        string userId)
+    {
+        var store = factory.Services.GetRequiredService<IConversationStore>();
+        return store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                TenantId = DaemonTenant,
+                OwnerUserId = userId,
+                Visibility = Visibility.Private,
+            });
+    }
+
+    /// <summary>Shares a conversation with a second human as an editor (write, not just read).</summary>
+    private static Task GrantEditorAsync(E2EWebAppFactory factory, string threadId, string subjectId)
+    {
+        var grants = factory.Services.GetRequiredService<IResourceGrantStore>();
+        return grants.GrantAsync(new ResourceGrant
+        {
+            TenantId = DaemonTenant,
+            Resource = ConversationAuthorizer.ConversationRef(threadId),
+            SubjectId = subjectId,
+            Role = GrantRole.Editor,
+            GrantedBy = "dir-a:alice",
+            GrantedAt = DateTimeOffset.UtcNow,
+        });
     }
 
     private static E2EWebAppFactory NewFactory(

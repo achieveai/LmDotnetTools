@@ -58,30 +58,41 @@ public sealed class AuthPagesController(
         return Content(BuildPendingHtml(provider.ProviderId), "text/html");
     }
 
+    /// <summary>
+    /// The signed-in page. It renders the provider id and NOTHING ELSE about the sign-in (#419).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// It used to render the account, the granted scopes and the token expiry, for an operator to
+    /// confirm the grant covered what the app needs. That reasoning does not survive the route being
+    /// OUTSIDE the identity boundary: <c>/auth/{providerId}</c> is not under <c>/api</c>, so
+    /// <c>IdentityMiddleware</c> never sees it and the caller need not be signed in - or be anyone at
+    /// all. And <see cref="IOAuthTokenProvider"/> is a process-wide singleton, so the account rendered
+    /// was never the caller's; it was the HOST OPERATOR's, handed to whoever reached the port. Two
+    /// unauthenticated GETs were enough to learn which identity the host runs as and exactly what it
+    /// is authorized to do.
+    /// </para>
+    /// <para>
+    /// The operator's own view of that detail did not disappear with it: it is
+    /// <c>GET /api/auth/{providerId}/status</c>, which is under <c>/api</c> and therefore inside the
+    /// boundary. That is the right place for it, and moving the operator to it is the point of the
+    /// change rather than a cost of it.
+    /// </para>
+    /// <para>
+    /// <paramref name="status"/> is now unused and stays in the signature deliberately: the next
+    /// person to add a line to this page must decide, at the call site, that the field they are about
+    /// to render is safe for an anonymous caller. Removing the parameter would make re-reading the
+    /// status the easy accident.
+    /// </para>
+    /// </remarks>
     private static string BuildSignedInHtml(string providerId, OAuthStatus status)
     {
+        _ = status;
         var encoded = Encode(providerId);
-        var accountLine = string.IsNullOrEmpty(status.Account)
-            ? string.Empty
-            : $"<p>Account: <code>{Encode(status.Account)}</code></p>";
-
-        // Scopes the user granted, surfaced verbatim from the provider's last sign-in so the
-        // operator can confirm the grant covers what the app needs. Empty list (e.g. provider has
-        // not exposed scopes) just renders nothing.
-        var scopesLine = status.Scopes is { Count: > 0 }
-            ? $"<p>Scopes: <code>{Encode(string.Join(' ', status.Scopes))}</code></p>"
-            : string.Empty;
-
-        // ExpiresAtUtc is rendered as an ISO-8601 absolute timestamp; the operator can compare it
-        // against now without us guessing a locale. Some providers (M365 hydrate) don't surface an
-        // expiry — omit the line in that case.
-        var expiryLine = status.ExpiresAtUtc is { } expiresAt
-            ? $"<p>Expires: <code>{Encode(expiresAt.UtcDateTime.ToString("o", System.Globalization.CultureInfo.InvariantCulture))}</code></p>"
-            : string.Empty;
 
         return Page(
             rawTitle: $"Signed in to {providerId}",
-            body: $"<h3>Signed in to {encoded}</h3>{accountLine}{scopesLine}{expiryLine}<p>You can close this tab.</p>");
+            body: $"<h3>Signed in to {encoded}</h3><p>You can close this tab.</p>");
     }
 
     private static string BuildUnavailableHtml(string providerId, string error)

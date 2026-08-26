@@ -72,6 +72,7 @@ public static class IdentityServiceCollectionExtensions
 
         _ = services.AddSingleton<IPrincipalAccessor, HttpContextPrincipalAccessor>();
         _ = services.AddSingleton<ConversationAuthorizer>();
+        _ = services.AddSingleton<WebSocketConversationGate>();
         _ = services.AddHostedService<TenantSeedHostedService>();
         _ = services.AddHostedService<ConversationOwnershipRepairHostedService>();
 

@@ -2137,6 +2137,7 @@ subAgentFactory,
             HttpContext context,
             ChatWebSocketManager wsManager,
             IChatModeStore modeStore,
+            WebSocketConversationGate conversationGate,
             ILogger<Program> wsLogger,
             CancellationToken cancellationToken
         ) =>
@@ -2153,6 +2154,20 @@ subAgentFactory,
                 context.Request.Query["threadId"].FirstOrDefault()
                 ?? context.Request.Query["connectionId"].FirstOrDefault()
                 ?? Guid.NewGuid().ToString();
+
+            // Per-conversation authorization (#419), BEFORE the handshake is accepted and before any
+            // of the work below - the recording writer creates files, and a refused caller must not
+            // be able to make the host do that. Until this existed the route was a login wall: being
+            // somebody was enough to attach to, rehydrate, and freeze ANY thread id (#399).
+            // Write, not Read: this socket accepts user turns and takes ownership of the pooled agent.
+            if (!await conversationGate.AdmitAsync(
+                context,
+                threadId,
+                AchieveAi.LmDotnetTools.LmCore.Identity.AccessAction.Write,
+                cancellationToken))
+            {
+                return;
+            }
 
             // Get modeId from query string (optional, defaults to system default)
             var modeId = context.Request.Query["modeId"].FirstOrDefault();
@@ -2273,6 +2288,7 @@ subAgentFactory,
         async (
             HttpContext context,
             ChatWebSocketManager wsManager,
+            WebSocketConversationGate conversationGate,
             ILogger<Program> wsLogger,
             CancellationToken cancellationToken
         ) =>
@@ -2294,6 +2310,17 @@ subAgentFactory,
                 return;
             }
 
+            // Per-conversation authorization (#419), BEFORE the handshake is accepted. Two answers,
+            // not one: whether the caller may attach to the PARENT at all (refused here), and whether
+            // the named child is actually that parent's (withheld from the handler instead, so a
+            // child that is not theirs answers identically to a child that does not exist).
+            var admission = await conversationGate.AdmitSubAgentAsync(
+                context, parentThreadId, agentId, cancellationToken);
+            if (!admission.Admitted)
+            {
+                return;
+            }
+
             var webSocket = await AcceptNegotiatedWebSocketAsync(context);
             wsLogger.LogInformation(
                 "Sub-agent WebSocket connection established for agent {AgentId} on parent {ParentThreadId}",
@@ -2307,7 +2334,8 @@ subAgentFactory,
                     webSocket,
                     parentThreadId,
                     agentId,
-                    cancellationToken
+                    cancellationToken,
+                    admission.MayReplayPersistedTranscript
                 );
             }
             finally

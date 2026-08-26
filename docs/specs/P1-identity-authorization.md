@@ -1609,33 +1609,45 @@ with `code = "websocket_authentication_required"`. REST keeps its `401`. This is
 two surfaces deliberately differ, and the difference is about the client's retry behaviour, not about
 what was decided.
 
-**A login wall, not an authorization check.** This is the framing the deployment runbook uses, and
-this section previously understated it. These transports establish **who** the caller is and own the
-pooled entry they create; they never ask `ConversationAuthorizer` whether this user may open *this*
-conversation. What #342 changed is who may try - from anyone, to any signed-in principal in the
-deployment. It did not make the socket surface authorized.
+**It was a login wall, not an authorization check (#419, closed).** These transports established
+**who** the caller is and owned the pooled entry they create, but never asked `ConversationAuthorizer`
+whether this user may open *this* conversation. What #342 changed was who may try - from anyone, to
+any signed-in principal in the deployment. Sub-agent transcripts were readable by any of them
+(`/ws/subagent` threaded no principal into its handler at all, and on a cache miss read
+`subagent-{agentId}` straight out of the store), and a `threadId` with no live pooled entry did not
+yield an empty agent: the socket created one primed on that conversation's durable transcript and
+froze it to the caller as owner.
 
-The consequences, named rather than implied:
+**`WebSocketConversationGate` is now the socket's half of §7.4,** and it calls `AuthorizeAsync` rather
+than reimplementing it - the same seam, reached from a second transport, which is the only shape that
+cannot drift. It runs **before** `AcceptWebSocketAsync`, so a refusal creates nothing and never touches
+the pool.
 
-- **Sub-agent transcripts are readable by any signed-in principal.** `/ws/subagent` threads no
-  principal into its handler at all; it gates on "is this a WebSocket request" plus two non-empty
-  query strings. On a cache miss it reads the persisted content for `subagent-{agentId}` out of the
-  store, so a caller who knows or guesses an `agentId` reads another user's sub-agent output.
-- **Socket rehydration hands out ownership of primed history.** A `threadId` with no live pooled
-  entry does not yield an empty agent: the socket creates one primed on that conversation's durable
-  transcript and freezes it to the caller as owner. Knowing the id is enough to own an agent seeded
-  with the victim's conversation.
-- **`auth/{providerId}` answers unauthenticated GETs.** Outside the boundary by design - a provider
-  redirect carries no bearer token - but an unauthenticated request starts a sign-in, and a signed-in
-  one renders the account and its scopes.
+- `/ws` authorizes the thread for **`Write`**. The socket accepts user turns and takes ownership of the
+  pooled agent; both are writes. A `viewer` grantee is therefore refused the chat socket and reads over
+  REST, and an `editor` grantee is admitted and then meets #399's owner freeze.
+- `/ws/subagent` authorizes the **parent** for `Read` - the same ask
+  `GET /api/conversations/{threadId}/subagents` makes - and then checks the named child against the
+  durable parent link `SubAgentProvenance` stamps. Without the second check the first is a formality:
+  the caller supplies their own parent id with someone else's `agentId`.
+- A child that is not the named parent's is **admitted** and loses only its persisted replay, so the
+  socket answers `subagent_unavailable` exactly as it does for an `agentId` that names nothing.
+  Refusing that handshake would make the two distinguishable, which is §7.4.1's oracle in a second
+  place.
+- The existence-hiding refusal is a `404` whose body is identical to the REST surface's
+  `unknown_thread` (§7.4.1). A never-minted id and another tenant's id answer the same. A refusal that
+  already admits existence keeps `403`, never `401` - the retry-loop reasoning above.
 
-The obstacle to simply adding the check is real: the client mints a `threadId` and opens the socket
-before any metadata row exists, so an authorizer call at handshake time would refuse every brand-new
-conversation as unknown. Closing it needs the socket to distinguish "not yours" from "not yet minted",
-which is a design change rather than a missing call. Until then a second user's handshake on an owned
-thread is refused by the pool guard with a structured `principal_conflict` frame - a cache collision,
-not a policy decision - and a multi-tenant host must not be deployed on the assumption that REST's
-grant checks cover this surface. Tracked in **#419**.
+**Consequence for clients, and why it was accepted.** The gate does not mint a row for an unknown id.
+Minting would make an unknown id succeed while a taken one refused, which is the oracle the `404`
+closes. A client must provision through `POST /api/conversations` and open the socket on the id the
+server mints; the bundled SPA does not yet do so and is tracked in **#435**, to ship with the
+enforcement flip exactly as #342's subprotocol change had to.
+
+**`auth/{providerId}`** no longer renders the account, scopes or expiry: the provider is a
+process-wide singleton, so that was the host operator's identity rendered to an anonymous caller on a
+route outside the boundary. The sign-in side effect on an unauthenticated GET remains, deliberately -
+it can only start a sign-in for the host's own provider, never for the caller.
 
 ### 7.7 Audit records
 

@@ -330,11 +330,20 @@ public sealed class ChatWebSocketManager
     /// <param name="parentThreadId">Thread id of the parent agent that owns the sub-agent.</param>
     /// <param name="agentId">Id (or caller-supplied name) of the focused child sub-agent.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
+    /// <param name="mayReplayPersistedTranscript">
+    /// Whether the persisted-transcript fallback below is available to this caller (#419). False when
+    /// the named child's durable parent link names a DIFFERENT conversation than
+    /// <paramref name="parentThreadId"/>: the caller is entitled to the parent they named, but not to
+    /// that child, and without this the authorized parent id would be a passphrase for any child in
+    /// the deployment. The refusal is deliberately indistinguishable from "no such agent" - see
+    /// <see cref="LmStreaming.Sample.Identity.SubAgentSocketAdmission"/>.
+    /// </param>
     public async Task HandleSubAgentConnectionAsync(
         System.Net.WebSockets.WebSocket webSocket,
         string parentThreadId,
         string agentId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool mayReplayPersistedTranscript = true)
     {
         ArgumentNullException.ThrowIfNull(webSocket);
 
@@ -403,8 +412,13 @@ public sealed class ChatWebSocketManager
                 // hold the socket open read-only (drain client frames to detect disconnect) so the
                 // persisted transcript replays. Only a genuinely missing agent (no persisted history)
                 // falls through to the structured error.
+                // The load runs even when the replay is withheld, and is then discarded. Skipping it
+                // would make the withheld answer measurably cheaper than the genuinely-absent one and
+                // reintroduce as a timing difference exactly the existence oracle the withholding
+                // closes (the same equalisation ConversationAuthorizer.EqualizeGrantLookupAsync makes
+                // on the REST refusal paths).
                 var persisted = await _conversationStore.LoadMessagesAsync($"subagent-{agentId}", connectionCts.Token);
-                if (persisted.Count == 0)
+                if (persisted.Count == 0 || !mayReplayPersistedTranscript)
                 {
                     _logger.LogWarning(
                         "Sub-agent {AgentId} unavailable for parent thread {ParentThreadId} (no live stream, no persisted history)",
