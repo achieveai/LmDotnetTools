@@ -219,6 +219,61 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task GetCurrentHeadSha_reads_the_head_sha_the_pr_actually_has()
+    {
+        // The #331 guard is only as good as this parse. MockPrProvider proves the guard's LOGIC and cannot
+        // touch the payload field at all — if `head.sha` ever stopped being read, this parser would return
+        // null, the guard would read that as INDETERMINATE, every review would sail through unchecked, and
+        // every test that goes through the mock would stay green. That is exactly the defect #331 was.
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/repos/acme/widgets/pulls/7",
+            """{ "number": 7, "head": { "ref": "feature", "sha": "d34dbeef" } }""");
+
+        var head = await Provider(handler).GetCurrentHeadShaAsync(Repo, "7", CancellationToken.None);
+
+        head.Should().Be("d34dbeef");
+        handler.Requests.Should().ContainSingle().Which.Uri.ToString()
+            .Should().EndWith("/repos/acme/widgets/pulls/7", "the currency check must cost one single-PR read");
+    }
+
+    [Theory]
+    [InlineData("""{ "number": 7 }""")]
+    [InlineData("""{ "number": 7, "head": {} }""")]
+    [InlineData("""{ "number": 7, "head": { "sha": "" } }""")]
+    [InlineData("""{ "number": 7, "head": { "sha": "   " } }""")]
+    [InlineData("""{ "number": 7, "head": { "sha": null } }""")]
+    public async Task GetCurrentHeadSha_is_null_when_the_payload_carries_no_head_rather_than_throwing(string payload)
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/repos/acme/widgets/pulls/7", payload);
+
+        var head = await Provider(handler).GetCurrentHeadShaAsync(Repo, "7", CancellationToken.None);
+
+        // "The host reports no head" is INDETERMINATE — the caller may only refuse a review on a head the
+        // host positively reported. Throwing here would turn a thin payload into an abandoned review.
+        head.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.NotFound)]
+    public async Task GetCurrentHeadSha_propagates_a_non_success_response_rather_than_flattening_it_to_null(
+        HttpStatusCode status)
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get, "/repos/acme/widgets/pulls/7", """{ "message": "nope" }""", status);
+
+        var act = () => Provider(handler).GetCurrentHeadShaAsync(Repo, "7", CancellationToken.None);
+
+        // The load-bearing case. Null means "nothing contradicts the recorded head" and lets the review
+        // through; a provider that flattened an outage into null would make the guard vacuous exactly when
+        // the host cannot be trusted. The executor is what decides an unreachable host is indeterminate —
+        // that decision must not be pre-made here, where it cannot be told apart from a real answer.
+        _ = await act.Should().ThrowAsync<HttpRequestException>();
+    }
+
+    [Fact]
     public async Task GetPrState_maps_a_closed_and_merged_pr_to_merged()
     {
         const string mergedPr = """

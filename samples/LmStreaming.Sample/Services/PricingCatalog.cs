@@ -1,3 +1,4 @@
+using System.Globalization;
 using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmConfig.Pricing;
 using AchieveAi.LmDotnetTools.LmConfig.Services;
@@ -90,7 +91,8 @@ public static class PricingCatalog
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
 
-        var catalog = BuildCatalog(configuration);
+        var rejected = new List<string>();
+        var catalog = BuildCatalog(configuration, rejected);
         var version = ReadVersion(configuration);
 
         // AddLmConfig registers MORE than pricing, and the extra registrations are the reason to read this
@@ -104,19 +106,32 @@ public static class PricingCatalog
         // its own provider path. If that ever stops being true, the fix is to register the pricing pieces
         // directly rather than to widen this catalog into a real agent catalog by accident.
         _ = services.AddLmConfig(catalog);
-        _ = services.AddSingleton<IPricingResolver>(_ =>
-            PricingConfigResolver.FromAppConfig(catalog, Source, version));
+        _ = services.AddSingleton<IPricingResolver>(sp =>
+        {
+            // Reported here rather than at BuildCatalog time because this method runs while the container is
+            // being described — there is no ILogger to resolve yet. The resolver's own factory is the first
+            // moment one exists AND the first moment a dropped rate can actually be observed as a null cost,
+            // so an operator reading the log sees the explanation next to the symptom.
+            ReportRejectedRates(sp.GetService<ILoggerFactory>(), rejected);
+            return PricingConfigResolver.FromAppConfig(catalog, Source, version);
+        });
 
         return services;
     }
 
     /// <summary>
     ///     Builds the <see cref="AppConfig" /> catalog from the <c>Pricing:Models</c> section. Each child key
-    ///     is a model id; an entry missing either rate is skipped, because half a rate cannot produce a cost
-    ///     and a zero substituted for the missing half would produce a wrong one. An absent section yields an
-    ///     empty catalog.
+    ///     is a model id; an entry whose rates are not both USABLE is skipped, because half a rate cannot
+    ///     produce a cost and a zero substituted for the missing half would produce a wrong one. "Usable" is
+    ///     present, finite and non-negative — see <see cref="IsUsableRate" /> for why zero is admitted and the
+    ///     other three are not. An absent section yields an empty catalog.
     /// </summary>
-    public static AppConfig BuildCatalog(IConfiguration configuration)
+    /// <param name="configuration">Host configuration to read <c>Pricing:Models</c> from.</param>
+    /// <param name="rejected">
+    ///     Optional sink receiving one operator-readable sentence per skipped entry, so the drop can be
+    ///     reported rather than left to be inferred from a null cost.
+    /// </param>
+    public static AppConfig BuildCatalog(IConfiguration configuration, ICollection<string>? rejected = null)
     {
         ArgumentNullException.ThrowIfNull(configuration);
 
@@ -125,15 +140,21 @@ public static class PricingCatalog
         {
             var prompt = entry.GetValue<double?>("PromptPerMillion");
             var completion = entry.GetValue<double?>("CompletionPerMillion");
-            if (prompt is null || completion is null)
+            var promptUsable = IsUsableRate(prompt, out var promptRate);
+            var completionUsable = IsUsableRate(completion, out var completionRate);
+            if (!promptUsable || !completionUsable)
             {
+                rejected?.Add(
+                    $"'{entry.Key}' has PromptPerMillion={Describe(prompt)} and "
+                        + $"CompletionPerMillion={Describe(completion)}; a rate must be present, finite and "
+                        + "not negative (zero is allowed, for a free model)");
                 continue;
             }
 
             var pricing = new PricingConfig
             {
-                PromptPerMillion = prompt.Value,
-                CompletionPerMillion = completion.Value,
+                PromptPerMillion = promptRate,
+                CompletionPerMillion = completionRate,
             };
 
             // One provider entry per name the model answers to, all carrying the SAME rate. The resolver
@@ -174,4 +195,43 @@ public static class PricingCatalog
         var version = configuration[$"{SectionName}:Version"];
         return string.IsNullOrWhiteSpace(version) ? null : version;
     }
+
+    /// <summary>
+    ///     Warns once per unusable entry. A silent skip leaves the operator with a null cost that looks exactly
+    ///     like a model they never configured — the state #378 was filed against — so the drop is announced.
+    /// </summary>
+    private static void ReportRejectedRates(ILoggerFactory? loggerFactory, IReadOnlyList<string> rejected)
+    {
+        if (rejected.Count == 0 || loggerFactory is null)
+        {
+            return;
+        }
+
+        var logger = loggerFactory.CreateLogger(typeof(PricingCatalog).FullName!);
+        foreach (var reason in rejected)
+        {
+            logger.LogWarning(
+                "Pricing entry dropped: {Reason}. Its models resolve to no cost at all rather than to a wrong one.",
+                reason);
+        }
+    }
+
+    /// <summary>
+    ///     A rate this host is willing to sum: present, finite, and not negative. Zero is deliberately
+    ///     ADMITTED — a free model has a knowable rate of zero, and "$0.00, priced" is a different fact from
+    ///     "cost unavailable"; rejecting it would be the over-eager fix that breaks free models. Negative, NaN
+    ///     and infinity are refused for the same reason half a rate is: a wrong number is worse than an absent
+    ///     one because it is summed, reported and believed. NaN and infinity additionally have no decimal
+    ///     representation, so <c>PricingConfigResolver</c>'s cast would throw and one mistyped entry would take
+    ///     pricing down for every model the host runs, not just the mistyped one.
+    /// </summary>
+    private static bool IsUsableRate(double? rate, out double value)
+    {
+        value = rate.GetValueOrDefault();
+        return rate.HasValue && double.IsFinite(value) && value >= 0;
+    }
+
+    /// <summary>Renders a rate for the operator, naming an absent one rather than printing an empty string.</summary>
+    private static string Describe(double? rate) =>
+        rate is { } value ? value.ToString(CultureInfo.InvariantCulture) : "(absent)";
 }
