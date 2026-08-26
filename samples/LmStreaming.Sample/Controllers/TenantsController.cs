@@ -2,6 +2,7 @@ using System.ComponentModel.DataAnnotations;
 using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using LmStreaming.Sample.Identity;
+using LmStreaming.Sample.Persistence;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.Extensions.Options;
@@ -180,6 +181,19 @@ public sealed class TenantsController : ControllerBase
     /// not answer with 40,000 ids.</summary>
     private const int SampleSize = 20;
 
+    /// <summary>
+    /// Ceiling on the single scan a subset adoption walks the sub-agent tree over (#405).
+    /// </summary>
+    /// <remarks>
+    /// Matches the roster scan's own cap in <c>ConversationDescendantScanner</c>, and is one call
+    /// rather than a paging loop for the reason recorded there: the store is contractually ordered
+    /// by last-updated, so a conversation touched between two pages moves across the offset boundary
+    /// and the next page skips it. Here that skip would drop a parent link and split a tree - which
+    /// is the defect this walk exists to prevent - so the over-cap case is refused rather than
+    /// walked partially.
+    /// </remarks>
+    internal const int AdoptionScanMaxThreads = 2000;
+
     private readonly ITenantStore _tenantStore;
     private readonly IAuditSink _auditSink;
     private readonly TimeProvider _timeProvider;
@@ -344,6 +358,27 @@ public sealed class TenantsController : ControllerBase
         // conversation on a call that asked for none.
         var resourceIds = request.ResourceIds?.ToArray();
 
+        // #405. A submitted subset is expanded to the whole conversation TREE each named id belongs
+        // to. Leaving a sub-agent behind is not a tidiness problem: the roster scan scopes by the
+        // root's tenant, so a descendant stranded in quarantine drops out of its parent's roster
+        // silently, and the incomplete roster is then cached for the life of the process.
+        if (resourceIds is { Length: > 0 })
+        {
+            var expansion = await ExpandToWholeTreesAsync(quarantineTenantId, resourceIds, ct)
+                .ConfigureAwait(false);
+
+            if (expansion is null)
+            {
+                return RejectAdoption(
+                    tenantId,
+                    request,
+                    StatusCodes.Status503ServiceUnavailable,
+                    "adoption_scan_truncated");
+            }
+
+            resourceIds = expansion;
+        }
+
         var eligible = await ownership
             .ListThreadIdsByTenantAsync(quarantineTenantId, resourceIds, ct)
             .ConfigureAwait(false);
@@ -392,6 +427,115 @@ public sealed class TenantsController : ControllerBase
             DryRun = false,
             Sample = [.. eligible.Take(SampleSize)],
         });
+    }
+
+    /// <summary>
+    /// Grows a submitted id list into every whole sub-agent tree those ids touch, or returns
+    /// <see langword="null"/> when the one bounded scan it walks could not read the tenant (#405).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The walk goes BOTH ways along each <c>sample.subAgentOf</c> edge, and one connected-component
+    /// pass is why. A downward-only expansion still splits a tree whenever the operator names a
+    /// sub-agent rather than a root: the child moves, the root stays, and the roster scan rooted at
+    /// the row still in quarantine drops the adopted child instead. Same disclosure, same edge,
+    /// selected from the other end. Following the component makes the direction of the operator's
+    /// selection stop mattering, at the cost of adopting rows they did not name - which is reported
+    /// in the count and the rehearsal sample, and which is the whole tree they were already
+    /// implicitly asking for.
+    /// </para>
+    /// <para>
+    /// Scoped to the quarantine tenant WITHOUT <c>IncludeUntenanted</c>, unlike the roster scan.
+    /// That tolerance exists there because a scan rooted in a real tenant must still see a
+    /// descendant whose stamp has not landed yet; here it would buy nothing, because an untenanted
+    /// row is not in the source tenant and <c>AdoptThreadsAsync</c> would not move it - and it is
+    /// not dropped from any roster either, which is exactly what #395 established.
+    /// </para>
+    /// <para>
+    /// A parent that is NOT in the scan is not followed. Rows leave quarantine here; they never
+    /// leave a real tenant, or adopting a conversation would become a way to move somebody else's
+    /// by claiming to be its child.
+    /// </para>
+    /// </remarks>
+    /// <param name="quarantineTenantId">The tenant the adoption reads from.</param>
+    /// <param name="seeds">The ids the operator named.</param>
+    /// <param name="ct">Cancellation token.</param>
+    private async Task<string[]?> ExpandToWholeTreesAsync(
+        string quarantineTenantId,
+        IReadOnlyCollection<string> seeds,
+        CancellationToken ct)
+    {
+        var rows = await _conversationStore
+            .ListThreadsAsync(
+                ConversationListScope.ForTenant(quarantineTenantId),
+                AdoptionScanMaxThreads + 1,
+                0,
+                ct)
+            .ConfigureAwait(false) ?? [];
+
+        if (rows.Count > AdoptionScanMaxThreads)
+        {
+            // Refused, not truncated. A partial walk cannot see the parent links past the cap, so
+            // proceeding would reintroduce the split this method exists to prevent - on exactly the
+            // deployments too large for anyone to notice it happening.
+            _logger.LogWarning(
+                "Refusing a subset adoption from {QuarantineTenantId}: more than {MaxThreads} "
+                    + "quarantined conversations, so the sub-agent tree cannot be walked in one scan.",
+                quarantineTenantId,
+                AdoptionScanMaxThreads);
+            return null;
+        }
+
+        var childrenOf = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        var parentOf = new Dictionary<string, string>(StringComparer.Ordinal);
+        var inScan = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var row in rows)
+        {
+            _ = inScan.Add(row.ThreadId);
+
+            if (SubAgentProvenance.TryProject(row)?.ParentThreadId is not { } parentThreadId)
+            {
+                continue;
+            }
+
+            parentOf[row.ThreadId] = parentThreadId;
+            if (!childrenOf.TryGetValue(parentThreadId, out var children))
+            {
+                childrenOf[parentThreadId] = children = [];
+            }
+
+            children.Add(row.ThreadId);
+        }
+
+        var reached = new HashSet<string>(seeds, StringComparer.Ordinal);
+        var frontier = new Queue<string>(reached);
+        while (frontier.Count > 0)
+        {
+            var current = frontier.Dequeue();
+
+            if (parentOf.TryGetValue(current, out var parent)
+                && inScan.Contains(parent)
+                && reached.Add(parent))
+            {
+                frontier.Enqueue(parent);
+            }
+
+            if (!childrenOf.TryGetValue(current, out var children))
+            {
+                continue;
+            }
+
+            foreach (var child in children)
+            {
+                if (reached.Add(child))
+                {
+                    frontier.Enqueue(child);
+                }
+            }
+        }
+
+        return [.. reached];
     }
 
     /// <summary>
