@@ -131,6 +131,76 @@ public sealed class PrincipalFactory
         };
 
     /// <summary>
+    /// The authentication type stamped on a principal this class projected, distinct from any
+    /// scheme's own so a reader can tell a bridged identity from a token-validated one.
+    /// </summary>
+    public const string BridgedAuthenticationType = "LmStreaming.Identity.AppOnly";
+
+    /// <summary>The claim carrying the principal's tenant, for a reader that needs more than the app.</summary>
+    public const string TenantIdClaimType = "lm_tenant_id";
+
+    /// <summary>
+    /// Projects <paramref name="principal"/> onto a <see cref="ClaimsPrincipal"/> for the code that
+    /// reads <c>HttpContext.User</c> rather than the sample's own principal, or <see langword="null"/>
+    /// when there is nothing to project (#424).
+    /// </summary>
+    /// <param name="principal">The principal the identity boundary minted.</param>
+    /// <returns>The claims projection, or <see langword="null"/> when the principal names no app.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="principal"/> is null.</exception>
+    /// <remarks>
+    /// <para>
+    /// The consumers are <c>LifecycleSubscriptionsController</c> and <c>LifecycleApprovalController</c>,
+    /// which live in <c>LmAgentInfra</c> and therefore cannot reference <see cref="Principal"/> at
+    /// all. Both authenticate by asking whether <c>User</c> is authenticated and reading
+    /// <see cref="ClaimTypes.NameIdentifier"/> off it, so those are the two facts this projection
+    /// exists to carry - and the name identifier is the caller's <b>app id</b>, because that is what
+    /// <c>ILifecycleOwnerResolver.ResolveCallerAsync</c> turns into an owner key. A projection that
+    /// carried anything else there would still authenticate and would file every app's subscriptions
+    /// under the wrong owner.
+    /// </para>
+    /// <para>
+    /// <b>Null for an app-less principal, and that narrowness is the point for the development
+    /// principal.</b> With <c>Identity:Enforce</c> off - the default -
+    /// <see cref="CreateDevelopmentPrincipal"/> answers every anonymous request, is app-less, and
+    /// DOES reach this check live: without it, projecting that principal would authenticate an
+    /// anonymous caller to a control plane whose entire authorization model is "the principal names
+    /// an app", turning a feature flag into an open subscription endpoint.
+    /// </para>
+    /// <para>
+    /// <b>Defensive, deliberately, for an end-user principal.</b> Every interactive principal is
+    /// constructed with <c>AppId = null</c> (see <see cref="ResolveInteractiveAsync"/>), and
+    /// <c>IdentityMiddleware.ResolveAsync</c> returns that stashed resolution before any other front
+    /// door runs - so by the time an interactive principal could reach this method, it was never
+    /// going to carry an app id for this check to exclude. Making the guard load-bearing here would
+    /// mean either letting interactive principals carry an <c>AppId</c> (which would start firing the
+    /// app-only ownership branch of <c>ResourceAccessPolicy</c> on interactive requests) or replacing
+    /// this silent null return with a log-and-skip that could never fire in production - dead logging
+    /// either way. The check stays as defence-in-depth against a future resolver that returns an
+    /// app-shaped principal on an interactive path, which is exactly the change that would otherwise
+    /// bridge an app identity onto <c>HttpContext.User</c>.
+    /// </para>
+    /// </remarks>
+    public static ClaimsPrincipal? ToClaimsPrincipalOrNull(Principal principal)
+    {
+        ArgumentNullException.ThrowIfNull(principal);
+
+        if (string.IsNullOrWhiteSpace(principal.AppId))
+        {
+            return null;
+        }
+
+        var identity = new ClaimsIdentity(
+            [
+                new Claim(ClaimTypes.NameIdentifier, principal.AppId),
+                new Claim(ClaimTypes.Name, principal.AppId),
+                new Claim(TenantIdClaimType, principal.TenantId),
+            ],
+            BridgedAuthenticationType);
+
+        return new ClaimsPrincipal(identity);
+    }
+
+    /// <summary>
     /// Resolves a validated interactive token. Writes exactly one audit record either way, because
     /// a deny-only trail cannot answer "was this ever attempted successfully?".
     /// </summary>

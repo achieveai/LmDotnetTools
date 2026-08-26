@@ -989,10 +989,29 @@ public sealed class ChatWebSocketManager
             };
 
             // Send to agent (non-blocking - queues the message)
-            var receipt = await agent.SendAsync(
-                [userMessage],
-                inputId: Guid.NewGuid().ToString(),
-                ct: ct);
+            var inputId = Guid.NewGuid().ToString();
+
+            // The sibling of the REST send's own call (#418), and recorded BEFORE the send for the
+            // same reason: this path queues turns on exactly the same pooled entry, so a ledger kept
+            // only on the REST path would leave the hole open for every message typed into the UI -
+            // which is most of them. The id is the one being sent, so the run assignment that picks
+            // it up is what retires it.
+            _agentPool.AddOutstandingInput(threadId, inputId, agent);
+            SendReceipt receipt;
+            try
+            {
+                receipt = await agent.SendAsync(
+                    [userMessage],
+                    inputId: inputId,
+                    ct: ct);
+            }
+            catch
+            {
+                // Nothing was queued, so the id must not outlive the attempt - otherwise no run can
+                // ever name it and the thread reads busy until the grace expires.
+                _agentPool.RemoveOutstandingInput(threadId, inputId, agent);
+                throw;
+            }
 
             _logger.LogDebug(
                 "Message queued for thread {ThreadId}, receipt: {InputId}",

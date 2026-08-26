@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmTestUtils;
@@ -41,6 +42,7 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
     private const string DaemonTenant = "tnt_daemon";
     private const string ClientOrigin = "https://client.example";
     private const string GuardedRoute = "/api/conversations";
+    private const string CallbackHost = "callbacks.example.com";
 
     public IdentityBoundaryPipelineTests(ITestOutputHelper output)
         : base(output) { }
@@ -259,6 +261,90 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         _ = response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
         _ = response.Headers.GetValues(IdentityMiddleware.RefusalCodeHeader).Should().ContainSingle()
             .Which.Should().Be("authentication_required");
+    }
+
+    [Fact]
+    public async Task WithEnforcementOn_ARegisteredServiceCaller_ReachesTheLifecycleControlPlane()
+    {
+        LogTestStart();
+
+        // #424. Passing the identity boundary was never the whole journey. The two lifecycle
+        // controllers live in LmAgentInfra, cannot see this sample's Principal type, and read
+        // HttpContext.User; IdentityMiddleware published its minted principal only on
+        // HttpContext.Items. Nothing bridged the two, and the only registered authentication scheme
+        // is JWT bearer - which the daemon's S2S headers do not trigger. So a caller that identity
+        // had just accepted arrived at Register() with User.Identity.IsAuthenticated false and was
+        // refused 403 "caller is not authenticated", by the host's own control plane, for being
+        // exactly the kind of caller that plane exists to serve.
+        using var factory = NewFactory(LifecycleEnforcingSettings());
+        using var client = factory.CreateClient();
+
+        var response = await client.SendAsync(RegistrationRequest(daemonHeaders: true));
+        var body = await response.Content.ReadAsStringAsync();
+        LogData("registrationBody", body);
+
+        _ = response.StatusCode.Should().Be(
+            HttpStatusCode.Created,
+            "a caller the identity boundary admitted as {0} must be authenticated to the controllers "
+                + "behind it, not just to the middleware in front of them",
+            DaemonAppId);
+
+        // Non-vacuity for the status alone: a 201 proves the action ran, and the minted subscription
+        // proves it ran as an owner rather than reaching some shared, ownerless path.
+        _ = body.Should().Contain("subscription_id");
+        _ = body.Should().Contain("signing_secret");
+    }
+
+    [Fact]
+    public async Task WithEnforcementOn_AnUnregisteredServiceCaller_NeverReachesTheLifecyclePlane()
+    {
+        LogTestStart();
+
+        // The bridge must not be a second front door. This caller's secret matches, so it is
+        // authenticated - but its app id is not onboarded, so identity refuses it at the boundary
+        // and it never reaches Register(). Without this, a bridge that minted a principal for any
+        // app id the caller cared to name would pass the test above unchanged.
+        using var factory = NewFactory(LifecycleEnforcingSettings());
+        using var client = factory.CreateClient();
+
+        var request = RegistrationRequest(daemonHeaders: false);
+        request.Headers.TryAddWithoutValidation("X-S2S-Auth", Secret);
+        request.Headers.TryAddWithoutValidation("X-Sbx-App-Id", "not-onboarded");
+
+        var response = await client.SendAsync(request);
+
+        _ = response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        _ = response.Headers.GetValues(IdentityMiddleware.RefusalCodeHeader).Should().ContainSingle()
+            .Which.Should().Be(ServiceCallerPrincipalSource.AppNotRegisteredCode);
+    }
+
+    [Fact]
+    public async Task WithEnforcementOff_TheDevelopmentPrincipal_StillDoesNotAuthenticateToLifecycle()
+    {
+        LogTestStart();
+
+        // The narrowness pin, and the reason the bridge is keyed on the app id rather than on
+        // "identity produced a principal". With Identity:Enforce off - the default every other E2E
+        // test in this repository runs under - the middleware mints a development principal for an
+        // anonymous request. Bridging that one would silently authenticate every anonymous caller to
+        // a control plane whose whole authorization model is "the principal names an app", turning a
+        // feature flag into an open subscription endpoint. The development principal names no app,
+        // ToClaimsPrincipalOrNull returns null for it, and this is what that decision costs and buys.
+        var settings = LifecycleSettings();
+        settings["Identity:DatabasePath"] = Path.Combine(
+            Path.GetTempPath(),
+            $"identity_e2e_{Guid.NewGuid():N}.db");
+
+        using var factory = NewFactory(settings);
+        using var client = factory.CreateClient();
+
+        var response = await client.SendAsync(RegistrationRequest(daemonHeaders: false));
+
+        _ = response.StatusCode.Should().Be(
+            HttpStatusCode.Forbidden,
+            "the lifecycle control plane refuses a caller that names no app, and an unenforced host "
+                + "mints exactly such a principal for an anonymous request");
+        _ = (await response.Content.ReadAsStringAsync()).Should().Contain("not authenticated");
     }
 
     [Fact]
@@ -487,6 +573,57 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
             ["Auth:S2SInboundSecret"] = Secret,
             ["LmStreaming:AllowedOrigins:0"] = ClientOrigin,
         };
+
+    /// <summary>
+    /// The flags that publish the lifecycle control plane. The callback allow-list is not optional:
+    /// the options are validated at wiring time, so a host that enables delivery without one does
+    /// not boot.
+    /// </summary>
+    private static Dictionary<string, string?> LifecycleSettings() =>
+        new(StringComparer.Ordinal)
+        {
+            ["Lifecycle:Delivery:Enabled"] = "true",
+            ["Lifecycle:Delivery:AllowedCallbackHosts:0"] = CallbackHost,
+            ["Lifecycle:Approval:Enabled"] = "true",
+        };
+
+    /// <summary>An enforcing host that also publishes the lifecycle control plane.</summary>
+    private static Dictionary<string, string?> LifecycleEnforcingSettings()
+    {
+        var settings = EnforcingSettings();
+        foreach (var (key, value) in LifecycleSettings())
+        {
+            settings[key] = value;
+        }
+
+        return settings;
+    }
+
+    /// <summary>
+    /// A subscription registration addressed to an allow-listed callback, so nothing but identity
+    /// can refuse it. Registration performs no DNS, so the host need not exist.
+    /// </summary>
+    private static HttpRequestMessage RegistrationRequest(bool daemonHeaders)
+    {
+        var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            new Uri("/api/lifecycle/subscriptions", UriKind.Relative))
+        {
+            Content = new StringContent(
+                $$"""{"callback_uri":"https://{{CallbackHost}}/hook"}""",
+                Encoding.UTF8,
+                "application/json"),
+        };
+
+        if (daemonHeaders)
+        {
+            request.Headers.TryAddWithoutValidation("X-S2S-Auth", Secret);
+            request.Headers.TryAddWithoutValidation("X-Sbx-App-Id", DaemonAppId);
+            request.Headers.TryAddWithoutValidation("X-Sbx-App-Key", "app-key-value");
+        }
+
+        return request;
+    }
 
     /// <summary>
     /// The subprotocol list a signed-in browser offers: the credential, then the application

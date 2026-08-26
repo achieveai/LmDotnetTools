@@ -95,19 +95,28 @@ not this S2S service secret.
 ## Cross-actor resume (per-conversation identity binding)
 
 A conversation is bound to the caller identity (`X-Sbx-App-Id`) that first created it, for its
-lifetime:
+lifetime. That freeze lives entirely in the pool
+(`MultiTurnAgentPool.EnsureCallerMatches`, `src/LmAgentInfra/Agents/MultiTurnAgentPool.cs`) and is a
+**separate** boundary from `Identity:Enforce`'s end-user authorization (#301, "A third boundary"
+below). With `Identity:Enforce=false` nothing runs ahead of the pool, so its own comparison is the
+only thing a cross-actor resume ever reaches. With `Identity:Enforce=true`, every conversation route
+first resolves the request through `ResourceAccessPolicy.AuthorizeAsync`
+(`src/LmCore/Identity/ResourceAccessPolicy.cs`) via `ConversationAuthorizer`, and a genuinely
+cross-actor resume is denied and existence-hidden there — `404`, not `409` — before the pool's freeze
+comparison is ever reached. The rationale for hiding rather than conflicting is in
+`docs/specs/P1-identity-authorization.md` §8.3.
 
-| Creator | Continuer | Behavior |
-|---|---|---|
-| S2S caller A | S2S caller A | Continues under A |
-| S2S caller A | S2S caller B | **409 Conflict** |
-| S2S caller A | Plain UI (no credential) | **409 Conflict** |
-| Plain UI (no credential) | S2S caller A | **409 Conflict** |
-| Plain UI (no credential) | Plain UI (no credential) | Continues under the sample's own default identity |
+| Creator | Continuer | `Identity:Enforce=false` | `Identity:Enforce=true` |
+|---|---|---|---|
+| S2S caller A | S2S caller A | Continues under A | Continues under A — same app owns the resource (`ResourceAccessPolicy.cs:201-208`) |
+| S2S caller A | S2S caller B | **409 Conflict** (pool freeze) | **404** — `app_only_no_owner` if A and B share a tenant (`ResourceAccessPolicy.cs:201-208`), or `cross_tenant` if they don't (`ResourceAccessPolicy.cs:188-191`); either reason is existence-hidden by `ConversationAuthorizer.ExistenceHidingReasons` (`ConversationAuthorizer.cs:55-61`) before the pool is ever asked |
+| S2S caller A | Plain UI (no credential) | **409 Conflict** (pool freeze) | **404** — `no_relationship` (`ResourceAccessPolicy.cs:259-262`): the signed-in user owns nothing, holds no grant, and is not an admin of a resource an app-only caller created |
+| Plain UI (no credential) | S2S caller A | **409 Conflict** (pool freeze) | **404** — `app_only_no_owner` (`ResourceAccessPolicy.cs:201-208`): a plain-UI-created conversation has no `owner_app_id`, so no app-only principal owns it |
+| Plain UI (no credential) | Plain UI (no credential) | Continues under the sample's own default identity | Continues, subject to the same owner/grant/admin check every other route applies |
 
-`ConversationsController.SendMessage` maps the pool's `SandboxCredentialConflictException` to a
-`409` whose body names **neither** app id — `detail` is a fixed sentence, and the `/ws` frame carrying
-the same `code` matches it word for word:
+The unenforced column is what `ConversationsController.SendMessage` maps the pool's
+`SandboxCredentialConflictException` to: a `409` whose body names **neither** app id — `detail` is a
+fixed sentence, and the `/ws` frame carrying the same `code` matches it word for word:
 `{ "error": "caller_credential_conflict", "code": "caller_credential_conflict", "detail": "...", "threadId": "..." }`.
 For the ids, read the structured log line the refusal writes (`ExistingAppId` / `RequestedAppId`); app
 keys appear in neither place. The body used to carry both ids, on a diagnosability argument that did
@@ -351,6 +360,23 @@ claimed first. Two mechanisms do this, and both are needed:
      still writes an audit record.
    - An **omitted** `resourceIds` means "every quarantined conversation". An **empty array** means
      "none". They are not the same, and the route does not conflate them.
+   - **Naming ids adopts whole conversation trees, not just the ids you named (#405).** A
+     conversation's sub-agent roster is read within the tenant of the conversation it hangs off, so
+     a root adopted without its sub-agents loses them from its roster — silently, and for the life
+     of the process, because the short roster is then cached. Naming a sub-agent instead of a root
+     has the same effect from the other side. So the route follows the parent/child links in both
+     directions and moves the whole tree. Expect the count to exceed the number of ids you
+     submitted, and use `dryRun` to see the real blast radius first — the rehearsal reports the
+     expanded set, not the submitted one.
+   - Two limits on that expansion, both intentional:
+     - It only ever moves conversations **out of the quarantine tenant**. A sub-agent already living
+       in a real tenant is left alone, so adoption cannot be used to pull another tenant's
+       conversation across by adopting something that claims to be its parent. A tree already split
+       across two real tenants is not repaired by this route.
+     - If the quarantine tenant holds more than 2,000 conversations, a call that names `resourceIds`
+       is refused with `503 adoption_scan_truncated` rather than run on a tree it could not finish
+       walking. Adopting the **whole** tenant (omit `resourceIds`) needs no walk and still works —
+       that is the way through.
    - `ownerUserId` must belong to the target tenant's Entra directory or the call is refused with
      `owner_tenant_mismatch` before anything is written.
    - Re-running adopts nothing the first run already moved: the selection is on the SOURCE tenant,
@@ -397,14 +423,22 @@ The registration does not replace `Auth:S2SInboundSecret`; it reads the same val
 same constant-time comparison the endpoint filter uses, so the two can never disagree about what a
 service request is.
 
-**Infrastructure callbacks sit outside this boundary entirely.** `/api/auth/webhook/*` and
-`/api/lifecycle/*` have no user and no tenant to resolve, and each carries its own credential — the
-gateway's deferred-auth webhook puts a *session secret* in `Authorization`, which the JWT handler
-cannot parse by design, and the lifecycle control plane runs its own signature check and is off by
-default. Guarding them would refuse every legitimate caller and grant nothing. That exemption is
-asserted, not trusted: a test enumerates this host's real endpoint table and requires every `/api`
-route to be either guarded or named on `IdentityMiddleware.UnguardedApiPaths`, so a newly added
-route cannot land outside the boundary silently.
+**Infrastructure callbacks sit outside this boundary entirely.** `/api/auth/webhook/*` has no user
+and no tenant to resolve and carries its own credential: the gateway's deferred-auth webhook puts a
+*session secret* in `Authorization`, which the JWT handler cannot parse by design, so guarding it
+would refuse every legitimate caller and grant nothing. That exemption is asserted, not trusted: a
+test enumerates this host's real endpoint table and requires every `/api` route to be either guarded
+or named on `IdentityMiddleware.UnguardedApiPaths`, so a newly added route cannot land outside the
+boundary silently.
+
+**`/api/lifecycle/*` was on that list and no longer is (#402).** Its exemption rested on the lifecycle
+control plane running "its own signature check". It does not — the plane's only signing is *outbound*,
+and `LifecycleApprovalController` states in its own remarks that it does not authenticate. The
+exemption therefore granted nothing and cost tenant refusal, so the routes are now guarded like any
+other. A lifecycle caller must be onboarded under `Identity:Apps` when enforcement is on, which is
+what enforcement already means for every other service-to-service route, and since #424 an onboarded
+caller is authenticated to the plane's controllers as well as admitted at the boundary — the minted
+principal is published on `HttpContext.User`, which is what those controllers read.
 
 `/api/auth/egress-keys*` is **not** one of these, despite looking like one. Its controller presents
 no credential — it is loopback-gated only — and the SPA reaches it through `apiFetch`, which attaches
@@ -507,20 +541,71 @@ Whether that sharing is the RIGHT behaviour is an open product question, tracked
 grantees get their own session key, or the sharing stays and is documented as intentional. This
 runbook states what ships today.
 
-A run **in progress** is left alone on a **best-effort** basis: the release checks for an active run
-and skips if it finds one, and the second caller still gets `409 principal_conflict`. Treat it as
-best-effort literally — the check and the removal are not one atomic step, and a turn that is queued
-but has not started reads as "not in progress", so it can be dropped by a handoff that arrives in
-that window (**#418**). Evicting a genuinely streaming turn would abort the answer of whoever is mid-answer —
-the wrong party to punish for someone else's handoff — which is why the check exists at all. Retry
-once the run ends.
+**An entry with work in hand is not released** (**#418**). The release is a compare-and-remove inside
+the pool: `TryGetHandoffState` returns the owner, the frozen app id, and a busy flag from one entry
+under one per-thread lock, and `TryReleaseIdleAgentAsync` re-validates that same entry under that
+same lock before it removes anything. The second caller still gets `409 principal_conflict`, and now
+gets it on what the pool actually did rather than on a read that may already be stale. Retry once the
+work in hand finishes.
 
-Same caveat, same issue, one layer down: the release reads the thread's owning user and then its
-frozen app id as two separate unlocked lookups. An entry that disappears between them makes the app id
-read as absent, which can refuse a caller who should have been allowed or allow one who should have
-been refused. Neither is a privilege escalation — the authorization decision has already been made
-above, and both outcomes land inside it — but it is why the whole helper is documented as best-effort
-rather than as a guard.
+"Work in hand" is deliberately wider than "a run is streaming". An input that has been **accepted and
+not yet started** has no run id and is not running, so an in-progress check alone reads it as idle —
+and the turn was discarded with the agent after its sender had already been handed a receipt. **Four**
+live paths hand an agent an input and record it in this ledger: the REST send
+(`ConversationsController.SendMessage`), the WebSocket send (`ChatWebSocketManager`), the
+context-discovery fan-out (`ContextDiscoveryInjector.FanOutToSessionAsync`), and the workflow
+completion notifier wired in `Program.cs` — the last three all call `SendAsync` directly on a pooled
+agent rather than going through a transport. The pool keeps a per-thread ledger of **outstanding
+input ids**, not a single flag, so any of the four paths can add an entry without clobbering what
+another already recorded.
+
+That is not a closed list of every way an input can reach a pooled agent — it is the list of paths
+this ledger actually sees. One further family reaches a pooled agent and is **not** ledgered:
+collaboration onto the pooled root conversation. `Program.cs` (~line 1570) builds a root collaboration
+handle for every conversation, on by default for `WorkspaceAgentModeId`
+(`CollaborationDefaultsOnForMode`). `MultiTurnAgentLoop` self-registers an `AgentLoopWriteEndpoint` for
+that handle (`MultiTurnAgentLoop.cs`, ~lines 409-417), and `AgentCollaborationMessenger` delivers a
+collaboration message by calling `TrySendAsync` directly on the pooled agent through that endpoint
+(`AgentCollaborationMessenger.cs`, ~line 167) — with no write to this ledger, while the sender is told
+the message was `Delivered`. That site, plus the two sub-agent relay calls at
+`SubAgentManager.cs:442` and `SubAgentManager.cs:3548` (both call `SendAsync` on the parent agent with
+the same no-ledger result), are a known, tracked gap: **#434**. They are not fixed here because
+`AgentCollaborationMessenger` and `MultiTurnAgentLoop` live in `src/LmMultiTurn`, which the pool's own
+assembly (`LmAgentInfra`) depends on — reaching back into the pool from there would close a circular
+assembly dependency.
+
+The ledger retires ids on **authoritative evidence**, not inference, for the four paths it covers: the
+pool subscribes to the agent's own message stream, and each `RunAssignmentMessage` names the input
+ids that assignment consumed (`RunAssignment.InputIds`) — the pool retires exactly those. That is a
+fact the agent states about its own input channel, not something inferred from the mere appearance of
+a new run id, and it needs no arithmetic: an id accepted after the message was published is simply
+not named by it, so the accept that lands between the agent's read and the pool's cannot be retired
+by mistake. An id is retired only once a run has actually taken it, so the accepted turn is never
+lost. An entry with any outstanding input id reads as busy, so a concurrent handoff refuses rather
+than disposing an agent that still owes someone an answer.
+
+Two bounds on that guarantee, both deliberate:
+
+- **A wedged agent does not pin the conversation forever.** Evidence-based retirement depends on the
+  pool's subscription to the agent's message stream actually delivering a `RunAssignmentMessage` — an
+  agent that wedges, or a subscription that ended or was dropped, never produces that evidence. For
+  exactly that case, an accepted input stops counting as work in hand after a bounded grace
+  (`MultiTurnAgentPool.AcceptedInputGrace`, 30 seconds of *continuous* observed idleness — a turn
+  queued behind a long run is never timed out by it). The grace is a **backstop** for missing
+  evidence, not the mechanism that normally retires an id. Refusing every future handoff for that
+  thread indefinitely is a worse failure than the one being prevented.
+- **A replaced entry is preserved, not released.** If the entry the caller reasoned about was swapped
+  out in between — a session refresh, a mode switch, a second caller's create — the release reports
+  `Replaced` and leaves the new entry alone, where the previous unconditional removal destroyed a live
+  agent nobody had decided anything about.
+
+The owner and the frozen app id now come from that same single look. They used to be two separate
+unlocked lookups, and both answer null for a thread with no entry at all — so an entry that vanished
+between them made the app id read as absent, which is indistinguishable from "created by a caller with
+no credential". That could refuse a caller who should have been allowed or allow one who should have
+been refused. Neither was a privilege escalation (the authorization decision is made before this
+helper runs, and both outcomes land inside it), and neither is reachable now: absence is reported as
+absence, and there is no second lookup to disagree with the first.
 
 The app-id freeze (`caller_credential_conflict`) is **not** released alongside it. That is the
 boundary between services rather than between people: an app-only S2S caller has no

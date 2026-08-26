@@ -118,14 +118,76 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent
     public async IAsyncEnumerable<IMessage> SubscribeAsync(
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
-        if (KeepSubscriptionOpen)
+        if (!KeepSubscriptionOpen)
         {
-            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            yield break;
         }
 
-        yield break;
+        // Serving from a channel rather than parking on the token keeps the "stays open" behaviour the
+        // property promises AND lets StartRun publish into a live stream. With nothing published it
+        // still parks, which is what the socket-teardown tests depend on.
+        var subscriptionId = Guid.NewGuid();
+        var channel = System.Threading.Channels.Channel.CreateUnbounded<IMessage>();
+        _subscribers[subscriptionId] = channel;
+        try
+        {
+            await foreach (var published in channel.Reader.ReadAllAsync(ct))
+            {
+                yield return published;
+            }
+        }
+        finally
+        {
+            _ = _subscribers.TryRemove(subscriptionId, out _);
+        }
     }
 #pragma warning restore CS1998, IDE0391
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<
+        Guid,
+        System.Threading.Channels.Channel<IMessage>
+    > _subscribers = new();
+
+    /// <summary>The run id of the most recently COMPLETED run - mirrors <c>MultiTurnAgentBase</c>.</summary>
+    public string? LatestRunId { get; private set; }
+
+    /// <summary>
+    /// Puts the agent on <paramref name="runId"/> and publishes the <see cref="RunAssignmentMessage"/>
+    /// echoing <paramref name="inputIds"/>, exactly as every real agent loop does when a run picks
+    /// queued input up. That echo is the evidence the pool's accepted-input ledger retires on, so a
+    /// test that sets <see cref="CurrentRunId"/> directly pins a state the product never produces.
+    /// </summary>
+    public void StartRun(string runId, params string[] inputIds)
+    {
+        CurrentRunId = runId;
+        IsRunning = true;
+        Publish(
+            new RunAssignmentMessage
+            {
+                Assignment = new RunAssignment(runId, Guid.NewGuid().ToString("N"), [.. inputIds]),
+                ThreadId = ThreadId,
+            }
+        );
+    }
+
+    /// <summary>
+    /// Ends the current run the way <c>MultiTurnAgentBase.CompleteRunAsync</c> does: the id moves to
+    /// <see cref="LatestRunId"/> and <see cref="CurrentRunId"/> goes back to null. A test that leaves
+    /// <see cref="CurrentRunId"/> set after a run "finished" is pinning an impossible state.
+    /// </summary>
+    public void CompleteRun()
+    {
+        LatestRunId = CurrentRunId;
+        CurrentRunId = null;
+    }
+
+    private void Publish(IMessage message)
+    {
+        foreach (var subscriber in _subscribers.Values)
+        {
+            _ = subscriber.Writer.TryWrite(message);
+        }
+    }
 
     public Task RunAsync(CancellationToken ct = default)
     {

@@ -758,23 +758,41 @@ that a lifecycle caller must now be onboarded under `Identity:Apps` when `Identi
 which is what enforcement already means for every other service-to-service route. With enforcement
 off, nothing changes: the development principal is established as before.
 
-**Known gap: the front door admits the caller, it does not yet authorize the plane.** The paragraph
-above is a statement about the *boundary*, and must not be read as saying an S2S-only caller can now
-drive lifecycle. It cannot. The principal this front door mints is stashed in `HttpContext.Items`,
-while `AuthenticatedAppId()` in both controllers reads `HttpContext.User` (as this section already
-notes two paragraphs up) — and nothing in the repository copies one into the other. The single
-registered authentication scheme is JWT bearer, which the S2S headers do not trigger. So a caller
-presenting only `X-S2S-Auth` + `X-Sbx-App-Id` passes the boundary and is then refused *by the
-controllers*, with `403`.
+**The front door now authorizes the plane as well as admitting the caller (#424).** For a while it
+did not, and this section said so: the principal the front door minted was published on
+`HttpContext.Items` alone, while `AuthenticatedAppId()` in both controllers reads `HttpContext.User`
+(as this section notes two paragraphs up), and nothing copied one into the other. The single
+registered authentication scheme is JWT bearer, which the S2S headers do not trigger — so a caller
+presenting only `X-S2S-Auth` + `X-Sbx-App-Id` passed the boundary and was then refused *by the
+controllers*, with `403`. That was a pre-existing gap rather than a regression from #402: before that
+change these routes were exempt, `IdentityMiddleware` returned at its first line, and
+`HttpContext.User` behind them was equally unauthenticated.
 
-This is a pre-existing gap, not a regression from #402: before the change these routes were exempt,
-so `IdentityMiddleware` returned at its first line and `HttpContext.User` behind them was equally
-unauthenticated. Bringing them inside the boundary took nothing away from any caller that worked.
-Closing the gap requires a deliberate bridge — an `IClaimsTransformation`, an authentication handler
-for the S2S scheme, or controllers that read `IPrincipalAccessor` instead of `HttpContext.User` —
-together with a test that drives the *real* controllers and asserts a non-`403`. Note that
-`ServiceCallerPrincipalTests` proves the boundary half only: its host terminates in the fixture's own
-endpoint and wires no controllers.
+`IdentityMiddleware` now also publishes the minted principal as a `ClaimsPrincipal` on
+`HttpContext.User`, projected by `PrincipalFactory.ToClaimsPrincipalOrNull`, so an app onboarded
+under `Identity:Apps` reaches the plane's actions and is resolved to its own owner key. Two
+properties bound that bridge, and both are asserted rather than described:
+
+- **It carries the app id, by value.** `ClaimTypes.NameIdentifier` holds `Principal.AppId`, because
+  that is what `ILifecycleOwnerResolver.ResolveCallerAsync` turns into an owner. A projection that
+  put anything else there would still authenticate, and would file every app's subscriptions under
+  one owner.
+- **It projects nothing for a principal that names no app, and never displaces an existing one.**
+  The development principal names no app and reaches this check live (enforcement off): without it, a
+  feature flag would have become an open subscription endpoint. An end-user principal also names no
+  app, but the check is defensive there rather than reachable — `IdentityMiddleware.ResolveAsync`
+  returns the stashed interactive resolution before any other front door runs, and every interactive
+  principal is built with `AppId = null` (`PrincipalFactory.cs` around line 381), so no live request
+  ever exercises this exclusion for a human. It stays as defence-in-depth against a future resolver
+  that returns an app-shaped principal on an interactive path — exactly the change that would
+  otherwise bridge an app identity onto `HttpContext.User`. And where `UseAuthentication` has already
+  established a principal, the bridge leaves it alone rather than narrowing a real identity to three
+  claims.
+
+The proof that the *real* controllers answer this caller shape lives in
+`IdentityBoundaryPipelineTests` (`WithEnforcementOn_ARegisteredServiceCaller_ReachesTheLifecycleControlPlane`),
+on a host that wires MVC and publishes the plane. `ServiceCallerPrincipalTests` still proves the
+boundary half only: its host terminates in the fixture's own endpoint and wires no controllers.
 
 **`/api/auth/egress-keys` is deliberately not exempt**, and is named here because it looks like an
 infrastructure route and is not one. It is a SPA management surface the browser calls through
@@ -1848,6 +1866,23 @@ This also closes [#162](https://github.com/achieveai/LmDotnetTools/issues/162) (
 at `Provision` rather than at first `SendMessage`), because `POST /api/conversations`
 (`ConversationsController.cs:221`) can now write ownership at provision time.
 
+**Why a cross-app resume answers `404`, not the pool's `409`.** The pool's own freeze
+(`MultiTurnAgentPool.EnsureCallerMatches`) predates this slice and answers every cross-app resume
+with `409 caller_credential_conflict`, unconditionally - correct with `Identity:Enforce=false`, where
+nothing runs ahead of it. With enforcement on, that is no longer the whole story: `AuthorizeAsync`
+(7.4.1) runs first, on every route, and decides existence-hiding before the pool's freeze is ever
+consulted. A continuer who owns nothing, holds no grant, and administers no relationship to the
+resource - the shape of a genuinely cross-app resume - is denied `app_only_no_owner`, `cross_tenant`,
+or `no_relationship` (`ResourceAccessPolicy.cs`, roughly lines 188-262), and
+`ConversationAuthorizer.ExistenceHidingReasons` (`ConversationAuthorizer.cs:55-61`) turns each of
+those into a `404` identical to a never-minted id. A `409` would tell that continuer the id names
+something real, which is exactly the busy-signal existence oracle the `404` convention above exists
+to close - an actor who may not even know the conversation exists must not learn that it does from a
+conflict response any more than from a `403`. The pool's `409` is not removed; it simply moves
+downstream of authorization, so it can only ever fire for a continuer the policy has already let
+through onto the resource (two credentials that both legitimately reach an owned conversation - the
+scenario #153 was written for), never for one it was going to turn away regardless.
+
 Corresponding fields are added to `ThreadMetadata`
 (`src/LmMultiTurn/Persistence/ThreadMetadata.cs`) as first-class properties - **not** into
 `Properties`, which is serialized into `metadata_json` and cannot be filtered in SQL.
@@ -1984,6 +2019,28 @@ Behaviour:
   tenant is never re-stamped, so a repeated call is idempotent rather than destructive.
 - Each adopted row gets `tenant_id = {tenantId}` and, when `ownerUserId` was supplied,
   `owner_user_id = ownerUserId`.
+- **A `resourceIds` subset is expanded to the whole conversation tree each named id belongs to
+  (#405).** Adoption moves trees, not rows. The sub-agent roster scan scopes by the *root* row's
+  tenant and admits only that tenant or an untenanted row (8.4a, #388a/#395), so a root adopted
+  while its sub-agents stay in quarantine loses them from its roster silently, and the incomplete
+  roster is then cached for the life of the process. Naming a sub-agent instead of a root produces
+  the same disclosure from the other end of the same edge, so the expansion follows
+  `sample.subAgentOf` in **both** directions over one bounded scan of the quarantine tenant - the
+  connected component, not just the descendants.
+
+  Two bounds are deliberate. The walk never leaves quarantine: a descendant already in a real
+  tenant stays there, and the walk does not continue *through* such a parent to reach its other
+  children, because adopting a conversation must not become a way to move somebody else's by
+  claiming to be its child. And when the quarantine tenant holds more rows than one bounded scan
+  can read, a subset adoption is **refused** (`503 adoption_scan_truncated`) rather than performed
+  on a tree it could not finish walking - a truncated scan cannot see the parent links past the
+  cap, and proceeding would split trees again only on the installs large enough that nobody would
+  notice. Adopting the whole tenant (no `resourceIds`) needs no walk and is unaffected.
+
+  *Decision, versus the alternative:* broadening the roster scan to admit the quarantine tenant
+  alongside the root's own was rejected. It re-enlarges the candidate set the scan's cap orders
+  over - the ordering hazard of #388a - and re-introduces cross-tenant candidates the projection
+  then has to discard. Fixing the write path keeps the scan's single-tenant scope true.
 - **`ownerUserId` is validated before any write**: it must parse as `{tid}:{oid}`, and its `tid`
   must equal the `entra_tenant_id` of `{tenantId}`. A user id from a different Entra tenant is
   `400 owner_tenant_mismatch` - accepting it would write a row that 7.4 step 2 then denies to

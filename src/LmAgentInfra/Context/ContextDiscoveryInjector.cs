@@ -45,6 +45,12 @@ public sealed class ContextDiscoveryInjector
     /// </summary>
     public const string MetadataKey = "context_discovery";
 
+    /// <summary>
+    /// Prefix on the input ids this injector mints, so an id in the pool's accepted-input ledger or in
+    /// a log line is attributable to a context-discovery injection rather than to a caller's send.
+    /// </summary>
+    internal const string ContextDiscoveryInputIdPrefix = "ctxdisc-";
+
     private readonly SandboxSessionRegistry _registry;
     private readonly MultiTurnAgentPool _pool;
     private readonly ContextDiscoveryFormatter _formatter;
@@ -174,7 +180,27 @@ public sealed class ContextDiscoveryInjector
 
             try
             {
-                _ = await agent.SendAsync([message], inputId: null, parentRunId: null, ct).ConfigureAwait(false);
+                // A minted id rather than null, because the ledger is retired by the agent echoing
+                // this id back on the run assignment that picks the input up. With a null id the
+                // record could only ever retire on the grace backstop.
+                //
+                // One of the paths that sends straight to a pooled agent rather than through a
+                // transport (#418). Leaving it unrecorded left a hole the size of every
+                // context-discovery injection: a concurrent grantee handoff read the entry as idle and
+                // disposed the agent with this turn queued on it. Recorded before the send, and
+                // withdrawn below if the send did not take.
+                var inputId = ContextDiscoveryInputIdPrefix + Guid.NewGuid().ToString("N");
+                _pool.AddOutstandingInput(threadId, inputId, agent);
+                try
+                {
+                    _ = await agent.SendAsync([message], inputId, parentRunId: null, ct).ConfigureAwait(false);
+                }
+                catch
+                {
+                    _pool.RemoveOutstandingInput(threadId, inputId, agent);
+                    throw;
+                }
+
                 injected++;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)

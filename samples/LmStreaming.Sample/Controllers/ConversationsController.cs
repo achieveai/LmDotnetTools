@@ -567,7 +567,7 @@ public class ConversationsController(
         var (rows, isKnown, _) = await _hierarchy.BuildAsync(threadId, viewer, ct);
         return isKnown
             ? Ok(rows.ToArray())
-            : NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
+            : UnknownThread(threadId);
     }
 
     /// <summary>
@@ -603,12 +603,7 @@ public class ConversationsController(
         var result = await _hierarchy.ReadTranscriptAsync(threadId, agentId, viewer, ct);
         return result.Outcome switch
         {
-            AgentTranscriptOutcome.UnknownThread =>
-                NotFound(new
-                {
-                    error = $"Conversation '{threadId}' not found.",
-                    code = AgentTranscriptReasons.UnknownThread,
-                }),
+            AgentTranscriptOutcome.UnknownThread => UnknownThread(threadId),
             AgentTranscriptOutcome.CollaborationUnavailable =>
                 NotFound(new
                 {
@@ -655,7 +650,7 @@ public class ConversationsController(
             agentPool.TryGet(rootThreadId, out var agent);
             if (!await IsKnownThreadAsync(rootThreadId, agent, ct))
             {
-                return NotFound(new { error = $"Conversation '{rootThreadId}' not found.", code = "unknown_thread" });
+                return UnknownThread(rootThreadId);
             }
         }
 
@@ -730,7 +725,7 @@ public class ConversationsController(
         // Reachable only with enforcement OFF (an allowed decision over null metadata): still unknown.
         if (metadata == null)
         {
-            return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
+            return UnknownThread(threadId);
         }
 
         var persistedModeId =
@@ -915,6 +910,13 @@ public class ConversationsController(
         // propagate to a 500, per the REST contract (no inputId returned either way). Either way the
         // admission taken above has to go back, or the id stays claimed by work that never ran and every
         // later retry of it reconciles to a turn that does not exist.
+        // Recorded BEFORE the hand-over, not after. Between the agent taking the input and this
+        // ledger learning about it, the entry has no run id and is not running - exactly what a
+        // concurrent grantee handoff or session refresh reads as "idle", and the turn goes with the
+        // disposed entry (#418). Recording afterwards leaves that window open, only narrower. Every
+        // exit below that does NOT leave an input queued withdraws it again.
+        agentPool.AddOutstandingInput(threadId, admission.InputId, agent);
+
         SendReceipt? receipt;
         try
         {
@@ -928,14 +930,25 @@ public class ConversationsController(
                     ct)
                 : await agent.TrySendAsync([userMessage], inputId: admission.InputId, parentRunId: null, ct);
         }
-        catch when (idempotent)
+        catch
         {
-            await ReleaseAdmissionAsync(acceptances!, admission);
+            // The send threw, so nothing is queued: withdraw the id or it sits in the ledger with no
+            // run that can ever name it, and every handoff for this thread answers 409 until the
+            // grace expires. Outside the `when (idempotent)` filter on purpose - the ledger write was
+            // unconditional, so its rollback has to be too.
+            agentPool.RemoveOutstandingInput(threadId, admission.InputId, agent);
+            if (idempotent)
+            {
+                await ReleaseAdmissionAsync(acceptances!, admission);
+            }
+
             throw;
         }
 
         if (receipt == null)
         {
+            // Queue full: the input was refused, so the ledger write above has to come back out.
+            agentPool.RemoveOutstandingInput(threadId, admission.InputId, agent);
             logger.LogWarning("SendMessage for thread {ThreadId} rejected: input queue full", threadId);
             if (idempotent)
             {
@@ -1263,7 +1276,7 @@ public class ConversationsController(
         // Reachable only with enforcement OFF (an allowed decision over null metadata): still unknown.
         if (metadata == null)
         {
-            return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
+            return UnknownThread(threadId);
         }
 
         var result = runId != null
@@ -1693,6 +1706,18 @@ public class ConversationsController(
     }
 
     /// <summary>
+    /// The byte-identical 404 every route in this controller returns for a thread id it will not
+    /// admit exists - a never-minted id, a refused cross-tenant read, an authorized-but-missing row,
+    /// all of it. This is the existence-hiding convention (see <see cref="Refuse"/>'s remarks), not
+    /// "row missing": the body, code, and phrasing must stay identical across every call site so none
+    /// of them becomes distinguishable from the others and reopens the oracle the 404 exists to close.
+    /// Do not vary the body per call site.
+    /// </summary>
+    /// <param name="threadId">The conversation id to report as not found.</param>
+    private ObjectResult UnknownThread(string threadId) =>
+        NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
+
+    /// <summary>
     /// Turns one access decision into the response that carries it, or null when it allowed.
     /// </summary>
     /// <remarks>
@@ -1716,7 +1741,7 @@ public class ConversationsController(
                 "Conversation {ThreadId} refused as unknown for the current principal: {Reason}",
                 threadId,
                 result.Reason);
-            return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
+            return UnknownThread(threadId);
         }
 
         if (string.Equals(result.Reason, ConversationAuthorizer.UnauthenticatedReason, StringComparison.Ordinal))
@@ -1835,16 +1860,23 @@ public class ConversationsController(
     /// product decision tracked in #417; this releases the agent, never the sandbox.
     /// </para>
     /// <para>
-    /// Every read below is BEST-EFFORT and none of them is atomic with the removal that follows. Two
-    /// consequences, both tracked in #418. First, a run in progress is left alone: this returns without
-    /// releasing, the pool's guard raises its conflict as before, and the caller gets the same
-    /// <c>409</c> - but the check and the removal are not one step, and a turn that is queued and not
-    /// yet started reads as not-in-progress, so a handoff arriving in that window can drop it. Second,
-    /// the owner read and the app-id read are two separate unlocked lookups: an entry that disappears
-    /// between them makes the app id read as null, which either refuses a caller who should have been
-    /// let through or lets one through who should have been refused.
-    /// Evicting a genuinely streaming turn would abort the answer of whoever is mid-answer - the wrong
-    /// party to punish for a handoff, and a race any second caller could trigger at will.
+    /// The reads below are ONE look at one entry, and the release re-validates that same entry under
+    /// the pool's per-thread lock before it removes anything (#418). Three things follow, and none of
+    /// them is best-effort any more. A run in progress is left in place, and so is an input that has
+    /// been accepted and not yet started - both count as work in hand, so a turn a sender already holds
+    /// a receipt for is not discarded by a handoff. An entry that was REPLACED between the look and the
+    /// release is left alone rather than disposed, because the decision made here no longer describes
+    /// it. And the owner and the app id come from one entry, so the cross-app compare can no longer be
+    /// decided against a thread state that never existed - a vanished entry now reports absence rather
+    /// than a null app id indistinguishable from "never frozen".
+    /// </para>
+    /// <para>
+    /// What is still not guaranteed, stated so the paragraph above is not read as more: the pool
+    /// answers what it DID, and this method acts on that answer, but a handoff refused as busy is
+    /// refused for as long as work keeps arriving on that thread. The accepted-input marker is also
+    /// bounded (<c>MultiTurnAgentPool.AcceptedInputGrace</c>): an agent that accepts an input and then
+    /// wedges stops pinning the entry once the grace elapses, because refusing every future handoff for
+    /// that conversation forever is a worse failure than the one being prevented.
     /// </para>
     /// <para>
     /// The app-id freeze (<see cref="SandboxCredentialConflictException"/>) is NOT released alongside
@@ -1887,15 +1919,23 @@ public class ConversationsController(
             return;
         }
 
-        var boundTo = agentPool.GetAgentOwnerUserId(threadId);
+        // ONE look, and every fact this method decides on comes out of it (#418). Absence is its own
+        // answer here: previously the owner and the app id were two unlocked lookups that both
+        // answered null for a thread with no entry, so a vanished entry read as "frozen to no app".
+        if (!agentPool.TryGetHandoffState(threadId, out var handoff))
+        {
+            return;
+        }
+
+        var boundTo = handoff.OwnerUserId;
         if (boundTo is null || string.Equals(boundTo, callerUserId, StringComparison.Ordinal))
         {
             return;
         }
 
-        // Before anything is torn down, and before the run-in-progress exit below: the app-id refusal
-        // is unconditional, so it must not depend on whether someone happens to be streaming.
-        var frozenAppId = agentPool.GetAgentCallerAppId(threadId);
+        // Before anything is torn down, and before the busy exit below: the app-id refusal is
+        // unconditional, so it must not depend on whether someone happens to be streaming.
+        var frozenAppId = handoff.CallerAppId;
         var requestedAppId = callerCredential?.AppId;
         if (!string.Equals(frozenAppId, requestedAppId, StringComparison.Ordinal))
         {
@@ -1908,21 +1948,38 @@ public class ConversationsController(
             throw new SandboxCredentialConflictException(threadId, frozenAppId, requestedAppId);
         }
 
-        if (agentPool.IsRunInProgress(threadId))
+        // The pool decides and acts in one step. Answering on this outcome rather than on the read
+        // above is the point: a run that started in between, or an entry that was replaced in
+        // between, is reported as such instead of being torn down anyway.
+        var outcome = await agentPool.TryReleaseIdleAgentAsync(threadId, handoff);
+        switch (outcome)
         {
-            logger.LogInformation(
-                "{Operation} for thread {ThreadId} left the agent bound to another user in place: a run is in progress",
-                operation,
-                threadId);
-            return;
+            case MultiTurnAgentPool.AgentReleaseOutcome.Released:
+                logger.LogInformation(
+                    "{Operation} for thread {ThreadId} released the agent bound to another user so an authorized caller gets their own",
+                    operation,
+                    threadId);
+                break;
+
+            case MultiTurnAgentPool.AgentReleaseOutcome.Busy:
+                logger.LogInformation(
+                    "{Operation} for thread {ThreadId} left the agent bound to another user in place: it has work in hand",
+                    operation,
+                    threadId);
+                break;
+
+            case MultiTurnAgentPool.AgentReleaseOutcome.NotPooled:
+            case MultiTurnAgentPool.AgentReleaseOutcome.Replaced:
+            default:
+                // Either way the entry this method reasoned about is gone, and the next caller through
+                // gets its own look at whatever is there now.
+                logger.LogInformation(
+                    "{Operation} for thread {ThreadId} released nothing: the entry it read was {Outcome}",
+                    operation,
+                    threadId,
+                    outcome);
+                break;
         }
-
-        logger.LogInformation(
-            "{Operation} for thread {ThreadId} released the agent bound to another user so an authorized caller gets their own",
-            operation,
-            threadId);
-
-        await agentPool.RemoveAgentAsync(threadId);
     }
 
     /// <summary>Lists the grants on a conversation. Reading the roster is a read of the resource.</summary>
