@@ -454,6 +454,70 @@ public sealed class LegacyAdoptionTests
     }
 
     /// <summary>
+    /// Naming a conversation that is NOT in quarantine adopts nothing — least of all its quarantined
+    /// children.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The mirror of <see cref="ASiblingUnderAParentInARealTenant_IsNotSweptIn"/>, and the sharper
+    /// case: there the real-tenant row was reached mid-walk, here it is the id the operator typed.
+    /// A walk that seeds itself unconditionally starts at a row it may not touch and descends into
+    /// children it then moves — severing them from the parent that stayed put. That is the #405
+    /// defect exactly, manufactured by the #405 fix, which is why the seeds are filtered by the same
+    /// in-quarantine rule the walk uses rather than trusted because the operator named them.
+    /// </para>
+    /// <para>
+    /// Adopting nothing is the right answer and not a silently swallowed one: the row named is
+    /// already in a real tenant, so there is nothing here to move, and the count says so.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task NamingAConversationOutsideQuarantine_AdoptsNothing_NotItsChildren()
+    {
+        SeedTenant();
+        SeedTenant("tnt_other", "22222222-2222-2222-2222-222222222222");
+        await SeedThreadAsync(Root, "tnt_other");
+        await SeedThreadAsync(Child, Quarantine, subAgentOf: Root);
+        await SeedThreadAsync(GrandChild, Quarantine, subAgentOf: Child);
+
+        var ok = Assert.IsType<OkObjectResult>(await CreateController().AdoptLegacyAsync(
+            Acme,
+            Request(resourceIds: [Root]),
+            CancellationToken.None));
+
+        _ = Assert.IsType<AdoptLegacyResponse>(ok.Value).AffectedCount.Should().Be(0);
+        _ = (await TenantOfAsync(Root)).Should().Be("tnt_other");
+        _ = (await TenantOfAsync(Child)).Should().Be(
+            Quarantine,
+            "a child moved away from a parent that stayed put is the very split this walk exists to prevent");
+        _ = (await TenantOfAsync(GrandChild)).Should().Be(Quarantine);
+    }
+
+    /// <summary>
+    /// A null element in <c>resourceIds</c> is ignored, not thrown on.
+    /// </summary>
+    /// <remarks>
+    /// <c>["thread-1", null]</c> is valid JSON and binds to a list with a null element. Both the
+    /// parent lookup and the in-quarantine check are ordinal-comparer keyed, and both throw
+    /// <see cref="ArgumentNullException"/> on a null key — so the walk answered an operator's typo
+    /// with an unhandled <c>500</c>, on a route whose every other refusal is a stable code in an
+    /// audit record.
+    /// </remarks>
+    [Fact]
+    public async Task ANullIdInTheList_IsIgnored_NotThrownOn()
+    {
+        await SeedQuarantinedTreeAsync();
+
+        var ok = Assert.IsType<OkObjectResult>(await CreateController().AdoptLegacyAsync(
+            Acme,
+            Request(resourceIds: [Root, null!]),
+            CancellationToken.None));
+
+        _ = Assert.IsType<AdoptLegacyResponse>(ok.Value).AffectedCount.Should().Be(3);
+        _ = (await TenantOfAsync(Unrelated)).Should().Be(Quarantine);
+    }
+
+    /// <summary>
     /// When the quarantine tenant holds more rows than one bounded scan can read, a subset adoption
     /// is REFUSED rather than performed on a tree it could not finish walking.
     /// </summary>

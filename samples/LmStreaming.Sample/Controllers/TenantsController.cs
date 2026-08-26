@@ -508,7 +508,19 @@ public sealed class TenantsController : ControllerBase
             children.Add(row.ThreadId);
         }
 
-        var reached = new HashSet<string>(seeds, StringComparer.Ordinal);
+        // The seeds are filtered by the SAME in-quarantine rule the walk applies to a parent, and for
+        // the same reason. A seed naming a row in a real tenant is not a row this route may move, but
+        // an unfiltered seed still descends into that row's quarantined children and moves THEM -
+        // severing them from a parent that stayed put, which is #405 itself, manufactured here. The
+        // operator having typed the id does not make the row eligible; only its tenant does.
+        //
+        // The blank guard is not decoration: `["thread-1", null]` is valid JSON, and both the parent
+        // dictionary and this set are ordinal-comparer keyed, so a null key throws
+        // ArgumentNullException - answering a typo with an unhandled 500 on a route whose every other
+        // refusal is a stable code in an audit record.
+        var reached = new HashSet<string>(
+            seeds.Where(seed => !string.IsNullOrWhiteSpace(seed) && inScan.Contains(seed)),
+            StringComparer.Ordinal);
         var frontier = new Queue<string>(reached);
         while (frontier.Count > 0)
         {
