@@ -1,4 +1,5 @@
 using System.Net.WebSockets;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.TestDoubles;
 using LmStreaming.Sample.WebSocket;
@@ -67,6 +68,50 @@ public sealed class ChatWebSocketManagerPrincipalHandoffTests
         await handlerTask;
         _ = socket.CloseAsyncCalled.Should().BeTrue();
         _ = socket.LastCloseStatus.Should().Be(WebSocketCloseStatus.NormalClosure);
+    }
+
+    [Fact]
+    public async Task AMessageAcceptedOverTheSocket_CountsAsWorkInHand_LikeOneAcceptedOverRest()
+    {
+        // #418's sibling exit. The accepted-input ledger is what stops a grantee handoff from
+        // discarding a turn its sender already holds a receipt for, and a ledger written only by the
+        // REST send has a hole in it exactly the size of this transport - which is the one most
+        // messages actually arrive on. The fake agent never starts a run, so this pins the state the
+        // hole lives in: accepted, not started, no run id, not running.
+        const string ThreadId = "handoff-ws-accept";
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using var pool = CreatePool();
+
+        var socket = new FakeWebSocket();
+        var handlerTask = Connect(pool, socket, ThreadId, Alice, cts.Token);
+        await socket.WaitUntilAsync(
+            () => string.Equals(pool.GetAgentOwnerUserId(ThreadId), Alice, StringComparison.Ordinal),
+            cts.Token);
+
+        // Non-vacuity: before the message the entry is releasable, so the assertion below is about
+        // the send and not about the entry's resting state.
+        _ = pool.TryGetHandoffState(ThreadId, out var beforeSend).Should().BeTrue();
+        _ = beforeSend.IsBusy.Should().BeFalse();
+
+        socket.EnqueueTextFrame(/*lang=json,strict*/ """{"Message":"queue this"}""");
+
+        // Polled, not signalled on socket activity: the accepted-input ledger is written in the pool
+        // and the accept path sends NO frame, so a wait that only re-checks when the socket moves
+        // would sleep through the very transition under test.
+        await Wait.UntilAsync(
+            () => pool.TryGetHandoffState(ThreadId, out var state) && state.IsBusy,
+            "the socket's accepted turn is recorded as work in hand",
+            cancellationToken: cts.Token);
+
+        _ = pool.TryGetHandoffState(ThreadId, out var afterSend).Should().BeTrue();
+        _ = (await pool.TryReleaseIdleAgentAsync(ThreadId, afterSend))
+            .Should().Be(
+                MultiTurnAgentPool.AgentReleaseOutcome.Busy,
+                "a turn accepted over the socket must survive a concurrent handoff exactly as one "
+                    + "accepted over REST does");
+
+        await cts.CancelAsync();
+        await handlerTask;
     }
 
     [Fact]

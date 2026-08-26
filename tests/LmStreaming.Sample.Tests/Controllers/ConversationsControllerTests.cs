@@ -897,6 +897,55 @@ public class ConversationsControllerTests
 
         // The DTO has no RunId member at all — belt-and-suspenders check on the wire shape too.
         JsonSerializer.Serialize(accepted.Value).Should().NotContain("runId");
+
+        // #418. The caller now holds a receipt, and the agent has not picked the input up: no run id,
+        // not running. A grantee handoff arriving at this instant used to read that as idle and
+        // dispose the entry with this turn on it. The controller has to TELL the pool the input was
+        // accepted, and asking the pool is what proves it did — a fixture that merely returned 202
+        // would look identical.
+        pool.TryGetHandoffState(threadId, out var handoff).Should().BeTrue();
+        handoff.IsBusy.Should().BeTrue(
+            "an accepted turn the agent has not started is work in hand, and the send is the only "
+                + "place that knows it was accepted");
+    }
+
+    [Fact]
+    public async Task SendMessage_DoesNotClaimWorkInHand_WhenTheInputQueueWasFull()
+    {
+        // The non-vacuity partner. A send that was REFUSED leaves nothing queued, so marking the
+        // entry busy would refuse every later handoff for a turn that never existed. The ledger has
+        // to be written on the success path only, and an unconditional call at the top of the send
+        // would pass the test above while failing this one.
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        const string ThreadId = "thread-send-full";
+        await store.SaveMetadataAsync(
+            ThreadId,
+            new ThreadMetadata
+            {
+                ThreadId = ThreadId,
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty
+                    .SetItem(MultiTurnAgentPool.ModePropertyKey, SystemChatModes.DefaultModeId),
+            });
+
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+        var agent = (FakeMultiTurnAgent)pool.GetOrCreateAgent(
+            ThreadId,
+            SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+        agent.CurrentRunId = null;
+        agent.IsRunning = false;
+        agent.RejectAsQueueFull = true;
+
+        var result = await controller.SendMessage(
+            ThreadId,
+            new SendMessageRequest { Text = "hello" },
+            CancellationToken.None);
+
+        Assert.IsType<ObjectResult>(result).StatusCode.Should().Be(503);
+
+        pool.TryGetHandoffState(ThreadId, out var handoff).Should().BeTrue();
+        handoff.IsBusy.Should().BeFalse("nothing was queued, so nothing is in hand");
     }
 
     /// <summary>
