@@ -323,6 +323,35 @@ public sealed class IdentityMiddlewareTests
             .Should().NotContain("attacker-token");
     }
 
+    /// <summary>
+    /// A handshake may offer more than one <c>lm.bearer.*</c> entry, and every one of them must leave
+    /// the request. The strip decision used to be fused to the promotion decision - the first match
+    /// became the credential and every LATER match fell through to the keep list - so a client that
+    /// offered two tokens got the second one written straight back into
+    /// <c>Sec-WebSocket-Protocol</c>, which is the exact leak the strip exists to prevent.
+    /// </summary>
+    /// <remarks>
+    /// The promotion half is unchanged and asserted alongside: at most one credential is honoured, and
+    /// it is the first offered. Only the stripping is unconditional.
+    /// </remarks>
+    [Fact]
+    public void EveryCredentialSubprotocolIsStripped_NotJustTheOneThatGetsPromoted()
+    {
+        var request = WebSocketRequest(
+            "/ws",
+            $"{IdentityMiddleware.WebSocketCredentialSubProtocolPrefix}first-token, "
+                + $"{IdentityMiddleware.WebSocketCredentialSubProtocolPrefix}second-token, "
+                + IdentityMiddleware.WebSocketSubProtocol);
+
+        _ = IdentityMiddleware.PromoteWebSocketCredential(request).Should().BeTrue();
+        _ = request.Headers.Authorization.ToString().Should().Be("Bearer first-token");
+
+        var offered = request.Headers["Sec-WebSocket-Protocol"].ToString();
+        _ = offered.Should().Be(IdentityMiddleware.WebSocketSubProtocol);
+        _ = offered.Should().NotContain("second-token");
+        _ = offered.Should().NotContain(IdentityMiddleware.WebSocketCredentialSubProtocolPrefix);
+    }
+
     [Fact]
     public void ASubprotocolCredential_IsIgnoredOutsideTheWebSocketTransports()
     {

@@ -422,13 +422,21 @@ public sealed class IdentityMiddleware
                     continue;
                 }
 
-                if (credential is null
-                    && candidate.Length > WebSocketCredentialSubProtocolPrefix.Length
-                    && candidate.StartsWith(
-                        WebSocketCredentialSubProtocolPrefix,
-                        StringComparison.Ordinal))
+                // Deliberately NOT gated on "credential is null". Which token gets PROMOTED and which
+                // tokens get STRIPPED are separate decisions: at most one credential is ever honoured,
+                // but every credential-shaped entry leaves the request. Fusing them let a handshake
+                // offering two lm.bearer.* entries keep the second one - it fell straight through to
+                // the keep list and was written back into the header.
+                if (candidate.StartsWith(WebSocketCredentialSubProtocolPrefix, StringComparison.Ordinal))
                 {
-                    credential = candidate[WebSocketCredentialSubProtocolPrefix.Length..];
+                    // Strip on the prefix alone; promote only what actually has a token behind it. A
+                    // bare "lm.bearer." carries nothing to honour, but it is still credential-shaped
+                    // and has no business travelling on into logs or the accept's echo.
+                    if (candidate.Length > WebSocketCredentialSubProtocolPrefix.Length)
+                    {
+                        credential ??= candidate[WebSocketCredentialSubProtocolPrefix.Length..];
+                    }
+
                     continue;
                 }
 
