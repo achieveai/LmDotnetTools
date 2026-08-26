@@ -3146,6 +3146,26 @@ public sealed class SubAgentManager : IAsyncDisposable
                     lastTextContent = tm.Text;
                 }
 
+                // Latch the parking from the ORDERED message stream, ahead of the run completion it
+                // belongs to (#262). AskUserQuestion parks the run for external resolution on every
+                // well-formed call — only synchronous argument validation returns inline — so the tool
+                // call itself is the earliest reliable evidence that this sub-agent is going to park,
+                // and unlike the loop's live deferred-call registry it cannot be erased by the answer
+                // arriving. Over-approximating on a malformed call is harmless: its error result drives
+                // another provider turn, and the first completion that settles the caller clears the
+                // latch again. It is the SOLE latch source on purpose: latching from the completion's own
+                // pending-question probe instead would inherit exactly the raciness that probe has - an
+                // answer applied before the monitor reaches the parked completion already empties the
+                // registry, so that completion would never latch anything.
+                if (msg is ToolCallMessage askCall
+                    && string.Equals(
+                        askCall.FunctionName,
+                        AskUserQuestionToolProvider.ToolName,
+                        StringComparison.Ordinal))
+                {
+                    state.LatchParkedOnQuestion();
+                }
+
                 if (msg is RunCompletedMessage rcm)
                 {
                     state.LastResult = lastTextContent;
@@ -3160,6 +3180,19 @@ public sealed class SubAgentManager : IAsyncDisposable
                         && !rcm.IsError
                         && await HasPendingAskUserQuestionAsync(state);
 
+                    // The window this closes (#262) opens the instant the question is resolved and
+                    // closes only when the answer-triggered run produces its text: awaitingQuestion is
+                    // already false (the registry was emptied by the resolution), yet the run carries no
+                    // assistant text to hand back, so the terminal branch would settle the caller with
+                    // "(no text response)" and discard the real answer that follows. A completion with
+                    // nothing to say is never the answer this caller is waiting for, so treat it exactly
+                    // like the parked completion: non-terminal, permit held, latch kept.
+                    var awaitingAnswerText = !awaitingQuestion
+                        && !rcm.HasPendingMessages
+                        && !rcm.IsError
+                        && lastTextContent is null
+                        && state.ParkedOnQuestion;
+
                     // Release the slot BEFORE the (possibly slow/backpressured) parent relay in
                     // HandleRunCompletionAsync — but ONLY for a genuinely TERMINAL completion. A
                     // nonterminal completion — either HasPendingMessages (another run will follow) or a
@@ -3169,12 +3202,13 @@ public sealed class SubAgentManager : IAsyncDisposable
                     // MaxConcurrentSubAgents. The permit is held until the run truly ends: the terminal
                     // completion here, or the monitor's finally if the stream ends first. Idempotent, so
                     // that fallback release is a safe no-op afterward.
-                    if (!rcm.HasPendingMessages && !awaitingQuestion)
+                    if (!rcm.HasPendingMessages && !awaitingQuestion && !awaitingAnswerText)
                     {
                         gateGuard.ReleaseOnce(_concurrencyGate);
                     }
 
-                    await HandleRunCompletionAsync(state, rcm, lastTextContent, awaitingQuestion, ct);
+                    await HandleRunCompletionAsync(
+                        state, rcm, lastTextContent, awaitingQuestion, awaitingAnswerText, ct);
                     lastTextContent = null;
                     textGenerationId = null;
                     _ = textBuilder.Clear();
@@ -3246,12 +3280,19 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// call, so the concurrency-gate release decision and this method's terminal/non-terminal branching
     /// always agree on the same answer for the same <see cref="RunCompletedMessage"/>.
     /// </param>
+    /// <param name="awaitingAnswerText">
+    /// Also precomputed by the monitor loop: true for a text-free completion that lands after this
+    /// sub-agent's parked question was resolved but before the answer-triggered run produced its text
+    /// (#262). Non-terminal for the same reason <paramref name="awaitingQuestion"/> is — the caller's
+    /// real result has not arrived yet — but silent, because the human has already answered.
+    /// </param>
     /// <param name="ct">Cancellation token for this run's lifetime.</param>
     private async Task HandleRunCompletionAsync(
         SubAgentState state,
         RunCompletedMessage rcm,
         string? lastTextContent,
         bool awaitingQuestion,
+        bool awaitingAnswerText,
         CancellationToken ct)
     {
         // A run that still has queued messages is NOT terminal: another run will follow and reuse the
@@ -3305,6 +3346,28 @@ public sealed class SubAgentManager : IAsyncDisposable
 
             return;
         }
+
+        if (awaitingAnswerText)
+        {
+            // The question has been answered — the loop is already running (or about to run) the turn
+            // that carries the answer — but THIS completion brought no assistant text, so it has nothing
+            // to hand the caller. Settling it here would resolve the one-shot Completion latch with the
+            // "(no text response)" placeholder and permanently discard the real answer (#262). Stay
+            // non-terminal in exactly the way the parked branch above does: leave the latch unresolved,
+            // the status Running, the loop and owned provider alive, and the concurrency permit held —
+            // but send NO descendant-question notification, since nothing is pending for the human.
+            _logger.LogDebug(
+                "Sub-agent {AgentId} completed a run with no assistant text while awaiting the output of "
+                    + "its answered question; keeping it non-terminal so the real answer can settle it.",
+                state.AgentId);
+            return;
+        }
+
+        // This completion is the one that settles the caller, so the parked latch has done its job.
+        // Clearing it here (rather than at resolution) is what makes the latch span exactly the interval
+        // between parking and the arrival of a real answer-derived result — a background sub-agent
+        // continued in place can park again later and get the same protection.
+        state.ClearParkedOnQuestion();
 
         // Transition out of Running BEFORE disposing the owned provider, atomically against a
         // concurrent SendMessageAsync (see SubAgentState.BeginContinuation). This blocks new inject
@@ -3376,8 +3439,10 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
         else
         {
-            // Genuinely terminal at this point: awaitingQuestion (precomputed by the caller) already
-            // returned early above when true, so a run reaching here truly has nothing more to do.
+            // Genuinely terminal at this point: a run still parked on a question, and a text-free run
+            // landing between that question's resolution and the answer's own text, both returned early
+            // above. The placeholder is therefore reached only by a run that never parked and produced
+            // no text — never by one whose real result is still on its way (#262).
             var result = lastTextContent ?? "(no text response)";
 
             var resultText =

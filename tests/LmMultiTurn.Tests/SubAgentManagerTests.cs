@@ -929,6 +929,185 @@ public class SubAgentManagerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SpawnAsync_Foreground_WhenPostResolutionRunHasNoText_StillSettlesWithTheRealAnswer()
+    {
+        // Arrange (#262): the sibling test above proves a parked question keeps the foreground caller
+        // blocked, but it lets the answer and the answer's text land in the SAME synthetic run, so it
+        // never enters the window this test is about — the interval that opens the instant the deferred
+        // AskUserQuestion is resolved (which EMPTIES the loop's live deferred-call registry) and closes
+        // only when the answer-triggered work actually produces assistant text. Any run completion
+        // landing inside it reports "no question pending" for a benign reason, so the terminal gate read
+        // it as genuinely finished and settled the one-shot Completion latch with the
+        // "(no text response)" placeholder — permanently discarding the real answer that followed,
+        // because a TaskCompletionSource settles once.
+        //
+        // The provider script below stages exactly that: run 1 parks on the question, run 2 (the one the
+        // answer triggers) yields only THINKING text — assistant output the monitor deliberately does not
+        // count as a result — and run 3 carries the real answer.
+        var askArgs = JsonSerializer.Serialize(new
+        {
+            context = "Need input before continuing.",
+            questions = new[]
+            {
+                new
+                {
+                    prompt = "Which color?",
+                    options = new object[] { new { label = "Red" }, new { label = "Blue" } },
+                },
+            },
+        });
+
+        const string RealAnswer = "Final answer: chose Red.";
+        var providerCalls = 0;
+        _subAgentMock
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, _) =>
+            {
+                List<IMessage> reply = Interlocked.Increment(ref providerCalls) switch
+                {
+                    1 =>
+                    [
+                        new ToolCallMessage
+                        {
+                            FunctionName = AskUserQuestionToolProvider.ToolName,
+                            FunctionArgs = askArgs,
+                            ToolCallId = "tc_color",
+                            Role = Role.Assistant,
+                        },
+                    ],
+
+                    // The answer-triggered run, carrying no result for the caller yet.
+                    2 => [new TextMessage { Text = "weighing the answer", Role = Role.Assistant, IsThinking = true }],
+
+                    _ => [new TextMessage { Text = RealAnswer, Role = Role.Assistant }],
+                };
+
+                return Task.FromResult(ToAsyncEnumerable(reply));
+            });
+
+        // maxConcurrent: 1 so the permit assertions below are meaningful.
+        _manager = CreateManager(maxConcurrent: 1);
+
+        var foregroundTask = _manager.SpawnAsync(
+            "test-agent", "Pick a color", name: "color-agent", runInBackground: false);
+
+        MultiTurnAgentLoop? loop = null;
+        IReadOnlyList<DeferredToolCallInfo> deferred = [];
+        await Wait.UntilAsync(
+            async () =>
+            {
+                if (_manager!.TryGetAgent("color-agent", out var agent) && agent is MultiTurnAgentLoop l)
+                {
+                    loop = l;
+                    deferred = await l.GetDeferredToolCallsAsync();
+                    return deferred.Any(d => d.ToolCallId == "tc_color");
+                }
+
+                return false;
+            },
+            "the child registered as a MultiTurnAgentLoop and parked tc_color",
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromMilliseconds(50),
+            observed: () => loop is null
+                ? "no MultiTurnAgentLoop registered yet for 'color-agent'"
+                : $"deferred tool calls: [{string.Join(", ", deferred.Select(d => d.ToolCallId))}]");
+
+        var agentId = _manager!.ListAgents().Single(a => a.Name == "color-agent").AgentId;
+
+        // Answering before the monitor has classified the parked run would test a different (timing)
+        // path; the descendant-question notification is emitted from inside the parked branch itself, so
+        // its arrival proves that classification already happened.
+        await Wait.UntilAsync(
+            () =>
+            {
+                try
+                {
+                    _parentMock.Verify(
+                        p => p.SendAsync(
+                            It.Is<List<IMessage>>(msgs =>
+                                msgs.Count == 1
+                                && ContainsDescendantQuestionNotification(msgs[0], agentId, "test-agent")),
+                            It.IsAny<string?>(),
+                            It.IsAny<string?>(),
+                            It.IsAny<CancellationToken>()),
+                        Times.AtLeastOnce);
+                    return true;
+                }
+                catch
+                {
+                    return false;
+                }
+            },
+            "the parent received the descendant-question notification",
+            TimeSpan.FromSeconds(10));
+
+        // Watch the child's own message stream on a SECOND subscription — the same public seam the
+        // manager's monitor uses, and independent of it. This is what makes the window deterministic
+        // rather than timed: a RunCompletedMessage is published (with HasPendingMessages already
+        // computed) before any subscriber dequeues it, so once this side has counted run 2's completion,
+        // the monitor is guaranteed to process that exact text-free, no-pending-messages completion —
+        // whatever the test does next.
+        using var watchCts = new CancellationTokenSource();
+        var completedRuns = 0;
+        var watcher = Task.Run(
+            async () =>
+            {
+                await foreach (var msg in loop!.SubscribeAsync(watchCts.Token))
+                {
+                    if (msg is RunCompletedMessage { HasPendingMessages: false })
+                    {
+                        _ = Interlocked.Increment(ref completedRuns);
+                    }
+                }
+            },
+            watchCts.Token);
+
+        var completedBeforeAnswer = Volatile.Read(ref completedRuns);
+
+        // Act: answer the question exactly as a real client does.
+        var outcome = await loop!.TryResolveToolCallAsync("tc_color", "Red");
+        outcome.Should().Be(ResolveToolCallOutcome.Resolved);
+
+        await Wait.UntilAsync(
+            () => Volatile.Read(ref completedRuns) > completedBeforeAnswer,
+            "the answer-triggered run completed without producing any assistant text",
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromMilliseconds(25),
+            observed: () =>
+                $"completed runs: {Volatile.Read(ref completedRuns)} (before the answer: {completedBeforeAnswer}), "
+                + $"provider calls: {Volatile.Read(ref providerCalls)}");
+
+        // The text-free completion is now guaranteed to reach the monitor. It must NOT have been taken
+        // for a finished run: the child stays Running, holding its loop, provider and permit, so the
+        // work the answer actually set in motion can still produce a result.
+        using (var midPeekDoc = JsonDocument.Parse(_manager.Peek(agentId)))
+        {
+            midPeekDoc.RootElement.GetProperty("status").GetString().Should().Be(
+                "running",
+                "a run that completed with no assistant text after the question was answered has "
+                    + "nothing to hand the caller, so it is not the completion that ends this sub-agent");
+        }
+
+        // Drive the run that carries the real answer.
+        _ = await _manager.SendMessageAsync(agentId, "continue", runInBackground: true);
+
+        // Assert: the foreground caller settles with the REAL answer. Before the fix the placeholder
+        // won the race to the one-shot latch, so this returned "(no text response)" and the answer here
+        // was silently thrown away.
+        var result = await foregroundTask.WaitAsync(TimeSpan.FromSeconds(10));
+        result.Should().Be(
+            RealAnswer,
+            "the caller must receive the answer-derived text, never the '(no text response)' "
+                + "placeholder produced by a completion that landed before the answer's own output");
+
+        await watchCts.CancelAsync();
+        try { await watcher; } catch (OperationCanceledException) { }
+    }
+
+    [Fact]
     public async Task DisposeAsync_StopsAllAgents()
     {
         // Arrange: create a background sub-agent with a delayed response

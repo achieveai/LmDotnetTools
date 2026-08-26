@@ -229,6 +229,10 @@ internal class SubAgentState
     private const int OwnedProviderDisposeDisposed = 2;
     private int _ownedProviderDisposeState;
 
+    // Latched once this run parks on its own AskUserQuestion; cleared only by the completion that
+    // actually settles the caller with a real result. See ParkedOnQuestion.
+    private int _parkedOnQuestion;
+
     /// <summary>
     /// Guards the sub-agent lifecycle bookkeeping — the status transition, the outstanding inject-send
     /// lease count, and the single-flight restart claim — so a continuation's admission decision, a
@@ -611,6 +615,36 @@ internal class SubAgentState
     /// path rebuilds a fresh provider (and retries disposing this one) instead of reusing it.
     /// </summary>
     public void MarkOwnedProviderTerminalDisposeFailed() => _ownedProviderTerminalDisposeFailed = true;
+
+    /// <summary>
+    /// True while this sub-agent is known to have parked on its own <c>AskUserQuestion</c> and no
+    /// completion carrying a real result has settled since.
+    /// </summary>
+    /// <remarks>
+    /// This is the state the monitor's terminal gate needs and the loop's deferred-call registry cannot
+    /// give it (#262). That registry is the LIVE record of unresolved calls, so resolving the question —
+    /// the very event that makes an answer imminent — empties it. Between the resolution and the
+    /// answer-triggered run producing its text, a probe of the registry reports "no question pending" for
+    /// a benign reason (it was answered), which is indistinguishable from the intended one (there never
+    /// was one). Any run completion landing in that window was then read as genuinely terminal and settled
+    /// the caller with the <c>"(no text response)"</c> placeholder; because a <c>TaskCompletionSource</c>
+    /// settles once, the real answer that followed was discarded silently. A latch survives the
+    /// resolution, so the window is closed by construction rather than by timing.
+    /// </remarks>
+    public bool ParkedOnQuestion => Volatile.Read(ref _parkedOnQuestion) != 0;
+
+    /// <summary>
+    /// Records that this sub-agent parked on its own <c>AskUserQuestion</c>. Idempotent, and
+    /// deliberately NOT cleared when the question is resolved — see <see cref="ParkedOnQuestion"/>.
+    /// </summary>
+    public void LatchParkedOnQuestion() => Volatile.Write(ref _parkedOnQuestion, 1);
+
+    /// <summary>
+    /// Clears the parked latch. Called only from the completion that actually settles the caller (with
+    /// text or with an error), so the latch spans exactly the interval between parking and the arrival
+    /// of the real answer-derived result.
+    /// </summary>
+    public void ClearParkedOnQuestion() => Volatile.Write(ref _parkedOnQuestion, 0);
 
     /// <summary>
     /// True once the live <see cref="Agent"/> loop itself has been disposed while this sub-agent stayed
