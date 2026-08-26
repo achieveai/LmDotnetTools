@@ -1681,6 +1681,134 @@ public sealed class ConversationTranscriptWriterTests
         _ = Written(browser, 0).Should().Be(ExpectedAppend(messages));
     }
 
+    // ---------------------------------------------------------------- #253: S2S-owned threads
+
+    /// <summary>
+    /// #253, and the whole of it. ADR 0011 gap 3 recorded S2S conversations as getting no transcript
+    /// "in v1", and the issue's own framing blames the attach path — but <c>Attach</c> was never the
+    /// problem. <c>Program.cs</c> wraps the ENTIRE pooled agent factory in <c>AttachingToMirror</c>,
+    /// so an S2S-created conversation has always been subscribed and has always scheduled flushes.
+    /// Every one of those flushes then died at step 1.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The mechanism: <c>SandboxSessionRegistry</c> compares the binding's ORIGINAL creating caller
+    /// against the credential this call presents, raw and nullable, null meaning "interactive UI". A
+    /// background flush has no inbound request to borrow a credential from, so it presented null; an
+    /// S2S thread's binding carries the daemon's app id; <c>Equals("review-daemon", null)</c> is
+    /// false; <c>CredentialConflict</c>, every flush, forever. There was no retry that could ever
+    /// win, because nothing about the inputs ever changed.
+    /// </para>
+    /// <para>
+    /// That comparison is a CROSS-ACTOR guard — it stops one app reading another app's session. The
+    /// background mirror is not another actor; it is the host writing this thread's own record into
+    /// this thread's own workspace, and it holds no credential to be checked because it is not a
+    /// caller at all. Presenting null was never "the mirror claiming to be the UI", it was the mirror
+    /// having nothing to say, and the registry read the silence as a foreign claim.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task AnS2SOwnedThread_GetsATranscript_RatherThanConflictingWithItsOwnBindingForever()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        PersistedMessage[] messages = [Msg("m1", 1, "User"), Msg("m2", 2)];
+        await store.AppendMessagesAsync(ThreadId, messages);
+
+        // The thread's sandbox binding was created by an S2S caller, so the registry's provenance
+        // check is armed against that app id and nothing else matches it.
+        var browser = new FakeFileBrowser { OwnerAppId = "review-daemon" };
+        var writer = CreateWriter(store, browser);
+
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+        _ = Written(browser, 0).Should().Be(ExpectedAppend(messages));
+        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
+            .Should().Contain(MainPath(Title));
+    }
+
+    /// <summary>
+    /// Non-vacuity for the test above, and the reason it cannot be satisfied by weakening the guard.
+    /// A FOREIGN app's request — a real caller, presenting a real credential that is not the owner's
+    /// — must still be refused. #253 is about the background mirror having no caller, not about the
+    /// cross-actor check being wrong.
+    /// </summary>
+    [Fact]
+    public async Task TheProvenanceGuardStillRefusesAForeignCaller_SoTheFixIsNotAWeakening()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User")]);
+
+        var browser = new FakeFileBrowser { OwnerAppId = "review-daemon" };
+
+        var refused = await browser.ResolveThreadWorkspaceSessionAsync(
+            ThreadId,
+            WorkspaceId,
+            new SandboxCredential("some-other-app", "key"));
+
+        _ = refused.Outcome.Should().Be(SandboxSessionResolutionOutcome.CredentialConflict);
+        _ = refused.ExistingAppId.Should().Be("review-daemon");
+    }
+
+    /// <summary>
+    /// #253 asks what the title-derived filename should be "when the conversation was never titled by
+    /// a human", which is the ORDINARY case for S2S: a daemon hands work to this host and nobody is
+    /// looking at a UI to type a title.
+    /// </summary>
+    /// <remarks>
+    /// The decision is to change nothing. <c>MainFileLeaf</c> already falls back to the bare
+    /// <c>shortThreadId</c> when the slug is empty — no leading hyphen, no invented "untitled"
+    /// literal — and that fallback is already exercised by titles that slug to nothing. Minting an
+    /// <c>untitled-</c> prefix would collide with a real conversation someone titles "Untitled", and
+    /// <c>IsThisConversation</c>'s adoption predicate already accepts the bare form as this
+    /// conversation's own, so a later retitle moves the file correctly with no extra case. This test
+    /// pins the answer as a decision rather than leaving it to be rediscovered.
+    /// </remarks>
+    [Fact]
+    public async Task AnUntitledS2SThread_WritesUnderItsBareShortId_WithNoLeadingSeparator()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store, title: null);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User")]);
+
+        var browser = new FakeFileBrowser { OwnerAppId = "review-daemon" };
+        var writer = CreateWriter(store, browser);
+
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var expected = $"{ConversationTranscriptWriter.TranscriptDirectory}/{ShortThreadId}"
+            + ConversationTranscriptWriter.TranscriptExtension;
+        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
+            .Should().Contain(expected);
+        _ = expected.Should().NotContain($"/-{ShortThreadId}");
+    }
+
+    /// <summary>
+    /// The issue's second acceptance clause: sub-agents of an S2S root land under
+    /// <c>{leaf}_agents/</c>. <c>ConversationDescendantScanner</c> reads only persisted thread
+    /// metadata and knows nothing about credentials, so it was never itself broken for S2S — but it
+    /// never ran either, because the root's own step-1 failure returns before the fan-out is reached.
+    /// This proves the fan-out is genuinely restored rather than merely unblocked in principle.
+    /// </summary>
+    [Fact]
+    public async Task SubAgentsOfAnS2SRoot_LandUnderTheAgentsDirectory()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User")]);
+        await SeedSubAgentAsync(store, "agent-a", "Explorer", Msg("s1", 1, "User"));
+
+        var browser = new FakeFileBrowser { OwnerAppId = "review-daemon" };
+        var writer = CreateWriter(store, browser);
+
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
+            .Should().Contain(
+                AgentPath(Title, "agent-a", "Explorer"),
+                "the descendant fan-out keys off persisted metadata, not credentials, so once the "
+                    + "root resolves its children must be mirrored too");
+    }
+
     // ---------------------------------------------------------------- read until stable
 
     /// <summary>

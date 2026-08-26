@@ -927,9 +927,26 @@ public sealed class ConversationTranscriptWriter
     ///     flush legitimately has none.
     /// </summary>
     /// <remarks>
-    ///     The credential is always null: a flush has no inbound HTTP request to borrow one from. That is
-    ///     also why an S2S-owned session reports <c>CredentialConflict</c> forever and gets no transcript
-    ///     in v1 — an accepted, recorded gap (ADR 0011), not a bug to retry around.
+    ///     <para>
+    ///     A flush has no inbound HTTP request and therefore no caller credential — so it resolves
+    ///     through the background seam, which skips the registry's cross-actor provenance comparison
+    ///     rather than presenting a null credential to it.
+    ///     </para>
+    ///     <para>
+    ///     <b>That distinction is the whole of #253.</b> Provenance is compared raw and nullable, and
+    ///     <c>null</c> means "the interactive UI" — a provenance, not an absence. Passing null from here
+    ///     therefore did not say "no caller", it said "the UI caller", which conflicts with an S2S-owned
+    ///     binding exactly as a foreign app would. An S2S-created conversation reported
+    ///     <c>CredentialConflict</c> on every flush, forever, with no input that could ever change; ADR
+    ///     0011 recorded the resulting silence as accepted gap 3. The mirror is not a caller at all: it is
+    ///     the host writing this thread's own record into this thread's own workspace, and it holds no
+    ///     credential to be checked. Saying so is what fixed it.
+    ///     </para>
+    ///     <para>
+    ///     <c>CredentialConflict</c> is still handled below, and still reachable: a binding whose owner
+    ///     the registry cannot resolve, or a future caller-bearing path through this method, must not
+    ///     silently fall through to "no session".
+    ///     </para>
     /// </remarks>
     private async Task<string?> ResolveSessionAsync(ThreadMetadata? metadata, CancellationToken ct)
     {
@@ -944,7 +961,7 @@ public sealed class ConversationTranscriptWriter
         try
         {
             resolution = await _fileBrowser
-                .ResolveThreadWorkspaceSessionAsync(ThreadId, workspaceId, requestCredential: null, ct)
+                .ResolveThreadWorkspaceSessionForBackgroundAsync(ThreadId, workspaceId, ct)
                 .ConfigureAwait(false);
         }
         catch (SandboxSessionUnavailableException ex)
