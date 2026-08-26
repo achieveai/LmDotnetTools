@@ -21,7 +21,7 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn;
 /// Abstract base class for multi-turn agents providing common infrastructure for
 /// channel management, subscription handling, and lifecycle management.
 /// </summary>
-public abstract class MultiTurnAgentBase : IMultiTurnAgent
+public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReportingAgent
 {
     #region Fields
 
@@ -191,6 +191,30 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// separate bool — is the single source of truth for whether run-ledger persistence is on.
     /// </summary>
     protected IRunLedgerStore? RunLedgerStore { get; }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// Reported to from the two send methods below and nowhere else, because those two are where an
+    /// accept's receipt id is minted on the public send path — so every accept that arrives that way
+    /// is covered by construction, including the ones that reach a pooled agent from inside this
+    /// assembly and could never call a host's pool directly (a sub-agent relaying a descendant's
+    /// question to its parent, a sub-agent completion notification, a peer's collaboration message).
+    /// A derived loop's internal raw enqueues bypass both mint sites and this observer: the loop wake
+    /// sentinel (inert — empty payload, no run content, nothing to record) and the trigger notify (a
+    /// real turn, and so genuinely unobserved, but unreachable in production — it is gated behind
+    /// trigger options only test mode supplies, and #161 tracks enabling it).
+    /// </para>
+    /// <para>
+    /// A throwing observer FAILS THE SEND. It is reported to after the durable accepted-input write
+    /// and before the channel write, so a throw leaves nothing enqueued and no acceptance recorded
+    /// anywhere — the caller gets an error for a turn that genuinely was not taken. Swallowing here
+    /// would produce the opposite and much worse outcome: the input sitting in the channel with the
+    /// host believing the agent idle, which is the released-with-work-queued case this whole
+    /// mechanism exists to prevent.
+    /// </para>
+    /// </remarks>
+    public IInputAcceptanceObserver? InputAcceptanceObserver { get; set; }
 
     /// <summary>
     /// What the host wired up for lifecycle observation and tool approval.
@@ -1063,6 +1087,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         var receiptId = inputId ?? Guid.NewGuid().ToString("N");
         var queuedAt = DateTimeOffset.UtcNow;
         var suppressed = WillSuppressSpawning(input);
+
+        // Announce the acceptance BEFORE the enqueue, for the same reason the durable write in
+        // TrySendAsync happens first: reporting afterwards leaves a window in which the input is
+        // already in the channel and no host knows it — the hole this closes, only narrower. A
+        // throwing observer therefore fails the send with nothing queued (see the property's remarks).
+        InputAcceptanceObserver?.OnInputAccepted(ThreadId, receiptId, this);
+
         var queued = new QueuedInput(input, receiptId, queuedAt);
 
         // Fire-and-forget write to channel (non-blocking if not full)
@@ -1143,11 +1174,22 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             await RunLedgerStore.RecordAcceptedInputAsync(ThreadId, receiptId, queuedAt, ct);
         }
 
+        // AFTER the durable write and BEFORE the enqueue. After, because a store failure means the
+        // input was never accepted by anyone, so there is nothing to announce and nothing to
+        // withdraw. Before, because an in-memory host that learns of the accept only once the input
+        // is already queued has the same hole this closes.
+        InputAcceptanceObserver?.OnInputAccepted(ThreadId, receiptId, this);
+
         var queued = new QueuedInput(input, receiptId, queuedAt);
 
         if (!_inputChannel.Writer.TryWrite(queued))
         {
             Logger.LogWarning("Input channel full, rejecting TrySendAsync. ReceiptId: {ReceiptId}", receiptId);
+
+            // Withdraw the announcement for the same reason the durable record is rolled back below:
+            // no run will ever name an input the agent never received, so an announcement left
+            // standing here is an id nothing can retire until the host's grace expires.
+            InputAcceptanceObserver?.OnInputAcceptanceRescinded(ThreadId, receiptId, this);
 
             if (RunLedgerStore != null)
             {

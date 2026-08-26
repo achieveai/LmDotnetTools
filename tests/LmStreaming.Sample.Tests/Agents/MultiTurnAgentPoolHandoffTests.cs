@@ -406,6 +406,168 @@ public class MultiTurnAgentPoolHandoffTests
                 + "entry is simply gone");
     }
 
+    [Fact]
+    public async Task AnAgentThatReportsItsOwnAccept_HoldsTheEntry_WithNoExplicitLedgerCall()
+    {
+        // Issue #434, the whole of it. Three accept paths live in LmMultiTurn - a sub-agent relaying
+        // a descendant's question to its parent, a sub-agent completion notification, and a peer's
+        // collaboration message - and none of them can call AddOutstandingInput, because the pool is
+        // in an assembly that depends on theirs. A handoff landing between such an accept and the run
+        // that would start it read the entry as idle and disposed the agent with the turn on it.
+        //
+        // Nothing below calls AddOutstandingInput. The agent reports its OWN accept from the place
+        // the receipt id is minted, which is what makes the ledger complete rather than merely
+        // well-maintained: the send here goes through exactly the method those three sites call.
+        await using var pool = CreatePool(agentFactory: threadId => new PooledReportingAgent(threadId));
+        var agent = (PooledReportingAgent)pool.GetOrCreateAgent(
+            "thread-reported",
+            SystemChatModes.GetById(SystemChatModes.DefaultModeId)!,
+            requestedProviderId: null,
+            requestResponseDumpFileName: null,
+            requestedWorkspaceId: null,
+            callerCredential: null,
+            ownerUserId: Alice);
+
+        // Non-vacuity anchor: before any accept the entry really is releasable, so the Busy below
+        // cannot be an entry that was never idle to begin with. The loop parks without draining, so
+        // CurrentRunId stays null and every signal IsEntryInProgress reads says "idle".
+        pool.TryGetHandoffState("thread-reported", out var beforeAccept).Should().BeTrue();
+        beforeAccept.IsBusy.Should().BeFalse("nothing has been accepted yet");
+
+        var receipt = await agent.SendAsync([new TextMessage { Text = "relayed", Role = Role.User }]);
+
+        pool.TryGetHandoffState("thread-reported", out var state).Should().BeTrue();
+        state.IsBusy.Should().BeTrue(
+            "the agent reported the accept itself, so the pool knows a turn is in hand");
+
+        (await pool.TryReleaseIdleAgentAsync("thread-reported", state))
+            .Should().Be(MultiTurnAgentPool.AgentReleaseOutcome.Busy);
+        pool.TryGetHandoffState("thread-reported", out _).Should().BeTrue("the entry must survive");
+
+        receipt.ReceiptId.Should().NotBeNullOrEmpty(
+            "the id the pool holds is the one the sender was given");
+    }
+
+    [Fact]
+    public async Task AReportedAccept_RetiresOnTheRunAssignmentThatNamesIt()
+    {
+        // The ordering guarantee, end to end and through the product's own code: an id retires only
+        // once a run has actually TAKEN it. The report happens before the enqueue and the assignment
+        // after the dequeue, so the two can never be observed out of order - which matters, because
+        // an assignment observed FIRST would retire nothing and leave the id stranded until the
+        // grace expired.
+        //
+        // The clock is frozen, so a pass cannot mean the 30s backstop cleared the ledger instead.
+        var time = new FakeTimeProvider(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        await using var pool = CreatePool(
+            time,
+            agentFactory: threadId => new PooledReportingAgent(threadId) { DrainInputs = true });
+        var agent = (PooledReportingAgent)pool.GetOrCreateAgent(
+            "thread-reported-drain",
+            SystemChatModes.GetById(SystemChatModes.DefaultModeId)!,
+            requestedProviderId: null,
+            requestResponseDumpFileName: null,
+            requestedWorkspaceId: null,
+            callerCredential: null,
+            ownerUserId: Alice);
+
+        _ = await agent.SendAsync([new TextMessage { Text = "relayed", Role = Role.User }]);
+
+        // Non-vacuity, and the reason the drain is gated: an EMPTY ledger is also "not busy", so a
+        // wait for !IsBusy would be satisfied just as well by an agent that reported nothing. The id
+        // has to be observably held first for its disappearance to mean retirement.
+        pool.TryGetHandoffState("thread-reported-drain", out var held).Should().BeTrue();
+        held.IsBusy.Should().BeTrue("the reported id is in the ledger before any run takes it");
+
+        agent.OpenDrainGate();
+
+        // The BUDGET is the timeout argument, not a token: Wait.UntilAsync defaults to 10s and a
+        // token only bounds the wait from outside. Safe at 30s only because the clock is frozen.
+        await Wait.UntilAsync(
+            () => pool.TryGetHandoffState("thread-reported-drain", out var s) && !s.IsBusy,
+            "the run assignment naming the reported id retires it from the ledger",
+            timeout: TimeSpan.FromSeconds(30));
+
+        pool.TryGetHandoffState("thread-reported-drain", out var state).Should().BeTrue();
+        (await pool.TryReleaseIdleAgentAsync("thread-reported-drain", state))
+            .Should().Be(MultiTurnAgentPool.AgentReleaseOutcome.Released);
+    }
+
+    [Fact]
+    public async Task APooledAgentThatReportsNothing_IsStillHeldByTheHostsOwnLedgerCall()
+    {
+        // Why the transports' explicit AddOutstandingInput calls are NOT redundant with the reporting
+        // above, and the one case that tells the two mechanisms apart. Reporting is a capability an
+        // agent has (IAcceptanceReportingAgent), not an obligation of IMultiTurnAgent - so a pooled
+        // agent that does not implement it reports nothing at all, and the host's own record of what
+        // it handed over is then the only ledger there is.
+        //
+        // Without this the two mechanisms would be two sources for one fact, and removing either
+        // would leave every test still passing.
+        await using var pool = CreatePool();
+        var agent = CreateOwnedAgent(pool, "thread-silent", Alice);
+        agent.CurrentRunId = null;
+        agent.IsRunning = false;
+
+        agent.Should().NotBeAssignableTo<IAcceptanceReportingAgent>(
+            "the premise: this agent cannot report its own accepts");
+
+        // So an accept it takes is invisible to the pool unless the host says so...
+        _ = await agent.SendAsync([new TextMessage { Text = "hello", Role = Role.User }]);
+        pool.TryGetHandoffState("thread-silent", out var unreported).Should().BeTrue();
+        unreported.IsBusy.Should().BeFalse(
+            "a non-reporting agent's accept reaches the pool only through the host");
+
+        // ...and the host's own pre-send record is what covers it.
+        pool.AddOutstandingInput("thread-silent", "input-1", agent);
+        pool.TryGetHandoffState("thread-silent", out var recorded).Should().BeTrue();
+        recorded.IsBusy.Should().BeTrue();
+        (await pool.TryReleaseIdleAgentAsync("thread-silent", recorded))
+            .Should().Be(MultiTurnAgentPool.AgentReleaseOutcome.Busy);
+    }
+
+    [Fact]
+    public async Task AReportFromAnAgentTheThreadNoLongerHolds_DoesNotMarkThePooledOne()
+    {
+        // The reference check, reached through the reporting path rather than a direct ledger call:
+        // a report must name the entry's OWN agent, or it would hold a replacement busy for a turn it
+        // never received while the agent that really holds the turn is not held at all.
+        //
+        // The stray is constructed and attached here rather than evicted from the pool, because an
+        // evicted agent cannot reach this state by any later call: RemoveAgentAsync disposes it and
+        // SendAsync refuses outright on a disposed agent (ObjectDisposedException before the report).
+        // The reachable shape is therefore a report already IN FLIGHT when the swap lands - a race
+        // whose window cannot be pinned deterministically. What is pinned is the state that race
+        // produces, wired exactly as CreateAgentEntry wires it.
+        await using var pool = CreatePool(agentFactory: threadId => new PooledReportingAgent(threadId));
+        var pooled = (PooledReportingAgent)pool.GetOrCreateAgent(
+            "thread-reported-swap",
+            SystemChatModes.GetById(SystemChatModes.DefaultModeId)!,
+            requestedProviderId: null,
+            requestResponseDumpFileName: null,
+            requestedWorkspaceId: null,
+            callerCredential: null,
+            ownerUserId: Alice);
+
+        await using var stray = new PooledReportingAgent("thread-reported-swap")
+        {
+            InputAcceptanceObserver = pool,
+        };
+        stray.Should().NotBeSameAs(pooled);
+
+        // The stray accepts, and reports - for a thread whose entry is a different agent.
+        _ = await stray.SendAsync([new TextMessage { Text = "late", Role = Role.User }]);
+
+        pool.TryGetHandoffState("thread-reported-swap", out var state).Should().BeTrue();
+        state.IsBusy.Should().BeFalse("the pooled agent never accepted that input");
+
+        // Non-vacuity: the agent that IS pooled reports into the same ledger and does mark it, so
+        // what the assertion above caught is the reference check, not reporting that stopped working.
+        _ = await pooled.SendAsync([new TextMessage { Text = "current", Role = Role.User }]);
+        pool.TryGetHandoffState("thread-reported-swap", out var marked).Should().BeTrue();
+        marked.IsBusy.Should().BeTrue();
+    }
+
     /// <remarks>
     /// What no test here claims: that a CONCURRENT replacement between the two old accessors is
     /// impossible. That is a property of the lock, not of an observable outcome, and a race test for
@@ -428,12 +590,21 @@ public class MultiTurnAgentPoolHandoffTests
             callerCredential: callerCredential,
             ownerUserId: ownerUserId);
 
-    private static MultiTurnAgentPool CreatePool(TimeProvider? timeProvider = null) =>
+    /// <param name="timeProvider">Drives the accepted-input grace; the system clock when omitted.</param>
+    /// <param name="agentFactory">
+    /// What the pool builds for a thread. The default stand-in reports no acceptances of its own,
+    /// which is the right double for the ledger's host-driven half; pass
+    /// <see cref="PooledReportingAgent"/> to exercise the half an agent reports for itself.
+    /// </param>
+    private static MultiTurnAgentPool CreatePool(
+        TimeProvider? timeProvider = null,
+        Func<string, IMultiTurnAgent>? agentFactory = null) =>
         new(
             // KeepSubscriptionOpen: the pool subscribes to every agent it creates and retires accepted
             // inputs on the run assignment that names them, so the stand-in has to keep that stream up.
             (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(
-                new FakeMultiTurnAgent(threadId) { KeepSubscriptionOpen = true }),
+                agentFactory?.Invoke(threadId)
+                    ?? new FakeMultiTurnAgent(threadId) { KeepSubscriptionOpen = true }),
             NullLogger<MultiTurnAgentPool>.Instance)
         {
             TimeProvider = timeProvider ?? TimeProvider.System,
