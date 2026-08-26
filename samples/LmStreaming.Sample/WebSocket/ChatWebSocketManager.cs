@@ -113,6 +113,11 @@ public sealed class ChatWebSocketManager
     /// Optional workspace id requested by the client for this connection. Honored only when the
     /// thread has no persisted workspace yet; otherwise the persisted value wins.
     /// </param>
+    /// <param name="ownerUserId">
+    /// The connecting user's <c>Principal.EffectiveUserId</c>, resolved by the identity middleware
+    /// from the handshake credential (#342). Passed to every pool call this connection makes so a
+    /// thread the UI opened a socket on is owned exactly as a REST-created one is (#399).
+    /// </param>
     public async Task HandleConnectionAsync(
         System.Net.WebSockets.WebSocket webSocket,
         string threadId,
@@ -121,7 +126,8 @@ public sealed class ChatWebSocketManager
         string? requestResponseDumpFileName,
         StreamWriter? recordWriter,
         CancellationToken cancellationToken,
-        string? workspaceId = null)
+        string? workspaceId = null,
+        string? ownerUserId = null)
     {
         ArgumentNullException.ThrowIfNull(webSocket);
         var codexSessionId = !string.IsNullOrWhiteSpace(requestResponseDumpFileName)
@@ -167,14 +173,20 @@ public sealed class ChatWebSocketManager
             IMultiTurnAgent agent;
             try
             {
+                // ownerUserId on BOTH calls, matching ConversationsController. Whichever surface
+                // touches a thread first decides whether the principal guard exists at all, because
+                // AgentEntry.OwnerUserId is frozen at creation and EnsurePrincipalMatches returns
+                // early when either side is null - and in the browser the first toucher is this
+                // socket, opened on load before any REST turn (#399).
                 _ = _agentPool.GetOrCreateAgent(
                     threadId,
                     resolvedMode,
                     providerId,
                     requestResponseDumpFileName,
-                    workspaceId);
+                    workspaceId,
+                    ownerUserId: ownerUserId);
                 agent = (await _agentPool
-                    .EnsureCurrentAgentAsync(threadId, ct: cancellationToken)
+                    .EnsureCurrentAgentAsync(threadId, ct: cancellationToken, ownerUserId: ownerUserId)
                     .ConfigureAwait(false)).Agent;
             }
             catch (ProviderUnavailableException ex)
@@ -234,7 +246,8 @@ public sealed class ChatWebSocketManager
                 connection,
                 agent,
                 threadId,
-                connectionCts.Token);
+                connectionCts.Token,
+                ownerUserId);
 
             try
             {
@@ -641,11 +654,13 @@ public sealed class ChatWebSocketManager
         RegisteredWebSocketConnection connection,
         IMultiTurnAgent agent,
         string threadId,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? ownerUserId)
         => ReceiveTextMessagesAsync(
             webSocket,
             $"thread {threadId}",
-            (message, token) => ProcessClientMessageAsync(connection, agent, threadId, message, token),
+            (message, token) =>
+                ProcessClientMessageAsync(connection, agent, threadId, message, token, ownerUserId),
             ct);
 
     /// <summary>
@@ -871,7 +886,8 @@ public sealed class ChatWebSocketManager
         IMultiTurnAgent agent,
         string threadId,
         string json,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? ownerUserId)
     {
         if (TryPeekFrameType(json, out var frameType) && frameType == ClientToolResultFrameType)
         {
@@ -894,7 +910,7 @@ public sealed class ChatWebSocketManager
                 request.Message);
 
             var refresh = await _agentPool
-                .EnsureCurrentAgentAsync(threadId, ct: ct, replace: false)
+                .EnsureCurrentAgentAsync(threadId, ct: ct, replace: false, ownerUserId: ownerUserId)
                 .ConfigureAwait(false);
             var agentChanged = !ReferenceEquals(refresh.Agent, agent);
             if (

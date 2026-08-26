@@ -986,6 +986,24 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     }
 
     /// <summary>
+    /// The user this thread's live agent is frozen to, or null when no agent is pooled for it or the
+    /// entry was created without a principal.
+    /// </summary>
+    /// <remarks>
+    /// A READ of the freeze, never an enforcement of it - <see cref="EnsurePrincipalMatches"/> stays
+    /// the only thing that refuses. It exists so a caller that has ALREADY authorized this request
+    /// can ask whose agent is in the way before it is thrown at, which is what lets a legitimate
+    /// grantee be handed their own agent instead of a <c>409</c> (#376). Answering that question by
+    /// catching the conflict instead would mean the pool decides an authorization outcome it has no
+    /// way to evaluate.
+    /// </remarks>
+    /// <param name="threadId">The thread identifier.</param>
+    public string? GetAgentOwnerUserId(string threadId)
+    {
+        return _agents.TryGetValue(threadId, out var entry) ? entry.OwnerUserId : null;
+    }
+
+    /// <summary>
     /// Ensures a sandbox-backed pooled agent still targets the registry's live session before a new
     /// message is dispatched. A replaced session rebuilds an idle entry transactionally; an active run
     /// is never interrupted and will be checked again before the next message.

@@ -1,5 +1,7 @@
 using System.Net;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Identity;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using FluentAssertions;
@@ -331,17 +333,54 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
         // principal through the SAME front doors as REST rather than a second, parallel one.
         using var socket = await factory.ConnectWebSocketAsync(
             "thread-authenticated",
-            subProtocols:
-            [
-                IdentityMiddleware.WebSocketCredentialSubProtocolPrefix + "dir-a:alice",
-                IdentityMiddleware.WebSocketSubProtocol,
-            ]);
+            subProtocols: AliceCredential());
 
         _ = socket.State.Should().Be(System.Net.WebSockets.WebSocketState.Open);
 
         // The server echoes the APPLICATION subprotocol, never the credential one - echoing the
         // credential would hand it back to anything reading the response headers.
         _ = socket.SubProtocol.Should().Be(IdentityMiddleware.WebSocketSubProtocol);
+
+        await socket.CloseAsync(
+            System.Net.WebSockets.WebSocketCloseStatus.NormalClosure,
+            "done",
+            CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task WithEnforcementOn_APooledEntryCreatedOverTheSocket_IsOwnedByTheConnectingUser()
+    {
+        LogTestStart();
+        using var factory = NewFactory(EnforcingSettings(), WithTestPrincipalSource);
+        const string ThreadId = "thread-owned-over-ws";
+
+        using var socket = await factory.ConnectWebSocketAsync(
+            ThreadId,
+            subProtocols: AliceCredential());
+
+        var pool = factory.Services.GetRequiredService<MultiTurnAgentPool>();
+
+        // The socket resolves at AcceptWebSocketAsync; the pooled entry is created just after, on the
+        // connection's own task. Bounded, and loud on timeout - a silent poll would make every
+        // assertion below vacuous exactly when the entry was never created.
+        await Wait.UntilAsync(
+            () => pool.TryGet(ThreadId, out _),
+            because: "the WebSocket connection creates the thread's pooled agent",
+            timeout: TimeSpan.FromSeconds(20));
+
+        // #399: in the browser the FIRST toucher of a thread is /ws, opened on load before any REST
+        // turn. An entry created unowned freezes OwnerUserId to null for the entry's whole life, and
+        // EnsurePrincipalMatches returns early when either side is null - so the REST guard added by
+        // #302 was dead for every conversation the UI had ever opened a socket on.
+        _ = pool.GetAgentOwnerUserId(ThreadId).Should().Be("dir-a:alice");
+
+        // The behavioural half, because the value alone does not prove the guard is armed by it.
+        Func<Task> bobsTurn = () => pool.EnsureCurrentAgentAsync(ThreadId, ownerUserId: "dir-b:bob");
+
+        var conflict = await bobsTurn.Should().ThrowAsync<PrincipalConflictException>(
+            "a second human's turn on a socket-created thread must conflict exactly as it does on a "
+                + "REST-created one");
+        _ = conflict.Which.ExistingUserId.Should().Be("dir-a:alice");
 
         await socket.CloseAsync(
             System.Net.WebSockets.WebSocketCloseStatus.NormalClosure,
@@ -398,6 +437,16 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
             ["Auth:S2SInboundSecret"] = Secret,
             ["LmStreaming:AllowedOrigins:0"] = ClientOrigin,
         };
+
+    /// <summary>
+    /// The subprotocol list a signed-in browser offers: the credential, then the application
+    /// subprotocol the server is allowed to echo back.
+    /// </summary>
+    private static string[] AliceCredential() =>
+        [
+            IdentityMiddleware.WebSocketCredentialSubProtocolPrefix + "dir-a:alice",
+            IdentityMiddleware.WebSocketSubProtocol,
+        ];
 
     /// <summary>
     /// Registers a front door that turns <c>Authorization: Bearer &lt;userId&gt;</c> into an end-user

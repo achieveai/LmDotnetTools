@@ -2197,6 +2197,13 @@ subAgentFactory,
                 );
             }
 
+            // Established by IdentityMiddleware, which now guards this route (#342). Null only when
+            // enforcement is off AND no development principal could be built; the pool then behaves
+            // exactly as it did before #399.
+            var ownerUserId =
+                (context.Items[IdentityHttpItems.PrincipalKey]
+                    as AchieveAi.LmDotnetTools.LmCore.Identity.Principal)?.EffectiveUserId;
+
             var webSocket = await AcceptNegotiatedWebSocketAsync(context);
             wsLogger.LogInformation(
                 "WebSocket connection established for thread {ThreadId} with mode {ModeId}",
@@ -2214,7 +2221,8 @@ subAgentFactory,
                     requestResponseDumpFileName,
                     recordWriter,
                     cancellationToken,
-                    workspaceId
+                    workspaceId,
+                    ownerUserId
                 );
             }
             finally
