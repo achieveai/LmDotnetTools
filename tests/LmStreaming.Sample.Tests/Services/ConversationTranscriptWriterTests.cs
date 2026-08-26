@@ -116,14 +116,16 @@ public sealed class ConversationTranscriptWriterTests
         + "[ -z \"$end\" ] || exit 43\n";
 
     /// <summary>
-    /// The standalone guard, for the two writes that reach the workspace without a shell — the staged
-    /// payload and the containment file, both PUT directly by the gateway. Duplicated for the same reason:
-    /// nothing else would notice if these writes stopped being checked.
+    /// The standalone guard, for the three writes that reach the workspace without a shell — the staged
+    /// payload, the containment file and the oversized tool-result sidecar (#254), all PUT directly by the
+    /// gateway. Duplicated for the same reason: nothing else would notice if these writes stopped being
+    /// checked.
     /// </summary>
     /// <remarks>
-    /// This is the ONLY place the alias check can defend those two writes: a PUT carries no shell, so an
-    /// in-script check would run after the bytes were already through. The containment file is the sharper
-    /// of the two — it is PUT whole, so an aliased path does not append to a tracked file, it REPLACES one.
+    /// This is the ONLY place the alias check can defend those writes: a PUT carries no shell, so an
+    /// in-script check would run after the bytes were already through. The containment file is the sharpest
+    /// of the three — it is PUT whole, so an aliased path does not append to a tracked file, it REPLACES
+    /// one. The sidecar is the mildest: a refusal there inlines the payload and costs the record nothing.
     /// </remarks>
     private const string ExpectedGuardScript =
         ExpectedGuardPreamble + "guard \"$1\" || exit 44\n" + "solo \"$1\" || exit 46\n";
@@ -322,6 +324,15 @@ public sealed class ConversationTranscriptWriterTests
     /// off the production constant could not notice it drifting onto a value <c>tail</c> or <c>sh</c> also
     /// produces.
     /// </summary>
+    /// <summary>
+    /// What the standalone path guard reports when the path is a symlink or lies under one. The literal 44
+    /// is duplicated here on the same footing as 42 and 43 above: it is the private code that carries
+    /// "refused" back from a script whose other exits mean something else entirely, and a test that read it
+    /// off the production constant could not notice it drifting onto a value <c>sh</c> also produces.
+    /// </summary>
+    private static SandboxCommandResult Refused() =>
+        new() { ExitCode = 44, StandardOutput = "", StandardError = "", OperationId = "op" };
+
     private static SandboxCommandResult Missing() =>
         new() { ExitCode = 42, StandardOutput = "", StandardError = "", OperationId = "op" };
 
@@ -2259,6 +2270,84 @@ public sealed class ConversationTranscriptWriterTests
         var written = browser.Writes.Select(w => w.Path).ToList();
         _ = written.Should().Contain($"{ConversationTranscriptWriter.TranscriptDirectory}/{reference}");
         _ = written.Should().NotContain($"{AgentsDirectory(Title)}/{reference}");
+    }
+
+    /// <summary>
+    /// The symlink invariant, extended to the surface this feature added. A sidecar PUT carries no shell,
+    /// so an in-script check would run after the bytes were already through — it is guarded by
+    /// <c>IsPathSafeAsync</c> immediately before the write, exactly like the staged payload and the
+    /// <c>.gitignore</c>. A link planted at the sidecar name is REFUSED and the payload inlines: refused,
+    /// never followed, never repaired.
+    /// </summary>
+    /// <remarks>
+    /// The refusal is scoped to the SIDECAR path alone. Refusing every guard would defer the whole flush
+    /// and this test would pass without ever reaching the branch it is about — the transcript would be
+    /// empty for an unrelated reason. Here the flush still succeeds and the row still lands; only its
+    /// shape changes.
+    /// </remarks>
+    [Fact]
+    public async Task AGuardRefusalOnTheSidecarPath_InlinesThePayload_AndWritesNoSidecar()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        var big = BigToolResult("m1", 1);
+        await store.AppendMessagesAsync(ThreadId, [big]);
+
+        var sidecarPath = $"{BlobsDirectory(Title)}/{WorkspaceTranscriptLine.DeriveUid(big.Id)}.json";
+        var browser = new FakeFileBrowser
+        {
+            ExecuteHandler = command =>
+                IsGuard(command) && command.Arguments[^1] == sidecarPath ? Refused() : Ok(),
+        };
+
+        // The flush still succeeds - a refused sidecar costs the record nothing.
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        // The guard really was consulted for this path; without that, the refusal above is inert and the
+        // assertions below would hold for the wrong reason.
+        _ = browser.Commands.Any(c => IsGuard(c) && c.Arguments[^1] == sidecarPath).Should().BeTrue(
+            "the sidecar PUT must be guarded before the bytes go through, not after");
+
+        // The payload stayed on the line, whole.
+        var payload = Written(browser, 0);
+        _ = Field(payload, 0, "message_json").Should().Be(big.MessageJson);
+        _ = Field(payload, 0, "message_json_ref").Should().BeNull(
+            "a reference to a file that was refused would point at nothing");
+
+        // And nothing was written through the refused path - refused, not followed, not repaired.
+        _ = browser.Writes.Select(w => w.Path).Should().NotContain(
+            p => p.Contains(ConversationTranscriptWriter.BlobsDirectorySuffix, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// The same "every failure inlines" clause on the other reachable failure: the PUT itself is rejected
+    /// by the gateway. A transcript holding the payload beats one holding a reference to a file that was
+    /// never written, so the exception is swallowed at this one call site and the line goes out complete.
+    /// </summary>
+    [Fact]
+    public async Task AFailedSidecarWrite_InlinesThePayload_AndStillAppendsTheRow()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        var big = BigToolResult("m1", 1);
+        await store.AppendMessagesAsync(ThreadId, [big]);
+
+        var browser = new FakeFileBrowser
+        {
+            WriteFailure = path =>
+                path.Contains(ConversationTranscriptWriter.BlobsDirectorySuffix, StringComparison.Ordinal)
+                    ? new SandboxException(SandboxErrorKind.Protocol, "gateway said no")
+                    : null,
+        };
+
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var payload = Written(browser, 0);
+        _ = Field(payload, 0, "message_json").Should().Be(big.MessageJson);
+        _ = Field(payload, 0, "message_json_ref").Should().BeNull();
+
+        // The row is still in the file - a failed sidecar must not cost the record the row itself.
+        _ = UidsIn(payload).Should().Equal(WorkspaceTranscriptLine.DeriveUid(big.Id));
     }
 
     // ---------------------------------------------------------------- read until stable

@@ -83,18 +83,21 @@ public enum TranscriptFlushOutcome
 ///     </para>
 ///     <para>
 ///     <b>No path is written to before it has been checked for redirection, and the check is never
-///     cached.</b> Every script guards its own path parameters, and the two writes that bypass the shell
-///     entirely — the staged payload and the <c>.gitignore</c>, both PUT by the gateway — are guarded by
-///     <see cref="IsPathSafeAsync"/> immediately before each PUT. The staging guard in particular runs per
+///     cached.</b> Every script guards its own path parameters, and the three writes that bypass the shell
+///     entirely — the staged payload, the <c>.gitignore</c> and the tool-result sidecar, all PUT by the
+///     gateway — are guarded by <see cref="IsPathSafeAsync"/> immediately before each PUT. The staging
+///     guard in particular runs per
 ///     APPEND rather than per flush: one flush stages the main transcript and every descendant through the
 ///     same path, with a full gateway round trip between consecutive PUTs. A redirected path is refused and
 ///     left alone, never unlinked; see <see cref="UnsafePathExitCode"/>.
 ///     </para>
 ///     <para>
-///     <b>The filesystem surface is a closed set of six calls</b>, listed here so the next reader can check
+///     <b>The filesystem surface is a closed set of seven calls</b>, listed here so the next reader can check
 ///     coverage by enumeration rather than by searching. Four successive review rounds each fixed one
 ///     surface and left another, because nobody had written down how many there were — and the round that
-///     first wrote this list down still recorded a wrong reason for leaving the sixth alone. Members rather
+///     first wrote this list down still recorded a wrong reason for leaving <see cref="TryMoveAsync"/>
+///     alone. Named rather than numbered, because inserting an entry renumbers every ordinal after it and
+///     turns a cross-reference into a pointer at the wrong row. Members rather
 ///     than line numbers: a line-number table is stale by the next commit and reads as authoritative anyway.
 ///     <list type="table">
 ///         <item>
@@ -108,6 +111,14 @@ public enum TranscriptFlushOutcome
 ///             <see cref="IsPathSafeAsync"/> per append, uncached; that guard is also where the staging
 ///             path's link count is checked, because this PUT is the write an in-script check would be
 ///             too late for.</description>
+///         </item>
+///         <item>
+///             <description><see cref="ExternalizeIfOversizedAsync"/> — PUTs an oversized tool result's
+///             sidecar (#254). Guarded by <see cref="IsPathSafeAsync"/> immediately before the PUT, for
+///             the same reason as the staged payload: a PUT carries no shell, so an in-script check would
+///             run after the bytes were already through. A refusal here INLINES the payload rather than
+///             failing the flush — the sidecar is an optimisation of the record's shape, so declining it
+///             costs nothing the record needs.</description>
 ///         </item>
 ///         <item>
 ///             <description><see cref="AppendAsync"/> — runs <see cref="AppendScript"/>. Guards its three
@@ -133,7 +144,7 @@ public enum TranscriptFlushOutcome
 ///     </list>
 ///     </para>
 ///     <para>
-///     <b>What none of the six can cover — and a retracted claim about what they could not.</b> An earlier
+///     <b>What none of the seven can cover — and a retracted claim about what they could not.</b> An earlier
 ///     revision of this paragraph asserted that a HARD link at a transcript's name was undetectable here,
 ///     because <c>[ -L ]</c> cannot see one and "the gateway does not expose <c>st_nlink</c>". The first
 ///     half is true and the second was never checked. A hard link is indeed not a distinguishable KIND of
@@ -481,15 +492,16 @@ public sealed class ConversationTranscriptWriter
         + "\n";
 
     /// <summary>
-    ///     The guards on their own, for the two writes that reach the workspace WITHOUT a shell — the
-    ///     staged payload and the <c>.gitignore</c>, both of which the gateway PUTs directly. <c>$1</c> is
-    ///     the path. Reads nothing, writes nothing. See <see cref="IsPathSafeAsync"/>.
+    ///     The guards on their own, for the three writes that reach the workspace WITHOUT a shell — the
+    ///     staged payload, the <c>.gitignore</c> and the tool-result sidecar (#254), all of which the
+    ///     gateway PUTs directly. <c>$1</c> is the path. Reads nothing, writes nothing. See
+    ///     <see cref="IsPathSafeAsync"/>.
     /// </summary>
     /// <remarks>
-    ///     This is the ONLY place the alias check can defend those two writes, and it is why
+    ///     This is the ONLY place the alias check can defend those writes, and it is why
     ///     <see cref="AliasedPathExitCode"/> belongs here rather than only on the append: a PUT carries no
     ///     shell, so by the time <see cref="AppendScript"/> could look at the staging path the bytes are
-    ///     already through it. The <c>.gitignore</c> is the sharper of the two — it is PUT with the whole
+    ///     already through it. The <c>.gitignore</c> is the sharpest of the three — it is PUT with the whole
     ///     file's content, so an aliased path does not append to a tracked file, it REPLACES one with
     ///     <c>*</c>.
     /// </remarks>
@@ -2041,17 +2053,17 @@ public sealed class ConversationTranscriptWriter
     /// </summary>
     /// <remarks>
     ///     <para>
-    ///     Only the two writes that reach the workspace WITHOUT a shell need this — the staged payload and
-    ///     the <c>.gitignore</c>. Everything the shell writes carries its guard inside the same script it
-    ///     writes with, which is both cheaper (no extra round trip) and tighter (no gap between the check
-    ///     and the write). See <see cref="UnsafePathExitCode"/> for why the answer is refusal rather than
-    ///     repair.
+    ///     Only the three writes that reach the workspace WITHOUT a shell need this — the staged payload,
+    ///     the <c>.gitignore</c>, and the oversized tool-result sidecar (#254). Everything the shell writes
+    ///     carries its guard inside the same script it writes with, which is both cheaper (no extra round
+    ///     trip) and tighter (no gap between the check and the write). See <see cref="UnsafePathExitCode"/>
+    ///     for why the answer is refusal rather than repair.
     ///     </para>
     ///     <para>
-    ///     This is one of six filesystem entry points, and the six are enumerated ONCE, on the class. Keep
-    ///     them there rather than restating them here: two copies of a coverage table drift, and a drifted
-    ///     coverage table is worse than none, because the reason to enumerate is to be able to trust the
-    ///     count. Anything new that touches <c>_fileBrowser</c> belongs in that list.
+    ///     This is one of seven filesystem entry points, and the seven are enumerated ONCE, on the class.
+    ///     Keep them there rather than restating them here: two copies of a coverage table drift, and a
+    ///     drifted coverage table is worse than none, because the reason to enumerate is to be able to trust
+    ///     the count. Anything new that touches <c>_fileBrowser</c> belongs in that list.
     ///     </para>
     /// </remarks>
     private async Task<bool> IsPathSafeAsync(string sessionId, string path, CancellationToken ct)
