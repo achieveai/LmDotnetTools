@@ -1501,6 +1501,96 @@ public class SubAgentManagerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SpawnAsync_Foreground_WhenTheForcedRaceIsFollowedByAZeroTurnRun_KeepsAbsorbing()
+    {
+        // Arrange (#262, the two absorptions together): the asking run's own completion is absorbed and
+        // must LEAVE THE LATCH ARMED, because the run the resolution triggers can itself be a zero-turn
+        // sibling (#227) that still needs absorbing. Consuming the latch on the asking run instead would
+        // strand that second run with no protection: it would be read as terminal and settle the caller
+        // with the placeholder, which is the original bug wearing one more turn of delay.
+        //
+        // Neither sibling test can see this. The forced-race test answers straight into a run that has
+        // real text, so the latch's survival never matters; the two-zero-turn test never enters the
+        // dangerous ordering at all. Only both halves at once — a forced race THEN a zero-turn run —
+        // distinguishes "keep armed" from "consume".
+        var askArgs = AskColorArgs();
+
+        const string RealAnswer = "Final answer: chose Green.";
+        var providerCalls = 0;
+        _subAgentMock
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, opts, _) =>
+            {
+                List<IMessage> reply = Interlocked.Increment(ref providerCalls) switch
+                {
+                    1 => [StreamingAskUserQuestionCall("tc_color", askArgs, opts.GenerationId)],
+
+                    // The resolution-triggered run, taking no model turn at all.
+                    2 => [],
+
+                    _ => [new TextMessage { Text = RealAnswer, Role = Role.Assistant }],
+                };
+
+                return Task.FromResult(ToAsyncEnumerable(reply));
+            });
+
+        _manager = CreateManager(maxConcurrent: 1);
+
+        ResolveToolCallOutcome? resolvedInsideWindow = null;
+        var hookFired = 0;
+        _manager.BeforeClassifyingRunCompletionForTest = async (state, _) =>
+        {
+            if (state.Agent is not MultiTurnAgentLoop l
+                || Interlocked.Exchange(ref hookFired, 1) != 0)
+            {
+                return;
+            }
+
+            resolvedInsideWindow = await l.TryResolveToolCallAsync("tc_color", "Green");
+        };
+
+        var foregroundTask = _manager.SpawnAsync(
+            "test-agent", "Pick a color", name: "color-agent", runInBackground: false);
+
+        await Wait.UntilAsync(
+            () => _manager!.ListAgents().Any(a => a.Name == "color-agent"),
+            "the child registered",
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromMilliseconds(25));
+
+        var agentId = _manager!.ListAgents().Single(a => a.Name == "color-agent").AgentId;
+
+        // Let the zero-turn run land, so the nudge below cannot be what the second absorption applies to.
+        await Wait.UntilAsync(
+            () => Volatile.Read(ref providerCalls) >= 2,
+            "the resolution triggered its zero-turn child run",
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromMilliseconds(25),
+            observed: () => $"provider calls: {Volatile.Read(ref providerCalls)}");
+
+        // Act: only now drive the run that actually carries the answer.
+        _ = await _manager!.SendMessageAsync(agentId, "continue", runInBackground: true);
+
+        // Assert: the caller settles with the real answer. If the asking run had consumed the latch, the
+        // zero-turn run above would already have settled it with the placeholder.
+        var result = await foregroundTask.WaitAsync(TimeSpan.FromSeconds(10));
+        result.Should().Be(
+            RealAnswer,
+            "absorbing the asking run must leave the latch armed, because the run its resolution "
+                + "triggers can be a zero-turn sibling that needs absorbing too");
+
+        Volatile.Read(ref hookFired).Should().Be(
+            1, "the classification seam must have fired, or this test proved nothing about the race");
+        resolvedInsideWindow.Should().Be(
+            ResolveToolCallOutcome.Resolved,
+            "the answer must have been applied INSIDE the classification window — otherwise the monitor "
+                + "classified the parked run first and this is the safe ordering, not the one under test");
+    }
+
+    [Fact]
     public async Task DisposeAsync_StopsAllAgents()
     {
         // Arrange: create a background sub-agent with a delayed response

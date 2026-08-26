@@ -3463,10 +3463,12 @@ public sealed class SubAgentManager : IAsyncDisposable
             // The two absorbed shapes are bounded differently, because their guarantees differ:
             //
             //   A. `latchedThisRun` — the asking run's own completion. A follow-on run is GUARANTEED:
-            //      landing here means the question was resolved, and a resolution always enqueues the run
-            //      that carries the answer. Keep the latch armed, because that follow-on run may itself be
-            //      a zero-turn sibling (#227) that still needs absorbing. Self-bounding: only one run per
-            //      parking can arm the latch, so this absorbs at most once.
+            //      the loop parks the run BEFORE publishing its completion (MultiTurnAgentLoop marks and
+            //      decides together inside the delayed-call coordinator), so any resolution that lands
+            //      from here on mints a child run — and landing here at all means one did, since the
+            //      registry is empty while the latch says it was parked. Keep the latch armed, because
+            //      that follow-on run may itself be a zero-turn sibling (#227) that still needs
+            //      absorbing. Self-bounding: only one run per parking can arm the latch.
             //
             //   B. otherwise — a zero-model-turn run. Nothing guarantees a further run here, so CONSUME
             //      the latch: a second text-free run must be allowed to settle the caller rather than be
