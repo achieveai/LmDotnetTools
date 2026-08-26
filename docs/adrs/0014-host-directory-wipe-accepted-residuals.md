@@ -1,4 +1,4 @@
-# ADR 0013: Accepted residuals and deferred work from PR #274's host workspace wipe
+# ADR 0014: Accepted residuals and deferred work from PR #274's host workspace wipe
 
 * Status: Accepted
 * Date: 2026-08-25
