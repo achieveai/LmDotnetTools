@@ -49,6 +49,18 @@ public sealed class SandboxToolCatalogProbe(
     public static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(10);
 
     /// <summary>
+    ///     How long the whole live probe may take before the labelled baseline is served instead.
+    /// </summary>
+    /// <remarks>
+    ///     A gateway that REFUSES a connection fails fast and needs no bound. One that accepts the
+    ///     socket and then never answers does not: without this, session creation and
+    ///     <c>McpClient.CreateAsync</c> would both wait forever while holding the single-entry lock,
+    ///     turning a degraded-but-usable Modes editor into a hang. The fallback below is triggered by
+    ///     failure, so it has to be reachable by timeout and not only by exception.
+    /// </remarks>
+    public static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
     ///     The tools the gateway has always shipped. Used only as a labelled fallback when the live
     ///     listing fails — never as the primary source, because it cannot know about plugin-provided
     ///     tools such as <c>Skill</c>.
@@ -83,7 +95,7 @@ public sealed class SandboxToolCatalogProbe(
                 return stillFresh;
             }
 
-            var probed = await ProbeAsync(ct).ConfigureAwait(false);
+            var probed = await ProbeAsync(timeProvider, ct).ConfigureAwait(false);
 
             // Only a SUCCESSFUL listing is cached. Caching a failure would pin the baseline for the
             // whole TTL, so a gateway that comes up thirty seconds later would still read as down.
@@ -101,8 +113,13 @@ public sealed class SandboxToolCatalogProbe(
         }
     }
 
-    private async Task<SandboxToolCatalog> ProbeAsync(CancellationToken ct)
+    private async Task<SandboxToolCatalog> ProbeAsync(TimeProvider timeProvider, CancellationToken ct)
     {
+        // Driven by the injected TimeProvider so a test can expire the budget deterministically
+        // rather than by sleeping for the real timeout.
+        using var timeoutCts = new CancellationTokenSource(ProbeTimeout, timeProvider);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+
         McpClient? client = null;
         try
         {
@@ -111,7 +128,7 @@ public sealed class SandboxToolCatalogProbe(
             // whose plugins add tools beyond this listing is covered by the wildcard row rather than
             // by probing every workspace here.
             var session = await sessionRegistry
-                .GetOrCreateLiveSessionAsync(SandboxSessionRegistry.DefaultWorkspaceId, ct)
+                .GetOrCreateLiveSessionAsync(SandboxSessionRegistry.DefaultWorkspaceId, linkedCts.Token)
                 .ConfigureAwait(false);
 
             var headers = new Dictionary<string, string> { ["X-Session-ID"] = session.SessionId };
@@ -122,11 +139,14 @@ public sealed class SandboxToolCatalogProbe(
                 {
                     Name = "sandbox",
                     Endpoint = new Uri($"{gatewayLifetime.GatewayBaseUrl}/mcp"),
+                    ConnectionTimeout = ProbeTimeout,
                     AdditionalHeaders = headers,
                 }
             );
 
-            client = await McpClient.CreateAsync(transport).ConfigureAwait(false);
+            client = await McpClient
+                .CreateAsync(transport, cancellationToken: linkedCts.Token)
+                .ConfigureAwait(false);
 
             // Reuse the registry's own MCP->contract projection rather than reading the raw tool list,
             // so the names and descriptions the editor shows are exactly the ones the agent would get.
@@ -135,7 +155,8 @@ public sealed class SandboxToolCatalogProbe(
                 .AddMcpClientsAsync(
                     new Dictionary<string, McpClient> { ["sandbox"] = client },
                     "sandbox",
-                    omitServerPrefix: true)
+                    omitServerPrefix: true,
+                    cancellationToken: linkedCts.Token)
                 .ConfigureAwait(false);
 
             var (contracts, _) = scratch.Build();
@@ -151,12 +172,22 @@ public sealed class SandboxToolCatalogProbe(
 
             return new SandboxToolCatalog(tools, IsLive: true, Warning: null);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        // Branch on the CALLER's token, not on the exception type. The session registry wraps a
+        // cancelled HTTP call in its own exception, so a type test here would read an abandoned
+        // request as a broken gateway and answer it with a degraded catalog nobody asked for.
+        catch (Exception) when (ct.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(ct);
+        }
+        // Everything else is a probe failure - including this probe's OWN budget expiring, which is
+        // the whole reason the fallback has to be reachable without an exception from the gateway.
+        catch (Exception ex)
         {
             _logger.LogWarning(
                 ex,
-                "Could not list sandbox tools from the gateway; the Modes editor falls back to the "
-                    + "static baseline and says so"
+                "Could not list sandbox tools from the gateway within {Timeout}; the Modes editor "
+                    + "falls back to the static baseline and says so",
+                ProbeTimeout
             );
 
             var baseline = StaticBaseline

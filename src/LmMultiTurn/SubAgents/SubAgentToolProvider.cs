@@ -94,6 +94,7 @@ public class SubAgentToolProvider : IFunctionProvider
 
     private readonly SubAgentManager _manager;
     private readonly MutableSubAgentTemplateSource _source;
+    private readonly IReadOnlySet<string>? _exposedToolNames;
 
     /// <summary>
     /// Number of open <see cref="SuppressSpawning"/> scopes. Non-zero hides the spawn tool
@@ -103,14 +104,22 @@ public class SubAgentToolProvider : IFunctionProvider
     /// </summary>
     private int _spawnSuppressionDepth;
 
+    /// <param name="manager">The manager whose sub-agents these tools drive.</param>
+    /// <param name="source">The mutable template source backing the spawn tool's catalog.</param>
+    /// <param name="exposedToolNames">
+    /// An allow-list of tool names to expose, or null for the whole surface. Applied on top of the
+    /// collaboration shape chosen by <paramref name="manager"/>, so it can only ever remove.
+    /// </param>
     public SubAgentToolProvider(
         SubAgentManager manager,
-        MutableSubAgentTemplateSource source)
+        MutableSubAgentTemplateSource source,
+        IReadOnlySet<string>? exposedToolNames = null)
     {
         ArgumentNullException.ThrowIfNull(manager);
         ArgumentNullException.ThrowIfNull(source);
         _manager = manager;
         _source = source;
+        _exposedToolNames = exposedToolNames;
     }
 
     public string ProviderName => "SubAgentTools";
@@ -132,6 +141,17 @@ public class SubAgentToolProvider : IFunctionProvider
     public IDisposable SuppressSpawning() => new SpawnSuppressionScope(this);
 
     public IEnumerable<FunctionDescriptor> GetFunctions()
+    {
+        var shape = EmitShape();
+        return _exposedToolNames is null
+            ? shape
+            : shape.Where(d => _exposedToolNames.Contains(d.Contract.Name));
+    }
+
+    /// <summary>
+    /// The tools this provider's collaboration shape emits, before any allow-list narrowing.
+    /// </summary>
+    private IEnumerable<FunctionDescriptor> EmitShape()
     {
         var collaboration = _manager.Collaboration;
         if (collaboration is null)

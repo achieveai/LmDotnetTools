@@ -268,6 +268,51 @@ describe('selectionToModeFields', () => {
     expect(fields.enabledCapabilityTools).toEqual(['sandbox:*']);
   });
 
+  it('round-trips a stored capability id the catalog could not display', () => {
+    // Found in review: the sandbox listing is probed LIVE, so a failed probe still serves the
+    // baseline plus a wildcard row while omitting plugin-provided tools. The group is therefore
+    // non-empty and the group-level preservation never fires, so a stored sandbox:MathEval was read
+    // as unticked and written away - narrowing a hand-curated mode because discovery was degraded.
+    const degraded = catalog.filter((t) => t.id !== 'sandbox:Bash');
+    const current = mode({ enabledCapabilityTools: ['sandbox:Read', 'sandbox:MathEval'] });
+
+    const fields = selectionToModeFields(['sandbox:Read'], degraded, current);
+
+    expect(fields.enabledCapabilityTools).toContain('sandbox:MathEval');
+    expect(fields.enabledCapabilityTools).toContain('sandbox:Read');
+  });
+
+  it('still drops a displayed row the user actually unticked', () => {
+    // Non-vacuity for the preservation above: it must not resurrect a real deselection.
+    const current = mode({ enabledCapabilityTools: ['sandbox:Read', 'sandbox:Bash'] });
+
+    const fields = selectionToModeFields(['sandbox:Read'], catalog, current);
+
+    expect(fields.enabledCapabilityTools).toEqual(['sandbox:Read']);
+  });
+
+  it('does not preserve an unrenderable id once its group wildcard is selected', () => {
+    // sandbox:* already covers it, and keeping both would re-introduce the redundancy the
+    // wildcard exists to avoid.
+    const degraded = catalog.filter((t) => t.id !== 'sandbox:Bash');
+    const current = mode({ enabledCapabilityTools: ['sandbox:MathEval'] });
+
+    const fields = selectionToModeFields(['sandbox:*'], degraded, current);
+
+    expect(fields.enabledCapabilityTools).toEqual(['sandbox:*']);
+  });
+
+  it('ignores a stored id that is not a qualified capability id', () => {
+    // Defensive: a bare name in enabledCapabilityTools belongs to enabledTools and must not be
+    // carried into the capability list by the preservation path.
+    const current = mode({ enabledCapabilityTools: ['calculate', 'sandbox:MathEval'] });
+
+    const fields = selectionToModeFields(['sandbox:Read'], catalog, current);
+
+    expect(fields.enabledCapabilityTools).not.toContain('calculate');
+    expect(fields.enabledCapabilityTools).toContain('sandbox:MathEval');
+  });
+
   it('round-trips a legacy mode into the surface it already had', () => {
     // The regression that matters for existing modes: opening one and saving it unchanged must not
     // change what it does.

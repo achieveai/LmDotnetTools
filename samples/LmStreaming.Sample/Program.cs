@@ -1350,7 +1350,14 @@ try
                     var workflowRuntime = WorkflowRuntime.CreateNew(
                         logger: loggerFactory.CreateLogger<WorkflowRuntime>()
                     );
-                    _ = filteredRegistry.AddProvider(new WorkflowToolProvider(workflowRuntime));
+                    // Narrowed to the names the mode selected, so the editor's per-tool checkboxes
+                    // mean what they say; null allow-list (workflow:*) passes the family through.
+                    _ = filteredRegistry.AddProvider(
+                        AllowListedFunctionProvider.Wrap(
+                            new WorkflowToolProvider(workflowRuntime),
+                            caps.WorkflowToolAllowList
+                        )
+                    );
                 }
 
                 if (caps.NeedsSandbox)
@@ -1576,6 +1583,15 @@ try
                     if (subAgentOptions is not null)
                     {
                         subAgentOptions = outputTokenPolicy.ApplyDelegated(subAgentOptions);
+                    }
+
+                    // Narrow the delegation surface to the names the mode actually selected. Null
+                    // (subagents:* or a legacy mode) leaves the whole shape intact. Applied here,
+                    // before the workflow/transcript blocks below add their own `with` clauses, so it
+                    // cannot be lost to a later record copy.
+                    if (subAgentOptions is not null && caps.SubAgentToolAllowList is { } subAgentAllowList)
+                    {
+                        subAgentOptions = subAgentOptions with { ExposedToolNames = subAgentAllowList };
                     }
 
                     // Route a spawn's modelIntelligence tier (the Agent tool's argument, or a workflow task's
@@ -1864,17 +1880,24 @@ subAgentFactory,
 
                         );
 
-                        _ = filteredRegistry.AddProvider(new StartWorkflowToolProvider(
-                            workflowManager,
-                            validatePreferredProvider: p =>
-                                !providerRegistry.IsKnown(p) ? $"Unknown provider '{p}'."
-                                : !providerRegistry.IsAvailable(p) ? $"Provider '{p}' is not available."
-                                : null,
-                            // Admits the run's controller as a hierarchy node under the LAUNCHING agent.
-                            // Passed as a thunk (not a value) purely for symmetry with the other late-bound
-                            // launch inputs above; the handle itself is already built.
-                            callerCollaboration: () => rootCollaboration
-                        ));
+                        // Narrowed to the names the mode selected, so a mode that asks for
+                        // StartWorkflowAgent alone does not also receive the three status tools.
+                        _ = filteredRegistry.AddProvider(
+                            AllowListedFunctionProvider.Wrap(
+                                new StartWorkflowToolProvider(
+                                    workflowManager,
+                                    validatePreferredProvider: p =>
+                                        !providerRegistry.IsKnown(p) ? $"Unknown provider '{p}'."
+                                        : !providerRegistry.IsAvailable(p) ? $"Provider '{p}' is not available."
+                                        : null,
+                                    // Admits the run's controller as a hierarchy node under the LAUNCHING
+                                    // agent. Passed as a thunk (not a value) purely for symmetry with the
+                                    // other late-bound launch inputs above; the handle is already built.
+                                    callerCollaboration: () => rootCollaboration
+                                ),
+                                caps.WorkflowToolAllowList
+                            )
+                        );
                         ownedResources.Add(workflowManager);
 
                         // Publish this conversation's WorkflowManager so /subagents + the sub-agent WebSocket

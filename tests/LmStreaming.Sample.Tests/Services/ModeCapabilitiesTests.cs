@@ -167,4 +167,140 @@ public class ModeCapabilitiesTests
         caps.NeedsSandbox.Should().BeFalse();
         caps.SubAgents.Should().BeFalse();
     }
+
+    [Fact]
+    public void NamedWorkflowTool_NarrowsTheGrantToThatName()
+    {
+        // The editor lists the seven authoring tools separately, so picking one must grant one.
+        // Before this, any single pick turned on the whole WorkflowToolProvider family.
+        var caps = ModeCapabilities.Resolve([$"{ToolGroups.Workflow}:{WorkflowToolProvider.AddNodeToolName}"]);
+
+        caps.WorkflowAuthoringTools.Should().BeTrue();
+        caps.WorkflowToolAllowList.Should().BeEquivalentTo([WorkflowToolProvider.AddNodeToolName]);
+    }
+
+    [Fact]
+    public void WorkflowWildcard_LeavesTheAllowListNullSoLaterToolsFlowThrough()
+    {
+        var caps = ModeCapabilities.Resolve([ToolGroups.Wildcard(ToolGroups.Workflow)]);
+
+        caps.WorkflowAuthoringTools.Should().BeTrue();
+        caps.StartWorkflowTools.Should().BeTrue();
+        caps.WorkflowToolAllowList.Should().BeNull();
+    }
+
+    [Fact]
+    public void NoWorkflowSelection_LeavesTheAllowListNullRatherThanEmpty()
+    {
+        // An empty set would read as "register the provider and expose nothing"; null says the
+        // provider is never built at all, which is what the two booleans already encode.
+        var caps = ModeCapabilities.Resolve([ToolGroups.Wildcard(ToolGroups.Sandbox)]);
+
+        caps.WorkflowAuthoringTools.Should().BeFalse();
+        caps.StartWorkflowTools.Should().BeFalse();
+        caps.WorkflowToolAllowList.Should().BeNull();
+    }
+
+    [Fact]
+    public void MixedWorkflowFamilies_ShareOneAllowListAcrossBothProviders()
+    {
+        // Authoring and launch tools live in one group namespace, so one allow-list narrows both.
+        var caps = ModeCapabilities.Resolve(
+            [
+                $"{ToolGroups.Workflow}:{WorkflowToolProvider.AddNodeToolName}",
+                $"{ToolGroups.Workflow}:{StartWorkflowToolProvider.StartWorkflowToolName}",
+            ]
+        );
+
+        caps.WorkflowAuthoringTools.Should().BeTrue();
+        caps.StartWorkflowTools.Should().BeTrue();
+        caps.WorkflowToolAllowList
+            .Should()
+            .BeEquivalentTo(
+                [WorkflowToolProvider.AddNodeToolName, StartWorkflowToolProvider.StartWorkflowToolName]
+            );
+    }
+
+    [Fact]
+    public void NamedSubAgentTool_NarrowsTheGrantToThatName()
+    {
+        var caps = ModeCapabilities.Resolve([$"{ToolGroups.SubAgents}:{SubAgentToolProvider.SpawnToolName}"]);
+
+        caps.SubAgents.Should().BeTrue();
+        caps.SubAgentToolAllowList.Should().BeEquivalentTo([SubAgentToolProvider.SpawnToolName]);
+    }
+
+    [Fact]
+    public void SubAgentWildcard_LeavesTheAllowListNull()
+    {
+        var caps = ModeCapabilities.Resolve([ToolGroups.Wildcard(ToolGroups.SubAgents)]);
+
+        caps.SubAgents.Should().BeTrue();
+        caps.SubAgentToolAllowList.Should().BeNull();
+    }
+
+    [Fact]
+    public void LegacyMode_KeepsAnUnnarrowedSubAgentSurface()
+    {
+        // The regression that would hurt most: every mode predating capability selection resolves
+        // here, and a non-null allow-list would silently shrink what it has always had.
+        var caps = ModeCapabilities.Resolve((IReadOnlyList<string>?)null);
+
+        caps.SubAgents.Should().BeTrue();
+        caps.SubAgentToolAllowList.Should().BeNull();
+        caps.WorkflowToolAllowList.Should().BeNull();
+    }
+
+    [Fact]
+    public void EqualSelections_AreEqualCapabilities_EvenThoughTheirSetsAreDistinctInstances()
+    {
+        // The record's synthesized equality compares the allow-list sets BY REFERENCE, so two
+        // resolutions of the same selection read as different capabilities. That breaks the one
+        // question this type exists to answer - "does a copy behave like its original?".
+        IReadOnlyList<string> selection =
+            [
+                $"{ToolGroups.Sandbox}:Read",
+                $"{ToolGroups.SubAgents}:{SubAgentToolProvider.SpawnToolName}",
+                $"{ToolGroups.Workflow}:{WorkflowToolProvider.AddNodeToolName}",
+            ];
+
+        var left = ModeCapabilities.Resolve(selection);
+        var right = ModeCapabilities.Resolve(selection);
+
+        left.SandboxToolAllowList.Should().NotBeSameAs(right.SandboxToolAllowList);
+        left.Should().Be(right);
+        left.GetHashCode().Should().Be(right.GetHashCode());
+    }
+
+    [Fact]
+    public void SelectionOrder_DoesNotChangeEquality()
+    {
+        var forward = ModeCapabilities.Resolve([$"{ToolGroups.Sandbox}:Read", $"{ToolGroups.Sandbox}:Grep"]);
+        var reversed = ModeCapabilities.Resolve([$"{ToolGroups.Sandbox}:Grep", $"{ToolGroups.Sandbox}:Read"]);
+
+        forward.Should().Be(reversed);
+        forward.GetHashCode().Should().Be(reversed.GetHashCode());
+    }
+
+    [Fact]
+    public void DifferentAllowLists_AreNotEqual()
+    {
+        // Non-vacuity: an Equals that ignored the sets entirely would pass both tests above.
+        var read = ModeCapabilities.Resolve([$"{ToolGroups.Sandbox}:Read"]);
+        var write = ModeCapabilities.Resolve([$"{ToolGroups.Sandbox}:Write"]);
+
+        read.Should().NotBe(write);
+    }
+
+    [Fact]
+    public void WildcardAndNamedSelection_AreNotEqual()
+    {
+        // null (everything, including tools added later) must never compare equal to an explicit
+        // list that happens to name today's tools.
+        var wildcard = ModeCapabilities.Resolve([ToolGroups.Wildcard(ToolGroups.Sandbox)]);
+        var named = ModeCapabilities.Resolve([$"{ToolGroups.Sandbox}:Read"]);
+
+        wildcard.SandboxToolAllowList.Should().BeNull();
+        wildcard.Should().NotBe(named);
+    }
 }
