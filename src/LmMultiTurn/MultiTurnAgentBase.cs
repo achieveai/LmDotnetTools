@@ -202,8 +202,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// question to its parent, a sub-agent completion notification, a peer's collaboration message).
     /// A derived loop's internal raw enqueues bypass both mint sites and this observer: the loop wake
     /// sentinel (inert — empty payload, no run content, nothing to record) and the trigger notify (a
-    /// real turn, and so genuinely unobserved, but unreachable in production — it is gated behind
-    /// trigger options only test mode supplies, and #161 tracks enabling it).
+    /// real turn, and so genuinely unobserved, but unreachable in this repository's host — it is
+    /// gated behind trigger options that only test mode supplies here, and #161 tracks enabling it. A
+    /// host outside this repository that enables triggers DOES reach it, and its notify turns are not
+    /// covered by this observer).
     /// </para>
     /// <para>
     /// A throwing observer FAILS THE SEND. It is reported to after the durable accepted-input write
@@ -1092,7 +1094,14 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         // TrySendAsync happens first: reporting afterwards leaves a window in which the input is
         // already in the channel and no host knows it — the hole this closes, only narrower. A
         // throwing observer therefore fails the send with nothing queued (see the property's remarks).
-        InputAcceptanceObserver?.OnInputAccepted(ThreadId, receiptId, this);
+        if (InputAcceptanceObserver?.OnInputAccepted(ThreadId, receiptId, this) == false)
+        {
+            // The observer holds a different agent for this conversation, so it will never see this
+            // turn. Enqueuing anyway is the silent loss the refusal exists to prevent: the input would
+            // sit in a channel belonging to an agent already being replaced. Nothing was queued and
+            // (unlike TrySendAsync) nothing durable was written, so there is nothing to roll back.
+            throw new InputAcceptanceRefusedException(ThreadId, receiptId);
+        }
 
         var queued = new QueuedInput(input, receiptId, queuedAt);
 
@@ -1106,7 +1115,29 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
 
             async Task<SendReceipt> WriteWithBackpressureAsync()
             {
-                await _inputChannel.Writer.WriteAsync(queued, ct);
+                try
+                {
+                    await _inputChannel.Writer.WriteAsync(queued, ct);
+                }
+                catch
+                {
+                    // The mirror of TrySendAsync's refused-enqueue rollback, for the exit this path
+                    // has and that one does not. A full channel does not refuse here, it parks — and
+                    // that await can still fail (a cancelled token, or a channel completed by
+                    // disposal underneath the waiter). The accept was announced before the TryWrite,
+                    // so leaving the report standing here leaves an id nothing can ever retire: no
+                    // run will name an input the agent never received, and the conversation reads
+                    // busy until the host's grace expires.
+                    //
+                    // Unlike TrySendAsync there is no durable accepted-input write on this path
+                    // (SendAsync does not touch RunLedgerStore), so this withdrawal IS the whole
+                    // rollback rather than half of it. A throwing observer surfaces here in place of
+                    // the write failure; both are failures of the same send with nothing queued, so
+                    // what the caller must do about it is the same.
+                    InputAcceptanceObserver?.OnInputAcceptanceRescinded(ThreadId, receiptId, this);
+                    throw;
+                }
+
                 return new SendReceipt(receiptId, inputId, queuedAt, SpawningSuppressed: suppressed);
             }
         }
@@ -1178,7 +1209,21 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         // input was never accepted by anyone, so there is nothing to announce and nothing to
         // withdraw. Before, because an in-memory host that learns of the accept only once the input
         // is already queued has the same hole this closes.
-        InputAcceptanceObserver?.OnInputAccepted(ThreadId, receiptId, this);
+        if (InputAcceptanceObserver?.OnInputAccepted(ThreadId, receiptId, this) == false)
+        {
+            // Same refusal as SendAsync's, with the durable half rolled back first: the record was
+            // written before the report, and a caller polling by inputId must not find an acceptance
+            // for a turn that was never queued and never will be.
+            if (RunLedgerStore != null)
+            {
+                await RunLedgerStore.RemoveAcceptedInputAsync(ThreadId, receiptId, ct);
+            }
+
+            // Thrown rather than returned as null. Null on this method means "the channel is full,
+            // try this agent again"; a refusal means the opposite — this agent is finished, and the
+            // retry has to be resolved to the conversation's current one.
+            throw new InputAcceptanceRefusedException(ThreadId, receiptId);
+        }
 
         var queued = new QueuedInput(input, receiptId, queuedAt);
 

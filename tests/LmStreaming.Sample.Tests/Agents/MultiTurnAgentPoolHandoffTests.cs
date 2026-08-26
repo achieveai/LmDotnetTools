@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using LmStreaming.Sample.Tests.TestDoubles;
 using Microsoft.Extensions.Time.Testing;
@@ -61,7 +62,7 @@ public class MultiTurnAgentPoolHandoffTests
         agent.CurrentRunId = null;
         agent.IsRunning = false;
 
-        pool.AddOutstandingInput("thread-queued", "input-1", agent);
+        ReportAccept(pool, "thread-queued", "input-1", agent);
 
         pool.TryGetHandoffState("thread-queued", out var state).Should().BeTrue();
         state.IsBusy.Should().BeTrue("an accepted input the agent has not started is still work in hand");
@@ -83,7 +84,7 @@ public class MultiTurnAgentPoolHandoffTests
         var agent = CreateOwnedAgent(pool, "thread-behind", Alice);
         agent.StartRun("run_1", "input-0");
 
-        pool.AddOutstandingInput("thread-behind", "input-1", agent);
+        ReportAccept(pool, "thread-behind", "input-1", agent);
 
         agent.CompleteRun();
         agent.IsRunning = false;
@@ -111,7 +112,7 @@ public class MultiTurnAgentPoolHandoffTests
         agent.CurrentRunId = null;
         agent.IsRunning = false;
 
-        pool.AddOutstandingInput("thread-drained", "input-1", agent);
+        ReportAccept(pool, "thread-drained", "input-1", agent);
         pool.TryGetHandoffState("thread-drained", out var queued).Should().BeTrue();
         queued.IsBusy.Should().BeTrue("nothing has picked the input up yet");
 
@@ -150,8 +151,8 @@ public class MultiTurnAgentPoolHandoffTests
         agent.CurrentRunId = null;
         agent.IsRunning = false;
 
-        pool.AddOutstandingInput("thread-two", "input-1", agent);
-        pool.AddOutstandingInput("thread-two", "input-2", agent);
+        ReportAccept(pool, "thread-two", "input-1", agent);
+        ReportAccept(pool, "thread-two", "input-2", agent);
 
         agent.StartRun("run_1", "input-1");
         agent.CompleteRun();
@@ -183,7 +184,7 @@ public class MultiTurnAgentPoolHandoffTests
         agent.CurrentRunId = null;
         agent.IsRunning = false;
 
-        pool.AddOutstandingInput("thread-wedged", "input-1", agent);
+        ReportAccept(pool, "thread-wedged", "input-1", agent);
 
         // First look starts the idle clock; still busy.
         pool.TryGetHandoffState("thread-wedged", out var first).Should().BeTrue();
@@ -214,7 +215,7 @@ public class MultiTurnAgentPoolHandoffTests
         agent.CurrentRunId = "run_1";
         agent.IsRunning = false;
 
-        pool.AddOutstandingInput("thread-resumed", "input-1", agent);
+        ReportAccept(pool, "thread-resumed", "input-1", agent);
 
         // Observed idle: the grace clock starts here.
         pool.TryGetHandoffState("thread-resumed", out var whileIdle).Should().BeTrue();
@@ -256,14 +257,14 @@ public class MultiTurnAgentPoolHandoffTests
         second.Should().NotBeSameAs(first);
 
         // The late write, carrying the agent that took the input.
-        pool.AddOutstandingInput("thread-swapped", "input-1", first);
+        ReportAccept(pool, "thread-swapped", "input-1", first);
 
         pool.TryGetHandoffState("thread-swapped", out var state).Should().BeTrue();
         state.IsBusy.Should().BeFalse("the pooled agent never accepted that input");
 
         // Non-vacuity: the same call against the agent that IS pooled does mark it, so what the
         // assertion above caught is the reference check and not a ledger that stopped working.
-        pool.AddOutstandingInput("thread-swapped", "input-2", second);
+        ReportAccept(pool, "thread-swapped", "input-2", second);
         pool.TryGetHandoffState("thread-swapped", out var marked).Should().BeTrue();
         marked.IsBusy.Should().BeTrue();
     }
@@ -285,7 +286,7 @@ public class MultiTurnAgentPoolHandoffTests
         original.CurrentRunId = null;
         original.IsRunning = false;
 
-        pool.AddOutstandingInput("thread-switch", "input-1", original);
+        ReportAccept(pool, "thread-switch", "input-1", original);
         pool.TryGetHandoffState("thread-switch", out var queued).Should().BeTrue();
         queued.IsBusy.Should().BeTrue("the precondition: there really is a turn in hand to lose");
 
@@ -494,36 +495,94 @@ public class MultiTurnAgentPoolHandoffTests
     }
 
     [Fact]
-    public async Task APooledAgentThatReportsNothing_IsStillHeldByTheHostsOwnLedgerCall()
+    public async Task APooledAgentThatCannotReportItsOwnAccepts_IsRefusedByThePool()
     {
-        // Why the transports' explicit AddOutstandingInput calls are NOT redundant with the reporting
-        // above, and the one case that tells the two mechanisms apart. Reporting is a capability an
-        // agent has (IAcceptanceReportingAgent), not an obligation of IMultiTurnAgent - so a pooled
-        // agent that does not implement it reports nothing at all, and the host's own record of what
-        // it handed over is then the only ledger there is.
+        // The decision #442 required before the four synchronous host AddOutstandingInput calls could
+        // go, and the flipped form of the test that used to prove those calls were load-bearing.
         //
-        // Without this the two mechanisms would be two sources for one fact, and removing either
-        // would leave every test still passing.
-        await using var pool = CreatePool();
-        var agent = CreateOwnedAgent(pool, "thread-silent", Alice);
-        agent.CurrentRunId = null;
-        agent.IsRunning = false;
+        // Reporting is declared as a CAPABILITY (IAcceptanceReportingAgent), not an obligation of
+        // IMultiTurnAgent, so a pooled agent that does not declare it announces nothing. While the
+        // host sites existed, such an agent was covered on the four transport paths and uncovered on
+        // the three that live in LmMultiTurn - a ledger with a hole in it exactly the size of a
+        // sub-agent relay. Removing the host sites would have made it uncovered everywhere.
+        //
+        // So the pool refuses to pool it at all. This is the ONLY moment the pool can detect the
+        // condition: nothing calls the pool at accept time any more, so an unreported accept is
+        // invisible by construction and the first symptom is a disposed agent with a turn on it. A
+        // refusal here is a deterministic failure in whatever wires the factory, at the first
+        // conversation, with the offending type named - and the alternative (keep the host calls as a
+        // fallback) was never a fallback at all: it covers four of the seven accept paths.
+        await using var pool = CreatePool(agentFactory: threadId => new SilentPooledAgent(threadId));
 
-        agent.Should().NotBeAssignableTo<IAcceptanceReportingAgent>(
-            "the premise: this agent cannot report its own accepts");
+        var act = () => pool.GetOrCreateAgent(
+            "thread-silent",
+            SystemChatModes.GetById(SystemChatModes.DefaultModeId)!,
+            requestedProviderId: null,
+            requestResponseDumpFileName: null,
+            requestedWorkspaceId: null,
+            callerCredential: null,
+            ownerUserId: Alice);
 
-        // So an accept it takes is invisible to the pool unless the host says so...
-        _ = await agent.SendAsync([new TextMessage { Text = "hello", Role = Role.User }]);
-        pool.TryGetHandoffState("thread-silent", out var unreported).Should().BeTrue();
-        unreported.IsBusy.Should().BeFalse(
-            "a non-reporting agent's accept reaches the pool only through the host");
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage($"*{nameof(IAcceptanceReportingAgent)}*")
+            .WithMessage($"*{nameof(SilentPooledAgent)}*",
+                "the refusal has to name the type that has to change, or it is a puzzle rather than "
+                    + "a diagnosis");
 
-        // ...and the host's own pre-send record is what covers it.
-        pool.AddOutstandingInput("thread-silent", "input-1", agent);
-        pool.TryGetHandoffState("thread-silent", out var recorded).Should().BeTrue();
-        recorded.IsBusy.Should().BeTrue();
-        (await pool.TryReleaseIdleAgentAsync("thread-silent", recorded))
-            .Should().Be(MultiTurnAgentPool.AgentReleaseOutcome.Busy);
+        pool.TryGetHandoffState("thread-silent", out _).Should().BeFalse(
+            "a refused agent must leave no entry behind - a half-registered thread would be worse "
+                + "than the hole this closes");
+    }
+
+    /// <summary>
+    /// An <see cref="IMultiTurnAgent"/> that is deliberately NOT
+    /// <see cref="IAcceptanceReportingAgent"/> — the premise of the refusal above, and the reason it
+    /// cannot derive from <see cref="FakeMultiTurnAgent"/>, which declares the capability so the pool
+    /// will accept it.
+    /// </summary>
+    private sealed class SilentPooledAgent(string threadId) : IMultiTurnAgent
+    {
+        public string? CurrentRunId => null;
+
+        public string ThreadId { get; } = threadId;
+
+        public bool IsRunning => false;
+
+        public ValueTask<SendReceipt> SendAsync(
+            List<IMessage> messages,
+            string? inputId = null,
+            string? parentRunId = null,
+            CancellationToken ct = default) =>
+            ValueTask.FromResult(
+                new SendReceipt(inputId ?? Guid.NewGuid().ToString("N"), inputId, DateTimeOffset.UtcNow));
+
+        public async ValueTask<SendReceipt?> TrySendAsync(
+            List<IMessage> messages,
+            string? inputId = null,
+            string? parentRunId = null,
+            CancellationToken ct = default) =>
+            await SendAsync(messages, inputId, parentRunId, ct);
+
+#pragma warning disable CS1998, IDE0391 // Async iterator without await — an intentionally empty stub.
+        public async IAsyncEnumerable<IMessage> ExecuteRunAsync(
+            UserInput userInput,
+            [EnumeratorCancellation] CancellationToken ct = default)
+        {
+            yield break;
+        }
+
+        public async IAsyncEnumerable<IMessage> SubscribeAsync(
+            [EnumeratorCancellation] CancellationToken ct = default)
+        {
+            yield break;
+        }
+#pragma warning restore CS1998, IDE0391
+
+        public Task RunAsync(CancellationToken ct = default) => Task.Delay(Timeout.InfiniteTimeSpan, ct);
+
+        public Task StopAsync(TimeSpan? timeout = null) => Task.CompletedTask;
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     [Fact]
@@ -555,8 +614,18 @@ public class MultiTurnAgentPoolHandoffTests
         };
         stray.Should().NotBeSameAs(pooled);
 
-        // The stray accepts, and reports - for a thread whose entry is a different agent.
-        _ = await stray.SendAsync([new TextMessage { Text = "late", Role = Role.User }]);
+        // The stray reports - for a thread whose entry is a different agent - and is REFUSED (#442).
+        // Ignoring the mismatch was not enough: the stray's own channel is still open, so the enqueue
+        // after an ignored report succeeded and the turn sat in an agent being torn down, in no
+        // ledger, with its sender holding a receipt. The refusal fails the send instead, so the
+        // caller finds out and a retry resolves to the replacement.
+        var act = () => stray.SendAsync([new TextMessage { Text = "late", Role = Role.User }]).AsTask();
+        var thrown = await act.Should().ThrowAsync<InputAcceptanceRefusedException>();
+        thrown.Which.ThreadId.Should().Be("thread-reported-swap");
+
+        stray.QueuedInputCount.Should().Be(0,
+            "the refused turn must not be sitting in the stray's channel - unqueued is the whole "
+                + "difference between a retryable failure and a silently lost turn");
 
         pool.TryGetHandoffState("thread-reported-swap", out var state).Should().BeTrue();
         state.IsBusy.Should().BeFalse("the pooled agent never accepted that input");
@@ -589,6 +658,24 @@ public class MultiTurnAgentPoolHandoffTests
             requestedWorkspaceId: null,
             callerCredential: callerCredential,
             ownerUserId: ownerUserId);
+
+    /// <summary>
+    /// Puts an accepted id into the pool's ledger the only way anything can since #442: as the
+    /// accepting agent's own report. <c>AddOutstandingInput</c> is private now, because with no host
+    /// caller left it would only be a way to hold an entry busy for an accept no agent made.
+    /// </summary>
+    /// <remarks>
+    /// The stand-in agents here are not <c>MultiTurnAgentBase</c>-derived, so their send stubs do not
+    /// run the product's mint sites; this reports on their behalf, with exactly the arguments
+    /// <c>SendAsync</c> would have passed. Where the REPORTING itself is what is under test, the tests
+    /// use <see cref="PooledReportingAgent"/> and a real send instead.
+    /// </remarks>
+    private static void ReportAccept(
+        MultiTurnAgentPool pool,
+        string threadId,
+        string inputId,
+        IMultiTurnAgent acceptedBy) =>
+        ((IInputAcceptanceObserver)pool).OnInputAccepted(threadId, inputId, acceptedBy);
 
     /// <param name="timeProvider">Drives the accepted-input grace; the system clock when omitted.</param>
     /// <param name="agentFactory">

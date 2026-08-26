@@ -8,7 +8,7 @@ namespace LmStreaming.Sample.Tests.TestDoubles;
 /// the chain above it) enqueued onto the thread. <see cref="ThrowOnSend"/> simulates a thread
 /// whose send fails, to exercise per-thread error isolation.
 /// </summary>
-internal sealed class RecordingMultiTurnAgent : IMultiTurnAgent
+internal sealed class RecordingMultiTurnAgent : IMultiTurnAgent, IAcceptanceReportingAgent
 {
     private readonly List<IMessage> _sent = [];
     private readonly Lock _lock = new();
@@ -25,6 +25,15 @@ internal sealed class RecordingMultiTurnAgent : IMultiTurnAgent
     public bool IsRunning { get; set; } = true;
 
     public bool ThrowOnSend { get; set; }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Since #442 the pool refuses to pool an agent that is not
+    /// <see cref="IAcceptanceReportingAgent"/>, because the accepted-input ledger has no other
+    /// source. This double therefore reports like the product does: from the place the receipt id is
+    /// minted, BEFORE the input is taken.
+    /// </remarks>
+    public IInputAcceptanceObserver? InputAcceptanceObserver { get; set; }
 
     public IReadOnlyList<IMessage> SentMessages
     {
@@ -43,9 +52,21 @@ internal sealed class RecordingMultiTurnAgent : IMultiTurnAgent
         string? parentRunId = null,
         CancellationToken ct = default)
     {
+        // Before the report, standing in for every way a real send fails ahead of minting an
+        // acceptance (a disposed agent, a failed durable accepted-input write): nothing is announced,
+        // so nothing has to be withdrawn.
         if (ThrowOnSend)
         {
             throw new InvalidOperationException("send failed");
+        }
+
+        var receiptId = inputId ?? Guid.NewGuid().ToString("N");
+        if (InputAcceptanceObserver?.OnInputAccepted(ThreadId, receiptId, this) == false)
+        {
+            // Honoured, not ignored: the product refuses the enqueue when the observer says this
+            // agent is no longer the conversation's, and a double that queued anyway would let a
+            // host test pass over the silent loss (#442).
+            throw new InputAcceptanceRefusedException(ThreadId, receiptId);
         }
 
         lock (_lock)
@@ -53,7 +74,6 @@ internal sealed class RecordingMultiTurnAgent : IMultiTurnAgent
             _sent.AddRange(messages);
         }
 
-        var receiptId = inputId ?? Guid.NewGuid().ToString("N");
         return ValueTask.FromResult(new SendReceipt(receiptId, inputId, DateTimeOffset.UtcNow));
     }
 

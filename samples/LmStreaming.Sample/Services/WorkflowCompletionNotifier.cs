@@ -52,19 +52,8 @@ internal static class WorkflowCompletionNotifier
     {
         var inputId = InputIdPrefix + Guid.NewGuid().ToString("N");
 
-        // Recorded BEFORE the send: afterwards would leave the notice sitting in the agent's channel
-        // and absent from the ledger, which is the same hole this closes, only narrower.
-        pool.AddOutstandingInput(threadId, inputId, conversation);
-        try
-        {
-            _ = await conversation.SendAsync([notify], inputId, ct: ct);
-        }
-        catch
-        {
-            // Nothing was queued, so the id must not outlive the attempt - no run will ever name an
-            // input the agent did not receive, and the thread would read busy until the grace expired.
-            pool.RemoveOutstandingInput(threadId, inputId, conversation);
-            throw;
-        }
+        // No ledger call of its own (#442): the agent announces the accept from the place this id
+        // becomes a receipt, and withdraws it there if the send does not take.
+        _ = await conversation.SendAsync([notify], inputId, ct: ct);
     }
 }

@@ -24,7 +24,7 @@ public class ConversationsControllerTests
     /// test can seed ledger/accepted-input state through the same <paramref name="store"/> instance
     /// it hands the controller.
     /// </summary>
-    private static ConversationsController CreateController(
+    internal static ConversationsController CreateController(
         IConversationStore store,
         MultiTurnAgentPool pool,
         IChatModeStore modeStore,
@@ -50,7 +50,7 @@ public class ConversationsControllerTests
 
     /// <summary>Resolves any real system mode id (default mode, math-helper, etc.) — for tests that
     /// need mode resolution to just work without stubbing one specific mode id.</summary>
-    private static IChatModeStore ModeStoreResolvingSystemModes()
+    internal static IChatModeStore ModeStoreResolvingSystemModes()
     {
         var modeStore = new Mock<IChatModeStore>();
         modeStore
@@ -331,7 +331,7 @@ public class ConversationsControllerTests
         Assert.IsType<NotFoundResult>(result);
     }
 
-    private static MultiTurnAgentPool CreatePool()
+    internal static MultiTurnAgentPool CreatePool()
     {
         return new MultiTurnAgentPool(
             (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(threadId)),
@@ -900,9 +900,10 @@ public class ConversationsControllerTests
 
         // #418. The caller now holds a receipt, and the agent has not picked the input up: no run id,
         // not running. A grantee handoff arriving at this instant used to read that as idle and
-        // dispose the entry with this turn on it. The controller has to TELL the pool the input was
-        // accepted, and asking the pool is what proves it did — a fixture that merely returned 202
-        // would look identical.
+        // dispose the entry with this turn on it. Since #442 the accept is announced by the AGENT, so
+        // what this pins is that the controller reaches it through an accept path rather than a raw
+        // enqueue — asking the pool is what proves it, because a fixture that merely returned 202
+        // would look identical on the wire.
         pool.TryGetHandoffState(threadId, out var handoff).Should().BeTrue();
         handoff.IsBusy.Should().BeTrue(
             "an accepted turn the agent has not started is work in hand, and the send is the only "
@@ -1116,6 +1117,49 @@ public class ConversationsControllerTests
         var obj = Assert.IsType<ObjectResult>(result);
         obj.StatusCode.Should().Be(503);
         JsonSerializer.Serialize(obj.Value).Should().Contain("queue_full");
+    }
+
+    [Fact]
+    public async Task SendMessage_Returns503_WhenTheAgentWasReplacedMidSend()
+    {
+        // #442's swap-race residual, from the caller's side. The agent resolved for this request was
+        // replaced while its send was reporting the accept, so the pool refused the accept and nothing
+        // was queued. A bare throw would surface as a 500 - "something broke" - for a request that was
+        // well-formed against a healthy deployment and that succeeds on the very next attempt. It is
+        // answered as a retryable 503 with its own code, so a client can tell it apart from queue_full
+        // (which means "this agent is busy") and retry into a freshly resolved agent.
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var threadId = "thread-send-replaced";
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (FakeMultiTurnAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        agent.RefuseAccepts = true;
+
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty
+                    .SetItem(MultiTurnAgentPool.ModePropertyKey, SystemChatModes.DefaultModeId),
+            });
+
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var result = await controller.SendMessage(
+            threadId,
+            new SendMessageRequest { Text = "hello" },
+            CancellationToken.None);
+
+        var obj = Assert.IsType<ObjectResult>(result);
+        obj.StatusCode.Should().Be(503);
+        var body = JsonSerializer.Serialize(obj.Value);
+        body.Should().Contain("agent_replaced");
+        body.Should().NotContain("queue_full",
+            "the two 503s mean opposite things about whether retrying THIS agent can ever work");
+
+        agent.SendCount.Should().Be(0, "a refused accept never reached the enqueue");
     }
 
     [Fact]

@@ -329,7 +329,6 @@ public sealed class ChatWebSocketManager
     /// <param name="webSocket">The WebSocket connection.</param>
     /// <param name="parentThreadId">Thread id of the parent agent that owns the sub-agent.</param>
     /// <param name="agentId">Id (or caller-supplied name) of the focused child sub-agent.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
     /// <param name="mayReplayPersistedTranscript">
     /// Whether the persisted-transcript fallback below is available to this caller (#419). False when
     /// the named child's durable parent link names a DIFFERENT conversation than
@@ -337,13 +336,22 @@ public sealed class ChatWebSocketManager
     /// that child, and without this the authorized parent id would be a passphrase for any child in
     /// the deployment. The refusal is deliberately indistinguishable from "no such agent" - see
     /// <see cref="LmStreaming.Sample.Identity.SubAgentSocketAdmission"/>.
+    /// <para>
+    /// REQUIRED, and moved ahead of the token so it cannot be forgotten. It defaulted to <c>true</c>,
+    /// which made "replay this child's transcript" the answer a caller got by saying nothing at all -
+    /// so a new call site added without a thought about provenance was, silently, the permissive one.
+    /// A security decision must be stated by whoever decides it; there is no safe default here,
+    /// because <c>false</c> would instead have new call sites quietly withholding replay from
+    /// legitimate callers.
+    /// </para>
     /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
     public async Task HandleSubAgentConnectionAsync(
         System.Net.WebSockets.WebSocket webSocket,
         string parentThreadId,
         string agentId,
-        CancellationToken cancellationToken,
-        bool mayReplayPersistedTranscript = true)
+        bool mayReplayPersistedTranscript,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(webSocket);
 
@@ -1005,27 +1013,13 @@ public sealed class ChatWebSocketManager
             // Send to agent (non-blocking - queues the message)
             var inputId = Guid.NewGuid().ToString();
 
-            // The sibling of the REST send's own call (#418), and recorded BEFORE the send for the
-            // same reason: this path queues turns on exactly the same pooled entry, so a ledger kept
-            // only on the REST path would leave the hole open for every message typed into the UI -
-            // which is most of them. The id is the one being sent, so the run assignment that picks
-            // it up is what retires it.
-            _agentPool.AddOutstandingInput(threadId, inputId, agent);
-            SendReceipt receipt;
-            try
-            {
-                receipt = await agent.SendAsync(
-                    [userMessage],
-                    inputId: inputId,
-                    ct: ct);
-            }
-            catch
-            {
-                // Nothing was queued, so the id must not outlive the attempt - otherwise no run can
-                // ever name it and the thread reads busy until the grace expires.
-                _agentPool.RemoveOutstandingInput(threadId, inputId, agent);
-                throw;
-            }
+            // No pool ledger call here (#442). The agent announces this accept itself from the place
+            // the receipt id is minted, and the pool refuses to pool an agent that cannot - so the id
+            // below reaches the ledger through SendAsync, and a failed send withdraws it there too.
+            var receipt = await agent.SendAsync(
+                [userMessage],
+                inputId: inputId,
+                ct: ct);
 
             _logger.LogDebug(
                 "Message queued for thread {ThreadId}, receipt: {InputId}",
@@ -1073,6 +1067,23 @@ public sealed class ChatWebSocketManager
             _logger.LogInformation(
                 ex,
                 "Message for thread {ThreadId} arrived while its pooled agent was being handed off; closing so the client reconnects",
+                threadId
+            );
+            await SendAgentReleasedAsync(connection, recordWriter: null, ct).ConfigureAwait(false);
+        }
+        catch (InputAcceptanceRefusedException ex)
+        {
+            // The third arrival of the same handoff, one step later than the two above. Those two fire
+            // while the agent is being RESOLVED; this one fires when the resolution succeeded and the
+            // replacement landed while the send was reporting its accept. Nothing was queued.
+            //
+            // Answered with the same frame for the same reason the principal conflict is: one
+            // condition must not grow a third name because it was reached from a third direction. The
+            // client reconnects and gets whatever agent the thread now has, and the message it typed
+            // is the message it retries.
+            _logger.LogInformation(
+                ex,
+                "Message for thread {ThreadId} raced an agent replacement; closing so the client reconnects",
                 threadId
             );
             await SendAgentReleasedAsync(connection, recordWriter: null, ct).ConfigureAwait(false);

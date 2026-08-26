@@ -74,10 +74,14 @@ public sealed class ChatWebSocketManagerPrincipalHandoffTests
     public async Task AMessageAcceptedOverTheSocket_CountsAsWorkInHand_LikeOneAcceptedOverRest()
     {
         // #418's sibling exit. The accepted-input ledger is what stops a grantee handoff from
-        // discarding a turn its sender already holds a receipt for, and a ledger written only by the
-        // REST send has a hole in it exactly the size of this transport - which is the one most
-        // messages actually arrive on. The fake agent never starts a run, so this pins the state the
-        // hole lives in: accepted, not started, no run id, not running.
+        // discarding a turn its sender already holds a receipt for, and this transport - the one most
+        // messages actually arrive on - has to be covered by it. Since #442 the ledger entry comes
+        // from the AGENT's own accept report rather than a call the socket handler makes, so what
+        // this pins is that the socket handler still reaches the agent through an accept path at all:
+        // rerouted onto a raw enqueue it would deliver the message and record nothing, and the
+        // handoff below would once again release the turn. The fake agent never starts a run, so the
+        // state under test is the one the hole lives in: accepted, not started, no run id, not
+        // running.
         const string ThreadId = "handoff-ws-accept";
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await using var pool = CreatePool();

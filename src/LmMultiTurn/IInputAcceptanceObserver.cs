@@ -29,8 +29,9 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn;
 /// the ones that live in this assembly and cannot reach the pool at all. A derived loop's internal
 /// raw enqueues bypass both mint sites and this observer: the loop wake sentinel (inert — empty
 /// payload, no run content, nothing to record) and the trigger notify (a real turn, and so genuinely
-/// unobserved, but unreachable in production — it is gated behind trigger options only test mode
-/// supplies, and #161 tracks enabling it).
+/// unobserved, but unreachable in this repository's host — it is gated behind trigger options that
+/// only test mode supplies here, and #161 tracks enabling it. A host outside this repository that
+/// enables triggers DOES reach it, and its notify turns are not covered by this observer).
 /// </para>
 /// <para>
 /// Implementations must be safe to call from any thread and must not block: both methods run inline
@@ -54,7 +55,33 @@ public interface IInputAcceptanceObserver
     /// compare this against the one it currently holds: the accept and the observer's own bookkeeping
     /// are two steps, and an agent can be replaced between them.
     /// </param>
-    void OnInputAccepted(string threadId, string inputId, IMultiTurnAgent acceptedBy);
+    /// <returns>
+    /// <see langword="true"/> when the accept may proceed. <see langword="false"/> ONLY when the
+    /// observer positively knows <paramref name="acceptedBy"/> is not the agent it holds for
+    /// <paramref name="threadId"/> — in which case the agent MUST NOT enqueue the input and MUST fail
+    /// the send with <see cref="InputAcceptanceRefusedException"/>.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// The refusal exists for one race and closes it completely. Reporting and enqueuing are two
+    /// steps, and an observer that serialises its bookkeeping (a per-conversation lock, say) can have
+    /// this call PARKED while the conversation's agent is replaced underneath it. When the call
+    /// finally runs, the reference check fails and the observer records nothing — but the reporting
+    /// agent's own channel is still open, so the enqueue that follows SUCCEEDS. The turn is then held
+    /// in an agent that is being torn down, tracked by nobody, and the sender is holding a receipt for
+    /// it. Returning <see langword="false"/> converts that silent loss into a failed send the caller
+    /// can retry, which lands on the replacement.
+    /// </para>
+    /// <para>
+    /// "Positively knows" is the whole contract, and the reason this is not simply "did you record
+    /// it". Not knowing is not a refusal: an observer holding NOTHING for the conversation has no
+    /// grounds to contradict the agent and must return <see langword="true"/>, because the alternative
+    /// is refusing every send to an agent the observer does not happen to track — including one it has
+    /// not adopted yet. Only a held entry naming a DIFFERENT agent is evidence, and only that is a
+    /// refusal.
+    /// </para>
+    /// </remarks>
+    bool OnInputAccepted(string threadId, string inputId, IMultiTurnAgent acceptedBy);
 
     /// <summary>
     /// Withdraws an acceptance reported by <see cref="OnInputAccepted"/> whose enqueue did not
@@ -93,4 +120,46 @@ public interface IAcceptanceReportingAgent
     /// and cannot be recovered.
     /// </remarks>
     IInputAcceptanceObserver? InputAcceptanceObserver { get; set; }
+}
+
+/// <summary>
+/// Thrown by a send whose <see cref="IInputAcceptanceObserver"/> refused the accept because the
+/// agent taking the input is no longer the one the observer holds for the conversation.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>This is retryable, and that is the point.</b> Nothing was enqueued and nothing was recorded —
+/// the conversation simply has a different agent now (a mode or provider switch, or a handoff, landed
+/// while this send was reporting). A caller that retries reaches the replacement. Distinguished from
+/// every other send failure precisely so a host can say that: the alternative shapes available were a
+/// generic throw, which a host maps to "something broke", and silently dropping the turn into a
+/// channel nobody is watching, which is the defect this exists to prevent.
+/// </para>
+/// <para>
+/// It is never thrown because the observer knows nothing about the conversation — see
+/// <see cref="IInputAcceptanceObserver.OnInputAccepted"/> for why not knowing is not a refusal.
+/// </para>
+/// </remarks>
+public sealed class InputAcceptanceRefusedException : InvalidOperationException
+{
+    /// <summary>Creates the exception for a refused accept.</summary>
+    /// <param name="threadId">The conversation the input was sent to.</param>
+    /// <param name="receiptId">The receipt id minted for the input that was refused.</param>
+    public InputAcceptanceRefusedException(string threadId, string receiptId)
+        : base(
+            $"The input '{receiptId}' for thread '{threadId}' was refused: this agent is no longer the "
+                + "one the conversation holds, so the turn would be queued in an agent that is being "
+                + "torn down and tracked by nobody. Nothing was queued; retry the send to reach the "
+                + "conversation's current agent."
+        )
+    {
+        ThreadId = threadId;
+        ReceiptId = receiptId;
+    }
+
+    /// <summary>The conversation the refused input was sent to.</summary>
+    public string ThreadId { get; }
+
+    /// <summary>The receipt id minted for the refused input. No run will ever name it.</summary>
+    public string ReceiptId { get; }
 }

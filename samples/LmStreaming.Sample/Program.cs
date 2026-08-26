@@ -2149,11 +2149,26 @@ subAgentFactory,
                 return;
             }
 
-            // Get threadId from query string (required for agent routing)
-            var threadId =
+            // Get threadId from query string (optional - absent means "start a new conversation").
+            var suppliedThreadId =
                 context.Request.Query["threadId"].FirstOrDefault()
-                ?? context.Request.Query["connectionId"].FirstOrDefault()
-                ?? Guid.NewGuid().ToString();
+                ?? context.Request.Query["connectionId"].FirstOrDefault();
+
+            // Supplied-but-blank is a client error, not an absent id, and is refused here rather than
+            // normalised away. ?threadId=%20 used to reach WebSocketConversationGate.AdmitAsync, whose
+            // ArgumentException surfaced as a 500 - and did so with Identity:Enforce OFF, where the gate
+            // is otherwise a no-op, so a deployment with authorization disabled still had a route that
+            // could be made to fault. Minting a GUID for it instead would be worse than the 500: the
+            // caller's turns would land in a conversation whose id they never learn. /ws/subagent
+            // already answers its own blank ids this way, and one prefix should not have two rules.
+            if (suppliedThreadId is not null && string.IsNullOrWhiteSpace(suppliedThreadId))
+            {
+                context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                await context.Response.WriteAsync("threadId must not be blank", cancellationToken);
+                return;
+            }
+
+            var threadId = suppliedThreadId ?? Guid.NewGuid().ToString();
 
             // Per-conversation authorization (#419), BEFORE the handshake is accepted and before any
             // of the work below - the recording writer creates files, and a refused caller must not
@@ -2334,8 +2349,8 @@ subAgentFactory,
                     webSocket,
                     parentThreadId,
                     agentId,
-                    cancellationToken,
-                    admission.MayReplayPersistedTranscript
+                    admission.MayReplayPersistedTranscript,
+                    cancellationToken
                 );
             }
             finally

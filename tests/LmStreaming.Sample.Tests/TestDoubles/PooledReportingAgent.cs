@@ -47,6 +47,13 @@ internal sealed class PooledReportingAgent : MultiTurnAgentBase
     /// <summary>Lets the run loop proceed to drain. Only meaningful with <see cref="DrainInputs"/> set.</summary>
     public void OpenDrainGate() => _drainGate.TrySetResult();
 
+    /// <summary>
+    /// How many inputs are sitting in the channel. Read directly rather than drained, so a test can
+    /// prove an enqueue did NOT happen — the difference between a refused send and a silently
+    /// accepted one is invisible from the receipt alone.
+    /// </summary>
+    public int QueuedInputCount => InputReader.Count;
+
     protected override async Task RunLoopAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)

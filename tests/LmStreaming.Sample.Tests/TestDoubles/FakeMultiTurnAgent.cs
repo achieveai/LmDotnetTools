@@ -7,12 +7,29 @@ namespace LmStreaming.Sample.Tests.TestDoubles;
 /// <c>ISpawnSuppressingAgent</c>, so it also serves as the "host cannot enforce per-turn spawn suppression"
 /// fixture — see <see cref="SpawnSuppressingFakeAgent"/> for the capable counterpart.
 /// </summary>
-internal class FakeMultiTurnAgent : IMultiTurnAgent
+internal class FakeMultiTurnAgent : IMultiTurnAgent, IAcceptanceReportingAgent
 {
     public FakeMultiTurnAgent(string threadId)
     {
         ThreadId = threadId;
     }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// Declared so the pool will pool it: since #442 the pool refuses an agent that is not
+    /// <see cref="IAcceptanceReportingAgent"/>, because the accepted-input ledger has no other source.
+    /// The send stubs below report through it in the product's own order — announce, then take the
+    /// input — so a host path exercised against this double populates the ledger the way it will in
+    /// production.
+    /// </para>
+    /// <para>
+    /// Use <see cref="PooledReportingAgent"/> instead whenever the REPORTING is what is under test:
+    /// this class re-implements the accept path, so pinning it would pin the double rather than the
+    /// product.
+    /// </para>
+    /// </remarks>
+    public IInputAcceptanceObserver? InputAcceptanceObserver { get; set; }
 
     public string? CurrentRunId { get; set; }
 
@@ -31,6 +48,21 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent
     /// <summary>When true, <see cref="TrySendAsync"/> throws — simulates a durable accepted-input
     /// write failure (the controller lets this propagate to a 500).</summary>
     public bool ThrowOnTrySend { get; set; }
+
+    /// <summary>
+    /// When true, both send paths throw <see cref="InputAcceptanceRefusedException"/> — the agent was
+    /// replaced while the send was reporting its accept, so the observer refused it and nothing was
+    /// queued (#442).
+    /// </summary>
+    /// <remarks>
+    /// A switch rather than a real desynchronised pool: reproducing the race would mean parking a
+    /// report inside the pool's per-thread lock while a swap runs, which is a window no test can hit
+    /// deterministically. What a host test needs from here is the OUTCOME the race produces, and the
+    /// product's own refusal is pinned where it lives, in
+    /// <c>LmMultiTurn.Tests.InputAcceptanceObserverTests</c> and against the real pool in
+    /// <c>MultiTurnAgentPoolHandoffTests.AReportFromAnAgentTheThreadNoLongerHolds_DoesNotMarkThePooledOne</c>.
+    /// </remarks>
+    public bool RefuseAccepts { get; set; }
 
     /// <summary>How many inputs reached the enqueue path. Lets a test prove a request was refused
     /// BEFORE anything was queued, rather than merely reported as unsuppressed afterwards.</summary>
@@ -58,8 +90,26 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent
         _ = parentRunId;
         _ = ct;
 
+        if (RefuseAccepts)
+        {
+            // Ahead of SendCount, because a refused send never took the input: counting it would let a
+            // test claiming "the turn did not reach the agent" pass against one that did.
+            throw new InputAcceptanceRefusedException(ThreadId, inputId ?? "unknown");
+        }
+
         SendCount++;
         var receiptId = inputId ?? Guid.NewGuid().ToString("N");
+
+        // Announced BEFORE the input is taken, exactly as MultiTurnAgentBase's mint sites do: a host
+        // that learns of the accept only afterwards has the window this ledger exists to close.
+        if (InputAcceptanceObserver?.OnInputAccepted(ThreadId, receiptId, this) == false)
+        {
+            // Honoured, not ignored: the product refuses the enqueue when the observer says this
+            // agent is no longer the conversation's, and a double that queued anyway would let a
+            // host test pass over the silent loss (#442).
+            throw new InputAcceptanceRefusedException(ThreadId, receiptId);
+        }
+
         return ValueTask.FromResult(new SendReceipt(receiptId, inputId, DateTimeOffset.UtcNow));
     }
 
@@ -78,6 +128,8 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent
             await gate.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
         }
 
+        // Ahead of the report, like the real durable write it stands in for: a failure there means
+        // nobody accepted the input, so there is nothing to announce and nothing to withdraw.
         if (ThrowOnTrySend)
         {
             throw new InvalidOperationException("Simulated durable accepted-input write failure.");
@@ -85,6 +137,9 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent
 
         if (RejectAsQueueFull)
         {
+            // The product reports and then rescinds on a full channel. The net effect on the ledger is
+            // the same either way, and modelling the pair here would let a test pass on a rescind that
+            // matched the wrong id.
             return null;
         }
 

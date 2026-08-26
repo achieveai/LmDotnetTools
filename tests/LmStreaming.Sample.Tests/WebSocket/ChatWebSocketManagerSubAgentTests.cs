@@ -48,7 +48,7 @@ public sealed class ChatWebSocketManagerSubAgentTests
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         var handlerTask = manager.HandleSubAgentConnectionAsync(
-          socket, ParentThreadId, agentId, testCts.Token);
+          socket, ParentThreadId, agentId, mayReplayPersistedTranscript: true, testCts.Token);
 
         // The two live child messages must reach the client (via replay of the in-flight run).
         await socket.WaitUntilAsync(
@@ -97,7 +97,7 @@ public sealed class ChatWebSocketManagerSubAgentTests
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         var handlerTask = manager.HandleSubAgentConnectionAsync(
-          socket, ParentThreadId, agentId, testCts.Token);
+          socket, ParentThreadId, agentId, mayReplayPersistedTranscript: true, testCts.Token);
 
         // Non-blocking proof: both frames are read even though the child's first run is still blocked.
         await socket.WaitUntilAsync(() => socket.ReceivedFrameCount >= 2, testCts.Token);
@@ -155,7 +155,7 @@ public sealed class ChatWebSocketManagerSubAgentTests
         socket.EnqueueTextFrame(JsonSerializer.Serialize(new ChatRequest("relayed-two")));
 
         var handlerTask = manager.HandleSubAgentConnectionAsync(
-          socket, ParentThreadId, agentId, testCts.Token);
+          socket, ParentThreadId, agentId, mayReplayPersistedTranscript: true, testCts.Token);
 
         // Both frames are read: the first relay throws (restart recreation fails) but is isolated, so
         // the loop stays alive and reads the second frame instead of faulting the connection.
@@ -179,7 +179,7 @@ public sealed class ChatWebSocketManagerSubAgentTests
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         await manager.HandleSubAgentConnectionAsync(
-          socket, ParentThreadId, "does-not-exist", testCts.Token);
+          socket, ParentThreadId, "does-not-exist", mayReplayPersistedTranscript: true, testCts.Token);
 
         socket.SentFrames.Should().ContainSingle();
         var frame = socket.SentFrames[0];
@@ -217,7 +217,8 @@ public sealed class ChatWebSocketManagerSubAgentTests
         var socket = new FakeWebSocket();
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        var handlerTask = manager.HandleSubAgentConnectionAsync(socket, ParentThreadId, agentId, testCts.Token);
+        var handlerTask = manager.HandleSubAgentConnectionAsync(
+          socket, ParentThreadId, agentId, mayReplayPersistedTranscript: true, testCts.Token);
 
         // The handler settles the client with the done sentinel and does NOT surface an unavailable error.
         await socket.WaitUntilAsync(() => socket.SentContains("\"$type\":\"done\""), testCts.Token);
@@ -259,7 +260,8 @@ public sealed class ChatWebSocketManagerSubAgentTests
         socket.EnqueueTextFragment(bytes[mid..], endOfMessage: true);
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        var handlerTask = manager.HandleSubAgentConnectionAsync(socket, ParentThreadId, agentId, testCts.Token);
+        var handlerTask = manager.HandleSubAgentConnectionAsync(
+          socket, ParentThreadId, agentId, mayReplayPersistedTranscript: true, testCts.Token);
         firstRunGate.SetResult();
         await provider.WaitUntilAsync(() => provider.ReceivedContains("split-message"), TimeSpan.FromSeconds(30));
 
@@ -296,7 +298,8 @@ public sealed class ChatWebSocketManagerSubAgentTests
         socket.EnqueueTextFragment(bytes[split..], endOfMessage: true);
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        var handlerTask = manager.HandleSubAgentConnectionAsync(socket, ParentThreadId, agentId, testCts.Token);
+        var handlerTask = manager.HandleSubAgentConnectionAsync(
+          socket, ParentThreadId, agentId, mayReplayPersistedTranscript: true, testCts.Token);
         firstRunGate.SetResult();
         await provider.WaitUntilAsync(() => provider.ReceivedContains(payload), TimeSpan.FromSeconds(30));
 
@@ -327,7 +330,8 @@ public sealed class ChatWebSocketManagerSubAgentTests
           JsonSerializer.Serialize(new ChatRequest("this-message-is-far-larger-than-the-configured-limit")));
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        var handlerTask = manager.HandleSubAgentConnectionAsync(socket, ParentThreadId, agentId, testCts.Token);
+        var handlerTask = manager.HandleSubAgentConnectionAsync(
+          socket, ParentThreadId, agentId, mayReplayPersistedTranscript: true, testCts.Token);
         await handlerTask;
 
         socket.LastCloseStatus.Should().Be(WebSocketCloseStatus.MessageTooBig);
@@ -353,7 +357,8 @@ public sealed class ChatWebSocketManagerSubAgentTests
         socket.EnqueueBinaryFrame([0x01, 0x02, 0x03, 0x04]);
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        var handlerTask = manager.HandleSubAgentConnectionAsync(socket, ParentThreadId, agentId, testCts.Token);
+        var handlerTask = manager.HandleSubAgentConnectionAsync(
+          socket, ParentThreadId, agentId, mayReplayPersistedTranscript: true, testCts.Token);
         await handlerTask;
 
         socket.LastCloseStatus.Should().Be(WebSocketCloseStatus.InvalidMessageType);
@@ -381,7 +386,8 @@ public sealed class ChatWebSocketManagerSubAgentTests
         socket.EnqueueTextFragment(Encoding.UTF8.GetBytes("{\"message\":\"partial"), endOfMessage: false);
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        var handlerTask = manager.HandleSubAgentConnectionAsync(socket, ParentThreadId, agentId, testCts.Token);
+        var handlerTask = manager.HandleSubAgentConnectionAsync(
+          socket, ParentThreadId, agentId, mayReplayPersistedTranscript: true, testCts.Token);
         await handlerTask;
 
         socket.LastCloseStatus.Should().Be(WebSocketCloseStatus.PolicyViolation);
@@ -409,7 +415,8 @@ public sealed class ChatWebSocketManagerSubAgentTests
         var socket = new FakeWebSocket(); // No frames enqueued: the connection stays idle.
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        var handlerTask = manager.HandleSubAgentConnectionAsync(socket, ParentThreadId, agentId, testCts.Token);
+        var handlerTask = manager.HandleSubAgentConnectionAsync(
+          socket, ParentThreadId, agentId, mayReplayPersistedTranscript: true, testCts.Token);
 
         // Wait well past the assembly deadline; an idle wait must NOT close the socket.
         await Task.Delay(TimeSpan.FromMilliseconds(700), testCts.Token);
@@ -444,7 +451,8 @@ public sealed class ChatWebSocketManagerSubAgentTests
         socket.EnqueueTextFrame(JsonSerializer.Serialize(new ChatRequest(sentinel)));
         using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        var handlerTask = manager.HandleSubAgentConnectionAsync(socket, ParentThreadId, agentId, testCts.Token);
+        var handlerTask = manager.HandleSubAgentConnectionAsync(
+          socket, ParentThreadId, agentId, mayReplayPersistedTranscript: true, testCts.Token);
         firstRunGate.SetResult();
         await provider.WaitUntilAsync(() => provider.ReceivedContains(sentinel), TimeSpan.FromSeconds(30));
 
@@ -491,7 +499,8 @@ public sealed class ChatWebSocketManagerSubAgentTests
         var socket = new FakeWebSocket();
         socket.EnqueueTextFrame(JsonSerializer.Serialize(new ChatRequest("relayed-one")));
 
-        var handlerTask = manager.HandleSubAgentConnectionAsync(socket, ParentThreadId, agentId, testCts.Token);
+        var handlerTask = manager.HandleSubAgentConnectionAsync(
+          socket, ParentThreadId, agentId, mayReplayPersistedTranscript: true, testCts.Token);
 
         // A structured relay_failed error frame must reach the client (not silent) ...
         await socket.WaitUntilAsync(() => socket.SentContains("\"code\":\"relay_failed\""), testCts.Token);

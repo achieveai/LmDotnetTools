@@ -1338,7 +1338,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     internal static readonly TimeSpan AcceptedInputGrace = TimeSpan.FromSeconds(30);
 
     /// <summary>
-    /// Records that an input is being handed to <paramref name="threadId"/>'s agent and has not been
+    /// Records that an input has been accepted by <paramref name="threadId"/>'s agent and has not been
     /// started yet, so a concurrent handoff does not read the entry as idle and discard the turn
     /// (#418).
     /// </summary>
@@ -1349,22 +1349,22 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// <param name="acceptedBy">The agent instance that actually accepted it.</param>
     /// <remarks>
     /// <para>
-    /// Call this immediately BEFORE handing the input to the agent, and call
-    /// <see cref="RemoveOutstandingInput"/> if the hand-over did not take. Recording afterwards
-    /// leaves a window in which the input is already sitting in the agent's channel and not yet in
-    /// this ledger - the same hole this exists to close, only narrower.
+    /// PRIVATE since #442, and reached only through
+    /// <see cref="IInputAcceptanceObserver.OnInputAccepted"/> - the accepting agent's own report. It
+    /// used to be public so a host transport could record ahead of its own send, but the four sites
+    /// that did are gone: they duplicated a fact the agent already reports, and a ledger maintained by
+    /// a list of call sites is a ledger with a hole exactly the size of whatever is missing from that
+    /// list. Three accept paths could never be on it (the two <c>SubAgentManager</c> parent relays and
+    /// the collaboration write endpoint all live in <c>LmMultiTurn</c>, which this assembly depends
+    /// on), which is what #434 was. Left public with no caller it would be a way to hold an entry busy
+    /// for an accept no agent made - an id no run can ever name, and so one only the
+    /// <see cref="AcceptedInputGrace"/> can clear.
     /// </para>
     /// <para>
-    /// FOUR paths call this method explicitly: the REST send, the WebSocket send, the
-    /// context-discovery fan-out, and the workflow completion notifier - the last three send straight
-    /// to a pooled agent rather than through a transport. A ledger maintained on some of them is a
-    /// ledger with a hole in it exactly the size of the rest. A further family - the collaboration
-    /// write endpoint and <c>SubAgentManager</c>'s relays - still cannot call it from where they live:
-    /// they are all in <c>LmMultiTurn</c>, which this assembly depends on, so reaching the pool from
-    /// them would close a circular assembly dependency. They record all the same, via
-    /// <see cref="IInputAcceptanceObserver"/> - the agent reports its own accept and the pool, which
-    /// implements that interface and attaches itself in <see cref="CreateAgentEntry"/>, writes the
-    /// very same entry (#434).
+    /// The report arrives BEFORE the input is enqueued, and is withdrawn (
+    /// <see cref="RemoveOutstandingInput"/>) if the enqueue does not take. Recording afterwards would
+    /// leave a window in which the input is already sitting in the agent's channel and not yet in this
+    /// ledger - the same hole this exists to close, only narrower.
     /// </para>
     /// <para>
     /// The pool has to keep this itself because the fact it needs is not on
@@ -1380,22 +1380,39 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// </para>
     /// <para>
     /// <paramref name="acceptedBy"/> is compared by reference against the pooled agent, and a
-    /// mismatch is a no-op. Without it this marks whatever entry happens to be pooled NOW, which
-    /// after a concurrent refresh or mode swap is a DIFFERENT agent that never saw the input: the
-    /// replacement would be held busy for work it does not have, and the entry that actually holds
-    /// the turn would not be held at all.
+    /// mismatch is REFUSED (<see langword="false"/>), not merely ignored. Recording it would mark
+    /// whatever entry happens to be pooled NOW, which after a concurrent refresh or mode swap is a
+    /// DIFFERENT agent that never saw the input: the replacement would be held busy for work it does
+    /// not have, and the entry that actually holds the turn would not be held at all.
     /// </para>
     /// <para>
-    /// A no-op for a thread with no pooled entry: there is nothing to protect and nothing to
-    /// remember. An entry created later starts with a clean ledger, which is correct - an input
-    /// accepted by an agent that has since been replaced is not work the replacement holds.
+    /// Refusing rather than ignoring is what closes the last hole (#442). This runs under the SAME
+    /// per-thread lock a swap holds, so a report can be parked here while the conversation's agent is
+    /// replaced underneath it. Ignoring the mismatch left the reporting agent free to complete its
+    /// enqueue: the turn landed in an agent already being torn down, was in no ledger, and its sender
+    /// held a receipt for it. The refusal travels back up the send path and fails it instead, so the
+    /// caller learns immediately and a retry reaches the replacement.
+    /// </para>
+    /// <para>
+    /// <see langword="true"/> for a thread with no pooled entry, and NOT a refusal: the pool has no
+    /// grounds to contradict an agent it does not track, and refusing there would break every sender
+    /// of an unpooled agent that happens to report here. An entry created later starts with a clean
+    /// ledger, which is correct - an input accepted by an agent that has since been replaced is not
+    /// work the replacement holds.
     /// </para>
     /// </remarks>
-    public void AddOutstandingInput(string threadId, string inputId, IMultiTurnAgent acceptedBy)
+    /// <returns>
+    /// <see langword="false"/> only when this thread's pooled entry names a different agent, which
+    /// means the accept must not proceed. <see langword="true"/> in every other case, including the
+    /// argument guards and a thread with no entry.
+    /// </returns>
+    private bool AddOutstandingInput(string threadId, string inputId, IMultiTurnAgent acceptedBy)
     {
         if (string.IsNullOrEmpty(threadId) || string.IsNullOrEmpty(inputId) || acceptedBy is null)
         {
-            return;
+            // A malformed report is not evidence about which agent the thread holds, so it cannot be
+            // a refusal. It records nothing and lets the send through, exactly as before.
+            return true;
         }
 
         var lockObj = _creationLocks.GetOrAdd(threadId, static _ => new object());
@@ -1403,22 +1420,23 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         {
             if (!_agents.TryGetValue(threadId, out var entry))
             {
-                return;
+                return true;
             }
 
             if (!ReferenceEquals(entry.Agent, acceptedBy))
             {
-                _logger.LogDebug(
-                    "Ignoring input {InputId} for thread {ThreadId}: the accepting agent is no longer "
-                        + "the pooled one",
+                _logger.LogWarning(
+                    "Refusing input {InputId} for thread {ThreadId}: the accepting agent is no longer "
+                        + "the pooled one, so the turn would be queued in an agent being torn down",
                     inputId,
                     threadId
                 );
-                return;
+                return false;
             }
 
             entry.OutstandingInputIds.Add(inputId);
             entry.IdleSinceUtc = null;
+            return true;
         }
     }
 
@@ -1433,7 +1451,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// of refused handoffs bought for a turn that was never queued. Reference-checked exactly like
     /// the add, so a rollback cannot reach past a replacement and clear work the new entry holds.
     /// </remarks>
-    public void RemoveOutstandingInput(string threadId, string inputId, IMultiTurnAgent acceptedBy)
+    private void RemoveOutstandingInput(string threadId, string inputId, IMultiTurnAgent acceptedBy)
     {
         if (string.IsNullOrEmpty(threadId) || string.IsNullOrEmpty(inputId) || acceptedBy is null)
         {
@@ -1457,15 +1475,17 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
 
     /// <inheritdoc />
     /// <remarks>
-    /// The agent's own report of an accept, which is what makes the ledger complete rather than
-    /// merely well-maintained: it fires for EVERY accept on every path, including the three that
-    /// live in <c>LmMultiTurn</c> and cannot reach this pool at all (see
-    /// <see cref="AddOutstandingInput"/>'s remarks). It records exactly what an explicit
-    /// <see cref="AddOutstandingInput"/> records, into the same ledger, under the same reference
-    /// check — the id is idempotent in the set, so an input reported by BOTH a transport that
-    /// recorded it up front and the agent that then accepted it is one entry, not two.
+    /// The agent's own report of an accept, and since #442 the ledger's ONLY source. It fires for
+    /// every accept taken through the two places <c>MultiTurnAgentBase</c> mints a receipt id -
+    /// <c>SendAsync</c> and <c>TrySendAsync</c> - which is every accept on the public send path,
+    /// including the three that live in <c>LmMultiTurn</c> and cannot reach this pool at all (see
+    /// <see cref="AddOutstandingInput"/>'s remarks). It is NOT every enqueue: a derived loop's
+    /// internal raw enqueues bypass both mint sites and therefore this observer, which
+    /// <c>MultiTurnAgentBase.InputAcceptanceObserver</c>'s remarks itemise. That is what the pool
+    /// refusing a non-<see cref="IAcceptanceReportingAgent"/> agent buys - completeness over the
+    /// accepts an agent can report, not over every way an input can reach a channel.
     /// </remarks>
-    void IInputAcceptanceObserver.OnInputAccepted(string threadId, string inputId, IMultiTurnAgent acceptedBy) =>
+    bool IInputAcceptanceObserver.OnInputAccepted(string threadId, string inputId, IMultiTurnAgent acceptedBy) =>
         AddOutstandingInput(threadId, inputId, acceptedBy);
 
     /// <inheritdoc />
@@ -2080,6 +2100,47 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         return entry;
     }
 
+    /// <summary>
+    /// Tears down an agent the pool refused to register, and anything the factory created alongside
+    /// it. Never throws: the caller is already failing the creation with a diagnosis, and a secondary
+    /// disposal fault must not replace it.
+    /// </summary>
+    private async Task DiscardRefusedAgentAsync(
+        string threadId,
+        IMultiTurnAgent agent,
+        IReadOnlyList<IAsyncDisposable>? ownedResources
+    )
+    {
+        try
+        {
+            await agent.DisposeAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Failed to dispose the refused agent for thread {ThreadId}",
+                threadId
+            );
+        }
+
+        foreach (var resource in ownedResources ?? [])
+        {
+            try
+            {
+                await resource.DisposeAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Failed to dispose a resource owned by the refused agent for thread {ThreadId}",
+                    threadId
+                );
+            }
+        }
+    }
+
     private AgentEntry CreateAgentEntry(
         string threadId,
         AgentProfile mode,
@@ -2112,6 +2173,36 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             )
         );
         var agent = result.Agent;
+
+        // FAIL CLOSED on an agent that cannot report its own accepts (#442). This is the ONLY moment
+        // the pool can detect the condition. Nothing calls the pool at accept time any more — the four
+        // synchronous host AddOutstandingInput sites are gone, because a ledger maintained by a list of
+        // call sites is a ledger with a hole exactly the size of whatever is missing from the list, and
+        // three accept paths (the sub-agent relays and the collaboration write) live in LmMultiTurn and
+        // could never be on it. So an agent that announces nothing is not "less covered", it is
+        // uncovered: its accepted-but-unstarted turns are invisible, the entry reads idle, and the
+        // first symptom is a grantee handoff disposing the agent with the turn still queued (#418).
+        //
+        // Refusing HERE turns that silent, racy loss into a deterministic failure in whatever wired the
+        // factory, on the first conversation, naming the type that has to change.
+        if (agent is not IAcceptanceReportingAgent)
+        {
+            // The factory already built an agent (and possibly a sandbox session) before we could
+            // check. Tear it down rather than leak it — best-effort and off the caller's thread,
+            // because disposal awaits and this method is synchronous by contract (it runs under the
+            // per-thread creation lock).
+            _ = DiscardRefusedAgentAsync(threadId, agent, result.OwnedResources);
+
+            throw new InvalidOperationException(
+                $"The agent factory produced {agent.GetType().Name} for thread '{threadId}', which does "
+                    + $"not implement {nameof(IAcceptanceReportingAgent)}. A pooled agent must report its "
+                    + "own input acceptances: the pool's accepted-input ledger has no other source, and "
+                    + "an unreported accept is released out from under its sender by the next handoff. "
+                    + $"Derive from {nameof(MultiTurnAgentBase)}, or implement "
+                    + $"{nameof(IAcceptanceReportingAgent)} and report from every accept path."
+            );
+        }
+
         var cts = CancellationTokenSource.CreateLinkedTokenSource(_poolCts.Token);
 
         // Start the agent's background run loop
@@ -2174,13 +2265,11 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         // half-built agent would re-enter this lock on its own thread (Monitor is reentrant) and find
         // no entry published yet, so the report would be a no-op rather than a deadlock.
         //
-        // Reporting is a capability, not an obligation: an IMultiTurnAgent that is not
-        // IAcceptanceReportingAgent announces nothing, and for such an agent the host's own
-        // AddOutstandingInput calls remain the only ledger there is.
-        if (agent is IAcceptanceReportingAgent reporting)
-        {
-            reporting.InputAcceptanceObserver = this;
-        }
+        // A direct cast, not a type test: the fail-closed check at the top of this method already
+        // refused anything that is not IAcceptanceReportingAgent, so there is no "attaches to some
+        // agents" case left to express. Reporting used to be a capability the pool tolerated the
+        // absence of; since #442 it is the ledger's only source, so it is a condition of being pooled.
+        ((IAcceptanceReportingAgent)agent).InputAcceptanceObserver = this;
 
         return entry;
     }

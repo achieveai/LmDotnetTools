@@ -99,6 +99,14 @@ public sealed class WebSocketConversationGate
     /// <param name="action">The action the socket confers.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>True when the handshake may proceed; false when a refusal has been written.</returns>
+    /// <remarks>
+    /// The argument guards sit ABOVE the enforcement short-circuit deliberately. They describe a
+    /// mis-wired CALLER, not a refused request, and a condition that is a programming error with
+    /// authorization on does not become acceptable with it off - moving them below would make the same
+    /// input behave differently depending on an unrelated flag. Client-supplied values are therefore
+    /// validated at the route BEFORE they get here (a blank <c>threadId</c> is a 400 on both
+    /// <c>/ws</c> and <c>/ws/subagent</c>), so nothing a caller can type reaches these guards.
+    /// </remarks>
     public async Task<bool> AdmitAsync(
         HttpContext context,
         string threadId,
@@ -230,10 +238,11 @@ public sealed class WebSocketConversationGate
     }
 
     /// <summary>
-    /// Writes the handshake refusal. The 404 body is BYTE-IDENTICAL to
-    /// <c>ConversationsController.UnknownThread</c>'s, deliberately: a client that can tell the socket's
-    /// "not found" from the REST surface's has learned something about which of the two refused, and a
-    /// client that can tell one socket refusal from another has an existence oracle. Do not vary it.
+    /// Writes the handshake refusal. The 404 body comes from <see cref="UnknownThreadRefusal"/>, the
+    /// same factory <c>ConversationsController.UnknownThread</c> uses, so the two surfaces cannot drift
+    /// apart: a client that can tell the socket's "not found" from the REST surface's has learned
+    /// something about which of the two refused, and a client that can tell one socket refusal from
+    /// another has an existence oracle. Build the body there, never here.
     /// </summary>
     /// <remarks>
     /// 403, never 401, for the non-hiding refusals - the same reasoning as
@@ -255,8 +264,8 @@ public sealed class WebSocketConversationGate
                 result.Reason);
 
             status = StatusCodes.Status404NotFound;
-            code = "unknown_thread";
-            body = new { error = $"Conversation '{threadId}' not found.", code };
+            code = UnknownThreadRefusal.Code;
+            body = UnknownThreadRefusal.Body(threadId);
         }
         else
         {

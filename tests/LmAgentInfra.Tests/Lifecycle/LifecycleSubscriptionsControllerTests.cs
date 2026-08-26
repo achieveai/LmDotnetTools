@@ -309,7 +309,12 @@ public sealed class LifecycleSubscriptionsControllerTests
 
         var result = await harness.AsAnonymous().Register(Registration());
 
-        _ = ShouldRespond(result, StatusCodes.Status403Forbidden);
+        var body = ShouldRespond(result, StatusCodes.Status403Forbidden);
+        body.Error.Should().Contain(
+            "not authenticated",
+            "with no scheme wired there is no principal at all, and this is the one case where that "
+                + "is the accurate answer - it is the partner the not-an-app refusal is distinguished "
+                + "FROM");
         harness.Resolver.Asked.Should().BeEmpty("an unauthenticated caller never reaches owner resolution");
         harness.Subscriptions.ForOwner(LifecycleOwnerKey.ForAppId(AppA)).Should().BeEmpty();
     }
@@ -354,6 +359,18 @@ public sealed class LifecycleSubscriptionsControllerTests
 
         var body = ShouldRespond(result, StatusCodes.Status403Forbidden);
         body.SigningSecret.Should().BeNull("a refused caller is never handed signing material");
+
+        // And the refusal has to describe the refusal that happened. This caller AUTHENTICATED; the
+        // reason they are refused is that a person is not an app. Answering "not authenticated" sends
+        // whoever reads it to inspect the one part of the pipeline that is demonstrably working, and
+        // leaves the real cause unnamed - which for a host that populates HttpContext.User itself and
+        // forgot to stamp the app-id claim is the difference between a five-minute fix and a hunt.
+        body.Error.Should().Contain(
+            "does not name an application",
+            "the message must name the reason that actually applied");
+        body.Error.Should().NotContain(
+            "not authenticated",
+            "authentication succeeded, so this is the one thing the refusal must not claim");
         harness.Resolver.Asked.Should().BeEmpty("a human principal never reaches owner resolution");
         harness.Subscriptions.ForOwner(LifecycleOwnerKey.ForAppId("dir-a:alice")).Should().BeEmpty(
             "nothing may be filed under a human's subject id as though it were an app");
