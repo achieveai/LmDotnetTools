@@ -2004,22 +2004,57 @@ public class KnowledgeDigestTests
 
     [Theory]
     [InlineData("- [Alpha](system/alpha.md \"A title\")")]
+    [InlineData("- [Alpha](system/alpha.md 'A title')")]
+    [InlineData("- [Alpha](system/alpha.md (A title))")]
     [InlineData("- [Alpha](<system/alpha.md> \"A title\")")]
-    public void RenderTableOfContents_RefusesAContainedLinkCarryingATitle(string line)
+    [InlineData("- [Alpha](<system/alpha.md> 'A title')")]
+    [InlineData("- [Alpha](<system/alpha.md> (A title))")]
+    [InlineData("- [Alpha](system/alpha.md \"A title with an escaped \\\" quote\")")]
+    public void RenderTableOfContents_AcceptsAContainedLinkCarryingATitle(string line)
     {
-        // A KNOWN LIMITATION pinned deliberately, and the one still open under #258 after this change: a
-        // CommonMark title is valid syntax on a contained link, and both spellings of it are refused here -
-        // the bare form because a bare destination cannot contain whitespace, the angle form because the ")"
-        // no longer follows the ">". Fail-CLOSED, so it costs precision rather than containment: the line is
-        // dropped and reported, never rendered. Our own generator emits no titles, so nothing real is lost
-        // today; this pin exists so that reading titles properly is a visible change to a stated behaviour
-        // rather than a silent one, and so #258 can be checked against the code instead of believed.
+        // #258: a CommonMark title is valid syntax on a contained link, in either destination form and any
+        // of the three title spellings - quoted with each of the two quote characters, or parenthesised -
+        // and an escaped quote inside a quoted title does not end it early. The title itself is never
+        // rendered; only the destination that follows it through the standard containment check matters
+        // here, so a titled, contained link renders exactly as its untitled twin would.
         var toc = "# Knowledge Base\n\n" + line + "\n- [Beta](system/beta.md)\n";
 
         var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
 
-        block.Text.Should().NotContain("system/alpha.md", "the title makes the link unreadable to us");
+        block.Text.Should().Contain("system/alpha.md", "a title does not make a contained link unreadable");
+        block.Text.Should().Contain("system/beta.md");
+        block.Refused.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("- [Alpha](system/alpha.md \"An unterminated title)")]
+    [InlineData("- [Alpha](<system/alpha.md> \"An unterminated title)")]
+    public void RenderTableOfContents_StillRefusesAnUnterminatedTitle(string line)
+    {
+        // The over-acceptance pin for the fix above: a title that opens but never closes is not valid
+        // CommonMark, so the link it sits in does not parse. Reading past the opening quote for a closer
+        // that is never there would either run off the end of the line or, worse, treat some later "</a>)"-
+        // shaped text as the close - so this MUST still refuse rather than guess.
+        var toc = "# Knowledge Base\n\n" + line + "\n- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Text.Should().NotContain("system/alpha.md", "an unterminated title never lets the link close");
         block.Text.Should().Contain("system/beta.md", "a contained entry must survive its neighbour's refusal");
         block.Refused.Should().ContainSingle();
+    }
+
+    [Fact]
+    public void RenderTableOfContents_StillRefusesATitledLinkThatEscapesContainment()
+    {
+        // A title changes nothing about what the DESTINATION is allowed to be: reading titles must not
+        // become a second way past the containment check that already exists for every other link shape.
+        var toc = "# Knowledge Base\n\n- [a](../../../etc/passwd \"A title\")\n- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Text.Should().NotContain("etc/passwd");
+        block.Text.Should().Contain("system/beta.md", "a contained entry must survive its neighbour's refusal");
+        block.Refused.Should().Contain(refused => refused.Contains("etc/passwd", StringComparison.Ordinal));
     }
 }
