@@ -27,6 +27,23 @@ internal interface IPrProvider
     /// the open-PR list.
     /// </summary>
     Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Returns the PR's head SHA <em>as the host reports it right now</em>, or <c>null</c> when the
+    /// provider's payload carries none. This is the authority a
+    /// <see cref="PullRequestDescriptor.HeadSha"/> recorded at poll time is checked against before a review
+    /// built on it is allowed to reach the author: a branch can be force-pushed between the poll that
+    /// created a run and the review that executes it, and the run row cannot notice — its
+    /// <c>head_sha</c> is part of its identity and is written once, so re-reading the daemon's own store
+    /// re-reads the very value under suspicion.
+    /// <para>
+    /// Implementations must issue a LIVE read (no caching) and must not translate a transport failure into
+    /// <c>null</c>: <c>null</c> means "this host does not report a head for this PR", which is a different
+    /// answer from "the host could not be reached", and only the first is safe to treat as
+    /// "nothing contradicts the recorded head."
+    /// </para>
+    /// </summary>
+    Task<string?> GetCurrentHeadShaAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken);
 }
 
 /// <summary>
