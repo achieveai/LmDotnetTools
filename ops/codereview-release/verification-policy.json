@@ -1,0 +1,27 @@
+{
+  "formatVersion": 2,
+  "policyId": "codereview-v2",
+  "requiredSequence": [
+    "restore-solution",
+    "build-all-test-projects-isolated",
+    "test-all-projects-no-build-with-trx",
+    "csharpier-check",
+    "publish-host-from-built-graph",
+    "publish-daemon-from-built-graph",
+    "smoke-test-exact-published-executables",
+    "hash-and-seal-full-release"
+  ],
+  "testProjects": [
+    "tests/CodeReviewDaemon.Sample.Tests/CodeReviewDaemon.Sample.Tests.csproj",
+    "tests/LmStreaming.Sample.Tests/LmStreaming.Sample.Tests.csproj",
+    "tests/LmMultiTurn.Tests/LmMultiTurn.Tests.csproj"
+  ],
+  "hostApiContractVersion": 1,
+  "requiredCapabilities": [
+    "collaboration",
+    "message-idempotency",
+    "spawn-suppression",
+    "recursive-subagents",
+    "per-turn-model-override"
+  ]
+}

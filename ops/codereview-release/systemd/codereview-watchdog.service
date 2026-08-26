@@ -1,0 +1,9 @@
+[Unit]
+Description=Activate a newer preverified CodeReview release
+
+[Service]
+Type=oneshot
+Environment=ASPNETCORE_ENVIRONMENT=Production
+Environment=DOTNET_ENVIRONMENT=Production
+Environment=CODEREVIEW_DEVELOPMENT_IDENTITY=
+ExecStart=/usr/bin/python3 %h/LmDotnetTools/ops/codereview-release/release.py watchdog --root %h/.local/share/codereview --database %h/.local/share/codereview/review.db --host-url http://127.0.0.1:5080 --daemon-url http://127.0.0.1:5081 --control-socket %h/.local/share/codereview/daemon-control.sock --profile achieveai --activate

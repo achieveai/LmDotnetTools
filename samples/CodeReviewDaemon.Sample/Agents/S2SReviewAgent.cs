@@ -40,7 +40,11 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// </para>
 /// </summary>
 internal sealed class S2SReviewAgent
-    : IMultiTurnAgent, IDeadlineBoundedReviewLoop, IResumableReviewTurn, IReviewLoopSubAgentSurface
+    : IMultiTurnAgent,
+        IDeadlineBoundedReviewLoop,
+        IPerTurnModelReviewLoop,
+        IResumableReviewTurn,
+        IReviewLoopSubAgentSurface
 {
     /// <summary>Terminal run statuses that end the poll loop (matches <c>ConversationRunStatus</c> names).</summary>
     private static readonly HashSet<string> TerminalStatuses = new(StringComparer.OrdinalIgnoreCase)
@@ -72,8 +76,9 @@ internal sealed class S2SReviewAgent
     private int _spawnSuppressionDepth;
     private string? _armedIdempotencyKey;
     private string? _armedAcceptedInputId;
-    private Action<string>? _onInputAccepted;
+    private Action<string, string?>? _onInputAccepted;
     private Action<string>? _onRunConversationMinted;
+    private string? _nextTurnModelId;
 
     /// <summary>
     /// Builds the adapter. <paramref name="existingThreadId"/> seeds an ALREADY-PROVISIONED hosted
@@ -97,7 +102,8 @@ internal sealed class S2SReviewAgent
         TimeSpan? interruptedGrace = null,
         Action<string>? onConversationMinted = null,
         string? existingThreadId = null,
-        string? subAgentModelId = null)
+        string? subAgentModelId = null
+    )
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
@@ -143,6 +149,13 @@ internal sealed class S2SReviewAgent
     public void UseDeadline(DateTimeOffset deadlineUtc) => _deadlineUtc = deadlineUtc;
 
     /// <inheritdoc />
+    public void UseModelForNextTurn(string modelId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(modelId);
+        _nextTurnModelId = modelId.Trim();
+    }
+
+    /// <inheritdoc />
     public void ObserveConversationMint(Action<string> onConversationMinted)
     {
         ArgumentNullException.ThrowIfNull(onConversationMinted);
@@ -150,7 +163,11 @@ internal sealed class S2SReviewAgent
     }
 
     /// <inheritdoc />
-    public void ArmTurnCheckpoint(string idempotencyKey, string? acceptedInputId, Action<string>? onInputAccepted)
+    public void ArmTurnCheckpoint(
+        string idempotencyKey,
+        string? acceptedInputId,
+        Action<string, string?>? onInputAccepted
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(idempotencyKey);
         _armedIdempotencyKey = idempotencyKey;
@@ -180,7 +197,8 @@ internal sealed class S2SReviewAgent
 
     public async IAsyncEnumerable<IMessage> ExecuteRunAsync(
         UserInput userInput,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(userInput);
 
@@ -192,8 +210,7 @@ internal sealed class S2SReviewAgent
 
         // Either channel can demand it: the executor's synthesis scope (SuppressSpawning) or an input that
         // carries the SDK's per-turn flag. The host acknowledges or refuses — it is never a hint.
-        var suppressSpawning =
-            Volatile.Read(ref _spawnSuppressionDepth) > 0 || userInput.SuppressSubAgentSpawning;
+        var suppressSpawning = Volatile.Read(ref _spawnSuppressionDepth) > 0 || userInput.SuppressSubAgentSpawning;
 
         var threadId = await EnsureProvisionedAsync(ct).ConfigureAwait(false);
 
@@ -202,9 +219,11 @@ internal sealed class S2SReviewAgent
         var rejoinInputId = _armedAcceptedInputId;
         var idempotencyKey = _armedIdempotencyKey;
         var onInputAccepted = _onInputAccepted;
+        var modelId = _nextTurnModelId;
         _armedAcceptedInputId = null;
         _armedIdempotencyKey = null;
         _onInputAccepted = null;
+        _nextTurnModelId = null;
 
         string inputId;
         if (rejoinInputId is not null)
@@ -218,25 +237,28 @@ internal sealed class S2SReviewAgent
                 "Rejoining already-accepted S2S review input {InputId} on thread {ThreadId} instead of "
                     + "re-sending it; polling to terminal.",
                 inputId,
-                threadId);
+                threadId
+            );
         }
         else
         {
-            inputId = await _client
-                .SendMessageAsync(threadId, input, suppressSpawning, idempotencyKey, ct)
+            var accepted = await _client
+                .SendMessageAcceptedAsync(threadId, input, suppressSpawning, idempotencyKey, modelId, ct)
                 .ConfigureAwait(false);
+            inputId = accepted.InputId;
             // Reported before the first poll so the caller's checkpoint covers the whole wait, not just a wait
-            // that happened to finish. When the send carried a key this is a confirmation rather than the only
-            // record of it — the key is reconstructible, so losing this callback costs one extra send, not a
-            // duplicate turn.
-            onInputAccepted?.Invoke(inputId);
+            // that happened to finish. The host-acknowledged model travels with the id: this callback is the first
+            // point where telemetry can prove both what was accepted and which exact model will run it.
+            onInputAccepted?.Invoke(inputId, accepted.ModelId);
             _logger.LogInformation(
-                "S2S review message queued on thread {ThreadId} (inputId {InputId}, idempotency key {Key}, "
-                    + "spawning suppressed {SuppressSpawning}); polling to terminal.",
+                "S2S review message accepted on thread {ThreadId} (inputId {InputId}, model {ModelId}, "
+                    + "idempotency key {Key}, spawning suppressed {SuppressSpawning}); polling to terminal.",
                 threadId,
                 inputId,
+                accepted.ModelId ?? "(default)",
                 idempotencyKey ?? "(none)",
-                suppressSpawning);
+                suppressSpawning
+            );
         }
 
         var status = await PollToTerminalAsync(threadId, inputId, ct).ConfigureAwait(false);
@@ -246,14 +268,16 @@ internal sealed class S2SReviewAgent
         {
             throw new InvalidOperationException(
                 $"S2S review run {status.RunId} on thread {threadId} ended with terminal status "
-                    + $"{status.Status}, not Completed.");
+                    + $"{status.Status}, not Completed."
+            );
         }
 
         var reviewText = status.ResponseText;
         if (string.IsNullOrWhiteSpace(reviewText))
         {
             throw new InvalidOperationException(
-                $"S2S review run {status.RunId} on thread {threadId} reached Completed with no review text.");
+                $"S2S review run {status.RunId} on thread {threadId} reached Completed with no review text."
+            );
         }
 
         // ONE finalized assistant message. AgentTextCollector prefers a finalized TextMessage over streamed
@@ -302,6 +326,19 @@ internal sealed class S2SReviewAgent
             .ConfigureAwait(false);
         _threadId = threadId;
         _logger.LogInformation(
+            "Model routing: run {RunId}, profile {Profile}, stage {Stage}, requested {RequestedModelId}, "
+                + "effective {EffectiveModelId}, thread {ThreadId}, input {InputId}, state {ResumeState}, rung {EscalationRung}.",
+            CurrentRunId ?? "(not-started)",
+            _modeId,
+            "subagent",
+            string.IsNullOrWhiteSpace(_subAgentModelId) ? "(inherit)" : _subAgentModelId,
+            string.IsNullOrWhiteSpace(_subAgentModelId) ? "(parent-model)" : _subAgentModelId.Trim(),
+            threadId,
+            "(spawn-time)",
+            "fresh",
+            0
+        );
+        _logger.LogInformation(
             "Provisioned S2S review conversation {ThreadId} (workspace {WorkspaceId}, provider {ProviderId}, "
                 + "mode {ModeId}, system prompt {SystemPromptChars} chars, sub-agent model {SubAgentModelId}).",
             threadId,
@@ -313,7 +350,10 @@ internal sealed class S2SReviewAgent
             // a separate, host-side fact and arrives back on each sub-agent's modelSelectionSource — the two
             // are logged separately on purpose, because "we configured sol" and "the child ran sol" were
             // exactly the claims that got conflated while this knob drove nothing.
-            string.IsNullOrWhiteSpace(_subAgentModelId) ? "(inherit parent)" : _subAgentModelId);
+            string.IsNullOrWhiteSpace(_subAgentModelId)
+                ? "(inherit parent)"
+                : _subAgentModelId
+        );
 
         // The run-scoped checkpoint comes FIRST and is deliberately NOT guarded: from this line on there is a
         // hosted conversation that will fan out a sub-agent tree, and a caller that cannot record its identity
@@ -341,7 +381,8 @@ internal sealed class S2SReviewAgent
                     ex,
                     "Could not record S2S review conversation {ThreadId} in the deep-link retention ledger; "
                         + "it will not be discarded automatically.",
-                    threadId);
+                    threadId
+                );
             }
         }
 
@@ -395,7 +436,7 @@ internal sealed class S2SReviewAgent
             {
                 throw new TimeoutException(
                     $"S2S review run on thread {threadId} did not reach a terminal status before {deadline:O} "
-                    + $"(last status: {status.Status})."
+                        + $"(last status: {status.Status})."
                 );
             }
 
@@ -488,8 +529,8 @@ internal sealed class S2SReviewAgent
     /// <summary>Concatenates the user turn's non-empty text messages (the collector sends exactly one).</summary>
     private static string ExtractUserText(UserInput userInput)
     {
-        var parts = userInput.Messages
-            .OfType<TextMessage>()
+        var parts = userInput
+            .Messages.OfType<TextMessage>()
             .Where(static m => m.Role == Role.User && !string.IsNullOrEmpty(m.Text))
             .Select(static m => m.Text);
         return string.Join("\n", parts);
@@ -501,20 +542,23 @@ internal sealed class S2SReviewAgent
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
-        CancellationToken ct = default) =>
+        CancellationToken ct = default
+    ) =>
         throw new NotSupportedException(
-            "S2SReviewAgent is driven collect-only via ExecuteRunAsync; background SendAsync is not supported.");
+            "S2SReviewAgent is driven collect-only via ExecuteRunAsync; background SendAsync is not supported."
+        );
 
     public ValueTask<SendReceipt?> TrySendAsync(
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
-        CancellationToken ct = default) =>
+        CancellationToken ct = default
+    ) =>
         throw new NotSupportedException(
-            "S2SReviewAgent is driven collect-only via ExecuteRunAsync; background TrySendAsync is not supported.");
+            "S2SReviewAgent is driven collect-only via ExecuteRunAsync; background TrySendAsync is not supported."
+        );
 
-    public async IAsyncEnumerable<IMessage> SubscribeAsync(
-        [EnumeratorCancellation] CancellationToken ct = default)
+    public async IAsyncEnumerable<IMessage> SubscribeAsync([EnumeratorCancellation] CancellationToken ct = default)
     {
         // No background loop → no out-of-band message stream. Yield nothing (a valid empty async sequence).
         await Task.CompletedTask.ConfigureAwait(false);

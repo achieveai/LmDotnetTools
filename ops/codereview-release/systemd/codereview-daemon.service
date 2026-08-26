@@ -1,0 +1,19 @@
+[Unit]
+Description=Verified CodeReview daemon
+After=codereview-host.service
+Requires=codereview-host.service
+
+[Service]
+Type=simple
+Environment=ASPNETCORE_ENVIRONMENT=Production
+Environment=DOTNET_ENVIRONMENT=Production
+Environment=CODEREVIEW_DEVELOPMENT_IDENTITY=
+Environment=ASPNETCORE_URLS=http://127.0.0.1:5081
+Environment=CodeReviewDaemon__ControlSocketPath=%h/.local/share/codereview/daemon-control.sock
+ExecStart=/bin/sh -c 'r=$$(cat %h/.local/share/codereview/pointers/active); exec %h/.local/share/codereview/releases/$$r/daemon/CodeReviewDaemon.Sample --review achieveai'
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

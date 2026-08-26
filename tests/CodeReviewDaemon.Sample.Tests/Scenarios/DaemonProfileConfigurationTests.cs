@@ -7,17 +7,21 @@ public sealed class DaemonProfileConfigurationTests
     [Fact]
     public void Mcqdb_listener_and_auth_webhook_use_the_same_origin()
     {
-        using var document = JsonDocument.Parse(
-            File.ReadAllText(LocateProfile("appsettings.mcqdb.json")));
+        using var document = JsonDocument.Parse(File.ReadAllText(LocateProfile("appsettings.mcqdb.json")));
         var root = document.RootElement;
 
         var listener = new Uri(root.GetProperty("Urls").GetString()!);
         var webhook = new Uri(
-            root.GetProperty("Auth").GetProperty("Webhook").GetProperty("PublicBaseUrl").GetString()!);
+            root.GetProperty("Auth").GetProperty("Webhook").GetProperty("PublicBaseUrl").GetString()!
+        );
 
-        listener.GetLeftPart(UriPartial.Authority).Should().Be(
-            webhook.GetLeftPart(UriPartial.Authority),
-            "sandbox auth callbacks must return to the same daemon that minted each per-session secret");
+        listener
+            .GetLeftPart(UriPartial.Authority)
+            .Should()
+            .Be(
+                webhook.GetLeftPart(UriPartial.Authority),
+                "sandbox auth callbacks must return to the same daemon that minted each per-session secret"
+            );
         listener.Port.Should().Be(5082, "the GitHub daemon owns 5081 and cannot validate MCQdb session secrets");
     }
 
@@ -31,6 +35,12 @@ public sealed class DaemonProfileConfigurationTests
     /// </summary>
     private static string LocateProfile(string fileName)
     {
+        var copiedProfile = Path.Combine(AppContext.BaseDirectory, "ShippedProfiles", fileName);
+        if (File.Exists(copiedProfile))
+        {
+            return copiedProfile;
+        }
+
         var relative = Path.Combine("samples", "CodeReviewDaemon.Sample", fileName);
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
         {
@@ -42,6 +52,8 @@ public sealed class DaemonProfileConfigurationTests
         }
 
         throw new FileNotFoundException(
-            $"Could not find {relative} in any ancestor of {AppContext.BaseDirectory}.", relative);
+            $"Could not find {relative} in any ancestor of {AppContext.BaseDirectory}.",
+            relative
+        );
     }
 }

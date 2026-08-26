@@ -19,9 +19,7 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 public sealed class GitHubPrProviderTests : LoggingTestBase
 {
     public GitHubPrProviderTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     private static readonly RepoIdentity Repo = new()
     {
@@ -52,18 +50,20 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
         ]
         """;
 
-    private static PrPollRequest Request(OpaqueCursor? cursor = null) => new()
-    {
-        Repo = Repo,
-        Scope = "acme/widgets:open-prs",
-        Cursor = cursor,
-    };
+    private static PrPollRequest Request(OpaqueCursor? cursor = null) =>
+        new()
+        {
+            Repo = Repo,
+            Scope = "acme/widgets:open-prs",
+            Cursor = cursor,
+        };
 
     private GitHubPrProvider Provider(FakeHttpMessageHandler handler) =>
         new(
             new HttpClient(handler),
             new FakeOAuthTokenProvider("github", "gh-token-xyz"),
-            LoggerFactory.CreateLogger<GitHubPrProvider>());
+            LoggerFactory.CreateLogger<GitHubPrProvider>()
+        );
 
     [Fact]
     public void Provider_id_is_github()
@@ -126,8 +126,9 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
 
         page.PullRequests[0].Title.Should().Be("Revert the revenue report to the Q3 layout");
         page.PullRequests[0].Description.Should().Be("Rolls back the Q4 rewrite; drill-through was broken.");
-        page.PullRequests[0].TargetBranch.Should().Be(
-            "release/2026.08", "a fix aimed at a release branch is held to a different bar than one aimed at main");
+        page.PullRequests[0]
+            .TargetBranch.Should()
+            .Be("release/2026.08", "a fix aimed at a release branch is held to a different bar than one aimed at main");
 
         page.PullRequests[1].Title.Should().Be("Tidy up logging");
         page.PullRequests[1].Description.Should().BeNull("body: null is a PR opened with no description");
@@ -181,8 +182,9 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
         page.PullRequests[1].IsForkPr.Should().BeTrue("the head lives in mallory/widgets, the base in acme/widgets");
 
         page.PullRequests[2].IsForkPr.Should().BeNull("a payload with no repo objects cannot establish the signal");
-        page.PullRequests[2].IsTargetRepoPublic.Should().BeNull(
-            "null is 'could not determine' — the poller, not the provider, applies the fail-closed default");
+        page.PullRequests[2]
+            .IsTargetRepoPublic.Should()
+            .BeNull("null is 'could not determine' — the poller, not the provider, applies the fail-closed default");
     }
 
     [Fact]
@@ -241,7 +243,11 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
     public async Task ListOpenPullRequests_throws_on_a_non_success_status()
     {
         var handler = new FakeHttpMessageHandler().OnJson(
-            HttpMethod.Get, "/repos/acme/widgets/pulls", """{"message":"Bad credentials"}""", HttpStatusCode.Unauthorized);
+            HttpMethod.Get,
+            "/repos/acme/widgets/pulls",
+            """{"message":"Bad credentials"}""",
+            HttpStatusCode.Unauthorized
+        );
 
         var act = () => Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
@@ -264,12 +270,16 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
         var handler = new FakeHttpMessageHandler()
             .On(
                 req => req.RequestUri!.ToString().Contains("page=2", StringComparison.Ordinal),
-                _ => JsonResponse(page2))
+                _ => JsonResponse(page2)
+            )
             .On(
                 req => req.RequestUri!.ToString().Contains("per_page=100", StringComparison.Ordinal),
-                _ => JsonResponse(
-                    page1,
-                    ("Link", "<https://api.github.com/repos/acme/widgets/pulls?state=open&page=2>; rel=\"next\"")));
+                _ =>
+                    JsonResponse(
+                        page1,
+                        ("Link", "<https://api.github.com/repos/acme/widgets/pulls?state=open&page=2>; rel=\"next\"")
+                    )
+            );
 
         var page = await Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
@@ -303,6 +313,43 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
         page.NextCursor.CursorVersion.Should().Be(PrPollingService.CursorVersion);
     }
 
+    [Theory]
+    [InlineData("true", PrDraftState.Draft)]
+    [InlineData("false", PrDraftState.Ready)]
+    [InlineData("null", PrDraftState.Unknown)]
+    [InlineData("\"false\"", PrDraftState.Unknown)]
+    internal async Task ListOpenPullRequests_maps_draft_readiness_fail_closed(string draftJson, PrDraftState expected)
+    {
+        var payload = $$"""
+            [{
+              "number": 7, "state": "open", "draft": {{draftJson}}, "merged_at": null,
+              "updated_at": "2026-06-01T10:00:00Z",
+              "head": { "sha": "head-7" }, "base": { "sha": "base-7" }
+            }]
+            """;
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/repos/acme/widgets/pulls", payload);
+
+        var page = await Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        page.PullRequests.Single().DraftState.Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData("true", PrDraftState.Draft)]
+    [InlineData("false", PrDraftState.Ready)]
+    [InlineData("null", PrDraftState.Unknown)]
+    [InlineData("42", PrDraftState.Unknown)]
+    internal async Task GetPrState_maps_lifecycle_and_draft_independently(string draftJson, PrDraftState expected)
+    {
+        var payload = $$"""{ "number": 7, "state": "open", "draft": {{draftJson}}, "merged_at": null }""";
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/repos/acme/widgets/pulls/7", payload);
+
+        var status = await Provider(handler).GetPrStateAsync(Repo, "7", CancellationToken.None);
+
+        status.Lifecycle.Should().Be(PrLifecycle.Open);
+        status.DraftState.Should().Be(expected);
+    }
+
     [Fact]
     public async Task GetPrState_maps_an_open_pr_to_open()
     {
@@ -313,7 +360,7 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
 
         var state = await Provider(handler).GetPrStateAsync(Repo, "7", CancellationToken.None);
 
-        state.Should().Be(PrLifecycle.Open);
+        state.Lifecycle.Should().Be(PrLifecycle.Open);
     }
 
     [Fact]
@@ -326,7 +373,7 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
 
         var state = await Provider(handler).GetPrStateAsync(Repo, "7", CancellationToken.None);
 
-        state.Should().Be(PrLifecycle.Merged);
+        state.Lifecycle.Should().Be(PrLifecycle.Merged);
     }
 
     [Fact]
@@ -339,6 +386,6 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
 
         var state = await Provider(handler).GetPrStateAsync(Repo, "7", CancellationToken.None);
 
-        state.Should().Be(PrLifecycle.Abandoned);
+        state.Lifecycle.Should().Be(PrLifecycle.Abandoned);
     }
 }

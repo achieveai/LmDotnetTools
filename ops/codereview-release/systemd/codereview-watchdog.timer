@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodically inspect verified CodeReview releases
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=codereview-watchdog.service
+
+[Install]
+WantedBy=timers.target

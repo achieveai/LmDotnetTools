@@ -58,13 +58,35 @@ public class CodeReviewDaemonOptionsTests
     }
 
     [Fact]
-    public void Model_role_knobs_default_to_empty_so_secondary_agents_inherit_the_primary()
+    public void Model_role_knobs_use_terra_primary_and_blank_secondary_fallbacks()
     {
         var o = new CodeReviewDaemonOptions();
 
-        o.ReviewModelId.Should().Be("claude-sonnet-5", "the primary dispatcher always has a concrete model");
-        o.SubAgentModelId.Should().BeEmpty("empty ⇒ review sub-agents inherit ReviewModelId");
-        o.KnowledgeModelId.Should()
-            .BeEmpty("empty ⇒ the at-close knowledge-extraction loop inherits ReviewModelId; set it (e.g. claude-opus-4.8) to run extraction on a dedicated model");
+        o.ReviewModelId.Should().Be("gpt-5.6-terra");
+        o.SynthesisModelId.Should().BeEmpty();
+        o.JudgeModelId.Should().BeEmpty();
+        o.SubAgentModelId.Should().BeEmpty();
+        o.KnowledgeModelId.Should().BeEmpty();
+        o.EffectiveReviewModelId.Should().Be("gpt-5.6-terra");
+        o.EffectiveSynthesisModelId.Should().Be("gpt-5.6-terra");
+        o.EffectiveJudgeModelId.Should().Be("gpt-5.6-terra");
+        o.EffectiveKnowledgeModelId.Should().Be("gpt-5.6-terra");
+    }
+
+    [Fact]
+    public void Model_role_knobs_trim_values_and_blank_values_fall_back_to_the_trimmed_primary()
+    {
+        var o = new CodeReviewDaemonOptions
+        {
+            ReviewModelId = "  primary  ",
+            SynthesisModelId = "  synthesis  ",
+            JudgeModelId = "   ",
+            KnowledgeModelId = " knowledge ",
+        };
+
+        o.EffectiveReviewModelId.Should().Be("primary");
+        o.EffectiveSynthesisModelId.Should().Be("synthesis");
+        o.EffectiveJudgeModelId.Should().Be("primary");
+        o.EffectiveKnowledgeModelId.Should().Be("knowledge");
     }
 }

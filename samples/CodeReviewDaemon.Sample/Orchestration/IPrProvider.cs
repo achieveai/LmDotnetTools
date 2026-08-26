@@ -26,8 +26,19 @@ internal interface IPrProvider
     /// the PR is abandoned. Distinct from the coarser <see cref="PrLifecycleState"/> captured while polling
     /// the open-PR list.
     /// </summary>
-    Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken);
+    Task<PrStatus> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken);
 }
+
+/// <summary>A provider-neutral readiness classification. Unknown always fails closed.</summary>
+internal enum PrDraftState
+{
+    Unknown,
+    Ready,
+    Draft,
+}
+
+/// <summary>The independently observed lifecycle and readiness of one PR.</summary>
+internal sealed record PrStatus(PrLifecycle Lifecycle, PrDraftState DraftState);
 
 /// <summary>
 /// A single PR's Open/Merged/Abandoned classification returned by <see cref="IPrProvider.GetPrStateAsync"/>.
@@ -86,6 +97,9 @@ internal sealed record PullRequestDescriptor
     public required string TriggerWatermark { get; init; }
 
     public required PrLifecycleState LifecycleState { get; init; }
+
+    /// <summary>Whether the provider positively reports this PR ready, draft, or cannot tell.</summary>
+    public required PrDraftState DraftState { get; init; }
 
     /// <summary>
     /// When the PR was opened, if the provider's list exposes it (GitHub <c>created_at</c>, ADO

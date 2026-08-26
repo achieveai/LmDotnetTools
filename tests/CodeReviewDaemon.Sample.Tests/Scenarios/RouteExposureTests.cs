@@ -5,17 +5,16 @@ using Microsoft.Extensions.DependencyInjection;
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
 /// <summary>
-/// AC#4: the daemon's runtime HTTP surface is <strong>exactly</strong> two gateway callbacks —
-/// <c>POST /api/auth/webhook/{provider}</c> (post-auth callback) and
-/// <c>POST /api/discovery/context_discovery</c> (context-discovery callback, which must return 2xx or the
-/// gateway tears down the sandbox session) — and nothing else. The daemon does its PR-watching by polling
-/// and runs all git/fs work in the sandbox, so it deliberately exposes no other endpoints. This test
-/// enumerates the host's mapped endpoints and fails if any route other than those two is reachable.
+/// The daemon's runtime HTTP surface is the two gateway callbacks plus the release health and admission
+/// control plane. The daemon does its PR-watching by polling and runs all git/fs work in the sandbox, so no
+/// review execution route is exposed. This test enumerates the mapped endpoints and fails on accidental
+/// surface growth.
 /// </summary>
 public sealed class RouteExposureTests
 {
     private const string WebhookPattern = "api/auth/webhook/{provider}";
     private const string DiscoveryPattern = "api/discovery/context_discovery";
+    private const string VersionPattern = "/health/version";
 
     [Fact]
     public void Only_the_two_gateway_callback_routes_are_mapped()
@@ -23,10 +22,9 @@ public sealed class RouteExposureTests
         using var factory = new DaemonWebAppFactory();
 
         // Accessing Services forces the host to build and the endpoints to be composed.
-        var endpoints = factory.Services
-            .GetRequiredService<EndpointDataSource>()
-            .Endpoints
-            .OfType<RouteEndpoint>()
+        var endpoints = factory
+            .Services.GetRequiredService<EndpointDataSource>()
+            .Endpoints.OfType<RouteEndpoint>()
             .ToList();
 
         endpoints.Should().NotBeEmpty("the gateway callback routes must be mapped");
@@ -36,7 +34,21 @@ public sealed class RouteExposureTests
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        patterns.Should().BeEquivalentTo([WebhookPattern, DiscoveryPattern]);
+        patterns.Should().BeEquivalentTo([WebhookPattern, DiscoveryPattern, VersionPattern]);
+    }
+
+    [Fact]
+    public async Task Network_admission_mutation_routes_do_not_exist()
+    {
+        using var factory = new DaemonWebAppFactory();
+        using var client = factory.CreateClient();
+
+        (await client.PostAsync("/health/admission/activate", null))
+            .StatusCode.Should()
+            .Be(System.Net.HttpStatusCode.NotFound);
+        (await client.PostAsync("/health/admission/drain", null))
+            .StatusCode.Should()
+            .Be(System.Net.HttpStatusCode.NotFound);
     }
 
     [Theory]
@@ -46,17 +58,12 @@ public sealed class RouteExposureTests
     {
         using var factory = new DaemonWebAppFactory();
 
-        var route = factory.Services
-            .GetRequiredService<EndpointDataSource>()
-            .Endpoints
-            .OfType<RouteEndpoint>()
-            .Single(e => string.Equals(
-                e.RoutePattern.RawText,
-                pattern,
-                StringComparison.OrdinalIgnoreCase));
+        var route = factory
+            .Services.GetRequiredService<EndpointDataSource>()
+            .Endpoints.OfType<RouteEndpoint>()
+            .Single(e => string.Equals(e.RoutePattern.RawText, pattern, StringComparison.OrdinalIgnoreCase));
 
-        var httpMethods = route.Metadata
-            .GetMetadata<Microsoft.AspNetCore.Routing.HttpMethodMetadata>();
+        var httpMethods = route.Metadata.GetMetadata<Microsoft.AspNetCore.Routing.HttpMethodMetadata>();
 
         httpMethods.Should().NotBeNull();
         httpMethods!.HttpMethods.Should().BeEquivalentTo(["POST"]);

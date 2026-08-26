@@ -1,3 +1,5 @@
+using CodeReviewDaemon.Sample.Orchestration;
+
 namespace CodeReviewDaemon.Sample.Persistence.Models;
 
 /// <summary>
@@ -36,6 +38,7 @@ internal sealed record ReviewRun
     public required ReviewStage Stage { get; init; }
     public required WorkflowStatus WorkflowStatus { get; init; }
     public required PrLifecycleState PrLifecycleState { get; init; }
+    public PrDraftState PrDraftState { get; init; } = PrDraftState.Unknown;
 
     // ── Confidentiality trust signal (Task 17, design §6 Risk B) ────────────────────────────────
     /// <summary>

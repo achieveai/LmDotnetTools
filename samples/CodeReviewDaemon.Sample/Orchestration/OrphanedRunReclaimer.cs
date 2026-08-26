@@ -18,11 +18,11 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// two processes on the same PR, writing into the same notes branch — worse than the leak. So a run is
 /// only taken when no live process can be holding it: either it carries no owner at all (nothing that
 /// claims a run leaves the owner null, so such a row predates ownership and its process is long gone), or
-/// its owner stopped heartbeating longer ago than <see cref="StaleAfter"/>. Every ambiguous case is left
-/// alone: a missed reclaim costs one delayed retry, and those are not comparable.
+/// its owner stopped heartbeating longer ago than <see cref="RunOwnershipPolicy.StaleAfter"/>. Every
+/// ambiguous case is left alone: a missed reclaim costs one delayed retry, and those are not comparable.
 /// </para>
 /// </summary>
-internal sealed class OrphanedRunReclaimer : BackgroundService
+internal static class RunOwnershipPolicy
 {
     /// <summary>How often this process re-asserts its claims. A run whose heartbeat is this fresh is
     /// unambiguously live.</summary>
@@ -36,18 +36,27 @@ internal sealed class OrphanedRunReclaimer : BackgroundService
     /// </summary>
     internal static readonly TimeSpan StaleAfter = TimeSpan.FromSeconds(150);
 
+    internal static DateTimeOffset StaleCutoff(DateTimeOffset now) => now.ToUniversalTime() - StaleAfter;
+}
+
+internal sealed class OrphanedRunReclaimer : BackgroundService
+{
     private readonly ReviewStore _store;
     private readonly ILogger<OrphanedRunReclaimer> _logger;
     private readonly TimeProvider _timeProvider;
+    private readonly DaemonAdmissionCoordinator? _admission;
 
     public OrphanedRunReclaimer(
         ReviewStore store,
         ILogger<OrphanedRunReclaimer> logger,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        DaemonAdmissionCoordinator? admission = null
+    )
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _admission = admission;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -61,7 +70,8 @@ internal sealed class OrphanedRunReclaimer : BackgroundService
         {
             try
             {
-                await Task.Delay(HeartbeatInterval, _timeProvider, stoppingToken).ConfigureAwait(false);
+                await Task.Delay(RunOwnershipPolicy.HeartbeatInterval, _timeProvider, stoppingToken)
+                    .ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -87,15 +97,22 @@ internal sealed class OrphanedRunReclaimer : BackgroundService
 
     private void Reclaim()
     {
+        using var admission = _admission?.TryAdmit();
+        if (_admission is not null && admission is null)
+        {
+            return;
+        }
+
         try
         {
-            var reclaimed = _store.ReclaimOrphanedRuns(StaleAfter);
+            var reclaimed = _store.ReclaimOrphanedRuns();
             if (reclaimed > 0)
             {
                 _logger.LogInformation(
                     "Reclaimed {Count} review run(s) left Running by a process that is no longer alive; "
                         + "they are now RetryPending with their stage intact and will resume where they stopped.",
-                    reclaimed);
+                    reclaimed
+                );
             }
         }
         catch (Exception ex)

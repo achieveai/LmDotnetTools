@@ -4,14 +4,13 @@
       {
          "name": "format-verify",
          "group": "pre-commit",
-         "command": "dotnet",
+         "command": "csharpier",
          "args": [
-            "format",
-            "whitespace",
-            "LmDotnetTools.sln",
-            "--verify-no-changes",
-            "--verbosity",
-            "quiet"
+            "check",
+            "${staged}"
+         ],
+         "include": [
+            "**/*.cs"
          ]
       }
    ]

@@ -47,7 +47,8 @@ internal sealed class AdoPrProvider : IPrProvider
         IOAuthTokenProvider tokenProvider,
         ILogger<AdoPrProvider> logger,
         int maxPagesPerPoll = MaxPages,
-        int maxPrsPerPage = DefaultPageSize)
+        int maxPrsPerPage = DefaultPageSize
+    )
     {
         _httpClient = httpClient;
         _tokenProvider = tokenProvider;
@@ -91,7 +92,10 @@ internal sealed class AdoPrProvider : IPrProvider
     /// of old PRs doesn't serialize into minutes of round trips or trip ADO throttling.</summary>
     private const int MaxRecencyLookupConcurrency = 6;
 
-    public async Task<PullRequestPage> ListOpenPullRequestsAsync(PrPollRequest request, CancellationToken cancellationToken)
+    public async Task<PullRequestPage> ListOpenPullRequestsAsync(
+        PrPollRequest request,
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -128,14 +132,14 @@ internal sealed class AdoPrProvider : IPrProvider
             cancellationToken.ThrowIfCancellationRequested();
             pages++;
 
-            var url = continuationToken is not null
-                ? $"{baseUrl}&continuationToken={Uri.EscapeDataString(continuationToken)}"
-                : skip > 0
-                    ? $"{baseUrl}&$skip={skip.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
-                    : baseUrl;
+            var url =
+                continuationToken is not null ? $"{baseUrl}&continuationToken={Uri.EscapeDataString(continuationToken)}"
+                : skip > 0 ? $"{baseUrl}&$skip={skip.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
+                : baseUrl;
 
-            using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url)
-                .WithOperation(SandboxOperation.ReadProviderMetadata);
+            using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url).WithOperation(
+                SandboxOperation.ReadProviderMetadata
+            );
             var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
             var basic = Convert.ToBase64String(Encoding.ASCII.GetBytes($":{token.Value}"));
             httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);
@@ -153,38 +157,48 @@ internal sealed class AdoPrProvider : IPrProvider
                 var rawPrs = new List<RawAdoPr>();
                 foreach (var pr in document.RootElement.GetProperty("value").EnumerateArray())
                 {
-                    rawPrs.Add(new RawAdoPr(
-                        pr.GetProperty("pullRequestId").GetInt64(),
-                        CommitId(pr, "lastMergeSourceCommit"),
-                        CommitId(pr, "lastMergeTargetCommit"),
-                        ParseTimestamp(pr, "creationDate"),
-                        pr.TryGetProperty("sourceRefName", out var srn) && srn.ValueKind is JsonValueKind.String
-                            ? srn.GetString()
-                            : null,
-                        pr.GetProperty("status").GetString(),
-                        // Who OPENED the PR. ADO's uniqueName is normally an email address; it is only
-                        // carried as an opaque identity string here, and the consumer is responsible for
-                        // reducing it to a safe, confined file name.
-                        UniqueNameOf(pr, "createdBy"),
-                        // What the PR SAYS it does. Without these the reviewer sees the diff but not the
-                        // claim it is supposed to satisfy — on a revert whose files are all binaries, that
-                        // leaves it nothing whatsoever to review against.
-                        StringOf(pr, "title"),
-                        StringOf(pr, "description"),
-                        StringOf(pr, "targetRefName"),
-                        // Confidentiality trust signal (design §6 Risk B). Both are read off the PR-list
-                        // payload, and both stay null when the payload can't establish them, which
-                        // PrPollingService collapses to the fail-closed value. Visibility additionally
-                        // carries the EVIDENCE for why it could not be read, because the payload is
-                        // documented not to carry it and the fallback below needs the failure attributable.
-                        IsForkPr(pr),
-                        IsTargetRepoPublic(pr, out var visibility),
-                        visibility));
+                    rawPrs.Add(
+                        new RawAdoPr(
+                            pr.GetProperty("pullRequestId").GetInt64(),
+                            CommitId(pr, "lastMergeSourceCommit"),
+                            CommitId(pr, "lastMergeTargetCommit"),
+                            ParseTimestamp(pr, "creationDate"),
+                            pr.TryGetProperty("sourceRefName", out var srn) && srn.ValueKind is JsonValueKind.String
+                                ? srn.GetString()
+                                : null,
+                            pr.GetProperty("status").GetString(),
+                            MapDraftState(pr, "isDraft"),
+                            // Who OPENED the PR. ADO's uniqueName is normally an email address; it is only
+                            // carried as an opaque identity string here, and the consumer is responsible for
+                            // reducing it to a safe, confined file name.
+                            UniqueNameOf(pr, "createdBy"),
+                            // What the PR SAYS it does. Without these the reviewer sees the diff but not the
+                            // claim it is supposed to satisfy — on a revert whose files are all binaries, that
+                            // leaves it nothing whatsoever to review against.
+                            StringOf(pr, "title"),
+                            StringOf(pr, "description"),
+                            StringOf(pr, "targetRefName"),
+                            // Confidentiality trust signal (design §6 Risk B). Both are read off the PR-list
+                            // payload, and both stay null when the payload can't establish them, which
+                            // PrPollingService collapses to the fail-closed value. Visibility additionally
+                            // carries the EVIDENCE for why it could not be read, because the payload is
+                            // documented not to carry it and the fallback below needs the failure attributable.
+                            IsForkPr(pr),
+                            IsTargetRepoPublic(pr, out var visibility),
+                            visibility
+                        )
+                    );
                 }
 
                 // Phase 1b: resolve the target project's visibility where the payload could not.
                 var projectVisibility = await ResolveMissingVisibilityAsync(
-                    rawPrs, org, project, repo, cancellationToken).ConfigureAwait(false);
+                        rawPrs,
+                        org,
+                        project,
+                        repo,
+                        cancellationToken
+                    )
+                    .ConfigureAwait(false);
 
                 // Phase 2: resolve each PR's recency signal. ADO's PR list has no last-activity field, so a PR
                 // created BEFORE the window needs one bounded `/pushes` lookup for its source branch's true
@@ -192,37 +206,47 @@ internal sealed class AdoPrProvider : IPrProvider
                 // bounded concurrency so a page full of old PRs doesn't serialize into minutes of round trips or
                 // trip ADO throttling; recent PRs and PRs with no usable source ref make no call.
                 var recency = await ResolveRecencySignalsAsync(
-                    rawPrs, org, project, repo, request.RecencyCutoff, cancellationToken).ConfigureAwait(false);
+                        rawPrs,
+                        org,
+                        project,
+                        repo,
+                        request.RecencyCutoff,
+                        cancellationToken
+                    )
+                    .ConfigureAwait(false);
 
                 // Phase 3: build descriptors.
                 for (var i = 0; i < rawPrs.Count; i++)
                 {
                     var raw = rawPrs[i];
                     var (updatedAt, recencyCreatedAt) = recency[i];
-                    pullRequests.Add(new PullRequestDescriptor
-                    {
-                        PrId = raw.PrId.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                        HeadSha = raw.HeadSha,
-                        BaseSha = raw.BaseSha,
-                        // ADO's PR list exposes no last-activity timestamp, so a new source commit (the head
-                        // SHA) is the re-review trigger; same-head comment threads do not re-trigger here.
-                        TriggerWatermark = raw.HeadSha,
-                        LifecycleState = MapLifecycle(raw.Status),
-                        // Recency signals (consumed only by ApplyRecencyFilter): CreatedAt = opened date, but
-                        // nulled for an old PR whose last push couldn't be dated (see ResolveRecencySignalsAsync)
-                        // so the filter keeps it; UpdatedAt = last push, resolved only for PRs before the window.
-                        CreatedAt = recencyCreatedAt,
-                        UpdatedAt = updatedAt,
-                        Author = raw.Author,
-                        Title = raw.Title,
-                        Description = raw.Description,
-                        TargetBranch = ShortBranchName(raw.TargetRefName),
-                        IsForkPr = raw.IsForkPr,
-                        // The payload's answer wins where it has one (on-prem ADO Server, or a future API
-                        // version that serializes it); otherwise the project API's. Still null when neither
-                        // could answer — PrPollingService turns that into the fail-closed default.
-                        IsTargetRepoPublic = raw.IsTargetRepoPublic ?? projectVisibility,
-                    });
+                    pullRequests.Add(
+                        new PullRequestDescriptor
+                        {
+                            PrId = raw.PrId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                            HeadSha = raw.HeadSha,
+                            BaseSha = raw.BaseSha,
+                            // ADO's PR list exposes no last-activity timestamp, so a new source commit (the head
+                            // SHA) is the re-review trigger; same-head comment threads do not re-trigger here.
+                            TriggerWatermark = raw.HeadSha,
+                            LifecycleState = MapLifecycle(raw.Status),
+                            DraftState = raw.DraftState,
+                            // Recency signals (consumed only by ApplyRecencyFilter): CreatedAt = opened date, but
+                            // nulled for an old PR whose last push couldn't be dated (see ResolveRecencySignalsAsync)
+                            // so the filter keeps it; UpdatedAt = last push, resolved only for PRs before the window.
+                            CreatedAt = recencyCreatedAt,
+                            UpdatedAt = updatedAt,
+                            Author = raw.Author,
+                            Title = raw.Title,
+                            Description = raw.Description,
+                            TargetBranch = ShortBranchName(raw.TargetRefName),
+                            IsForkPr = raw.IsForkPr,
+                            // The payload's answer wins where it has one (on-prem ADO Server, or a future API
+                            // version that serializes it); otherwise the project API's. Still null when neither
+                            // could answer — PrPollingService turns that into the fail-closed default.
+                            IsTargetRepoPublic = raw.IsTargetRepoPublic ?? projectVisibility,
+                        }
+                    );
 
                     if (raw.PrId > highWaterMark)
                     {
@@ -237,8 +261,7 @@ internal sealed class AdoPrProvider : IPrProvider
             continuationToken = response.Headers.TryGetValues("x-ms-continuationtoken", out var values)
                 ? values.FirstOrDefault()
                 : null;
-        }
-        while (MoreMayRemain(continuationToken, lastPageCount, _pageSize) && pages < _maxPages);
+        } while (MoreMayRemain(continuationToken, lastPageCount, _pageSize) && pages < _maxPages);
 
         // A poll that stops while more may remain has NOT seen the repo's open PRs, and every downstream
         // filter — recency above all — can only ever filter what this list contained. Said out loud at
@@ -250,12 +273,23 @@ internal sealed class AdoPrProvider : IPrProvider
                 "ADO poll of {Org}/{Project}/{Repo} stopped after {Pages} page(s) of {PageSize} with more "
                     + "results still available; {Count} PR(s) were enumerated and the rest were NOT seen this "
                     + "poll. Raise CodeReviewDaemon:MaxPagesPerPoll or MaxPrsPerPage if this repeats.",
-                org, project, repo, pages, _pageSize, pullRequests.Count);
+                org,
+                project,
+                repo,
+                pages,
+                _pageSize,
+                pullRequests.Count
+            );
         }
 
         _logger.LogDebug(
             "ADO poll of {Org}/{Project}/{Repo} returned {Count} active PR(s) across {Pages} page(s).",
-            org, project, repo, pullRequests.Count, pages);
+            org,
+            project,
+            repo,
+            pullRequests.Count,
+            pages
+        );
 
         var hwm = highWaterMark.ToString(System.Globalization.CultureInfo.InvariantCulture);
         return new PullRequestPage
@@ -289,7 +323,8 @@ internal sealed class AdoPrProvider : IPrProvider
             value.GetString(),
             System.Globalization.CultureInfo.InvariantCulture,
             System.Globalization.DateTimeStyles.RoundtripKind,
-            out var parsed)
+            out var parsed
+        )
             ? parsed
             : null;
 
@@ -313,7 +348,8 @@ internal sealed class AdoPrProvider : IPrProvider
             return null;
         }
 
-        return identity.TryGetProperty("uniqueName", out var value)
+        return
+            identity.TryGetProperty("uniqueName", out var value)
             && value.ValueKind is JsonValueKind.String
             && !string.IsNullOrWhiteSpace(value.GetString())
             ? value.GetString()
@@ -427,13 +463,14 @@ internal sealed class AdoPrProvider : IPrProvider
     /// fails closed. A value nobody has ruled on must never be guessed into a trust decision.
     /// </para>
     /// </summary>
-    private static bool? MapVisibility(string? visibility) => visibility?.ToLowerInvariant() switch
-    {
-        "public" => true,
-        "private" => false,
-        "organization" => false,
-        _ => null,
-    };
+    private static bool? MapVisibility(string? visibility) =>
+        visibility?.ToLowerInvariant() switch
+        {
+            "public" => true,
+            "private" => false,
+            "organization" => false,
+            _ => null,
+        };
 
     /// <summary>Why the PR-list payload could not establish the target project's visibility.</summary>
     private enum VisibilityGap
@@ -484,7 +521,8 @@ internal sealed class AdoPrProvider : IPrProvider
         string org,
         string? project,
         string repo,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         var unresolved = prs.Where(static p => p.IsTargetRepoPublic is null).ToList();
         if (unresolved.Count == 0)
@@ -512,7 +550,8 @@ internal sealed class AdoPrProvider : IPrProvider
                 project,
                 repo,
                 DescribeGap(group.Key.Gap),
-                group.Key.Observed);
+                group.Key.Observed
+            );
         }
 
         return null;
@@ -520,15 +559,16 @@ internal sealed class AdoPrProvider : IPrProvider
 
     /// <summary>The cause phrase for a <see cref="VisibilityGap"/>, written so the reader can tell which
     /// remedy applies without opening the code.</summary>
-    private static string DescribeGap(VisibilityGap gap) => gap switch
-    {
-        VisibilityGap.NoProject => "the PR-list payload carried no repository.project object",
-        VisibilityGap.VisibilityAbsent =>
-            "the PR-list payload's repository.project carried no visibility property (the documented ADO cloud shape)",
-        VisibilityGap.VisibilityUnrecognized =>
-            "repository.project.visibility carried a value this parser does not map to public/private",
-        _ => "the visibility was established (this line should not have been logged)",
-    };
+    private static string DescribeGap(VisibilityGap gap) =>
+        gap switch
+        {
+            VisibilityGap.NoProject => "the PR-list payload carried no repository.project object",
+            VisibilityGap.VisibilityAbsent =>
+                "the PR-list payload's repository.project carried no visibility property (the documented ADO cloud shape)",
+            VisibilityGap.VisibilityUnrecognized =>
+                "repository.project.visibility carried a value this parser does not map to public/private",
+            _ => "the visibility was established (this line should not have been logged)",
+        };
 
     /// <summary>
     /// Reads a project's visibility from ADO's org-scoped project API
@@ -546,7 +586,8 @@ internal sealed class AdoPrProvider : IPrProvider
     private async Task<bool?> TryGetProjectVisibilityAsync(
         string org,
         string? project,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         if (string.IsNullOrEmpty(project))
         {
@@ -561,12 +602,11 @@ internal sealed class AdoPrProvider : IPrProvider
 
         try
         {
-            var url =
-                $"{BaseUrl}/{org}/_apis/projects/{Uri.EscapeDataString(project)}"
-                + $"?api-version={ApiVersion}";
+            var url = $"{BaseUrl}/{org}/_apis/projects/{Uri.EscapeDataString(project)}" + $"?api-version={ApiVersion}";
 
-            using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url)
-                .WithOperation(SandboxOperation.ReadProviderMetadata);
+            using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url).WithOperation(
+                SandboxOperation.ReadProviderMetadata
+            );
             var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
             var basic = Convert.ToBase64String(Encoding.ASCII.GetBytes($":{token.Value}"));
             httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);
@@ -579,15 +619,17 @@ internal sealed class AdoPrProvider : IPrProvider
                     "ADO project fetch for {Org}/{Project} returned {Status}; visibility stays unknown.",
                     org,
                     project,
-                    (int)response.StatusCode);
+                    (int)response.StatusCode
+                );
                 return null;
             }
 
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-            var raw = document.RootElement.ValueKind is JsonValueKind.Object
-                ? StringOf(document.RootElement, "visibility")
-                : null;
+            var raw =
+                document.RootElement.ValueKind is JsonValueKind.Object
+                    ? StringOf(document.RootElement, "visibility")
+                    : null;
 
             if (MapVisibility(raw) is { } answer)
             {
@@ -597,7 +639,8 @@ internal sealed class AdoPrProvider : IPrProvider
                     org,
                     project,
                     raw,
-                    answer);
+                    answer
+                );
                 return answer;
             }
 
@@ -612,7 +655,8 @@ internal sealed class AdoPrProvider : IPrProvider
                     + "gate fails closed.",
                 org,
                 project,
-                raw is null ? "(absent or non-object body)" : raw);
+                raw is null ? "(absent or non-object body)" : raw
+            );
             return null;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -626,7 +670,11 @@ internal sealed class AdoPrProvider : IPrProvider
             // surfaces as a TaskCanceledException even though the caller's token was NOT cancelled), a
             // malformed body — leaves the visibility unknown, which fails closed. It must never fault the poll.
             _logger.LogDebug(
-                ex, "ADO project fetch for {Org}/{Project} failed; visibility stays unknown.", org, project);
+                ex,
+                "ADO project fetch for {Org}/{Project} failed; visibility stays unknown.",
+                org,
+                project
+            );
             return null;
         }
     }
@@ -634,10 +682,21 @@ internal sealed class AdoPrProvider : IPrProvider
     /// <summary>Raw per-PR metadata materialized from one ADO PR-list page, before the async recency
     /// resolution (a <see cref="JsonElement"/> can't outlive its document).</summary>
     private sealed record RawAdoPr(
-        long PrId, string HeadSha, string BaseSha, DateTimeOffset? CreatedAt, string? SourceRefName, string? Status,
-        string? Author, string? Title, string? Description, string? TargetRefName,
-        bool? IsForkPr, bool? IsTargetRepoPublic, VisibilityEvidence Visibility);
-
+        long PrId,
+        string HeadSha,
+        string BaseSha,
+        DateTimeOffset? CreatedAt,
+        string? SourceRefName,
+        string? Status,
+        PrDraftState DraftState,
+        string? Author,
+        string? Title,
+        string? Description,
+        string? TargetRefName,
+        bool? IsForkPr,
+        bool? IsTargetRepoPublic,
+        VisibilityEvidence Visibility
+    );
 
     /// <summary>
     /// Resolves each PR's recency signal (<c>UpdatedAt</c>, <c>CreatedAt</c>) for
@@ -655,7 +714,8 @@ internal sealed class AdoPrProvider : IPrProvider
         string? project,
         string repo,
         DateTimeOffset? cutoff,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         using var gate = new SemaphoreSlim(MaxRecencyLookupConcurrency);
         var tasks = prs.Select(pr => ResolveOneRecencyAsync(pr, gate, org, project, repo, cutoff, cancellationToken));
@@ -671,7 +731,8 @@ internal sealed class AdoPrProvider : IPrProvider
         string? project,
         string repo,
         DateTimeOffset? cutoff,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         // Recent PR (or recency off): no lookup; the recent opened-date is the keep signal.
         if (cutoff is not { } c || pr.CreatedAt is not { } created || created >= c)
@@ -717,7 +778,8 @@ internal sealed class AdoPrProvider : IPrProvider
         string? project,
         string repo,
         string sourceRefName,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         try
         {
@@ -726,8 +788,9 @@ internal sealed class AdoPrProvider : IPrProvider
                 + $"?searchCriteria.refName={Uri.EscapeDataString(sourceRefName)}"
                 + $"&$top=1&api-version={ApiVersion}";
 
-            using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url)
-                .WithOperation(SandboxOperation.ReadProviderMetadata);
+            using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url).WithOperation(
+                SandboxOperation.ReadProviderMetadata
+            );
             var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
             var basic = Convert.ToBase64String(Encoding.ASCII.GetBytes($":{token.Value}"));
             httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);
@@ -739,14 +802,17 @@ internal sealed class AdoPrProvider : IPrProvider
                 _logger.LogDebug(
                     "ADO pushes fetch for ref {Ref} returned {Status}; keeping the PR (recency indeterminate).",
                     sourceRefName,
-                    (int)response.StatusCode);
+                    (int)response.StatusCode
+                );
                 return null;
             }
 
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-            if (!document.RootElement.TryGetProperty("value", out var pushes)
-                || pushes.ValueKind is not JsonValueKind.Array)
+            if (
+                !document.RootElement.TryGetProperty("value", out var pushes)
+                || pushes.ValueKind is not JsonValueKind.Array
+            )
             {
                 return null;
             }
@@ -788,7 +854,7 @@ internal sealed class AdoPrProvider : IPrProvider
     /// Used by the PR-lifecycle sweep (a later task) to decide whether to merge or delete the PR's notes
     /// branch. Mirrors <see cref="ListOpenPullRequestsAsync"/>'s basic-auth + accept-json request shape.
     /// </summary>
-    public async Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken)
+    public async Task<PrStatus> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(repo);
         ArgumentException.ThrowIfNullOrEmpty(prId);
@@ -800,8 +866,9 @@ internal sealed class AdoPrProvider : IPrProvider
             $"{BaseUrl}/{org}/{project}/_apis/git/repositories/{repoName}/pullrequests/{prId}"
             + $"?api-version={ApiVersion}";
 
-        using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url)
-            .WithOperation(SandboxOperation.ReadProviderMetadata);
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url).WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
         var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
         var basic = Convert.ToBase64String(Encoding.ASCII.GetBytes($":{token.Value}"));
         httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);
@@ -812,7 +879,12 @@ internal sealed class AdoPrProvider : IPrProvider
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-        return MapPrLifecycle(document.RootElement.GetProperty("status").GetString());
+        var root = document.RootElement;
+        var status =
+            root.TryGetProperty("status", out var statusValue) && statusValue.ValueKind is JsonValueKind.String
+                ? statusValue.GetString()
+                : null;
+        return new PrStatus(MapPrLifecycle(status), MapDraftState(root, "isDraft"));
     }
 
     /// <summary>
@@ -820,19 +892,28 @@ internal sealed class AdoPrProvider : IPrProvider
     /// <c>completed</c> is Merged, <c>abandoned</c> is Abandoned. An unrecognized status is treated as Open
     /// so the sweep leaves the notes branch untouched rather than risk a wrong merge or delete.
     /// </summary>
-    private static PrLifecycle MapPrLifecycle(string? status) => status switch
-    {
-        "active" => PrLifecycle.Open,
-        "completed" => PrLifecycle.Merged,
-        "abandoned" => PrLifecycle.Abandoned,
-        _ => PrLifecycle.Open,
-    };
+    private static PrLifecycle MapPrLifecycle(string? status) =>
+        status switch
+        {
+            "active" => PrLifecycle.Open,
+            "completed" => PrLifecycle.Merged,
+            "abandoned" => PrLifecycle.Abandoned,
+            _ => PrLifecycle.Open,
+        };
 
-    private static PrLifecycleState MapLifecycle(string? status) => status switch
-    {
-        "active" => PrLifecycleState.Open,
-        "completed" => PrLifecycleState.Merged,
-        "abandoned" => PrLifecycleState.Abandoned,
-        _ => PrLifecycleState.Closed,
-    };
+    private static PrDraftState MapDraftState(JsonElement pr, string property) =>
+        pr.TryGetProperty(property, out var value) && value.ValueKind is JsonValueKind.True or JsonValueKind.False
+            ? value.GetBoolean()
+                ? PrDraftState.Draft
+                : PrDraftState.Ready
+            : PrDraftState.Unknown;
+
+    private static PrLifecycleState MapLifecycle(string? status) =>
+        status switch
+        {
+            "active" => PrLifecycleState.Open,
+            "completed" => PrLifecycleState.Merged,
+            "abandoned" => PrLifecycleState.Abandoned,
+            _ => PrLifecycleState.Closed,
+        };
 }

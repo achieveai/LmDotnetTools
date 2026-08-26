@@ -21,6 +21,7 @@ internal static class SchemaMigrations
         new Migration(5, V5Sql),
         new Migration(6, V6Sql),
         new Migration(7, V7Sql),
+        new Migration(8, V8Sql),
     ];
 
     // ── v1: initial orchestration schema ─────────────────────────────────────────────────────────
@@ -229,5 +230,13 @@ internal static class SchemaMigrations
 
         CREATE INDEX ix_policy_refusal_at_utc ON policy_refusal (at_utc);
         CREATE INDEX ix_policy_refusal_kind   ON policy_refusal (kind);
+        """;
+
+    // ── v8: provider-neutral PR readiness ───────────────────────────────────────────────────────────
+    // Existing rows become Unknown and therefore cannot resume until a fresh provider observation proves
+    // Ready. Readiness is mutable metadata, never part of a review run's identity.
+    private const string V8Sql = """
+        ALTER TABLE review_run
+        ADD COLUMN pr_draft_state TEXT NOT NULL DEFAULT 'Unknown';
         """;
 }

@@ -1,4 +1,5 @@
 using System.Net;
+using AchieveAi.LmDotnetTools.LmSampleShared.Release;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
@@ -34,7 +35,9 @@ public sealed class ReviewHostCollaborationPreflightTests
         var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5051/") };
         return new ReviewHostCollaborationPreflight(
             new LmStreamingS2SClient(http, "s", "id", "key"),
-            NullLogger<ReviewHostCollaborationPreflight>.Instance);
+            ReleaseIdentity.Development("daemon"),
+            NullLogger<ReviewHostCollaborationPreflight>.Instance
+        );
     }
 
     /// <summary>
@@ -50,20 +53,26 @@ public sealed class ReviewHostCollaborationPreflightTests
             _ => new HttpResponseMessage(HttpStatusCode.BadRequest)
             {
                 Content = new StringContent(
-                    "{\"error\":\"Agent collaboration is disabled.\",\"code\":\"collaboration_unavailable\"}"),
-            });
+                    "{\"error\":\"Agent collaboration is disabled.\",\"code\":\"collaboration_unavailable\"}"
+                ),
+            }
+        );
 
         var act = () => Preflight(handler).StartAsync(CancellationToken.None);
 
         var thrown = (await act.Should().ThrowAsync<ReviewHostContractException>()).Which;
         // The operator has to be able to act on this without reading the daemon's source, so the message must
         // carry the exact setting to change — not merely that "collaboration is unavailable".
-        thrown.Message.Should().Contain(
-            "AgentCollaboration__Enabled=true", "the message names the exact setting the operator must set");
-        thrown.Message.Should().Contain(
-            "not retroactive",
-            "restarting the host does not repair the PRs already reviewed against it, and an operator who "
-                + "assumes otherwise will not go back and re-review them");
+        thrown
+            .Message.Should()
+            .Contain("AgentCollaboration__Enabled=true", "the message names the exact setting the operator must set");
+        thrown
+            .Message.Should()
+            .Contain(
+                "not retroactive",
+                "restarting the host does not repair the PRs already reviewed against it, and an operator who "
+                    + "assumes otherwise will not go back and re-review them"
+            );
     }
 
     /// <summary>
@@ -77,29 +86,34 @@ public sealed class ReviewHostCollaborationPreflightTests
     {
         var handler = new FakeHttpMessageHandler().On(
             req => req.RequestUri!.ToString().Contains(TranscriptRoute, StringComparison.Ordinal),
-            _ => throw new HttpRequestException("Connection refused"));
+            _ => throw new HttpRequestException("Connection refused")
+        );
 
         var act = () => Preflight(handler).StartAsync(CancellationToken.None);
 
-        await act.Should().NotThrowAsync(
-            "an unreachable host is a real problem with its own diagnosis elsewhere, but it is not evidence "
-                + "that collaboration is disabled, and blocking startup on it would make an unrelated outage "
-                + "look like a misconfiguration");
+        await act.Should()
+            .NotThrowAsync(
+                "an unreachable host is a real problem with its own diagnosis elsewhere, but it is not evidence "
+                    + "that collaboration is disabled, and blocking startup on it would make an unrelated outage "
+                    + "look like a misconfiguration"
+            );
     }
 
     /// <summary>The ordinary path: the route answers normally, so the setting is on and startup proceeds.</summary>
     [Fact]
     public async Task StartAsync_completes_when_the_transcript_route_answers_normally()
     {
-        var handler = new FakeHttpMessageHandler().OnJson(
-            HttpMethod.Get, TranscriptRoute, "{\"entries\":[]}");
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, TranscriptRoute, "{\"entries\":[]}");
 
         var act = () => Preflight(handler).StartAsync(CancellationToken.None);
 
         await act.Should().NotThrowAsync();
-        handler.Requests.Should().ContainSingle(
-            "the assertion is made once at startup, not polled — a second call would mean it moved into the "
-                + "review path, where it would cost a round trip per PR");
+        handler
+            .Requests.Should()
+            .ContainSingle(
+                "the assertion is made once at startup, not polled — a second call would mean it moved into the "
+                    + "review path, where it would cost a round trip per PR"
+            );
     }
 
     /// <summary>Stopping is not a place to do work: the daemon may be shutting down because startup itself

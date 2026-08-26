@@ -23,30 +23,43 @@ public sealed class LmStreamingS2SClientTests
     public async Task ProvisionAsync_sends_workspace_agent_mode_and_attaches_the_auth_headers()
     {
         string? capturedS2SAuth = null;
-        var handler = new FakeHttpMessageHandler()
-            .On(
-                req => req.Method == HttpMethod.Post
-                    && req.RequestUri!.ToString().Contains("api/conversations", StringComparison.Ordinal),
-                req =>
+        var handler = new FakeHttpMessageHandler().On(
+            req =>
+                req.Method == HttpMethod.Post
+                && req.RequestUri!.ToString().Contains("api/conversations", StringComparison.Ordinal),
+            req =>
+            {
+                capturedS2SAuth = req.Headers.TryGetValues("X-S2S-Auth", out var values)
+                    ? values.FirstOrDefault()
+                    : null;
+                return new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    capturedS2SAuth = req.Headers.TryGetValues("X-S2S-Auth", out var values)
-                        ? values.FirstOrDefault()
-                        : null;
-                    return new HttpResponseMessage(HttpStatusCode.OK)
-                    {
-                        Content = new StringContent("{\"threadId\":\"thread-abc123\"}"),
-                    };
-                });
+                    Content = new StringContent("{\"threadId\":\"thread-abc123\"}"),
+                };
+            }
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(
-            http, s2sSecret: "s2s-secret", sandboxAppId: "codereview-daemon", sandboxAppKey: "sbx-key");
+            http,
+            s2sSecret: "s2s-secret",
+            sandboxAppId: "codereview-daemon",
+            sandboxAppKey: "sbx-key"
+        );
 
         var threadId = await client.ProvisionAsync(
-            "ws-1", "openai", "workspace-agent", "REVIEW METHODOLOGY", "gpt-5.6-sol", CancellationToken.None);
+            "ws-1",
+            "openai",
+            "workspace-agent",
+            "REVIEW METHODOLOGY",
+            "gpt-5.6-sol",
+            CancellationToken.None
+        );
 
         threadId.Should().Be("thread-abc123");
         var recorded = handler.Requests.Should().ContainSingle().Subject;
-        recorded.Body.Should().Contain("\"workspaceId\":\"ws-1\"")
+        recorded
+            .Body.Should()
+            .Contain("\"workspaceId\":\"ws-1\"")
             .And.Contain("\"providerId\":\"openai\"")
             .And.Contain("\"modeId\":\"workspace-agent\"")
             // The review profile's system prompt is the only channel carrying the daemon's methodology,
@@ -68,14 +81,22 @@ public sealed class LmStreamingS2SClientTests
     [Fact]
     public async Task ProvisionAsync_omits_the_auth_headers_when_no_secret_or_app_credentials_are_configured()
     {
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-x\"}");
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "api/conversations",
+            "{\"threadId\":\"thread-x\"}"
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, s2sSecret: null, sandboxAppId: null, sandboxAppKey: null);
 
         _ = await client.ProvisionAsync(
-            "ws-1", "openai", "workspace-agent",
-            systemPromptAppendix: null, subAgentModelId: null, CancellationToken.None);
+            "ws-1",
+            "openai",
+            "workspace-agent",
+            systemPromptAppendix: null,
+            subAgentModelId: null,
+            CancellationToken.None
+        );
 
         var recorded = handler.Requests.Should().ContainSingle().Subject;
         recorded.SbxAppId.Should().BeNull();
@@ -92,17 +113,24 @@ public sealed class LmStreamingS2SClientTests
     {
         // CodeReviewDaemonOptions.SubAgentModelId defaults to "" — not null — so the unconfigured daemon
         // hits this path on every provision, and it is the path that must not put "" on the wire.
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-y\"}");
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "api/conversations",
+            "{\"threadId\":\"thread-y\"}"
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, s2sSecret: null, sandboxAppId: null, sandboxAppKey: null);
 
         _ = await client.ProvisionAsync(
-            "ws-1", "openai", "workspace-agent",
-            systemPromptAppendix: null, subAgentModelId: "   ", CancellationToken.None);
+            "ws-1",
+            "openai",
+            "workspace-agent",
+            systemPromptAppendix: null,
+            subAgentModelId: "   ",
+            CancellationToken.None
+        );
 
-        handler.Requests.Should().ContainSingle().Subject.Body
-            .Should().Contain("\"subAgentModelId\":null");
+        handler.Requests.Should().ContainSingle().Subject.Body.Should().Contain("\"subAgentModelId\":null");
     }
 
     [Fact]
@@ -113,12 +141,14 @@ public sealed class LmStreamingS2SClientTests
                 HttpMethod.Get,
                 "api/workspaces",
                 "[{\"id\":\"ws-1\",\"name\":\"Review PR #118\",\"directoryRelPath\":\"review-pr-118\","
-                    + "\"marketplaces\":[\"code-reviewer\"]}]")
+                    + "\"marketplaces\":[\"code-reviewer\"]}]"
+            )
             .OnJson(
                 HttpMethod.Post,
                 "api/workspaces",
                 "{\"id\":\"ws-2\",\"name\":\"Review PR #200\",\"directoryRelPath\":\"review-pr-200\","
-                    + "\"marketplaces\":[\"code-reviewer\"]}");
+                    + "\"marketplaces\":[\"code-reviewer\"]}"
+            );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
@@ -129,12 +159,18 @@ public sealed class LmStreamingS2SClientTests
         existing.Marketplaces.Should().ContainSingle().Which.Should().Be("code-reviewer");
 
         var created = await client.CreateWorkspaceAsync(
-            "Review PR #200", "review-pr-200", ["code-reviewer"], CancellationToken.None);
+            "Review PR #200",
+            "review-pr-200",
+            ["code-reviewer"],
+            CancellationToken.None
+        );
         created.Id.Should().Be("ws-2");
         created.DirectoryRelPath.Should().Be("review-pr-200");
 
         var postBody = handler.Requests.Single(r => r.Method == HttpMethod.Post).Body;
-        postBody.Should().Contain("\"name\":\"Review PR #200\"")
+        postBody
+            .Should()
+            .Contain("\"name\":\"Review PR #200\"")
             .And.Contain("\"directoryRelPath\":\"review-pr-200\"")
             .And.Contain("\"marketplaces\":[\"code-reviewer\"]");
     }
@@ -142,22 +178,54 @@ public sealed class LmStreamingS2SClientTests
     [Fact]
     public async Task ListWorkspacesAsync_reads_the_gateway_catalog_envelope()
     {
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(
-                HttpMethod.Get,
-                "api/workspaces",
-                "{\"gateway\":{\"canonicalBaseUrl\":\"http://gateway\",\"appId\":\"review\","
-                    + "\"available\":true,\"error\":null},\"workspaces\":[{\"id\":\"ws-1\","
-                    + "\"name\":\"Review\",\"directoryRelPath\":\"review-slot-0\","
-                    + "\"marketplaces\":[\"gb-plugins\"],\"isSystemDefined\":false,"
-                    + "\"createdAt\":1,\"updatedAt\":1,\"compatibility\":\"compatible\","
-                    + "\"unsupportedMarketplaces\":[]}]}");
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "api/workspaces",
+            "{\"gateway\":{\"canonicalBaseUrl\":\"http://gateway\",\"appId\":\"review\","
+                + "\"available\":true,\"error\":null},\"workspaces\":[{\"id\":\"ws-1\","
+                + "\"name\":\"Review\",\"directoryRelPath\":\"review-slot-0\","
+                + "\"marketplaces\":[\"gb-plugins\"],\"isSystemDefined\":false,"
+                + "\"createdAt\":1,\"updatedAt\":1,\"compatibility\":\"compatible\","
+                + "\"unsupportedMarketplaces\":[]}]}"
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
         var listed = await client.ListWorkspacesAsync(CancellationToken.None);
 
         listed.Should().ContainSingle().Which.DirectoryRelPath.Should().Be("review-slot-0");
+    }
+
+    [Fact]
+    public async Task EnsureHostContractAsync_requires_the_per_turn_model_capability()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "capabilities",
+            "{\"messageIdempotency\":true,\"spawnSuppression\":true,\"perTurnModelOverride\":false}"
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var act = () => client.EnsureHostContractAsync(CancellationToken.None);
+
+        await act.Should().ThrowAsync<ReviewHostContractException>().WithMessage("*perTurnModelOverride*");
+    }
+
+    [Fact]
+    public async Task EnsureHostContractAsync_accepts_the_complete_contract()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "capabilities",
+            "{\"messageIdempotency\":true,\"spawnSuppression\":true,\"perTurnModelOverride\":true}"
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var act = () => client.EnsureHostContractAsync(CancellationToken.None);
+
+        await act.Should().NotThrowAsync();
     }
 
     [Fact]
@@ -168,19 +236,73 @@ public sealed class LmStreamingS2SClientTests
             .OnJson(
                 HttpMethod.Get,
                 "/status",
-                "{\"status\":\"Completed\",\"runId\":\"run-9\",\"response\":{\"text\":\"LGTM, ship it.\"}}");
+                "{\"status\":\"Completed\",\"runId\":\"run-9\",\"response\":{\"text\":\"LGTM, ship it.\"}}"
+            );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
         var inputId = await client.SendMessageAsync(
-            "thread-1", "review this PR", suppressSubAgentSpawning: false, idempotencyKey: null,
-            CancellationToken.None);
+            "thread-1",
+            "review this PR",
+            suppressSubAgentSpawning: false,
+            idempotencyKey: null,
+            CancellationToken.None
+        );
         inputId.Should().Be("input-1");
 
         var status = await client.GetStatusByInputIdAsync("thread-1", "input-1", CancellationToken.None);
         status.Status.Should().Be("Completed");
         status.RunId.Should().Be("run-9");
         status.ResponseText.Should().Be("LGTM, ship it.");
+    }
+
+    [Fact]
+    public async Task SendMessageAsync_puts_the_model_on_the_wire_and_requires_the_exact_acknowledgement()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "/messages",
+            "{\"inputId\":\"input-1\",\"modelId\":\"gpt-5.6-sol\"}"
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var accepted = await client.SendMessageAcceptedAsync(
+            "thread-1",
+            "synthesize",
+            suppressSubAgentSpawning: false,
+            idempotencyKey: null,
+            modelId: "  gpt-5.6-sol  ",
+            CancellationToken.None
+        );
+
+        accepted.InputId.Should().Be("input-1");
+        accepted.ModelId.Should().Be("gpt-5.6-sol");
+        handler.Requests.Single().Body.Should().Contain("\"modelId\":\"gpt-5.6-sol\"");
+    }
+
+    [Theory]
+    [InlineData("{\"inputId\":\"input-1\"}")]
+    [InlineData("{\"inputId\":\"input-1\",\"modelId\":\"gpt-5.6-terra\"}")]
+    public async Task SendMessageAsync_fails_closed_when_the_model_acknowledgement_is_missing_or_different(
+        string acknowledgement
+    )
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Post, "/messages", acknowledgement);
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var act = () =>
+            client.SendMessageAsync(
+                "thread-1",
+                "synthesize",
+                suppressSubAgentSpawning: false,
+                idempotencyKey: null,
+                modelId: "gpt-5.6-sol",
+                CancellationToken.None
+            );
+
+        await act.Should().ThrowAsync<ReviewHostContractException>().WithMessage("*gpt-5.6-sol*");
     }
 
     /// <summary>
@@ -190,14 +312,21 @@ public sealed class LmStreamingS2SClientTests
     [Fact]
     public async Task SendMessageAsync_puts_the_suppression_flag_on_the_wire_and_accepts_the_hosts_acknowledgement()
     {
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\",\"spawningSuppressed\":true}");
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "/messages",
+            "{\"inputId\":\"input-1\",\"spawningSuppressed\":true}"
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
         var inputId = await client.SendMessageAsync(
-            "thread-1", "synthesize", suppressSubAgentSpawning: true, idempotencyKey: null,
-            CancellationToken.None);
+            "thread-1",
+            "synthesize",
+            suppressSubAgentSpawning: true,
+            idempotencyKey: null,
+            CancellationToken.None
+        );
 
         inputId.Should().Be("input-1");
         handler.Requests.Single().Body.Should().Contain("\"suppressSubAgentSpawning\":true");
@@ -211,17 +340,20 @@ public sealed class LmStreamingS2SClientTests
     [Fact]
     public async Task SendMessageAsync_fails_closed_when_the_host_does_not_acknowledge_the_suppression()
     {
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}");
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}");
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
-        var act = () => client.SendMessageAsync(
-            "thread-1", "synthesize", suppressSubAgentSpawning: true, idempotencyKey: null,
-            CancellationToken.None);
+        var act = () =>
+            client.SendMessageAsync(
+                "thread-1",
+                "synthesize",
+                suppressSubAgentSpawning: true,
+                idempotencyKey: null,
+                CancellationToken.None
+            );
 
-        _ = await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*spawningSuppressed*");
+        _ = await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*spawningSuppressed*");
     }
 
     /// <summary>The key has to reach the host, and the host's echo is what proves the send is REPEATABLE:
@@ -230,13 +362,20 @@ public sealed class LmStreamingS2SClientTests
     public async Task SendMessageAsync_puts_the_idempotency_key_on_the_wire_and_accepts_the_hosts_acknowledgement()
     {
         var handler = new FakeHttpMessageHandler().OnJson(
-            HttpMethod.Post, "/messages", "{\"inputId\":\"turn-key-1\",\"idempotencyKeyHonored\":true}");
+            HttpMethod.Post,
+            "/messages",
+            "{\"inputId\":\"turn-key-1\",\"idempotencyKeyHonored\":true}"
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
         var inputId = await client.SendMessageAsync(
-            "thread-1", "synthesize", suppressSubAgentSpawning: false, idempotencyKey: "turn-key-1",
-            CancellationToken.None);
+            "thread-1",
+            "synthesize",
+            suppressSubAgentSpawning: false,
+            idempotencyKey: "turn-key-1",
+            CancellationToken.None
+        );
 
         inputId.Should().Be("turn-key-1");
         handler.Requests.Single().Body.Should().Contain("\"idempotencyKey\":\"turn-key-1\"");
@@ -250,30 +389,67 @@ public sealed class LmStreamingS2SClientTests
     [Fact]
     public async Task SendMessageAsync_fails_closed_when_the_host_does_not_acknowledge_the_idempotency_key()
     {
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"host-minted-id\"}");
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "/messages",
+            "{\"inputId\":\"host-minted-id\"}"
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
-        var act = () => client.SendMessageAsync(
-            "thread-1", "synthesize", suppressSubAgentSpawning: false, idempotencyKey: "turn-key-1",
-            CancellationToken.None);
+        var act = () =>
+            client.SendMessageAsync(
+                "thread-1",
+                "synthesize",
+                suppressSubAgentSpawning: false,
+                idempotencyKey: "turn-key-1",
+                CancellationToken.None
+            );
 
         _ = await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*idempotencyKeyHonored*");
+    }
+
+    [Fact]
+    public async Task SendMessageAcceptedAsync_rejects_a_model_mismatched_idempotent_replay()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "/messages",
+            "{\"inputId\":\"persisted-input\",\"idempotencyKeyHonored\":true,\"modelId\":\"model-A\"}"
+        );
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var act = () =>
+            client.SendMessageAcceptedAsync(
+                "thread-1",
+                "synthesize",
+                suppressSubAgentSpawning: false,
+                idempotencyKey: "synthesis-turn",
+                modelId: "model-B",
+                CancellationToken.None
+            );
+
+        _ = await act.Should()
+            .ThrowAsync<ReviewHostContractException>()
+            .WithMessage("*did not acknowledge synthesis model 'model-B'*");
     }
 
     /// <summary>An ordinary send asks for nothing, so an un-acknowledging host is fine.</summary>
     [Fact]
     public async Task SendMessageAsync_does_not_require_an_acknowledgement_when_suppression_was_not_requested()
     {
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}");
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}");
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
         var inputId = await client.SendMessageAsync(
-            "thread-1", "review this PR", suppressSubAgentSpawning: false, idempotencyKey: null,
-            CancellationToken.None);
+            "thread-1",
+            "review this PR",
+            suppressSubAgentSpawning: false,
+            idempotencyKey: null,
+            CancellationToken.None
+        );
 
         inputId.Should().Be("input-1");
         handler.Requests.Single().Body.Should().Contain("\"suppressSubAgentSpawning\":false");
@@ -282,8 +458,11 @@ public sealed class LmStreamingS2SClientTests
     [Fact]
     public async Task GetStatusByInputIdAsync_returns_null_response_text_while_the_run_is_still_in_progress()
     {
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(HttpMethod.Get, "/status", "{\"status\":\"InProgress\",\"runId\":\"run-9\"}");
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/status",
+            "{\"status\":\"InProgress\",\"runId\":\"run-9\"}"
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
@@ -297,19 +476,23 @@ public sealed class LmStreamingS2SClientTests
     public async Task DeleteConversationAsync_discards_the_conversation_and_carries_the_auth_headers()
     {
         string? capturedS2SAuth = null;
-        var handler = new FakeHttpMessageHandler()
-            .On(
-                req => req.Method == HttpMethod.Delete,
-                req =>
-                {
-                    capturedS2SAuth = req.Headers.TryGetValues("X-S2S-Auth", out var values)
-                        ? values.FirstOrDefault()
-                        : null;
-                    return new HttpResponseMessage(HttpStatusCode.NoContent);
-                });
+        var handler = new FakeHttpMessageHandler().On(
+            req => req.Method == HttpMethod.Delete,
+            req =>
+            {
+                capturedS2SAuth = req.Headers.TryGetValues("X-S2S-Auth", out var values)
+                    ? values.FirstOrDefault()
+                    : null;
+                return new HttpResponseMessage(HttpStatusCode.NoContent);
+            }
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(
-            http, s2sSecret: "s2s-secret", sandboxAppId: "codereview-daemon", sandboxAppKey: "sbx-key");
+            http,
+            s2sSecret: "s2s-secret",
+            sandboxAppId: "codereview-daemon",
+            sandboxAppKey: "sbx-key"
+        );
 
         var deleted = await client.DeleteConversationAsync("thread-abc123", CancellationToken.None);
 
@@ -328,8 +511,12 @@ public sealed class LmStreamingS2SClientTests
     {
         // The review host 404s a thread it no longer has (deleted by hand, host storage reset). That is the
         // state the retention sweep wanted, reached by another route — not an error to retry forever.
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(HttpMethod.Delete, "api/conversations", "{}", HttpStatusCode.NotFound);
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Delete,
+            "api/conversations",
+            "{}",
+            HttpStatusCode.NotFound
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
@@ -341,8 +528,12 @@ public sealed class LmStreamingS2SClientTests
     [Fact]
     public async Task DeleteConversationAsync_throws_on_a_server_error_so_the_caller_can_retry()
     {
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(HttpMethod.Delete, "api/conversations", "boom", HttpStatusCode.InternalServerError);
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Delete,
+            "api/conversations",
+            "boom",
+            HttpStatusCode.InternalServerError
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
@@ -356,43 +547,52 @@ public sealed class LmStreamingS2SClientTests
     {
         // The review host isn't listening: the handler throws a bare ConnectionRefused SocketException, which
         // HttpClient propagates unwrapped. The client must translate that into the actionable "start it" error.
-        var handler = new FakeHttpMessageHandler()
-            .On(_ => true, _ => throw new SocketException((int)SocketError.ConnectionRefused));
+        var handler = new FakeHttpMessageHandler().On(
+            _ => true,
+            _ => throw new SocketException((int)SocketError.ConnectionRefused)
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
         var act = () => client.ListWorkspacesAsync(CancellationToken.None);
 
         (await act.Should().ThrowAsync<S2SConnectionException>())
-            .Which.Message.Should().Contain("http://localhost:5051");
+            .Which.Message.Should()
+            .Contain("http://localhost:5051");
     }
 
     [Fact]
     public async Task GetSubAgentTreeAsync_MapsEveryFieldAndAttachesTheAuthHeaders_ForASchemaV1Graph()
     {
         string? capturedS2SAuth = null;
-        var handler = new FakeHttpMessageHandler()
-            .On(
-                req => req.Method == HttpMethod.Get
-                    && req.RequestUri!.ToString().Contains("subagents?recursive=true", StringComparison.Ordinal),
-                req =>
+        var handler = new FakeHttpMessageHandler().On(
+            req =>
+                req.Method == HttpMethod.Get
+                && req.RequestUri!.ToString().Contains("subagents?recursive=true", StringComparison.Ordinal),
+            req =>
+            {
+                capturedS2SAuth = req.Headers.TryGetValues("X-S2S-Auth", out var values)
+                    ? values.FirstOrDefault()
+                    : null;
+                return new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    capturedS2SAuth = req.Headers.TryGetValues("X-S2S-Auth", out var values)
-                        ? values.FirstOrDefault()
-                        : null;
-                    return new HttpResponseMessage(HttpStatusCode.OK)
-                    {
-                        Content = new StringContent(
-                            "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"name\":\"reviewer-a\","
-                                + "\"template\":\"reviewer\",\"task\":\"review file X\",\"status\":\"completed\","
-                                + "\"threadId\":\"thread-a1\",\"lastActivityUtc\":\"2026-01-01T00:00:00Z\","
-                                + "\"parentThreadId\":\"thread-root\",\"depth\":1,"
-                                + "\"terminalAtUtc\":\"2026-01-01T00:05:00Z\",\"failureCode\":null}]}"),
-                    };
-                });
+                    Content = new StringContent(
+                        "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"name\":\"reviewer-a\","
+                            + "\"template\":\"reviewer\",\"task\":\"review file X\",\"status\":\"completed\","
+                            + "\"threadId\":\"thread-a1\",\"lastActivityUtc\":\"2026-01-01T00:00:00Z\","
+                            + "\"parentThreadId\":\"thread-root\",\"depth\":1,"
+                            + "\"terminalAtUtc\":\"2026-01-01T00:05:00Z\",\"failureCode\":null}]}"
+                    ),
+                };
+            }
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(
-            http, s2sSecret: "s2s-secret", sandboxAppId: "codereview-daemon", sandboxAppKey: "sbx-key");
+            http,
+            s2sSecret: "s2s-secret",
+            sandboxAppId: "codereview-daemon",
+            sandboxAppKey: "sbx-key"
+        );
 
         var snapshot = await client.GetSubAgentTreeAsync("thread-root", CancellationToken.None);
 
@@ -418,14 +618,14 @@ public sealed class LmStreamingS2SClientTests
     [Fact]
     public async Task GetSubAgentTreeAsync_ReadsTheModelRoutingFieldsWhenTheHostReportsThem()
     {
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(
-                HttpMethod.Get,
-                "subagents",
-                "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"threadId\":\"thread-a1\","
-                    + "\"parentThreadId\":\"thread-root\",\"depth\":1,\"template\":\"reviewer\","
-                    + "\"status\":\"completed\",\"effectiveModelId\":\"gpt-5.6-sol\","
-                    + "\"effectiveModelIntelligence\":3,\"modelSelectionSource\":\"template-tier\"}]}");
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "subagents",
+            "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"threadId\":\"thread-a1\","
+                + "\"parentThreadId\":\"thread-root\",\"depth\":1,\"template\":\"reviewer\","
+                + "\"status\":\"completed\",\"effectiveModelId\":\"gpt-5.6-sol\","
+                + "\"effectiveModelIntelligence\":3,\"modelSelectionSource\":\"template-tier\"}]}"
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
@@ -445,13 +645,13 @@ public sealed class LmStreamingS2SClientTests
         // daemon polls an old host that omits all three. Reading them as required would turn that omission
         // into a throw at the settlement barrier and fail the whole review over presentation fields — and
         // bumping schemaVersion instead would fail EVERY review against EVERY not-yet-updated host.
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(
-                HttpMethod.Get,
-                "subagents",
-                "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"threadId\":\"thread-a1\","
-                    + "\"parentThreadId\":\"thread-root\",\"depth\":1,\"template\":\"reviewer\","
-                    + "\"status\":\"completed\"}]}");
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "subagents",
+            "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"threadId\":\"thread-a1\","
+                + "\"parentThreadId\":\"thread-root\",\"depth\":1,\"template\":\"reviewer\","
+                + "\"status\":\"completed\"}]}"
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
@@ -470,14 +670,14 @@ public sealed class LmStreamingS2SClientTests
     {
         // A tier that arrives as a string (or anything non-integral) is a host that changed its mind about
         // the shape. Losing the roster over it would cost the review; losing the tier costs a table cell.
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(
-                HttpMethod.Get,
-                "subagents",
-                "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"threadId\":\"thread-a1\","
-                    + "\"parentThreadId\":\"thread-root\",\"depth\":1,\"template\":\"reviewer\","
-                    + "\"status\":\"completed\",\"effectiveModelId\":\"gpt-5.6-luna\","
-                    + "\"effectiveModelIntelligence\":\"three\"}]}");
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "subagents",
+            "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"threadId\":\"thread-a1\","
+                + "\"parentThreadId\":\"thread-root\",\"depth\":1,\"template\":\"reviewer\","
+                + "\"status\":\"completed\",\"effectiveModelId\":\"gpt-5.6-luna\","
+                + "\"effectiveModelIntelligence\":\"three\"}]}"
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
@@ -493,12 +693,12 @@ public sealed class LmStreamingS2SClientTests
     {
         // The non-recursive (pre-Task-2) endpoint returns a bare SubAgentSummary[] with no envelope at
         // all — a daemon polling a not-yet-upgraded host must not silently misread that as an empty tree.
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(
-                HttpMethod.Get,
-                "subagents",
-                "[{\"agentId\":\"a1\",\"template\":\"reviewer\",\"task\":\"t\",\"status\":\"completed\","
-                    + "\"threadId\":\"thread-a1\"}]");
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "subagents",
+            "[{\"agentId\":\"a1\",\"template\":\"reviewer\",\"task\":\"t\",\"status\":\"completed\","
+                + "\"threadId\":\"thread-a1\"}]"
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
@@ -510,8 +710,7 @@ public sealed class LmStreamingS2SClientTests
     [Fact]
     public async Task GetSubAgentTreeAsync_FailsClosed_WhenSchemaVersionIsAbsent()
     {
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(HttpMethod.Get, "subagents", "{\"nodes\":[]}");
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "subagents", "{\"nodes\":[]}");
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
@@ -523,8 +722,11 @@ public sealed class LmStreamingS2SClientTests
     [Fact]
     public async Task GetSubAgentTreeAsync_FailsClosed_WhenSchemaVersionIsUnsupported()
     {
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(HttpMethod.Get, "subagents", "{\"schemaVersion\":2,\"nodes\":[]}");
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "subagents",
+            "{\"schemaVersion\":2,\"nodes\":[]}"
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
@@ -538,12 +740,12 @@ public sealed class LmStreamingS2SClientTests
     {
         // "parentThreadId" is missing — a required relationship field on the recursive contract (unlike
         // the flat, non-recursive SubAgentSummary shape, where it is optional).
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(
-                HttpMethod.Get,
-                "subagents",
-                "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"threadId\":\"thread-a1\",\"depth\":1,"
-                    + "\"template\":\"reviewer\",\"status\":\"completed\"}]}");
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "subagents",
+            "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"threadId\":\"thread-a1\",\"depth\":1,"
+                + "\"template\":\"reviewer\",\"status\":\"completed\"}]}"
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
@@ -557,13 +759,13 @@ public sealed class LmStreamingS2SClientTests
     {
         // A malformed/new wire status must fail closed onto the NONTERMINAL Unknown status (which keeps
         // the barrier waiting) rather than throwing a JSON enum error or silently defaulting to terminal.
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(
-                HttpMethod.Get,
-                "subagents",
-                "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"threadId\":\"thread-a1\","
-                    + "\"parentThreadId\":\"thread-root\",\"depth\":1,\"template\":\"reviewer\","
-                    + "\"status\":\"Paused\"}]}");
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "subagents",
+            "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"threadId\":\"thread-a1\","
+                + "\"parentThreadId\":\"thread-root\",\"depth\":1,\"template\":\"reviewer\","
+                + "\"status\":\"Paused\"}]}"
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
@@ -578,13 +780,13 @@ public sealed class LmStreamingS2SClientTests
         // ParseNodeStatus's doc comment promises case-insensitive matching for recognized values, not just
         // the always-lowercase wire convention — pin a PascalCase status so a regression that drops the
         // ToLowerInvariant() normalization (and would otherwise fail closed to Unknown) is caught here.
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(
-                HttpMethod.Get,
-                "subagents",
-                "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"threadId\":\"thread-a1\","
-                    + "\"parentThreadId\":\"thread-root\",\"depth\":1,\"template\":\"reviewer\","
-                    + "\"status\":\"Completed\"}]}");
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "subagents",
+            "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"threadId\":\"thread-a1\","
+                + "\"parentThreadId\":\"thread-root\",\"depth\":1,\"template\":\"reviewer\","
+                + "\"status\":\"Completed\"}]}"
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
@@ -599,13 +801,13 @@ public sealed class LmStreamingS2SClientTests
         // An empty "agentId" is present in the JSON shape but semantically absent — the same fail-closed
         // guarantee that applies to a missing relationship field must apply here too, matching the stricter
         // empty-string rejection this file already applies via ReadStringProperty for other endpoints.
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(
-                HttpMethod.Get,
-                "subagents",
-                "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"\",\"threadId\":\"thread-a1\","
-                    + "\"parentThreadId\":\"thread-root\",\"depth\":1,\"template\":\"reviewer\","
-                    + "\"status\":\"completed\"}]}");
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "subagents",
+            "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"\",\"threadId\":\"thread-a1\","
+                + "\"parentThreadId\":\"thread-root\",\"depth\":1,\"template\":\"reviewer\","
+                + "\"status\":\"completed\"}]}"
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
@@ -628,29 +830,39 @@ public sealed class LmStreamingS2SClientTests
     [Fact]
     public async Task EnsureAgentCollaborationAsync_throws_when_the_host_reports_collaboration_unavailable()
     {
-        var handler = new FakeHttpMessageHandler()
-            .On(
-                req => req.RequestUri!.ToString().Contains("/transcript", StringComparison.Ordinal),
-                _ => new HttpResponseMessage(HttpStatusCode.NotFound)
-                {
-                    Content = new StringContent(
-                        "{\"error\":\"Agent collaboration is disabled.\",\"code\":\"collaboration_unavailable\"}"),
-                });
+        var handler = new FakeHttpMessageHandler().On(
+            req => req.RequestUri!.ToString().Contains("/transcript", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.NotFound)
+            {
+                Content = new StringContent(
+                    "{\"error\":\"Agent collaboration is disabled.\",\"code\":\"collaboration_unavailable\"}"
+                ),
+            }
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "secret", "app-id", "app-key");
 
         var act = () => client.EnsureAgentCollaborationAsync(CancellationToken.None);
 
         var thrown = (await act.Should().ThrowAsync<ReviewHostContractException>()).Which;
-        thrown.Message.Should().Contain(
-            "AgentCollaboration",
-            "someone hitting this at 2am must be told the SETTING, not just that something is unavailable");
-        thrown.Message.Should().Contain(
-            "transcript",
-            "and the route, so the claim is checkable against the host without reading this source");
-        thrown.Message.Should().MatchRegex(
-            "(?i)stub|could not read|sub-agent",
-            "and the consequence — silently stubbed sub-agent notes is why this is worth failing startup over");
+        thrown
+            .Message.Should()
+            .Contain(
+                "AgentCollaboration",
+                "someone hitting this at 2am must be told the SETTING, not just that something is unavailable"
+            );
+        thrown
+            .Message.Should()
+            .Contain(
+                "transcript",
+                "and the route, so the claim is checkable against the host without reading this source"
+            );
+        thrown
+            .Message.Should()
+            .MatchRegex(
+                "(?i)stub|could not read|sub-agent",
+                "and the consequence — silently stubbed sub-agent notes is why this is worth failing startup over"
+            );
     }
 
     /// <summary>
@@ -664,22 +876,25 @@ public sealed class LmStreamingS2SClientTests
     [Fact]
     public async Task EnsureAgentCollaborationAsync_passes_when_the_route_reports_an_unknown_thread()
     {
-        var handler = new FakeHttpMessageHandler()
-            .On(
-                req => req.RequestUri!.ToString().Contains("/transcript", StringComparison.Ordinal),
-                _ => new HttpResponseMessage(HttpStatusCode.NotFound)
-                {
-                    Content = new StringContent(
-                        "{\"error\":\"Conversation 'thread-doesnotexist000' not found.\",\"code\":\"unknown_thread\"}"),
-                });
+        var handler = new FakeHttpMessageHandler().On(
+            req => req.RequestUri!.ToString().Contains("/transcript", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.NotFound)
+            {
+                Content = new StringContent(
+                    "{\"error\":\"Conversation 'thread-doesnotexist000' not found.\",\"code\":\"unknown_thread\"}"
+                ),
+            }
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "secret", "app-id", "app-key");
 
         var act = () => client.EnsureAgentCollaborationAsync(CancellationToken.None);
 
-        await act.Should().NotThrowAsync(
-            "the route answered, so collaboration is on — a 404 for a thread that never existed is the "
-                + "CORRECT response and must not be read as the feature being off");
+        await act.Should()
+            .NotThrowAsync(
+                "the route answered, so collaboration is on — a 404 for a thread that never existed is the "
+                    + "CORRECT response and must not be read as the feature being off"
+            );
     }
 
     /// <summary>
@@ -695,20 +910,24 @@ public sealed class LmStreamingS2SClientTests
     [InlineData(HttpStatusCode.NotFound, "not json at all")]
     [InlineData(HttpStatusCode.OK, "[]")]
     public async Task EnsureAgentCollaborationAsync_passes_on_anything_that_is_not_that_exact_code(
-        HttpStatusCode status, string body)
+        HttpStatusCode status,
+        string body
+    )
     {
-        var handler = new FakeHttpMessageHandler()
-            .On(
-                req => req.RequestUri!.ToString().Contains("/transcript", StringComparison.Ordinal),
-                _ => new HttpResponseMessage(status) { Content = new StringContent(body) });
+        var handler = new FakeHttpMessageHandler().On(
+            req => req.RequestUri!.ToString().Contains("/transcript", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(status) { Content = new StringContent(body) }
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "secret", "app-id", "app-key");
 
         var act = () => client.EnsureAgentCollaborationAsync(CancellationToken.None);
 
-        await act.Should().NotThrowAsync(
-            "none of these establishes that collaboration is off, and refusing to start the daemon over an "
-                + "ambiguous answer trades a silent defect for a loud false one");
+        await act.Should()
+            .NotThrowAsync(
+                "none of these establishes that collaboration is off, and refusing to start the daemon over an "
+                    + "ambiguous answer trades a silent defect for a loud false one"
+            );
     }
 
     /// <summary>
@@ -733,20 +952,24 @@ public sealed class LmStreamingS2SClientTests
     [Fact]
     public async Task EnsureAgentCollaborationAsync_passes_when_the_request_times_out()
     {
-        var handler = new FakeHttpMessageHandler()
-            .On(
-                req => req.RequestUri!.ToString().Contains("/transcript", StringComparison.Ordinal),
-                _ => throw new TaskCanceledException(
+        var handler = new FakeHttpMessageHandler().On(
+            req => req.RequestUri!.ToString().Contains("/transcript", StringComparison.Ordinal),
+            _ =>
+                throw new TaskCanceledException(
                     "The request was canceled due to the configured HttpClient.Timeout of 100 seconds elapsing.",
-                    new TimeoutException("A task was canceled.")));
+                    new TimeoutException("A task was canceled.")
+                )
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "secret", "app-id", "app-key");
 
         var act = () => client.EnsureAgentCollaborationAsync(CancellationToken.None);
 
-        await act.Should().NotThrowAsync(
-            "a host that hangs says nothing about whether collaboration is enabled, and a startup assertion "
-                + "that cannot tell a slow host from a misconfigured one is an assertion nobody will keep");
+        await act.Should()
+            .NotThrowAsync(
+                "a host that hangs says nothing about whether collaboration is enabled, and a startup assertion "
+                    + "that cannot tell a slow host from a misconfigured one is an assertion nobody will keep"
+            );
     }
 
     /// <summary>
@@ -760,18 +983,20 @@ public sealed class LmStreamingS2SClientTests
     {
         using var cts = new CancellationTokenSource();
         await cts.CancelAsync();
-        var handler = new FakeHttpMessageHandler()
-            .On(
-                req => req.RequestUri!.ToString().Contains("/transcript", StringComparison.Ordinal),
-                _ => throw new TaskCanceledException("cancelled"));
+        var handler = new FakeHttpMessageHandler().On(
+            req => req.RequestUri!.ToString().Contains("/transcript", StringComparison.Ordinal),
+            _ => throw new TaskCanceledException("cancelled")
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "secret", "app-id", "app-key");
 
         var act = () => client.EnsureAgentCollaborationAsync(cts.Token);
 
-        await act.Should().ThrowAsync<OperationCanceledException>(
-            "shutdown is not a passing preflight — swallowing it would report the host as verified when the "
-                + "probe never finished");
+        await act.Should()
+            .ThrowAsync<OperationCanceledException>(
+                "shutdown is not a passing preflight — swallowing it would report the host as verified when the "
+                    + "probe never finished"
+            );
     }
 
     /// <summary>
@@ -790,27 +1015,34 @@ public sealed class LmStreamingS2SClientTests
     [Fact]
     public async Task GetAgentTranscriptAsync_names_the_setting_when_collaboration_is_disabled()
     {
-        var handler = new FakeHttpMessageHandler()
-            .On(
-                req => req.RequestUri!.ToString().Contains("/transcript", StringComparison.Ordinal),
-                _ => new HttpResponseMessage(HttpStatusCode.NotFound)
-                {
-                    Content = new StringContent(
-                        "{\"error\":\"Agent collaboration is disabled.\",\"code\":\"collaboration_unavailable\"}"),
-                });
+        var handler = new FakeHttpMessageHandler().On(
+            req => req.RequestUri!.ToString().Contains("/transcript", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.NotFound)
+            {
+                Content = new StringContent(
+                    "{\"error\":\"Agent collaboration is disabled.\",\"code\":\"collaboration_unavailable\"}"
+                ),
+            }
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "secret", "app-id", "app-key");
 
         var act = () => client.GetAgentTranscriptAsync("thread-root", "agent-1", CancellationToken.None);
 
         var thrown = (await act.Should().ThrowAsync<ReviewHostContractException>()).Which;
-        thrown.Message.Should().Contain(
-            "AgentCollaboration",
-            "the note this stub replaces is unreadable unless the message names the setting to change");
-        thrown.Message.Should().MatchRegex(
-            "(?i)startup",
-            "and it must say the startup check let this through, or the operator re-runs the check that "
-                + "already passed instead of looking at the host");
+        thrown
+            .Message.Should()
+            .Contain(
+                "AgentCollaboration",
+                "the note this stub replaces is unreadable unless the message names the setting to change"
+            );
+        thrown
+            .Message.Should()
+            .MatchRegex(
+                "(?i)startup",
+                "and it must say the startup check let this through, or the operator re-runs the check that "
+                    + "already passed instead of looking at the host"
+            );
     }
 
     /// <summary>
@@ -821,20 +1053,22 @@ public sealed class LmStreamingS2SClientTests
     [Fact]
     public async Task GetAgentTranscriptAsync_leaves_an_ordinary_404_alone()
     {
-        var handler = new FakeHttpMessageHandler()
-            .On(
-                req => req.RequestUri!.ToString().Contains("/transcript", StringComparison.Ordinal),
-                _ => new HttpResponseMessage(HttpStatusCode.NotFound)
-                {
-                    Content = new StringContent("{\"error\":\"forbidden\",\"code\":\"unknown_target\"}"),
-                });
+        var handler = new FakeHttpMessageHandler().On(
+            req => req.RequestUri!.ToString().Contains("/transcript", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.NotFound)
+            {
+                Content = new StringContent("{\"error\":\"forbidden\",\"code\":\"unknown_target\"}"),
+            }
+        );
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "secret", "app-id", "app-key");
 
         var act = () => client.GetAgentTranscriptAsync("thread-root", "nope", CancellationToken.None);
 
-        await act.Should().ThrowAsync<HttpRequestException>(
-            "only the collaboration code is evidence of the misconfiguration; every other 404 stays the "
-                + "transport failure it is");
+        await act.Should()
+            .ThrowAsync<HttpRequestException>(
+                "only the collaboration code is evidence of the misconfiguration; every other 404 stays the "
+                    + "transport failure it is"
+            );
     }
 }

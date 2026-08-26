@@ -49,6 +49,7 @@ internal sealed class PrPollingService : BackgroundService
     private readonly TimeProvider _timeProvider;
     private readonly int _maxReviewsPerTargetPerCycle;
     private readonly ReviewProgressReporter? _progress;
+    private readonly DaemonAdmissionCoordinator? _admission;
 
     public PrPollingService(
         IEnumerable<PrPollTarget> targets,
@@ -59,7 +60,9 @@ internal sealed class PrPollingService : BackgroundService
         TimeSpan? pollInterval = null,
         TimeProvider? timeProvider = null,
         int? maxReviewsPerTargetPerCycle = null,
-        ReviewProgressReporter? progress = null)
+        ReviewProgressReporter? progress = null,
+        DaemonAdmissionCoordinator? admission = null
+    )
     {
         _targets = [.. targets];
         _providers = [.. providers];
@@ -67,6 +70,7 @@ internal sealed class PrPollingService : BackgroundService
         _orchestrator = orchestrator;
         _logger = logger;
         _progress = progress;
+        _admission = admission;
         _pollInterval = pollInterval ?? TimeSpan.FromSeconds(30);
         _timeProvider = timeProvider ?? TimeProvider.System;
         _maxReviewsPerTargetPerCycle = maxReviewsPerTargetPerCycle is > 0
@@ -122,18 +126,22 @@ internal sealed class PrPollingService : BackgroundService
 
         try
         {
-            var since = _timeProvider.GetUtcNow().AddDays(-FirstReviewLookbackDays)
+            var since = _timeProvider
+                .GetUtcNow()
+                .AddDays(-FirstReviewLookbackDays)
                 .ToString("O", CultureInfo.InvariantCulture);
-            var payloads = _store.GetFirstReviewPayloadsSince(
-                since, DaemonReviewStageExecutor.ReviewArtifactKind);
+            var payloads = _store.GetFirstReviewPayloadsSince(since, DaemonReviewStageExecutor.ReviewArtifactKind);
             var sentinels = payloads.Count(static p =>
-                DaemonReviewStageExecutor.IsNoNewFindingsSentinel(ReadReviewText(p)));
+                DaemonReviewStageExecutor.IsNoNewFindingsSentinel(ReadReviewText(p))
+            );
             _progress.FirstReviewSentinelRate(payloads.Count, sentinels, FirstReviewLookbackDays);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(
-                ex, "Could not measure the no-change-on-a-first-review rate; polling continues regardless.");
+                ex,
+                "Could not measure the no-change-on-a-first-review rate; polling continues regardless."
+            );
         }
     }
 
@@ -142,8 +150,8 @@ internal sealed class PrPollingService : BackgroundService
         try
         {
             return JsonSerializer
-                .Deserialize<ReviewArtifactPayload>(payload, DaemonReviewStageExecutor.PayloadOptions)?
-                .ReviewText;
+                .Deserialize<ReviewArtifactPayload>(payload, DaemonReviewStageExecutor.PayloadOptions)
+                ?.ReviewText;
         }
         catch (JsonException)
         {
@@ -170,6 +178,12 @@ internal sealed class PrPollingService : BackgroundService
     /// </summary>
     internal async Task PollOnceAsync(CancellationToken cancellationToken)
     {
+        using var admission = _admission?.TryAdmit();
+        if (_admission is not null && admission is null)
+        {
+            return;
+        }
+
         if (_targets.Count == 0)
         {
             return;
@@ -222,7 +236,8 @@ internal sealed class PrPollingService : BackgroundService
             return 0;
         }
 
-        return int.TryParse(stored.Cursor.CursorPayload, NumberStyles.Integer, CultureInfo.InvariantCulture, out var next)
+        return
+            int.TryParse(stored.Cursor.CursorPayload, NumberStyles.Integer, CultureInfo.InvariantCulture, out var next)
             && next >= 0
             && next < _targets.Count
             ? next
@@ -231,19 +246,22 @@ internal sealed class PrPollingService : BackgroundService
 
     private void SaveRotationStart(int next)
     {
-        _store.SaveCursor(new OpaqueCursor
-        {
-            Provider = RotationProvider,
-            Scope = RotationScope,
-            CursorVersion = CursorVersion,
-            CursorPayload = next.ToString(CultureInfo.InvariantCulture),
-        });
+        _store.SaveCursor(
+            new OpaqueCursor
+            {
+                Provider = RotationProvider,
+                Scope = RotationScope,
+                CursorVersion = CursorVersion,
+                CursorPayload = next.ToString(CultureInfo.InvariantCulture),
+            }
+        );
     }
 
     private async Task PollTargetAsync(PrPollTarget target, CancellationToken cancellationToken)
     {
         var provider = _providers.FirstOrDefault(p =>
-            string.Equals(p.Provider, target.Provider, StringComparison.OrdinalIgnoreCase));
+            string.Equals(p.Provider, target.Provider, StringComparison.OrdinalIgnoreCase)
+        );
         if (provider is null)
         {
             _logger.LogWarning("No IPrProvider registered for '{Provider}'; skipping target.", target.Provider);
@@ -254,9 +272,10 @@ internal sealed class PrPollingService : BackgroundService
 
         // The recency-window cutoff, computed once so the provider (which may fetch a per-PR activity
         // signal for borderline PRs) and the filter below agree on the same instant.
-        var cutoff = target.MaxPrAgeDays > 0
-            ? _timeProvider.GetUtcNow() - TimeSpan.FromDays(target.MaxPrAgeDays)
-            : (DateTimeOffset?)null;
+        var cutoff =
+            target.MaxPrAgeDays > 0
+                ? _timeProvider.GetUtcNow() - TimeSpan.FromDays(target.MaxPrAgeDays)
+                : (DateTimeOffset?)null;
 
         var page = await provider.ListOpenPullRequestsAsync(
             new PrPollRequest
@@ -266,14 +285,58 @@ internal sealed class PrPollingService : BackgroundService
                 Cursor = cursorResult.ShouldResync ? null : cursorResult.Cursor,
                 RecencyCutoff = cutoff,
             },
-            cancellationToken);
+            cancellationToken
+        );
 
         var repoId = _store.EnsureRepo(target.Repo);
         var reviewed = 0;
         var truncated = false;
+        var ready = 0;
+        var drafts = 0;
+        var unknown = 0;
         foreach (var pr in ApplyRecencyFilter(target, cutoff, page.PullRequests))
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            if (pr.DraftState != PrDraftState.Ready)
+            {
+                var updated = _store.UpdateIncompletePrDraftState(repoId, pr.PrId, pr.DraftState);
+                if (pr.DraftState == PrDraftState.Draft)
+                {
+                    drafts++;
+                    _logger.LogInformation(
+                        "PR readiness exclusion: provider={Provider}, repository={Repository}, pr={PrId}, source={Source}, "
+                            + "run={RunId}, state={DraftState}, action={Action}.",
+                        provider.Provider,
+                        target.Repo.NormalizedKey,
+                        pr.PrId,
+                        "list",
+                        null,
+                        pr.DraftState,
+                        updated > 0 ? "deferred" : "not-created"
+                    );
+                }
+                else
+                {
+                    unknown++;
+                    _logger.LogWarning(
+                        "PR readiness exclusion: provider={Provider}, repository={Repository}, pr={PrId}, source={Source}, "
+                            + "run={RunId}, state={DraftState}, action={Action}.",
+                        provider.Provider,
+                        target.Repo.NormalizedKey,
+                        pr.PrId,
+                        "list",
+                        null,
+                        pr.DraftState,
+                        updated > 0 ? "deferred" : "not-created"
+                    );
+                }
+
+                continue;
+            }
+
+            ready++;
+            _ = _store.UpdateIncompletePrDraftState(repoId, pr.PrId, PrDraftState.Ready);
 
             if (reviewed >= _maxReviewsPerTargetPerCycle)
             {
@@ -283,7 +346,8 @@ internal sealed class PrPollingService : BackgroundService
                         + "next target with more of this page still pending. The cursor is NOT advanced, so the "
                         + "remainder is re-listed and resumed next cycle.",
                     target.Scope,
-                    reviewed);
+                    reviewed
+                );
                 break;
             }
 
@@ -301,6 +365,7 @@ internal sealed class PrPollingService : BackgroundService
                 Stage = ReviewStage.Discovered,
                 WorkflowStatus = WorkflowStatus.Pending,
                 PrLifecycleState = pr.LifecycleState,
+                PrDraftState = pr.DraftState,
                 // Captured now, while the PR is still open and the poll payload is in hand: the at-close
                 // feedback extraction runs much later, against a PR that may already be closed.
                 PrAuthor = pr.Author,
@@ -330,44 +395,40 @@ internal sealed class PrPollingService : BackgroundService
                     "PR {PrId} on {Scope}: provider could not establish the confidentiality trust signal "
                         + "(fork={ProviderIsForkPr}, public={ProviderIsTargetRepoPublic}); defaulting fail-closed, "
                         + "so cross-repo siblings will not be co-located for this run.",
-                    pr.PrId, target.Scope, pr.IsForkPr, pr.IsTargetRepoPublic);
+                    pr.PrId,
+                    target.Scope,
+                    pr.IsForkPr,
+                    pr.IsTargetRepoPublic
+                );
             }
 
-            // The cap counts WORK, not PRs seen, and only the run's state BEFORE this cycle can tell the two
-            // apart: RunAsync returns the finished run either way, so its outcome says "complete" both for a
-            // PR that was already done and for one this cycle just reviewed. Reading the pre-state here is
-            // what separates them. It matters because the two halves of the fairness fix would otherwise
-            // deadlock: a capped pass deliberately leaves the cursor put, so the next cycle re-lists the same
-            // page, and if the finished PRs at its head ate the cap every time, the PRs past the cap would
-            // never be reached on any cycle — #88's own starvation one level down, with the page as the queue.
-            // This is a create-or-get on the row the orchestrator is about to resolve anyway, not extra work.
-            var alreadyComplete = StageMachine.IsComplete(_store.CreateOrGetReviewRun(seed).Stage);
-
-            // Per-PR isolation: one poison PR must not abort the rest of the target's PRs. The
-            // orchestrator has already marked the failed run RetryPending before rethrowing, so it will
-            // resume from its first incomplete stage on a later poll; here we just log and move on.
+            // The cap counts eligible review attempts, not rows seen or incomplete rows. The orchestrator owns
+            // the execution preflight, so it also reports whether this invocation actually dispatched stage
+            // work. Draft/unknown/provider/retry deferrals therefore cannot consume the page's cap and starve a
+            // genuinely ready PR behind them. Completed rows likewise cost only their idempotent lookup.
+            PrExecutionResult execution;
             try
             {
-                _ = await _orchestrator.RunAsync(seed, cancellationToken);
-
-                if (!alreadyComplete)
-                {
-                    reviewed++;
-                }
+                execution = await _orchestrator.ExecuteAsync(seed, provider, cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
             }
-            catch (Exception ex)
+
+            if (execution.ConsumedReviewAttempt)
             {
-                // A failed attempt DID consume the slot: the work was done, it just did not land.
                 reviewed++;
+            }
+
+            if (execution.Failure is not null)
+            {
                 _logger.LogError(
-                    ex,
+                    execution.Failure,
                     "Orchestrating PR {PrId} on {Scope} failed; the run is left RetryPending and polling continues.",
                     pr.PrId,
-                    target.Scope);
+                    target.Scope
+                );
             }
         }
 
@@ -379,6 +440,19 @@ internal sealed class PrPollingService : BackgroundService
         {
             _store.SaveCursor(page.NextCursor);
         }
+
+        _logger.LogInformation(
+            "PR poll readiness: provider={Provider}, repository={Repository}, observed={Observed}, ready={Ready}, "
+                + "draft={Draft}, unknown={Unknown}, attempted={Attempted}, cursor={CursorAction}.",
+            provider.Provider,
+            target.Repo.NormalizedKey,
+            page.PullRequests.Count,
+            ready,
+            drafts,
+            unknown,
+            reviewed,
+            truncated ? "held" : "advanced"
+        );
     }
 
     /// <summary>
@@ -392,7 +466,8 @@ internal sealed class PrPollingService : BackgroundService
     private IReadOnlyList<PullRequestDescriptor> ApplyRecencyFilter(
         PrPollTarget target,
         DateTimeOffset? cutoff,
-        IReadOnlyList<PullRequestDescriptor> pullRequests)
+        IReadOnlyList<PullRequestDescriptor> pullRequests
+    )
     {
         if (cutoff is null || pullRequests.Count == 0)
         {
@@ -417,7 +492,8 @@ internal sealed class PrPollingService : BackgroundService
                 target.Scope,
                 kept.Count,
                 pullRequests.Count,
-                pullRequests.Count - kept.Count);
+                pullRequests.Count - kept.Count
+            );
         }
 
         return kept;

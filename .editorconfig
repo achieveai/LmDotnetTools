@@ -323,8 +323,9 @@ dotnet_naming_style.prefixed_with_i.capitalization = pascal_case
 # Unused usings
 dotnet_diagnostic.IDE0005.severity = warning
 
-# IDE0055: Fix formatting
-dotnet_diagnostic.IDE0055.severity = warning
+# IDE0055 is Roslyn's formatter, whose wrapping conflicts with the repository's canonical CSharpier
+# output. CSharpier is enforced separately; all semantic/style analyzers below remain enabled.
+dotnet_diagnostic.IDE0055.severity = none
 dotnet_diagnostic.IDE0160.severity = none
 
 # IDE0028: collections can be simplified

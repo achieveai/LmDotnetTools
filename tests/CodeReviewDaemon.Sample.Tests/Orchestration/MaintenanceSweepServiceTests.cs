@@ -27,9 +27,7 @@ public sealed class MaintenanceSweepServiceTests : LoggingTestBase
     private static readonly TimeSpan Interval = TimeSpan.FromMinutes(15);
 
     public MaintenanceSweepServiceTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     /// <summary>
     /// Startup behaviour, and not a detail: the live daemon's Knowledge Base went from empty to its first
@@ -42,11 +40,14 @@ public sealed class MaintenanceSweepServiceTests : LoggingTestBase
     {
         var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
         var swept = new TaskCompletionSource();
-        var service = Build(clock, _ =>
-        {
-            swept.TrySetResult();
-            return Task.CompletedTask;
-        });
+        var service = Build(
+            clock,
+            _ =>
+            {
+                swept.TrySetResult();
+                return Task.CompletedTask;
+            }
+        );
 
         await service.StartAsync(CancellationToken.None);
         try
@@ -54,10 +55,13 @@ public sealed class MaintenanceSweepServiceTests : LoggingTestBase
             // The clock is NEVER advanced in this test. If the loop delayed before its first sweep, this
             // would hang out its guard and fail, which is the whole point.
             var reached = await Task.WhenAny(swept.Task, Task.Delay(TimeSpan.FromSeconds(5)));
-            reached.Should().Be(
-                swept.Task,
-                "maintenance must start on entry, not one interval later — a 15-minute silent window after "
-                    + "every restart is exactly when someone is looking to see whether the restart helped");
+            reached
+                .Should()
+                .Be(
+                    swept.Task,
+                    "maintenance must start on entry, not one interval later — a 15-minute silent window after "
+                        + "every restart is exactly when someone is looking to see whether the restart helped"
+                );
         }
         finally
         {
@@ -82,18 +86,21 @@ public sealed class MaintenanceSweepServiceTests : LoggingTestBase
         var peak = 0;
         var firstStarted = new TaskCompletionSource();
 
-        var service = Build(clock, async ct =>
-        {
-            var now = Interlocked.Increment(ref concurrent);
-            _ = Interlocked.Exchange(ref peak, Math.Max(Volatile.Read(ref peak), now));
-            if (Interlocked.Increment(ref started) == 1)
+        var service = Build(
+            clock,
+            async ct =>
             {
-                firstStarted.TrySetResult();
-                await release.Task.ConfigureAwait(false);
-            }
+                var now = Interlocked.Increment(ref concurrent);
+                _ = Interlocked.Exchange(ref peak, Math.Max(Volatile.Read(ref peak), now));
+                if (Interlocked.Increment(ref started) == 1)
+                {
+                    firstStarted.TrySetResult();
+                    await release.Task.ConfigureAwait(false);
+                }
 
-            _ = Interlocked.Decrement(ref concurrent);
-        });
+                _ = Interlocked.Decrement(ref concurrent);
+            }
+        );
 
         await service.StartAsync(CancellationToken.None);
         try
@@ -106,21 +113,31 @@ public sealed class MaintenanceSweepServiceTests : LoggingTestBase
                 clock.Advance(Interval);
             }
 
-            Volatile.Read(ref started).Should().Be(
-                1,
-                "no second sweep may begin while the first is still merging branches — the backlog sweep "
-                    + "outlasts several intervals, so this is the normal case, not an edge one");
+            Volatile
+                .Read(ref started)
+                .Should()
+                .Be(
+                    1,
+                    "no second sweep may begin while the first is still merging branches — the backlog sweep "
+                        + "outlasts several intervals, so this is the normal case, not an edge one"
+                );
 
             release.TrySetResult();
 
             // Let the released sweep finish and the loop park on its next wait.
             _ = await clock.WaitForNextWaitAsync(TimeSpan.FromSeconds(5));
-            Volatile.Read(ref peak).Should().Be(
-                1, "observed concurrency of 2 means two processes were resolving the same notes branches");
-            Volatile.Read(ref started).Should().BeLessThan(
-                5,
-                "the ticks that arrived mid-sweep are DROPPED, not queued — a queue would discharge every "
-                    + "missed interval back-to-back the moment the long sweep returned");
+            Volatile
+                .Read(ref peak)
+                .Should()
+                .Be(1, "observed concurrency of 2 means two processes were resolving the same notes branches");
+            Volatile
+                .Read(ref started)
+                .Should()
+                .BeLessThan(
+                    5,
+                    "the ticks that arrived mid-sweep are DROPPED, not queued — a queue would discharge every "
+                        + "missed interval back-to-back the moment the long sweep returned"
+                );
         }
         finally
         {
@@ -141,16 +158,19 @@ public sealed class MaintenanceSweepServiceTests : LoggingTestBase
         var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
         var calls = 0;
         var secondRan = new TaskCompletionSource();
-        var service = Build(clock, _ =>
-        {
-            if (Interlocked.Increment(ref calls) == 1)
+        var service = Build(
+            clock,
+            _ =>
             {
-                throw new InvalidOperationException("provider unavailable");
-            }
+                if (Interlocked.Increment(ref calls) == 1)
+                {
+                    throw new InvalidOperationException("provider unavailable");
+                }
 
-            secondRan.TrySetResult();
-            return Task.CompletedTask;
-        });
+                secondRan.TrySetResult();
+                return Task.CompletedTask;
+            }
+        );
 
         await service.StartAsync(CancellationToken.None);
         try
@@ -159,10 +179,13 @@ public sealed class MaintenanceSweepServiceTests : LoggingTestBase
             clock.Advance(Interval);
 
             var reached = await Task.WhenAny(secondRan.Task, Task.Delay(TimeSpan.FromSeconds(5)));
-            reached.Should().Be(
-                secondRan.Task,
-                "one failed cycle must not end maintenance for the process lifetime — that is how a "
-                    + "transient provider error turns into a permanently cold Knowledge Base");
+            reached
+                .Should()
+                .Be(
+                    secondRan.Task,
+                    "one failed cycle must not end maintenance for the process lifetime — that is how a "
+                        + "transient provider error turns into a permanently cold Knowledge Base"
+                );
         }
         finally
         {
@@ -196,27 +219,44 @@ public sealed class MaintenanceSweepServiceTests : LoggingTestBase
         var orchestrator = new PrOrchestrator(
             store,
             new RecordingStageExecutor(gate: blocked.Task),
-            LoggerFactory.CreateLogger<PrOrchestrator>());
-        var target = new PrPollTarget { Provider = Provider, Repo = SampleRepo(), Scope = Scope };
+            LoggerFactory.CreateLogger<PrOrchestrator>()
+        );
+        var target = new PrPollTarget
+        {
+            Provider = Provider,
+            Repo = SampleRepo(),
+            Scope = Scope,
+        };
         var poller = new PrPollingService(
-            [target], [provider], store, orchestrator, LoggerFactory.CreateLogger<PrPollingService>());
+            [target],
+            [provider],
+            store,
+            orchestrator,
+            LoggerFactory.CreateLogger<PrPollingService>()
+        );
 
         var swept = new TaskCompletionSource();
-        var sweeps = Build(clock, _ =>
-        {
-            swept.TrySetResult();
-            return Task.CompletedTask;
-        });
+        var sweeps = Build(
+            clock,
+            _ =>
+            {
+                swept.TrySetResult();
+                return Task.CompletedTask;
+            }
+        );
 
         await poller.StartAsync(CancellationToken.None);
         await sweeps.StartAsync(CancellationToken.None);
         try
         {
             var reached = await Task.WhenAny(swept.Task, Task.Delay(TimeSpan.FromSeconds(5)));
-            reached.Should().Be(
-                swept.Task,
-                "the sweep must not wait on a poll cycle that reviews every PR inline — that cycle takes "
-                    + "hours in production, which is why the sweep had never run once");
+            reached
+                .Should()
+                .Be(
+                    swept.Task,
+                    "the sweep must not wait on a poll cycle that reviews every PR inline — that cycle takes "
+                        + "hours in production, which is why the sweep had never run once"
+                );
         }
         finally
         {
@@ -245,10 +285,23 @@ public sealed class MaintenanceSweepServiceTests : LoggingTestBase
 
         var provider = new MockPrProvider(Provider, [PrDescriptor("118")], NextCursor());
         var orchestrator = new PrOrchestrator(
-            store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
-        var target = new PrPollTarget { Provider = Provider, Repo = SampleRepo(), Scope = Scope };
+            store,
+            new RecordingStageExecutor(),
+            LoggerFactory.CreateLogger<PrOrchestrator>()
+        );
+        var target = new PrPollTarget
+        {
+            Provider = Provider,
+            Repo = SampleRepo(),
+            Scope = Scope,
+        };
         var poller = new PrPollingService(
-            [target], [provider], store, orchestrator, LoggerFactory.CreateLogger<PrPollingService>());
+            [target],
+            [provider],
+            store,
+            orchestrator,
+            LoggerFactory.CreateLogger<PrPollingService>()
+        );
 
         await sweeps.StartAsync(CancellationToken.None);
         await poller.StartAsync(CancellationToken.None);
@@ -257,11 +310,15 @@ public sealed class MaintenanceSweepServiceTests : LoggingTestBase
             var repoId = store.EnsureRepo(SampleRepo());
             var reviewed = await WaitUntilAsync(
                 () => store.CreateOrGetReviewRun(SeedFor(repoId, "118")).Stage == ReviewStage.Posted,
-                TimeSpan.FromSeconds(5));
+                TimeSpan.FromSeconds(5)
+            );
 
-            reviewed.Should().BeTrue(
-                "a maintenance backlog must not hold off reviewing — moving the sweep ahead of the poll "
-                    + "body cost the live daemon roughly two hours of reviewing nothing at all");
+            reviewed
+                .Should()
+                .BeTrue(
+                    "a maintenance backlog must not hold off reviewing — moving the sweep ahead of the poll "
+                        + "body cost the live daemon roughly two hours of reviewing nothing at all"
+                );
         }
         finally
         {
@@ -272,12 +329,7 @@ public sealed class MaintenanceSweepServiceTests : LoggingTestBase
     }
 
     private MaintenanceSweepService Build(TimeProvider clock, Func<CancellationToken, Task> sweepAsync) =>
-        new(
-            "PR-lifecycle",
-            sweepAsync,
-            Interval,
-            LoggerFactory.CreateLogger<MaintenanceSweepService>(),
-            clock);
+        new("PR-lifecycle", sweepAsync, Interval, LoggerFactory.CreateLogger<MaintenanceSweepService>(), clock);
 
     /// <summary>Polls <paramref name="condition"/> until it holds or <paramref name="guard"/> elapses. The
     /// services under test run on their own tasks, so the observable effect lands asynchronously.</summary>
@@ -309,8 +361,7 @@ public sealed class MaintenanceSweepServiceTests : LoggingTestBase
     {
         private readonly SemaphoreSlim _waitsRegistered = new(0);
 
-        public override ITimer CreateTimer(
-            TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {
             var timer = base.CreateTimer(callback, state, dueTime, period);
             _ = _waitsRegistered.Release();
@@ -323,44 +374,49 @@ public sealed class MaintenanceSweepServiceTests : LoggingTestBase
         public Task<bool> WaitForNextWaitAsync(TimeSpan guard) => _waitsRegistered.WaitAsync(guard);
     }
 
-    private static RepoIdentity SampleRepo() => new()
-    {
-        Provider = Provider,
-        OrgOrOwner = "achieveai",
-        RepoName = "LmDotnetTools",
-        RepoStableId = "R_node_123",
-    };
+    private static RepoIdentity SampleRepo() =>
+        new()
+        {
+            Provider = Provider,
+            OrgOrOwner = "achieveai",
+            RepoName = "LmDotnetTools",
+            RepoStableId = "R_node_123",
+        };
 
-    private static PullRequestDescriptor PrDescriptor(string prId) => new()
-    {
-        PrId = prId,
-        HeadSha = $"head-{prId}",
-        BaseSha = "base-sha",
-        TriggerWatermark = "wm-1",
-        LifecycleState = PrLifecycleState.Open,
-    };
+    private static PullRequestDescriptor PrDescriptor(string prId) =>
+        new()
+        {
+            PrId = prId,
+            HeadSha = $"head-{prId}",
+            BaseSha = "base-sha",
+            TriggerWatermark = "wm-1",
+            LifecycleState = PrLifecycleState.Open,
+            DraftState = PrDraftState.Ready,
+        };
 
-    private static OpaqueCursor NextCursor() => new()
-    {
-        Provider = Provider,
-        Scope = Scope,
-        CursorVersion = PrPollingService.CursorVersion,
-        CursorPayload = "{\"page\":2}",
-        HighWaterMark = "2026-06-01T00:00:00Z",
-    };
+    private static OpaqueCursor NextCursor() =>
+        new()
+        {
+            Provider = Provider,
+            Scope = Scope,
+            CursorVersion = PrPollingService.CursorVersion,
+            CursorPayload = "{\"page\":2}",
+            HighWaterMark = "2026-06-01T00:00:00Z",
+        };
 
-    private static ReviewRun SeedFor(long repoId, string prId) => new()
-    {
-        RepoId = repoId,
-        PrId = prId,
-        HeadSha = $"head-{prId}",
-        BaseSha = "base-sha",
-        TriggerWatermark = "wm-1",
-        ReviewKind = "full",
-        VariantId = "primary",
-        Mode = "collect-only",
-        Stage = ReviewStage.Discovered,
-        WorkflowStatus = WorkflowStatus.Pending,
-        PrLifecycleState = PrLifecycleState.Open,
-    };
+    private static ReviewRun SeedFor(long repoId, string prId) =>
+        new()
+        {
+            RepoId = repoId,
+            PrId = prId,
+            HeadSha = $"head-{prId}",
+            BaseSha = "base-sha",
+            TriggerWatermark = "wm-1",
+            ReviewKind = "full",
+            VariantId = "primary",
+            Mode = "collect-only",
+            Stage = ReviewStage.Discovered,
+            WorkflowStatus = WorkflowStatus.Pending,
+            PrLifecycleState = PrLifecycleState.Open,
+        };
 }

@@ -1,4 +1,3 @@
-using System.Reflection;
 using System.Text.Json.Nodes;
 using LmStreaming.Sample.Services;
 
@@ -80,17 +79,25 @@ public class AgentMessageFixtureParityTests
         var actualMessage = TakeMessageJson(actual);
         var expectedMessage = TakeMessageJson(expected);
 
-        JsonNode.DeepEquals(actualMessage, expectedMessage).Should().BeTrue(
-            "the fixture's messageJson must be the serialized AgentMessage this server emits, but it "
-                + "is\n{0}\nand the server emits\n{1}",
-            expectedMessage.ToJsonString(),
-            actualMessage.ToJsonString());
+        JsonNode
+            .DeepEquals(actualMessage, expectedMessage)
+            .Should()
+            .BeTrue(
+                "the fixture's messageJson must be the serialized AgentMessage this server emits, but it "
+                    + "is\n{0}\nand the server emits\n{1}",
+                expectedMessage.ToJsonString(),
+                actualMessage.ToJsonString()
+            );
 
-        JsonNode.DeepEquals(actual, expected).Should().BeTrue(
-            "the fixture's persisted envelope must be what the messages route returns, but it is\n{0}"
-                + "\nand the route returns\n{1}",
-            expected.ToJsonString(),
-            actual.ToJsonString());
+        JsonNode
+            .DeepEquals(actual, expected)
+            .Should()
+            .BeTrue(
+                "the fixture's persisted envelope must be what the messages route returns, but it is\n{0}"
+                    + "\nand the route returns\n{1}",
+                expected.ToJsonString(),
+                actual.ToJsonString()
+            );
     }
 
     [Fact]
@@ -115,8 +122,10 @@ public class AgentMessageFixtureParityTests
 
         var restored = MessagePersistenceConverter.FromPersistedMessage(persisted);
 
-        var agent = restored.Should().BeOfType<AgentMessage>(
-            "the persisted discriminator must resolve to the agent type, not a text fallback").Subject;
+        var agent = restored
+            .Should()
+            .BeOfType<AgentMessage>("the persisted discriminator must resolve to the agent type, not a text fallback")
+            .Subject;
         agent.MessageId.Should().Be("am-1");
         agent.AgentMessageType.Should().Be(AgentMessageType.Question);
         agent.FromAgentId.Should().Be("agent-2");
@@ -128,10 +137,15 @@ public class AgentMessageFixtureParityTests
         // discriminator in the shadow Metadata dictionary, which the synthesized record equality
         // compares by reference, so no two round-tripped messages ever compare equal.
         var reserialized = JsonNode.Parse(
-            MessagePersistenceConverter.ToPersistedMessage(agent, ThreadId, RunId).MessageJson)!;
-        JsonNode.DeepEquals(reserialized, JsonNode.Parse(persisted.MessageJson)).Should().BeTrue(
-            "reading the fixture and writing it back must not change it, but it became\n{0}",
-            reserialized.ToJsonString());
+            MessagePersistenceConverter.ToPersistedMessage(agent, ThreadId, RunId).MessageJson
+        )!;
+        JsonNode
+            .DeepEquals(reserialized, JsonNode.Parse(persisted.MessageJson))
+            .Should()
+            .BeTrue(
+                "reading the fixture and writing it back must not change it, but it became\n{0}",
+                reserialized.ToJsonString()
+            );
     }
 
     /// <summary>Removes and returns <c>messageJson</c>, parsed, leaving the envelope behind.</summary>
@@ -154,34 +168,13 @@ public class AgentMessageFixtureParityTests
     }
 
     /// <summary>The checked-in fixture, exactly as the client imports it.</summary>
-    private static JsonObject LoadFixture() =>
-        JsonNode.Parse(File.ReadAllText(FixturePath()))!.AsObject();
-
-    private static string FixturePath() =>
-        Path.Combine(
-            RepositoryRoot(),
-            "samples",
-            "LmStreaming.Sample",
-            "ClientApp",
-            "src",
-            "__tests__",
-            "fixtures",
-            "synthetic",
-            "agentmessage.persisted.json");
+    private static JsonObject LoadFixture() => JsonNode.Parse(File.ReadAllText(FixturePath()))!.AsObject();
 
     /// <summary>
-    ///     Walks up from the test assembly to the solution file. The fixture lives in the client's tree,
-    ///     which is not copied to the output directory — comparing against the file the client actually
-    ///     imports is the entire point, so a copy would defeat it.
+    ///     The authoritative client fixture, copied to the test output by an explicit MSBuild content item.
+    ///     This preserves parity with the file the client imports without assuming that the test assembly
+    ///     remains below the repository — an assumption <c>--artifacts-path</c> intentionally breaks.
     /// </summary>
-    private static string RepositoryRoot()
-    {
-        var dir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-        while (dir != null && !File.Exists(Path.Combine(dir, "LmDotnetTools.sln")))
-        {
-            dir = Directory.GetParent(dir)?.FullName;
-        }
-
-        return dir ?? throw new InvalidOperationException("Could not find the repository root.");
-    }
+    private static string FixturePath() =>
+        Path.Combine(AppContext.BaseDirectory, "TestData", "LmStreaming.Sample", "agentmessage.persisted.json");
 }

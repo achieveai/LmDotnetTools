@@ -27,13 +27,16 @@ internal sealed class MaintenanceSweepService : BackgroundService
     private readonly TimeSpan _interval;
     private readonly ILogger<MaintenanceSweepService> _logger;
     private readonly TimeProvider _timeProvider;
+    private readonly DaemonAdmissionCoordinator? _admission;
 
     public MaintenanceSweepService(
         string name,
         Func<CancellationToken, Task> sweepAsync,
         TimeSpan interval,
         ILogger<MaintenanceSweepService> logger,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        DaemonAdmissionCoordinator? admission = null
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(sweepAsync);
@@ -44,6 +47,7 @@ internal sealed class MaintenanceSweepService : BackgroundService
         _interval = interval;
         _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _admission = admission;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -52,7 +56,8 @@ internal sealed class MaintenanceSweepService : BackgroundService
             "{Name} maintenance sweep is on its own cadence: first pass now, then every {IntervalSeconds}s. "
                 + "It shares no loop with PR polling, so neither can starve the other.",
             _name,
-            _interval.TotalSeconds);
+            _interval.TotalSeconds
+        );
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -62,7 +67,11 @@ internal sealed class MaintenanceSweepService : BackgroundService
             // seconds after a restart because of this ordering.
             try
             {
-                await _sweepAsync(stoppingToken).ConfigureAwait(false);
+                using var admission = _admission?.TryAdmit();
+                if (_admission is null || admission is not null)
+                {
+                    await _sweepAsync(stoppingToken).ConfigureAwait(false);
+                }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

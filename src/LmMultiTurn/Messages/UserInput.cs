@@ -16,8 +16,14 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 /// <see cref="SubAgents.ISpawnSuppressingAgent"/> honour it — a caller that NEEDS the guarantee must refuse
 /// any other agent rather than send the flag and hope.
 /// </param>
+/// <param name="ModelId">
+/// Optional model override for the run that consumes this input. It applies to this run only; the loop's
+/// provisioned defaults and later inputs are unchanged.
+/// </param>
 public record UserInput(
     List<IMessage> Messages,
     string? InputId = null,
     string? ParentRunId = null,
-    bool SuppressSubAgentSpawning = false);
+    bool SuppressSubAgentSpawning = false,
+    string? ModelId = null
+);

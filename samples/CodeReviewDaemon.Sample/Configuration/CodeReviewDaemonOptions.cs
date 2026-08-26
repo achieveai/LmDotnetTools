@@ -19,8 +19,7 @@ internal sealed class CodeReviewDaemonOptions
     public static readonly IReadOnlyList<string> DefaultSubAgentMarketplaces = ["gb-plugins"];
 
     /// <summary>Default for <see cref="ReadOnlyToolAllowList"/>.</summary>
-    public static readonly IReadOnlyList<string> DefaultReadOnlyToolAllowList =
-        ["Read", "Grep", "Glob", "Skill"];
+    public static readonly IReadOnlyList<string> DefaultReadOnlyToolAllowList = ["Read", "Grep", "Glob", "Skill"];
 
     /// <summary>Default for <see cref="WritableToolAllowList"/>.</summary>
     public static readonly IReadOnlyList<string> DefaultWritableToolAllowList = ["Write", "Edit", "Bash"];
@@ -55,19 +54,26 @@ internal sealed class CodeReviewDaemonOptions
         var options = new CodeReviewDaemonOptions
         {
             Marketplaces = SeedForBinding(section, nameof(Marketplaces), DefaultMarketplaces),
-            SubAgentMarketplaces =
-                SeedForBinding(section, nameof(SubAgentMarketplaces), DefaultSubAgentMarketplaces),
-            ReadOnlyToolAllowList =
-                SeedForBinding(section, nameof(ReadOnlyToolAllowList), DefaultReadOnlyToolAllowList),
-            WritableToolAllowList =
-                SeedForBinding(section, nameof(WritableToolAllowList), DefaultWritableToolAllowList),
+            SubAgentMarketplaces = SeedForBinding(section, nameof(SubAgentMarketplaces), DefaultSubAgentMarketplaces),
+            ReadOnlyToolAllowList = SeedForBinding(
+                section,
+                nameof(ReadOnlyToolAllowList),
+                DefaultReadOnlyToolAllowList
+            ),
+            WritableToolAllowList = SeedForBinding(
+                section,
+                nameof(WritableToolAllowList),
+                DefaultWritableToolAllowList
+            ),
         };
         section.Bind(options);
         return options;
 
         static IReadOnlyList<string> SeedForBinding(
-            IConfiguration section, string key, IReadOnlyList<string> fallback) =>
-            section.GetSection(key).Exists() ? [] : fallback;
+            IConfiguration section,
+            string key,
+            IReadOnlyList<string> fallback
+        ) => section.GetSection(key).Exists() ? [] : fallback;
     }
 
     /// <summary>
@@ -167,20 +173,53 @@ internal sealed class CodeReviewDaemonOptions
     /// <summary>
     /// Model id the <b>primary orchestrator loop</b> runs with — the "dispatcher / state" agent that reads
     /// the diff, dispatches the <c>code-reviewer:*</c> review sub-agents, holds the review's conversation
-    /// state, and synthesizes the final posted review (the id sent to the Copilot backend, e.g.
-    /// <c>claude-sonnet-5</c> or <c>gpt-5.6-luna</c>). The poller stamps it onto each review run so the
-    /// primary review has a concrete model — an empty id would be rejected by the provider. The deep review
-    /// passes can run on a different model via <see cref="SubAgentModelId"/>; the A/B comparison (B) variant
+    /// state, and produces the provisional review (the id sent to the Copilot backend, e.g.
+    /// <c>gpt-5.6-terra</c>). The poller stamps it onto each review run so the primary review has a concrete
+    /// model — an empty id would be rejected by the provider. Final synthesis can use
+    /// <see cref="SynthesisModelId"/>, and deep review passes can use <see cref="SubAgentModelId"/>; the A/B comparison (B) variant
     /// keeps its own bounded model id and is unaffected by this knob.
     /// </summary>
-    public string ReviewModelId { get; init; } = "claude-sonnet-5";
+    public string ReviewModelId { get; init; } = "gpt-5.6-terra";
+
+    /// <summary>
+    /// Model id for the authoritative synthesis turn. Blank (default) preserves compatibility by using
+    /// <see cref="ReviewModelId"/>. The turn stays on the existing conversation and hosted thread.
+    /// </summary>
+    public string SynthesisModelId { get; init; } = "";
+
+    /// <summary>
+    /// Model id for review grading. Blank (default) preserves compatibility by using
+    /// <see cref="ReviewModelId"/>.
+    /// </summary>
+    public string JudgeModelId { get; init; } = "";
+
+    /// <summary>Normalizes a configured model id, falling back to the normalized primary model.</summary>
+    public string EffectiveModelId(string? configuredModelId)
+    {
+        var primary = ReviewModelId?.Trim();
+        if (string.IsNullOrWhiteSpace(primary))
+        {
+            primary = "gpt-5.6-terra";
+        }
+
+        var configured = configuredModelId?.Trim();
+        return string.IsNullOrWhiteSpace(configured) ? primary : configured;
+    }
+
+    public string EffectiveReviewModelId => EffectiveModelId(ReviewModelId);
+
+    public string EffectiveSynthesisModelId => EffectiveModelId(SynthesisModelId);
+
+    public string EffectiveJudgeModelId => EffectiveModelId(JudgeModelId);
+
+    public string EffectiveKnowledgeModelId => EffectiveModelId(KnowledgeModelId);
 
     /// <summary>
     /// Model id the discovered <c>code-reviewer:*</c> <b>review sub-agents</b> run with — the agents that do
     /// the focused, deep review passes the primary loop dispatches. Empty (default) ⇒ sub-agents inherit the
     /// primary loop's model (<see cref="ReviewModelId"/>), exactly as before. Set it to split the two roles:
     /// a stronger model for the actual reviewing (e.g. <c>gpt-5.6-sol</c>) while the orchestrator/dispatcher
-    /// runs a lighter one (<see cref="ReviewModelId"/>, e.g. <c>gpt-5.6-luna</c>). When set it overrides
+    /// runs a lighter one (<see cref="ReviewModelId"/>, e.g. <c>gpt-5.6-terra</c>). When set it overrides
     /// whatever <c>model:</c> a discovered sub-agent's markdown declares. It must be served by the same
     /// Copilot backend the daemon uses (a <c>gpt-*</c>/<c>o*</c> id routes through OpenAI Responses, a
     /// <c>claude-*</c> id through Anthropic Messages) — an unsupported slug is rejected with

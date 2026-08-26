@@ -39,4 +39,14 @@
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- These are contract inputs, not repository-location assumptions. Copy the authoritative checked-in
+         files beside every isolated test artifact so tests work with isolated artifact paths and vstest. -->
+    <None Include="..\..\samples\LmStreaming.Sample\appsettings.json"
+          Link="TestData\LmStreaming.Sample\appsettings.json"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\samples\LmStreaming.Sample\ClientApp\src\__tests__\fixtures\synthetic\agentmessage.persisted.json"
+          Link="TestData\LmStreaming.Sample\agentmessage.persisted.json"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

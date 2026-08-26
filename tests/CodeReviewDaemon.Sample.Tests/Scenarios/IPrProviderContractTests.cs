@@ -20,25 +20,29 @@ public sealed class IPrProviderContractTests
     };
 
     private static IPrProvider Provider(PrLifecycle state) =>
-        new MockPrProvider("github", [], Cursor()) { PrState = state };
+        new MockPrProvider("github", [], Cursor()) { PrState = new PrStatus(state, PrDraftState.Ready) };
 
     [Fact]
     public async Task GetPrState_is_callable_through_the_interface()
     {
         (await Provider(PrLifecycle.Open).GetPrStateAsync(Repo, "42", CancellationToken.None))
-            .Should().Be(PrLifecycle.Open);
+            .Lifecycle.Should()
+            .Be(PrLifecycle.Open);
         (await Provider(PrLifecycle.Merged).GetPrStateAsync(Repo, "42", CancellationToken.None))
-            .Should().Be(PrLifecycle.Merged);
+            .Lifecycle.Should()
+            .Be(PrLifecycle.Merged);
         (await Provider(PrLifecycle.Abandoned).GetPrStateAsync(Repo, "42", CancellationToken.None))
-            .Should().Be(PrLifecycle.Abandoned);
+            .Lifecycle.Should()
+            .Be(PrLifecycle.Abandoned);
     }
 
-    private static OpaqueCursor Cursor() => new()
-    {
-        Provider = "github",
-        Scope = "acme/widgets:open-prs",
-        CursorVersion = PrPollingService.CursorVersion,
-        CursorPayload = "{}",
-        HighWaterMark = null,
-    };
+    private static OpaqueCursor Cursor() =>
+        new()
+        {
+            Provider = "github",
+            Scope = "acme/widgets:open-prs",
+            CursorVersion = PrPollingService.CursorVersion,
+            CursorPayload = "{}",
+            HighWaterMark = null,
+        };
 }

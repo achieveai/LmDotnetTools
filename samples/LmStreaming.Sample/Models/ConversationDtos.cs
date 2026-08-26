@@ -185,6 +185,9 @@ public record ConversationCapabilitiesResponse
     /// specific conversation's agent can enforce it is still decided per send.
     /// </summary>
     public required bool SpawnSuppression { get; init; }
+
+    /// <summary>True when a message can select a model for exactly its own run.</summary>
+    public required bool PerTurnModelOverride { get; init; }
 }
 
 /// <summary>
@@ -223,6 +226,12 @@ public record SendMessageRequest
     /// </para>
     /// </summary>
     public string? IdempotencyKey { get; init; }
+
+    /// <summary>
+    /// Optional model for this run only. Blank is normalized to no override; later turns retain the
+    /// conversation's provisioned model.
+    /// </summary>
+    public string? ModelId { get; init; }
 }
 
 /// <summary>
@@ -249,6 +258,9 @@ public record SendMessageResponse
     /// safe retries can fail closed instead of retrying into a duplicate review.
     /// </summary>
     public bool IdempotencyKeyHonored { get; init; }
+
+    /// <summary>The normalized per-turn model the host accepted, or null when no override was requested.</summary>
+    public string? ModelId { get; init; }
 }
 
 /// <summary>

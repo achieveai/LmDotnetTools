@@ -5,6 +5,22 @@ using CodeReviewDaemon.Sample.Persistence.Models;
 
 namespace CodeReviewDaemon.Sample.Orchestration;
 
+internal enum PrExecutionOutcome
+{
+    AlreadyComplete,
+    LifecycleDeferred,
+    ReadinessDeferred,
+    RetryDeferred,
+    OwnershipDeferred,
+    StageProgress,
+    StageFailed,
+}
+
+internal sealed record PrExecutionResult(ReviewRun Run, PrExecutionOutcome Outcome, Exception? Failure = null)
+{
+    public bool ConsumedReviewAttempt => Outcome is PrExecutionOutcome.StageProgress or PrExecutionOutcome.StageFailed;
+}
+
 /// <summary>
 /// Drives one review run through the <see cref="StageMachine"/> serially, persisting progress after
 /// every stage so a crash resumes from the first incomplete step rather than re-doing work. Creation
@@ -18,30 +34,58 @@ internal sealed class PrOrchestrator
     private readonly ILogger<PrOrchestrator> _logger;
     private readonly ReviewProgressReporter? _progress;
     private readonly RetryGovernor? _retryGovernor;
+    private readonly IReadOnlyList<IPrProvider> _providers;
 
     public PrOrchestrator(
         ReviewStore store,
         IReviewStageExecutor executor,
         ILogger<PrOrchestrator> logger,
         ReviewProgressReporter? progress = null,
-        RetryGovernor? retryGovernor = null)
+        RetryGovernor? retryGovernor = null,
+        IEnumerable<IPrProvider>? providers = null
+    )
     {
         _store = store;
         _executor = executor;
         _logger = logger;
         _progress = progress;
         _retryGovernor = retryGovernor;
+        _providers = providers?.ToArray() ?? [];
     }
 
     /// <summary>
-    /// Ensures the run exists, then executes the stages still outstanding for it. Returns the run in
-    /// its final state for this invocation.
+    /// Compatibility entry point for callers that need the run and expect stage failures to throw.
     /// </summary>
     public async Task<ReviewRun> RunAsync(ReviewRun seed, CancellationToken cancellationToken)
+    {
+        var result = await ExecuteAsync(seed, executionProvider: null, cancellationToken).ConfigureAwait(false);
+        if (result.Failure is not null)
+        {
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(result.Failure).Throw();
+        }
+
+        return result.Run;
+    }
+
+    /// <summary>
+    /// Ensures the run exists, executes any eligible outstanding stages, and reports whether this invocation
+    /// consumed a review-attempt slot. Readiness/provider/retry deferrals are explicit rather than inferred
+    /// from incomplete before/after state.
+    /// </summary>
+    public Task<PrExecutionResult> ExecuteAsync(ReviewRun seed, CancellationToken cancellationToken) =>
+        ExecuteAsync(seed, executionProvider: null, cancellationToken);
+
+    public async Task<PrExecutionResult> ExecuteAsync(
+        ReviewRun seed,
+        IPrProvider? executionProvider,
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(seed);
 
         var run = _store.CreateOrGetReviewRun(seed);
+        var ownsRun = false;
+        var ownershipContended = false;
 
         try
         {
@@ -99,17 +143,21 @@ internal sealed class PrOrchestrator
             var freshTitle = PreferFresh(seed.PrTitle, run.PrTitle);
             var freshDescription = PreferFresh(seed.PrDescription, run.PrDescription);
             var freshTargetBranch = PreferFresh(seed.PrTargetBranch, run.PrTargetBranch);
-            if (!string.Equals(freshAuthor, run.PrAuthor, StringComparison.Ordinal)
+            if (
+                !string.Equals(freshAuthor, run.PrAuthor, StringComparison.Ordinal)
                 || !string.Equals(freshTitle, run.PrTitle, StringComparison.Ordinal)
                 || !string.Equals(freshDescription, run.PrDescription, StringComparison.Ordinal)
-                || !string.Equals(freshTargetBranch, run.PrTargetBranch, StringComparison.Ordinal))
+                || !string.Equals(freshTargetBranch, run.PrTargetBranch, StringComparison.Ordinal)
+            )
             {
                 // Lengths only, and never the text: the title and description are the author's own words and
                 // are EUII — the same rule the review-brief inventory line in DaemonReviewStageExecutor keeps.
                 // Logged because a review read against a superseded intent is otherwise indistinguishable, in
                 // every artifact the run leaves behind, from one read against the current one.
-                if (!string.Equals(freshTitle, run.PrTitle, StringComparison.Ordinal)
-                    || !string.Equals(freshDescription, run.PrDescription, StringComparison.Ordinal))
+                if (
+                    !string.Equals(freshTitle, run.PrTitle, StringComparison.Ordinal)
+                    || !string.Equals(freshDescription, run.PrDescription, StringComparison.Ordinal)
+                )
                 {
                     _logger.LogInformation(
                         "Review run {RunId}: PR {PrId}'s stated intent moved since it was captured — title "
@@ -121,7 +169,8 @@ internal sealed class PrOrchestrator
                         run.PrTitle?.Length ?? 0,
                         freshTitle?.Length ?? 0,
                         run.PrDescription?.Length ?? 0,
-                        freshDescription?.Length ?? 0);
+                        freshDescription?.Length ?? 0
+                    );
                 }
 
                 _store.UpdatePrMetadata(run.Id, freshAuthor, freshTitle, freshDescription, freshTargetBranch);
@@ -136,7 +185,7 @@ internal sealed class PrOrchestrator
 
             if (StageMachine.IsComplete(run.Stage))
             {
-                return run;
+                return new PrExecutionResult(run, PrExecutionOutcome.AlreadyComplete);
             }
 
             // Everything below is real work for this run — announce it once. The steady-state no-op poll
@@ -148,11 +197,34 @@ internal sealed class PrOrchestrator
             {
                 // PR merged/closed/abandoned — stop working it without marking the run as failed.
                 _logger.LogInformation(
-                    "Review run {RunId} halted: PR {PrId} is {State}.", run.Id, run.PrId, run.PrLifecycleState);
+                    "Review run {RunId} halted: PR {PrId} is {State}.",
+                    run.Id,
+                    run.PrId,
+                    run.PrLifecycleState
+                );
                 _store.UpdateReviewRunState(run.Id, run.Stage, WorkflowStatus.Completed, run.PrLifecycleState);
                 _progress?.Finished(
-                    run, $"halted (PR {run.PrLifecycleState})", System.Diagnostics.Stopwatch.GetElapsedTime(startedAt));
-                return run with { WorkflowStatus = WorkflowStatus.Completed };
+                    run,
+                    $"halted (PR {run.PrLifecycleState})",
+                    System.Diagnostics.Stopwatch.GetElapsedTime(startedAt)
+                );
+                return new PrExecutionResult(
+                    run with
+                    {
+                        WorkflowStatus = WorkflowStatus.Completed,
+                    },
+                    PrExecutionOutcome.LifecycleDeferred
+                );
+            }
+
+            // Readiness is re-read immediately before ownership and again before every dispatch. Poll-time
+            // readiness is not authority: the PR may have become draft while queued or between stages.
+            if (
+                !await IsExecutionEligibleAsync(run, executionProvider, "resume-blocked", cancellationToken)
+                    .ConfigureAwait(false)
+            )
+            {
+                return new PrExecutionResult(_store.GetReviewRun(run.Id) ?? run, PrExecutionOutcome.ReadinessDeferred);
             }
 
             // Retry governance: a run that failed a recent poll is backing off, and one that exhausted its
@@ -160,7 +232,7 @@ internal sealed class PrOrchestrator
             // the old ~30s hot-loop. Restart clears the in-memory state, so a restart retries everything.
             if (_retryGovernor is not null && !_retryGovernor.ShouldAttempt(run.Id))
             {
-                return run;
+                return new PrExecutionResult(run, PrExecutionOutcome.RetryDeferred);
             }
 
             // Claim the run for this process before any stage runs. WorkflowStatus.Running says "someone is
@@ -168,11 +240,35 @@ internal sealed class PrOrchestrator
             // row looks unowned, and the startup reclaim (task 29) could not tell a run this daemon is
             // mid-review from one whose process died — taking the wrong one puts two processes on the same
             // PR, writing into the same notes branch.
-            _store.ClaimReviewRun(run.Id, DaemonInstance.Id, DateTimeOffset.UtcNow);
+            var acquisition = _store.TryAcquireReviewRun(run.Id, DaemonInstance.Id, DateTimeOffset.UtcNow);
+            if (acquisition != RunOwnershipAcquisition.Acquired)
+            {
+                ownershipContended = true;
+                _logger.LogInformation(
+                    "Review run {RunId} deferred before dispatch: ownership acquisition returned {Acquisition}.",
+                    run.Id,
+                    acquisition
+                );
+                return new PrExecutionResult(_store.GetReviewRun(run.Id) ?? run, PrExecutionOutcome.OwnershipDeferred);
+            }
+
+            ownsRun = true;
+            var madeStageProgress = false;
 
             foreach (var stage in StageMachine.RemainingStages(run.Stage))
             {
                 cancellationToken.ThrowIfCancellationRequested();
+
+                if (
+                    !await IsExecutionEligibleAsync(run, executionProvider, "deferred", cancellationToken)
+                        .ConfigureAwait(false)
+                )
+                {
+                    return new PrExecutionResult(
+                        _store.GetReviewRun(run.Id) ?? run,
+                        madeStageProgress ? PrExecutionOutcome.StageProgress : PrExecutionOutcome.ReadinessDeferred
+                    );
+                }
 
                 _progress?.StageStarting(run, stage);
                 try
@@ -193,8 +289,15 @@ internal sealed class PrOrchestrator
                     }
                     _logger.LogError(ex, "Review run {RunId} failed at stage {Stage}.", run.Id, stage);
                     _progress?.Finished(
-                        run, $"failed at {stage}", System.Diagnostics.Stopwatch.GetElapsedTime(startedAt));
-                    throw;
+                        run,
+                        $"failed at {stage}",
+                        System.Diagnostics.Stopwatch.GetElapsedTime(startedAt)
+                    );
+                    return new PrExecutionResult(
+                        _store.GetReviewRun(run.Id) ?? run,
+                        PrExecutionOutcome.StageFailed,
+                        ex
+                    );
                 }
 
                 // A governed stage that cleared its cause → forget any accumulated retry state so a later
@@ -210,30 +313,136 @@ internal sealed class PrOrchestrator
                 var workflowStatus = StageMachine.IsComplete(stage) ? WorkflowStatus.Completed : WorkflowStatus.Running;
                 _store.UpdateReviewRunState(run.Id, stage, workflowStatus, run.PrLifecycleState);
                 run = run with { Stage = stage, WorkflowStatus = workflowStatus };
+                madeStageProgress = true;
             }
 
             _progress?.Finished(
                 run,
                 $"complete ({ClassifyDeliveryOutcome(run)})",
-                System.Diagnostics.Stopwatch.GetElapsedTime(startedAt));
-            return run;
+                System.Diagnostics.Stopwatch.GetElapsedTime(startedAt)
+            );
+            return new PrExecutionResult(run, PrExecutionOutcome.StageProgress);
         }
         finally
         {
-            // Drop this process's ownership claim on EVERY exit from the run — completion, the
-            // PR-not-open short-circuit, and the failure→RetryPending rethrow alike. A claim left behind
-            // by a process that has stopped working the run would make it look live to the next startup's
-            // reclaim, stranding it for a whole stale window; one left behind permanently would strand it
-            // for good, which is the leak this exists to close. Owner-scoped, so this can only ever drop
-            // a claim this process holds.
-            _store.ReleaseReviewRun(run.Id, DaemonInstance.Id);
+            if (!ownershipContended)
+            {
+                if (ownsRun)
+                {
+                    // Drop this process's ownership claim on EVERY exit after successful acquisition — completion,
+                    // readiness changing between stages, and failure→RetryPending alike. A contending invocation
+                    // never enters this branch: releasing by daemon id after losing to another invocation in the
+                    // SAME process would clear the winner's claim even though the loser never held it.
+                    _store.ReleaseReviewRun(run.Id, DaemonInstance.Id);
+                }
 
-            // Guarantee a pooled review slot is returned on EVERY terminal outcome of this run — normal
-            // completion (where the Posted stage already returned it, so this is a no-op), the PR-not-open
-            // short-circuit, and the failure→RetryPending rethrow — so a run that never reaches Posted can
-            // never leak pool capacity. Uses CancellationToken.None so a cancelled run still returns its slot.
-            await _executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
+                // Preserve the existing cleanup guarantee on readiness/lifecycle exits that happen before
+                // ownership acquisition: an executor may already hold a pooled lease restored for this run.
+                // Contention alone is excluded because that lease belongs to the winning invocation.
+                await _executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
+            }
         }
+    }
+
+    private async Task<bool> IsExecutionEligibleAsync(
+        ReviewRun run,
+        IPrProvider? executionProvider,
+        string action,
+        CancellationToken cancellationToken
+    )
+    {
+        var repo = _store.GetRepo(run.RepoId);
+        var provider =
+            executionProvider
+            ?? (
+                repo is null
+                    ? null
+                    : _providers.FirstOrDefault(p =>
+                        string.Equals(p.Provider, repo.Provider, StringComparison.OrdinalIgnoreCase)
+                        || (
+                            string.Equals(repo.Provider, "azure-devops", StringComparison.OrdinalIgnoreCase)
+                            && string.Equals(p.Provider, "ado", StringComparison.OrdinalIgnoreCase)
+                        )
+                    )
+            );
+
+        if (provider is null || repo is null)
+        {
+            _store.UpdateIncompletePrDraftState(run.RepoId, run.PrId, PrDraftState.Unknown);
+            _logger.LogWarning(
+                "PR readiness exclusion: provider={Provider}, repository={Repository}, pr={PrId}, source={Source}, "
+                    + "run={RunId}, state={DraftState}, action={Action}. Fresh readiness could not be resolved.",
+                provider?.Provider ?? repo?.Provider ?? "unknown",
+                repo?.NormalizedKey ?? run.RepoId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                run.PrId,
+                "execution-preflight",
+                run.Id,
+                PrDraftState.Unknown,
+                action
+            );
+            return false;
+        }
+
+        PrStatus status;
+        try
+        {
+            status = await provider.GetPrStateAsync(repo, run.PrId, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _store.UpdateIncompletePrDraftState(run.RepoId, run.PrId, PrDraftState.Unknown);
+            _logger.LogWarning(
+                ex,
+                "PR readiness exclusion: provider={Provider}, repository={Repository}, pr={PrId}, source={Source}, "
+                    + "run={RunId}, state={DraftState}, action={Action}.",
+                provider?.Provider ?? repo?.Provider ?? "unknown",
+                repo?.NormalizedKey ?? run.RepoId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                run.PrId,
+                "execution-preflight",
+                run.Id,
+                PrDraftState.Unknown,
+                action
+            );
+            return false;
+        }
+
+        var lifecycle = status.Lifecycle switch
+        {
+            PrLifecycle.Open => PrLifecycleState.Open,
+            PrLifecycle.Merged => PrLifecycleState.Merged,
+            PrLifecycle.Abandoned => PrLifecycleState.Abandoned,
+            _ => PrLifecycleState.Closed,
+        };
+        if (lifecycle != run.PrLifecycleState)
+        {
+            _store.UpdateReviewRunState(run.Id, run.Stage, run.WorkflowStatus, lifecycle);
+        }
+        _store.UpdateIncompletePrDraftState(run.RepoId, run.PrId, status.DraftState);
+
+        if (status.Lifecycle == PrLifecycle.Open && status.DraftState == PrDraftState.Ready)
+        {
+            return true;
+        }
+
+        var log = status.DraftState == PrDraftState.Unknown ? LogLevel.Warning : LogLevel.Information;
+        _logger.Log(
+            log,
+            "PR readiness exclusion: provider={Provider}, repository={Repository}, pr={PrId}, source={Source}, "
+                + "run={RunId}, lifecycle={Lifecycle}, state={DraftState}, action={Action}.",
+            provider?.Provider ?? repo?.Provider ?? "unknown",
+            repo?.NormalizedKey ?? run.RepoId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            run.PrId,
+            "execution-preflight",
+            run.Id,
+            status.Lifecycle,
+            status.DraftState,
+            action
+        );
+        return false;
     }
 
     /// <summary>
@@ -253,7 +462,9 @@ internal sealed class PrOrchestrator
             try
             {
                 var payload = JsonSerializer.Deserialize<ReviewArtifactPayload>(
-                    artifact.Payload, DaemonReviewStageExecutor.PayloadOptions);
+                    artifact.Payload,
+                    DaemonReviewStageExecutor.PayloadOptions
+                );
                 // Through the executor's predicate, not a second copy of it. This was an inlined StartsWith,
                 // which reported "nothing posted" for any review whose opening words happened to be the exit
                 // phrase — a body full of BLOCKERs included. Two constructions of one rule drift, and the
@@ -265,15 +476,20 @@ internal sealed class PrOrchestrator
             }
             catch (JsonException ex)
             {
-                _logger.LogWarning(ex, "Run {RunId}: could not classify delivery from review artifact {ArtifactId}.", run.Id, artifact.Id);
+                _logger.LogWarning(
+                    ex,
+                    "Run {RunId}: could not classify delivery from review artifact {ArtifactId}.",
+                    run.Id,
+                    artifact.Id
+                );
             }
         }
 
-        var delivery = _store.GetOutboxForRun(run.Id)
-            .LastOrDefault(entry => string.Equals(
-                entry.Operation,
-                ReviewPoster.PostReviewCommentOperation,
-                StringComparison.Ordinal));
+        var delivery = _store
+            .GetOutboxForRun(run.Id)
+            .LastOrDefault(entry =>
+                string.Equals(entry.Operation, ReviewPoster.PostReviewCommentOperation, StringComparison.Ordinal)
+            );
 
         return delivery?.Status switch
         {
@@ -283,8 +499,7 @@ internal sealed class PrOrchestrator
         };
     }
 
-    private static bool IsGovernedStage(ReviewStage stage) =>
-        stage is ReviewStage.ContextReady or ReviewStage.Reviewed;
+    private static bool IsGovernedStage(ReviewStage stage) => stage is ReviewStage.ContextReady or ReviewStage.Reviewed;
 
     /// <summary>
     /// Which value of a stated-intent field the run should carry: the poll's, when the poll actually carried
@@ -314,15 +529,16 @@ internal sealed class PrOrchestrator
     /// transients: they have to park eventually. A provider blip, a host 5xx or a blank synthesis stays
     /// outside the budget and keeps retrying.
     /// </summary>
-    private static bool IsGovernedFailure(ReviewStage stage, Exception ex) => stage switch
-    {
-        ReviewStage.ContextReady => true,
-        ReviewStage.Reviewed => ex
-            is ReviewBarrierDeadlineException
-                or ReviewCheckpointCorruptException
-                or ReviewHostContractException,
-        _ => false,
-    };
+    private static bool IsGovernedFailure(ReviewStage stage, Exception ex) =>
+        stage switch
+        {
+            ReviewStage.ContextReady => true,
+            ReviewStage.Reviewed => ex
+                is ReviewBarrierDeadlineException
+                    or ReviewCheckpointCorruptException
+                    or ReviewHostContractException,
+            _ => false,
+        };
 
     /// <summary>Human-readable reason a PR was picked this cycle: a brand-new run is "new PR" (no prior
     /// review of this PR) or "new commit {sha}" (its head advanced past the last reviewed commit); an

@@ -24,17 +24,23 @@ internal abstract class DelegatingLoop(IMultiTurnAgent inner) : IMultiTurnAgent
     public bool IsRunning => inner.IsRunning;
 
     public ValueTask<SendReceipt> SendAsync(
-        List<IMessage> messages, string? inputId = null, string? parentRunId = null, CancellationToken ct = default)
-        => inner.SendAsync(messages, inputId, parentRunId, ct);
+        List<IMessage> messages,
+        string? inputId = null,
+        string? parentRunId = null,
+        CancellationToken ct = default
+    ) => inner.SendAsync(messages, inputId, parentRunId, ct);
 
     public ValueTask<SendReceipt?> TrySendAsync(
-        List<IMessage> messages, string? inputId = null, string? parentRunId = null, CancellationToken ct = default)
-        => inner.TrySendAsync(messages, inputId, parentRunId, ct);
+        List<IMessage> messages,
+        string? inputId = null,
+        string? parentRunId = null,
+        CancellationToken ct = default
+    ) => inner.TrySendAsync(messages, inputId, parentRunId, ct);
 
     /// <summary>Virtual so a decorator can do what the hosted loop does around a turn — provision the
     /// conversation, resolve the armed checkpoint — before the inner script runs.</summary>
-    public virtual IAsyncEnumerable<IMessage> ExecuteRunAsync(UserInput userInput, CancellationToken ct = default)
-        => inner.ExecuteRunAsync(userInput, ct);
+    public virtual IAsyncEnumerable<IMessage> ExecuteRunAsync(UserInput userInput, CancellationToken ct = default) =>
+        inner.ExecuteRunAsync(userInput, ct);
 
     public IAsyncEnumerable<IMessage> SubscribeAsync(CancellationToken ct = default) => inner.SubscribeAsync(ct);
 
@@ -69,15 +75,18 @@ internal sealed class OpaqueLoop(IMultiTurnAgent inner) : DelegatingLoop(inner);
 /// (<see cref="AcceptedInputIds"/>) before producing anything.
 /// </para>
 /// </summary>
-internal sealed class ResumableFakeLoop(
-    IMultiTurnAgent inner, string? resumeHostedThreadId, string mintedThreadId)
-    : DelegatingLoop(inner), IReviewLoopWrapper, IResumableReviewTurn, IDeadlineBoundedReviewLoop
+internal sealed class ResumableFakeLoop(IMultiTurnAgent inner, string? resumeHostedThreadId, string mintedThreadId)
+    : DelegatingLoop(inner),
+        IReviewLoopWrapper,
+        IResumableReviewTurn,
+        IDeadlineBoundedReviewLoop,
+        IPerTurnModelReviewLoop
 {
     private string? _hostedThreadId = resumeHostedThreadId;
     private Action<string>? _onConversationMinted;
     private string? _armedIdempotencyKey;
     private string? _armedResumeInputId;
-    private Action<string>? _onInputAccepted;
+    private Action<string, string?>? _onInputAccepted;
     private bool _provisioned;
 
     public IMultiTurnAgent Inner => Wrapped;
@@ -110,13 +119,26 @@ internal sealed class ResumableFakeLoop(
     /// <summary>Conversations this loop minted (at most one, and none at all when it resumed one).</summary>
     public List<string> MintedThreadIds { get; } = [];
 
+    /// <summary>One-turn model overrides requested by the executor, in order.</summary>
+    public List<string> RequestedModelIds { get; } = [];
+
+    public void UseModelForNextTurn(string modelId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(modelId);
+        RequestedModelIds.Add(modelId.Trim());
+    }
+
     public void ObserveConversationMint(Action<string> onConversationMinted)
     {
         ArgumentNullException.ThrowIfNull(onConversationMinted);
         _onConversationMinted = onConversationMinted;
     }
 
-    public void ArmTurnCheckpoint(string idempotencyKey, string? acceptedInputId, Action<string>? onInputAccepted)
+    public void ArmTurnCheckpoint(
+        string idempotencyKey,
+        string? acceptedInputId,
+        Action<string, string?>? onInputAccepted
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(idempotencyKey);
         ArmedIdempotencyKeys.Add(idempotencyKey);
@@ -127,7 +149,9 @@ internal sealed class ResumableFakeLoop(
     }
 
     public override async IAsyncEnumerable<IMessage> ExecuteRunAsync(
-        UserInput userInput, [EnumeratorCancellation] CancellationToken ct = default)
+        UserInput userInput,
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         EnsureProvisioned();
         ResolveArmedTurn();
@@ -180,7 +204,7 @@ internal sealed class ResumableFakeLoop(
         }
 
         AcceptedInputIds.Add(NextInputId);
-        onAccepted?.Invoke(NextInputId);
+        onAccepted?.Invoke(NextInputId, RequestedModelIds.LastOrDefault());
     }
 }
 
@@ -201,7 +225,9 @@ internal sealed class MutableWrappingLoop(IMultiTurnAgent inner) : DelegatingLoo
 /// Its own capabilities default to null ("I add nothing of my own").
 /// </summary>
 internal sealed class SurfaceDeclaringWrapper(IMultiTurnAgent inner)
-    : DelegatingLoop(inner), IReviewLoopWrapper, IReviewLoopSubAgentSurface
+    : DelegatingLoop(inner),
+        IReviewLoopWrapper,
+        IReviewLoopSubAgentSurface
 {
     public IMultiTurnAgent Inner => Wrapped;
 

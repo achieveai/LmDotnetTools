@@ -1,4 +1,5 @@
 using System.Globalization;
+using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence.Migrations;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Workspace;
@@ -162,13 +163,13 @@ internal sealed class ReviewStore : IDisposable
             INSERT INTO review_run (
                 repo_id, pr_id, head_sha, base_sha, trigger_watermark, review_kind, variant_id, mode,
                 merge_sha, model_provider, model_id, prompt_template_hash, policy_bundle_version,
-                feature_flag_snapshot, stage, workflow_status, pr_lifecycle_state,
+                feature_flag_snapshot, stage, workflow_status, pr_lifecycle_state, pr_draft_state,
                 is_fork_pr, is_target_repo_public, pr_author,
                 pr_title, pr_description, pr_target_branch, created_at, updated_at)
             VALUES (
                 $repoId, $prId, $head, $base, $watermark, $kind, $variant, $mode,
                 $merge, $modelProvider, $modelId, $promptHash, $policyVersion,
-                $flags, $stage, $workflow, $prState,
+                $flags, $stage, $workflow, $prState, $draftState,
                 $isForkPr, $isTargetRepoPublic, $prAuthor,
                 $prTitle, $prDescription, $prTargetBranch, $now, $now);
             """;
@@ -189,6 +190,7 @@ internal sealed class ReviewStore : IDisposable
         _ = insert.Parameters.AddWithValue("$stage", run.Stage.ToString());
         _ = insert.Parameters.AddWithValue("$workflow", run.WorkflowStatus.ToString());
         _ = insert.Parameters.AddWithValue("$prState", run.PrLifecycleState.ToString());
+        _ = insert.Parameters.AddWithValue("$draftState", run.PrDraftState.ToString());
         _ = insert.Parameters.AddWithValue("$isForkPr", run.IsForkPr);
         _ = insert.Parameters.AddWithValue("$isTargetRepoPublic", run.IsTargetRepoPublic);
         _ = insert.Parameters.AddWithValue("$prAuthor", (object?)run.PrAuthor ?? DBNull.Value);
@@ -246,7 +248,12 @@ internal sealed class ReviewStore : IDisposable
     }
 
     /// <summary>Advances the three resume axes for a run (orchestrator step completion).</summary>
-    public void UpdateReviewRunState(long id, ReviewStage stage, WorkflowStatus workflowStatus, PrLifecycleState prLifecycleState)
+    public void UpdateReviewRunState(
+        long id,
+        ReviewStage stage,
+        WorkflowStatus workflowStatus,
+        PrLifecycleState prLifecycleState
+    )
     {
         using var gate = _gate.EnterScope();
         using var command = _connection.CreateCommand();
@@ -261,6 +268,40 @@ internal sealed class ReviewStore : IDisposable
         _ = command.Parameters.AddWithValue("$now", UtcNow());
         _ = command.Parameters.AddWithValue("$id", id);
         _ = command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Reconciles readiness for every incomplete row belonging to one PR without creating work. Completed
+    /// rows are deliberately excluded: readiness can defer unfinished work, never reopen delivered work.
+    /// </summary>
+    public int UpdateIncompletePrDraftState(long repoId, string prId, PrDraftState draftState)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(prId);
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            UPDATE review_run
+            SET pr_draft_state = $draftState, updated_at = $now
+            WHERE repo_id = $repoId AND pr_id = $prId
+              AND workflow_status != 'Completed' AND stage != 'Posted';
+            """;
+        _ = command.Parameters.AddWithValue("$draftState", draftState.ToString());
+        _ = command.Parameters.AddWithValue("$now", UtcNow());
+        _ = command.Parameters.AddWithValue("$repoId", repoId);
+        _ = command.Parameters.AddWithValue("$prId", prId);
+        return command.ExecuteNonQuery();
+    }
+
+    /// <summary>Counts incomplete rows still blocked on a positive readiness observation.</summary>
+    public int CountIncompleteUnknownDraftState()
+    {
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT COUNT(*) FROM review_run
+            WHERE pr_draft_state = 'Unknown' AND workflow_status != 'Completed' AND stage != 'Posted';
+            """;
+        return Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture);
     }
 
     /// <summary>
@@ -299,7 +340,12 @@ internal sealed class ReviewStore : IDisposable
     /// </para>
     /// </summary>
     public void UpdatePrMetadata(
-        long id, string? prAuthor, string? prTitle, string? prDescription, string? prTargetBranch)
+        long id,
+        string? prAuthor,
+        string? prTitle,
+        string? prDescription,
+        string? prTargetBranch
+    )
     {
         using var gate = _gate.EnterScope();
         using var command = _connection.CreateCommand();
@@ -358,29 +404,47 @@ internal sealed class ReviewStore : IDisposable
     }
 
     /// <summary>
-    /// Records that <paramref name="instanceId"/> is working on this run right now. Written when a process
-    /// starts executing a run's stages, so <see cref="WorkflowStatus.Running"/> stops being an unfalsifiable
-    /// claim: without an owner there is no way to tell a run some other daemon is mid-review from one whose
-    /// process died, and reclaiming the wrong one puts two processes on the same PR and the same notes branch.
+    /// Atomically attempts to acquire this run for <paramref name="instanceId"/>. The conditional UPDATE is
+    /// the compare-and-set: an unowned run or an owner whose heartbeat is provably stale may be acquired; any
+    /// fresh owner — including this same process id — wins contention and can never be overwritten. Treating a
+    /// same-owner claim as contention is intentional: the process id identifies a daemon, not one invocation,
+    /// so accepting it as reentrant would let two concurrent calls in one process execute the same stages.
     /// <para>
-    /// <paramref name="heartbeatAt"/> is normally "now"; it is a parameter so a test can plant a claim that
-    /// is already old, rather than sleeping for the length of the stale window.
+    /// Staleness uses <see cref="RunOwnershipPolicy.StaleAfter"/>, the same policy as orphan reclaim. Keeping
+    /// the cutoff here prevents acquisition and reclaim from quietly developing different meanings of dead.
+    /// <paramref name="heartbeatAt"/> is normally "now"; it is a parameter so tests can plant deterministic
+    /// old claims without sleeping.
     /// </para>
     /// </summary>
-    public void ClaimReviewRun(long id, string instanceId, DateTimeOffset heartbeatAt)
+    public RunOwnershipAcquisition TryAcquireReviewRun(long id, string instanceId, DateTimeOffset heartbeatAt)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        var beat = heartbeatAt.ToUniversalTime();
         using var gate = _gate.EnterScope();
         using var command = _connection.CreateCommand();
         command.CommandText = """
             UPDATE review_run
             SET owner_instance = $owner, owner_heartbeat_at = $beat
-            WHERE id = $id;
+            WHERE id = $id
+              AND (owner_instance IS NULL
+                   OR owner_heartbeat_at IS NULL
+                   OR owner_heartbeat_at < $cutoff);
             """;
         _ = command.Parameters.AddWithValue("$owner", instanceId);
-        _ = command.Parameters.AddWithValue("$beat", heartbeatAt.ToString("o"));
+        _ = command.Parameters.AddWithValue("$beat", Utc(beat));
+        _ = command.Parameters.AddWithValue("$cutoff", Utc(RunOwnershipPolicy.StaleCutoff(beat)));
         _ = command.Parameters.AddWithValue("$id", id);
-        _ = command.ExecuteNonQuery();
+        if (command.ExecuteNonQuery() == 1)
+        {
+            return RunOwnershipAcquisition.Acquired;
+        }
+
+        using var exists = _connection.CreateCommand();
+        exists.CommandText = "SELECT EXISTS(SELECT 1 FROM review_run WHERE id = $id);";
+        _ = exists.Parameters.AddWithValue("$id", id);
+        return Convert.ToInt32(exists.ExecuteScalar(), CultureInfo.InvariantCulture) == 0
+            ? RunOwnershipAcquisition.RunNotFound
+            : RunOwnershipAcquisition.Contended;
     }
 
     /// <summary>
@@ -397,7 +461,7 @@ internal sealed class ReviewStore : IDisposable
         command.CommandText = """
             UPDATE review_run
             SET owner_heartbeat_at = $beat
-            WHERE owner_instance = $owner AND workflow_status = 'Running';
+            WHERE owner_instance = $owner;
             """;
         _ = command.Parameters.AddWithValue("$beat", now.ToString("o"));
         _ = command.Parameters.AddWithValue("$owner", instanceId);
@@ -441,18 +505,18 @@ internal sealed class ReviewStore : IDisposable
     /// <para>
     /// Two things make a run reclaimable, and nothing else does. A NULL owner: no code that claims a run
     /// leaves it NULL, so a NULL-owned Running row predates ownership entirely and cannot belong to a
-    /// process that is still going. Or a heartbeat older than <paramref name="staleAfter"/>: an owner that
-    /// stopped saying it was there.
+    /// process that is still going. Or a heartbeat older than <see cref="RunOwnershipPolicy.StaleAfter"/>:
+    /// an owner that stopped saying it was there.
     /// </para>
     /// <para>
     /// The bias is deliberately toward doing nothing. Declining to reclaim a genuinely dead run costs a
     /// delayed retry; reclaiming a live one puts two daemons on the same PR, writing into the same notes
-    /// branch — those are not comparable, so <paramref name="staleAfter"/> is set several heartbeats wide
-    /// and every ambiguous case is left alone. The stage is deliberately NOT reset: it is the work already
+    /// branch — those are not comparable, so <see cref="RunOwnershipPolicy.StaleAfter"/> is set several
+    /// heartbeats wide and every ambiguous case is left alone. The stage is deliberately NOT reset: it is the work already
     /// done, and the whole point is that a stranded run was holding real completed work.
     /// </para>
     /// </summary>
-    public int ReclaimOrphanedRuns(TimeSpan staleAfter)
+    public int ReclaimOrphanedRuns()
     {
         using var gate = _gate.EnterScope();
         using var command = _connection.CreateCommand();
@@ -466,7 +530,7 @@ internal sealed class ReviewStore : IDisposable
               AND (owner_instance IS NULL OR owner_heartbeat_at IS NULL OR owner_heartbeat_at < $cutoff);
             """;
         _ = command.Parameters.AddWithValue("$now", UtcNow());
-        _ = command.Parameters.AddWithValue("$cutoff", (DateTimeOffset.UtcNow - staleAfter).ToString("o"));
+        _ = command.Parameters.AddWithValue("$cutoff", Utc(RunOwnershipPolicy.StaleCutoff(DateTimeOffset.UtcNow)));
         return command.ExecuteNonQuery();
     }
 
@@ -531,7 +595,11 @@ internal sealed class ReviewStore : IDisposable
     /// </para>
     /// </remarks>
     public IReadOnlyList<UndeliveredPriorReview> GetUndeliveredPriorReviews(
-        long repoId, string prId, long excludeRunId, string artifactKind)
+        long repoId,
+        string prId,
+        long excludeRunId,
+        string artifactKind
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(prId);
         ArgumentException.ThrowIfNullOrWhiteSpace(artifactKind);
@@ -569,10 +637,13 @@ internal sealed class ReviewStore : IDisposable
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
-            results.Add(new UndeliveredPriorReview(
-                reader.GetInt64(reader.GetOrdinal("run_id")),
-                reader.GetString(reader.GetOrdinal("head_sha")),
-                reader.GetString(reader.GetOrdinal("payload"))));
+            results.Add(
+                new UndeliveredPriorReview(
+                    reader.GetInt64(reader.GetOrdinal("run_id")),
+                    reader.GetString(reader.GetOrdinal("head_sha")),
+                    reader.GetString(reader.GetOrdinal("payload"))
+                )
+            );
         }
 
         return results;
@@ -745,11 +816,14 @@ internal sealed class ReviewStore : IDisposable
                 RepoName = reader.GetString(reader.GetOrdinal("repo_name")),
                 RepoStableId = GetNullableString(reader, "repo_stable_id"),
             };
-            results.Add(new ReviewedPrRow(
-                repo,
-                repo.Provider,
-                reader.GetString(reader.GetOrdinal("pr_id")),
-                GetNullableString(reader, "pr_author")));
+            results.Add(
+                new ReviewedPrRow(
+                    repo,
+                    repo.Provider,
+                    reader.GetString(reader.GetOrdinal("pr_id")),
+                    GetNullableString(reader, "pr_author")
+                )
+            );
         }
 
         return Task.FromResult<IReadOnlyList<ReviewedPrRow>>(results);
@@ -816,17 +890,19 @@ internal sealed class ReviewStore : IDisposable
             return CursorReadResult.Resync();
         }
 
-        return CursorReadResult.Usable(new OpaqueCursor
-        {
-            Provider = reader.GetString(reader.GetOrdinal("provider")),
-            Scope = reader.GetString(reader.GetOrdinal("scope")),
-            CursorVersion = version,
-            CursorPayload = payload,
-            HighWaterMark = GetNullableString(reader, "high_water_mark"),
-            Etag = GetNullableString(reader, "etag"),
-            Continuation = GetNullableString(reader, "continuation"),
-            SinceTimestamp = GetNullableString(reader, "since_timestamp"),
-        });
+        return CursorReadResult.Usable(
+            new OpaqueCursor
+            {
+                Provider = reader.GetString(reader.GetOrdinal("provider")),
+                Scope = reader.GetString(reader.GetOrdinal("scope")),
+                CursorVersion = version,
+                CursorPayload = payload,
+                HighWaterMark = GetNullableString(reader, "high_water_mark"),
+                Etag = GetNullableString(reader, "etag"),
+                Continuation = GetNullableString(reader, "continuation"),
+                SinceTimestamp = GetNullableString(reader, "since_timestamp"),
+            }
+        );
     }
 
     // ── review_outbox (§11) ──────────────────────────────────────────────────────────────────────
@@ -995,15 +1071,16 @@ internal sealed class ReviewStore : IDisposable
         return reader.Read() ? MapArtifact(reader) : null;
     }
 
-    private static ReviewArtifact MapArtifact(SqliteDataReader reader) => new()
-    {
-        Id = reader.GetInt64(reader.GetOrdinal("id")),
-        ReviewRunId = reader.GetInt64(reader.GetOrdinal("review_run_id")),
-        ArtifactSchemaVersion = reader.GetInt32(reader.GetOrdinal("artifact_schema_version")),
-        ArtifactKind = reader.GetString(reader.GetOrdinal("artifact_kind")),
-        Provider = reader.GetString(reader.GetOrdinal("provider")),
-        Payload = reader.GetString(reader.GetOrdinal("payload")),
-    };
+    private static ReviewArtifact MapArtifact(SqliteDataReader reader) =>
+        new()
+        {
+            Id = reader.GetInt64(reader.GetOrdinal("id")),
+            ReviewRunId = reader.GetInt64(reader.GetOrdinal("review_run_id")),
+            ArtifactSchemaVersion = reader.GetInt32(reader.GetOrdinal("artifact_schema_version")),
+            ArtifactKind = reader.GetString(reader.GetOrdinal("artifact_kind")),
+            Provider = reader.GetString(reader.GetOrdinal("provider")),
+            Payload = reader.GetString(reader.GetOrdinal("payload")),
+        };
 
     // ── deep_link_conversation (deep-link retention ledger) ──────────────────────────────────────
 
@@ -1029,9 +1106,7 @@ internal sealed class ReviewStore : IDisposable
             """;
         _ = command.Parameters.AddWithValue("$threadId", threadId);
         _ = command.Parameters.AddWithValue("$title", (object?)title ?? DBNull.Value);
-        _ = command.Parameters.AddWithValue(
-            "$mintedAt",
-            mintedAtUtc is { } minted ? Utc(minted) : UtcNow());
+        _ = command.Parameters.AddWithValue("$mintedAt", mintedAtUtc is { } minted ? Utc(minted) : UtcNow());
         _ = command.ExecuteNonQuery();
     }
 
@@ -1056,13 +1131,17 @@ internal sealed class ReviewStore : IDisposable
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
-            results.Add(new DeepLinkConversationRow(
-                reader.GetString(reader.GetOrdinal("thread_id")),
-                GetNullableString(reader, "title"),
-                DateTimeOffset.Parse(
-                    reader.GetString(reader.GetOrdinal("minted_at")),
-                    CultureInfo.InvariantCulture,
-                    DateTimeStyles.RoundtripKind)));
+            results.Add(
+                new DeepLinkConversationRow(
+                    reader.GetString(reader.GetOrdinal("thread_id")),
+                    GetNullableString(reader, "title"),
+                    DateTimeOffset.Parse(
+                        reader.GetString(reader.GetOrdinal("minted_at")),
+                        CultureInfo.InvariantCulture,
+                        DateTimeStyles.RoundtripKind
+                    )
+                )
+            );
         }
 
         return results;
@@ -1127,17 +1206,21 @@ internal sealed class ReviewStore : IDisposable
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
-            results.Add(new PolicyRefusalRecord(
-                DateTimeOffset.Parse(
-                    reader.GetString(reader.GetOrdinal("at_utc")),
-                    CultureInfo.InvariantCulture,
-                    DateTimeStyles.RoundtripKind),
-                Enum.Parse<PolicyRefusalKind>(reader.GetString(reader.GetOrdinal("kind"))),
-                reader.GetString(reader.GetOrdinal("provider")),
-                reader.GetString(reader.GetOrdinal("subject")),
-                reader.GetString(reader.GetOrdinal("method")),
-                reader.GetString(reader.GetOrdinal("target")),
-                reader.GetString(reader.GetOrdinal("reason"))));
+            results.Add(
+                new PolicyRefusalRecord(
+                    DateTimeOffset.Parse(
+                        reader.GetString(reader.GetOrdinal("at_utc")),
+                        CultureInfo.InvariantCulture,
+                        DateTimeStyles.RoundtripKind
+                    ),
+                    Enum.Parse<PolicyRefusalKind>(reader.GetString(reader.GetOrdinal("kind"))),
+                    reader.GetString(reader.GetOrdinal("provider")),
+                    reader.GetString(reader.GetOrdinal("subject")),
+                    reader.GetString(reader.GetOrdinal("method")),
+                    reader.GetString(reader.GetOrdinal("target")),
+                    reader.GetString(reader.GetOrdinal("reason"))
+                )
+            );
         }
 
         return results;
@@ -1145,46 +1228,54 @@ internal sealed class ReviewStore : IDisposable
 
     // ── mapping helpers ──────────────────────────────────────────────────────────────────────────
 
-    private static ReviewRun MapReviewRun(SqliteDataReader reader) => new()
-    {
-        Id = reader.GetInt64(reader.GetOrdinal("id")),
-        RepoId = reader.GetInt64(reader.GetOrdinal("repo_id")),
-        PrId = reader.GetString(reader.GetOrdinal("pr_id")),
-        HeadSha = reader.GetString(reader.GetOrdinal("head_sha")),
-        BaseSha = reader.GetString(reader.GetOrdinal("base_sha")),
-        TriggerWatermark = reader.GetString(reader.GetOrdinal("trigger_watermark")),
-        ReviewKind = reader.GetString(reader.GetOrdinal("review_kind")),
-        VariantId = reader.GetString(reader.GetOrdinal("variant_id")),
-        Mode = reader.GetString(reader.GetOrdinal("mode")),
-        MergeSha = GetNullableString(reader, "merge_sha"),
-        ModelProvider = GetNullableString(reader, "model_provider"),
-        ModelId = GetNullableString(reader, "model_id"),
-        PromptTemplateHash = GetNullableString(reader, "prompt_template_hash"),
-        PolicyBundleVersion = GetNullableString(reader, "policy_bundle_version"),
-        FeatureFlagSnapshot = GetNullableString(reader, "feature_flag_snapshot"),
-        Stage = Enum.Parse<ReviewStage>(reader.GetString(reader.GetOrdinal("stage"))),
-        WorkflowStatus = Enum.Parse<WorkflowStatus>(reader.GetString(reader.GetOrdinal("workflow_status"))),
-        PrLifecycleState = Enum.Parse<PrLifecycleState>(reader.GetString(reader.GetOrdinal("pr_lifecycle_state"))),
-        IsForkPr = reader.GetBoolean(reader.GetOrdinal("is_fork_pr")),
-        IsTargetRepoPublic = reader.GetBoolean(reader.GetOrdinal("is_target_repo_public")),
-        PrAuthor = GetNullableString(reader, "pr_author"),
-        PrTitle = GetNullableString(reader, "pr_title"),
-        PrDescription = GetNullableString(reader, "pr_description"),
-        PrTargetBranch = GetNullableString(reader, "pr_target_branch"),
-    };
+    private static ReviewRun MapReviewRun(SqliteDataReader reader) =>
+        new()
+        {
+            Id = reader.GetInt64(reader.GetOrdinal("id")),
+            RepoId = reader.GetInt64(reader.GetOrdinal("repo_id")),
+            PrId = reader.GetString(reader.GetOrdinal("pr_id")),
+            HeadSha = reader.GetString(reader.GetOrdinal("head_sha")),
+            BaseSha = reader.GetString(reader.GetOrdinal("base_sha")),
+            TriggerWatermark = reader.GetString(reader.GetOrdinal("trigger_watermark")),
+            ReviewKind = reader.GetString(reader.GetOrdinal("review_kind")),
+            VariantId = reader.GetString(reader.GetOrdinal("variant_id")),
+            Mode = reader.GetString(reader.GetOrdinal("mode")),
+            MergeSha = GetNullableString(reader, "merge_sha"),
+            ModelProvider = GetNullableString(reader, "model_provider"),
+            ModelId = GetNullableString(reader, "model_id"),
+            PromptTemplateHash = GetNullableString(reader, "prompt_template_hash"),
+            PolicyBundleVersion = GetNullableString(reader, "policy_bundle_version"),
+            FeatureFlagSnapshot = GetNullableString(reader, "feature_flag_snapshot"),
+            Stage = Enum.Parse<ReviewStage>(reader.GetString(reader.GetOrdinal("stage"))),
+            WorkflowStatus = Enum.Parse<WorkflowStatus>(reader.GetString(reader.GetOrdinal("workflow_status"))),
+            PrLifecycleState = Enum.Parse<PrLifecycleState>(reader.GetString(reader.GetOrdinal("pr_lifecycle_state"))),
+            PrDraftState = Enum.TryParse<PrDraftState>(
+                reader.GetString(reader.GetOrdinal("pr_draft_state")),
+                out var draftState
+            )
+                ? draftState
+                : PrDraftState.Unknown,
+            IsForkPr = reader.GetBoolean(reader.GetOrdinal("is_fork_pr")),
+            IsTargetRepoPublic = reader.GetBoolean(reader.GetOrdinal("is_target_repo_public")),
+            PrAuthor = GetNullableString(reader, "pr_author"),
+            PrTitle = GetNullableString(reader, "pr_title"),
+            PrDescription = GetNullableString(reader, "pr_description"),
+            PrTargetBranch = GetNullableString(reader, "pr_target_branch"),
+        };
 
-    private static OutboxEntry MapOutbox(SqliteDataReader reader) => new()
-    {
-        Id = reader.GetInt64(reader.GetOrdinal("id")),
-        IdempotencyKey = reader.GetString(reader.GetOrdinal("idempotency_key")),
-        Provider = reader.GetString(reader.GetOrdinal("provider")),
-        ReviewRunId = reader.GetInt64(reader.GetOrdinal("review_run_id")),
-        Operation = reader.GetString(reader.GetOrdinal("operation")),
-        ArtifactKind = reader.GetString(reader.GetOrdinal("artifact_kind")),
-        Status = Enum.Parse<OutboxStatus>(reader.GetString(reader.GetOrdinal("status"))),
-        BodyHash = GetNullableString(reader, "body_hash"),
-        ProviderResponseId = GetNullableString(reader, "provider_response_id"),
-    };
+    private static OutboxEntry MapOutbox(SqliteDataReader reader) =>
+        new()
+        {
+            Id = reader.GetInt64(reader.GetOrdinal("id")),
+            IdempotencyKey = reader.GetString(reader.GetOrdinal("idempotency_key")),
+            Provider = reader.GetString(reader.GetOrdinal("provider")),
+            ReviewRunId = reader.GetInt64(reader.GetOrdinal("review_run_id")),
+            Operation = reader.GetString(reader.GetOrdinal("operation")),
+            ArtifactKind = reader.GetString(reader.GetOrdinal("artifact_kind")),
+            Status = Enum.Parse<OutboxStatus>(reader.GetString(reader.GetOrdinal("status"))),
+            BodyHash = GetNullableString(reader, "body_hash"),
+            ProviderResponseId = GetNullableString(reader, "provider_response_id"),
+        };
 
     private static string? GetNullableString(SqliteDataReader reader, string column)
     {
@@ -1231,3 +1322,11 @@ internal sealed record UndeliveredPriorReview(long RunId, string HeadSha, string
 /// conversation was provisioned — the start of its retention window, not when the review finished.
 /// </summary>
 internal sealed record DeepLinkConversationRow(string ThreadId, string? Title, DateTimeOffset MintedAt);
+
+/// <summary>Result of one atomic review-run ownership compare-and-set.</summary>
+internal enum RunOwnershipAcquisition
+{
+    Acquired,
+    Contended,
+    RunNotFound,
+}

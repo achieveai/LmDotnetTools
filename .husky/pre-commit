@@ -1,8 +1,9 @@
 #!/bin/sh
 . "$(dirname "$0")/_/husky.sh"
 
-# Verify formatting matches .editorconfig before allowing the commit.
-# The full warning gate (TreatWarningsAsErrors) runs at build time and in CI;
-# we keep pre-commit to a fast `dotnet format --verify-no-changes` so commits
-# that would fail CI for whitespace/style get caught locally.
+# Verify formatting matches the repository's canonical CSharpier output before
+# allowing the commit. The full warning gate (TreatWarningsAsErrors) runs at
+# build time and in CI; pre-commit stays fast by running `csharpier check`
+# against only the staged .cs files, so commits that would fail CI for
+# formatting get caught locally.
 exec dotnet husky run --name format-verify

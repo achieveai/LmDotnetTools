@@ -1,0 +1,17 @@
+[Unit]
+Description=Verified CodeReview host
+After=network.target
+
+[Service]
+Type=simple
+Environment=ASPNETCORE_ENVIRONMENT=Production
+Environment=DOTNET_ENVIRONMENT=Production
+Environment=CODEREVIEW_DEVELOPMENT_IDENTITY=
+Environment=ASPNETCORE_URLS=http://127.0.0.1:5080
+ExecStart=/bin/sh -c 'r=$$(cat %h/.local/share/codereview/pointers/active); exec %h/.local/share/codereview/releases/$$r/host/LmStreaming.Sample'
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

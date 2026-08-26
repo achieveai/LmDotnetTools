@@ -33,8 +33,7 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// </summary>
 public sealed class PrMetadataRefreshTests
 {
-    private const string WipTitle =
-        "[WIP] Remove all references to the enableEmployeeDescriptiveAsPH flight";
+    private const string WipTitle = "[WIP] Remove all references to the enableEmployeeDescriptiveAsPH flight";
 
     private const string RetitledTitle =
         "Remove EnableEmployeeDescriptiveAsPH flight references from Data Ingress docs";
@@ -42,20 +41,24 @@ public sealed class PrMetadataRefreshTests
     private const string CapturedDescription =
         "Removes the flight gate and the four doc sections that referenced it. No behaviour change.";
 
-    private static long Repo(ReviewStore store) => store.EnsureRepo(new RepoIdentity
-    {
-        Provider = "azure-devops",
-        OrgOrOwner = "o365exchange",
-        Project = "Weve_DA",
-        RepoName = "Nova",
-    });
+    private static long Repo(ReviewStore store) =>
+        store.EnsureRepo(
+            new RepoIdentity
+            {
+                Provider = "azure-devops",
+                OrgOrOwner = "o365exchange",
+                Project = "Weve_DA",
+                RepoName = "Nova",
+            }
+        );
 
     private static ReviewRun Seed(
         long repoId,
         string? title,
         string? description,
         string? targetBranch = "main",
-        string? author = "dev@contoso.com")
+        string? author = "dev@contoso.com"
+    )
     {
         return new ReviewRun
         {
@@ -78,7 +81,12 @@ public sealed class PrMetadataRefreshTests
     }
 
     private static PrOrchestrator Orchestrator(ReviewStore store) =>
-        new(store, new RecordingStageExecutor(), NullLogger<PrOrchestrator>.Instance);
+        new(
+            store,
+            new RecordingStageExecutor(),
+            NullLogger<PrOrchestrator>.Instance,
+            providers: [new ReadyPrProvider()]
+        );
 
     /// <summary>
     /// PR 5505154's edit, replayed inside one run's lifetime. The run was created while the PR still carried
@@ -92,21 +100,28 @@ public sealed class PrMetadataRefreshTests
         using var store = new ReviewStore(db.ConnectionString);
         var repoId = Repo(store);
         var created = store.CreateOrGetReviewRun(
-            Seed(repoId, WipTitle, "Draft — do not review yet.", targetBranch: "main"));
+            Seed(repoId, WipTitle, "Draft — do not review yet.", targetBranch: "main")
+        );
 
         // Same identity tuple, so this re-polls the SAME row — now with the PR as its author left it.
-        var run = await Orchestrator(store).RunAsync(
-            Seed(repoId, RetitledTitle, CapturedDescription, targetBranch: "release/2026.08"),
-            CancellationToken.None);
+        var run = await Orchestrator(store)
+            .RunAsync(
+                Seed(repoId, RetitledTitle, CapturedDescription, targetBranch: "release/2026.08"),
+                CancellationToken.None
+            );
 
         run.Id.Should().Be(created.Id, "the identity tuple is unchanged, so this must be the same run");
         var refreshed = store.GetReviewRun(created.Id)!;
         refreshed.PrTitle.Should().Be(RetitledTitle);
-        refreshed.PrDescription.Should().Be(
-            CapturedDescription,
-            "the body is what the reviewer weighs the diff against; a stale one asks the wrong question");
-        refreshed.PrTargetBranch.Should().Be(
-            "release/2026.08", "risk is judged by destination, and this PR was retargeted");
+        refreshed
+            .PrDescription.Should()
+            .Be(
+                CapturedDescription,
+                "the body is what the reviewer weighs the diff against; a stale one asks the wrong question"
+            );
+        refreshed
+            .PrTargetBranch.Should()
+            .Be("release/2026.08", "risk is judged by destination, and this PR was retargeted");
 
         // The returned run, not only the row: the orchestrator hands this object to the stage executor, which
         // renders the brief from it. A row that is right while the in-memory run is stale reviews the stale one.
@@ -128,20 +143,22 @@ public sealed class PrMetadataRefreshTests
         var repoId = Repo(store);
         var created = store.CreateOrGetReviewRun(Seed(repoId, WipTitle, CapturedDescription));
 
-        _ = await Orchestrator(store).RunAsync(
-            Seed(repoId, RetitledTitle, description: null),
-            CancellationToken.None);
+        _ = await Orchestrator(store).RunAsync(Seed(repoId, RetitledTitle, description: null), CancellationToken.None);
 
         var refreshed = store.GetReviewRun(created.Id)!;
-        refreshed.PrDescription.Should().Be(
-            CapturedDescription,
-            "a poll that could not read the body says nothing about the body; adopting its silence would "
-                + "destroy the only copy the daemon will ever have");
+        refreshed
+            .PrDescription.Should()
+            .Be(
+                CapturedDescription,
+                "a poll that could not read the body says nothing about the body; adopting its silence would "
+                    + "destroy the only copy the daemon will ever have"
+            );
 
         // Same poll, same block, opposite outcome — proving the guard is about ABSENCE and not about refusing
         // to write. Without this the first assertion would also pass on a refresh that had simply stopped.
-        refreshed.PrTitle.Should().Be(
-            RetitledTitle, "this poll DID carry a title, so there is nothing to protect and it must be adopted");
+        refreshed
+            .PrTitle.Should()
+            .Be(RetitledTitle, "this poll DID carry a title, so there is nothing to protect and it must be adopted");
     }
 
     /// <summary>
@@ -160,16 +177,23 @@ public sealed class PrMetadataRefreshTests
 
         using var loggerFactory = new CapturingLoggerFactory();
         var orchestrator = new PrOrchestrator(
-            store, new RecordingStageExecutor(), loggerFactory.CreateLogger<PrOrchestrator>());
-        _ = await orchestrator.RunAsync(
-            Seed(repoId, RetitledTitle, CapturedDescription), CancellationToken.None);
+            store,
+            new RecordingStageExecutor(),
+            loggerFactory.CreateLogger<PrOrchestrator>(),
+            providers: [new ReadyPrProvider()]
+        );
+        _ = await orchestrator.RunAsync(Seed(repoId, RetitledTitle, CapturedDescription), CancellationToken.None);
 
-        var reported = loggerFactory.Capturing.MessagesAtLevel(LogLevel.Information)
+        var reported = loggerFactory
+            .Capturing.MessagesAtLevel(LogLevel.Information)
             .Where(m => m.Contains("stated intent", StringComparison.Ordinal))
             .ToList();
-        reported.Should().ContainSingle(
-            "a review read against a superseded intent is otherwise indistinguishable from one read against "
-                + "the current intent, in every artifact the run leaves behind");
+        reported
+            .Should()
+            .ContainSingle(
+                "a review read against a superseded intent is otherwise indistinguishable from one read against "
+                    + "the current intent, in every artifact the run leaves behind"
+            );
         reported[0].Should().Contain(RetitledTitle.Length.ToString(CultureInfo.InvariantCulture));
         reported[0].Should().NotContain(RetitledTitle);
         reported[0].Should().NotContain(CapturedDescription);

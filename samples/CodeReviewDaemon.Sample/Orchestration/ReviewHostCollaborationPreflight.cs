@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmSampleShared.Release;
 using CodeReviewDaemon.Sample.Agents;
 
 namespace CodeReviewDaemon.Sample.Orchestration;
@@ -21,14 +22,22 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// </summary>
 internal sealed class ReviewHostCollaborationPreflight(
     LmStreamingS2SClient client,
-    ILogger<ReviewHostCollaborationPreflight> logger) : IHostedService
+    ReleaseIdentity releaseIdentity,
+    ILogger<ReviewHostCollaborationPreflight> logger
+) : IHostedService
 {
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        if (!releaseIdentity.IsDevelopment)
+        {
+            await client.EnsureReleaseCompatibilityAsync(releaseIdentity, cancellationToken).ConfigureAwait(false);
+        }
+
         await client.EnsureAgentCollaborationAsync(cancellationToken).ConfigureAwait(false);
         logger.LogInformation(
             "Review host preflight: agent collaboration is enabled, so sub-agent transcripts are readable "
-                + "and delegate reviewers' notes will carry their reasoning rather than a placeholder.");
+                + "and delegate reviewers' notes will carry their reasoning rather than a placeholder."
+        );
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;

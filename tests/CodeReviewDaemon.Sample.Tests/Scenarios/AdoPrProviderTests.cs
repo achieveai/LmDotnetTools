@@ -19,9 +19,7 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 public sealed class AdoPrProviderTests : LoggingTestBase
 {
     public AdoPrProviderTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     private static readonly RepoIdentity Repo = new()
     {
@@ -52,13 +50,14 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         }
         """;
 
-    private static PrPollRequest Request(OpaqueCursor? cursor = null, DateTimeOffset? recencyCutoff = null) => new()
-    {
-        Repo = Repo,
-        Scope = "contoso/Platform/widgets:active-prs",
-        Cursor = cursor,
-        RecencyCutoff = recencyCutoff,
-    };
+    private static PrPollRequest Request(OpaqueCursor? cursor = null, DateTimeOffset? recencyCutoff = null) =>
+        new()
+        {
+            Repo = Repo,
+            Scope = "contoso/Platform/widgets:active-prs",
+            Cursor = cursor,
+            RecencyCutoff = recencyCutoff,
+        };
 
     // One PR opened before a recency window (needs a last-push lookup) and one opened inside it (does not).
     private const string DatedPrs = """
@@ -84,7 +83,8 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         new(
             new HttpClient(handler),
             new FakeOAuthTokenProvider("ado", "ado-token-abc"),
-            LoggerFactory.CreateLogger<AdoPrProvider>());
+            LoggerFactory.CreateLogger<AdoPrProvider>()
+        );
 
     [Fact]
     public void Provider_id_is_ado()
@@ -108,7 +108,9 @@ public sealed class AdoPrProviderTests : LoggingTestBase
     [InlineData("""{ "displayName": 7 }""", null)]
     [InlineData("{ }", null)]
     public async Task ListOpenPullRequests_takes_the_author_only_from_a_unique_identity(
-        string createdBy, string? expected)
+        string createdBy,
+        string? expected
+    )
     {
         var handler = new FakeHttpMessageHandler().OnJson(
             HttpMethod.Get,
@@ -117,7 +119,8 @@ public sealed class AdoPrProviderTests : LoggingTestBase
             { "value": [ { "pullRequestId": 42, "status": "active", "createdBy": {{createdBy}},
                 "lastMergeSourceCommit": { "commitId": "head-42" },
                 "lastMergeTargetCommit": { "commitId": "base-42" } } ] }
-            """);
+            """
+        );
 
         var page = await Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
@@ -148,20 +151,24 @@ public sealed class AdoPrProviderTests : LoggingTestBase
                   "targetRefName": "refs/pull/50/merge",
                   "lastMergeSourceCommit": { "commitId": "head-50" },
                   "lastMergeTargetCommit": { "commitId": "base-50" } } ] }
-            """);
+            """
+        );
 
         var page = await Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
         page.PullRequests[0].Title.Should().Be("Revert the Contoso revenue report to the Q3 layout");
-        page.PullRequests[0].Description.Should().Be(
-            "Rolls back the Q4 rewrite; drill-through was broken on three pages.");
-        page.PullRequests[0].TargetBranch.Should().Be(
-            "release/2026.08", "the brief names a branch, and refs/heads/ is plumbing the reviewer never types");
+        page.PullRequests[0]
+            .Description.Should()
+            .Be("Rolls back the Q4 rewrite; drill-through was broken on three pages.");
+        page.PullRequests[0]
+            .TargetBranch.Should()
+            .Be("release/2026.08", "the brief names a branch, and refs/heads/ is plumbing the reviewer never types");
 
         page.PullRequests[1].Title.Should().BeNull("a PR ADO gave no title for stays unknown");
         page.PullRequests[1].Description.Should().BeNull();
-        page.PullRequests[1].TargetBranch.Should().Be(
-            "refs/pull/50/merge", "a ref outside refs/heads/ is passed through rather than silently mangled");
+        page.PullRequests[1]
+            .TargetBranch.Should()
+            .Be("refs/pull/50/merge", "a ref outside refs/heads/ is passed through rather than silently mangled");
     }
 
     /// <summary>
@@ -194,7 +201,8 @@ public sealed class AdoPrProviderTests : LoggingTestBase
                 { "pullRequestId": 51, "status": "active",
                   "lastMergeSourceCommit": { "commitId": "head-51" },
                   "lastMergeTargetCommit": { "commitId": "base-51" } } ] }
-            """);
+            """
+        );
 
         var page = await Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
@@ -203,10 +211,13 @@ public sealed class AdoPrProviderTests : LoggingTestBase
 
         page.PullRequests[1].IsForkPr.Should().BeTrue("forkSource is present, so the head lives in a fork");
 
-        page.PullRequests[2].IsForkPr.Should().BeNull(
-            "absence of forkSource only means 'not a fork' in a payload we recognize; with no repository "
-                + "object either, the shape is unknown and so is the answer — the poller, not the provider, "
-                + "turns that into the fail-closed default");
+        page.PullRequests[2]
+            .IsForkPr.Should()
+            .BeNull(
+                "absence of forkSource only means 'not a fork' in a payload we recognize; with no repository "
+                    + "object either, the shape is unknown and so is the answer — the poller, not the provider, "
+                    + "turns that into the fail-closed default"
+            );
         page.PullRequests[2].IsTargetRepoPublic.Should().BeNull("no project object means visibility is unknown");
     }
 
@@ -232,7 +243,8 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         new(
             new HttpClient(handler),
             new FakeOAuthTokenProvider("ado", "ado-token-abc"),
-            logs.CreateLogger<AdoPrProvider>());
+            logs.CreateLogger<AdoPrProvider>()
+        );
 
     /// <summary>
     /// When the provider cannot establish the target project's visibility it must say WHICH of the
@@ -260,11 +272,14 @@ public sealed class AdoPrProviderTests : LoggingTestBase
 
         page.PullRequests[0].IsTargetRepoPublic.Should().BeNull("nothing established the project's visibility");
 
-        var warning = logs.Capturing.MessagesAtLevel(LogLevel.Warning).Should().ContainSingle(
-            "one line must tie the cause to the run, not scatter the facts across several").Subject;
-        warning.Should().Contain(
-            "visibility",
-            "the line has to name the property that was missing, not just report a failure");
+        var warning = logs
+            .Capturing.MessagesAtLevel(LogLevel.Warning)
+            .Should()
+            .ContainSingle("one line must tie the cause to the run, not scatter the facts across several")
+            .Subject;
+        warning
+            .Should()
+            .Contain("visibility", "the line has to name the property that was missing, not just report a failure");
         warning.Should().Contain("id").And.Contain("name").And.Contain("state");
         warning.Should().NotContain("Revert the Contoso revenue report", "a PR title is EUII");
         warning.Should().NotContain("drill-through", "a PR description is EUII");
@@ -291,15 +306,15 @@ public sealed class AdoPrProviderTests : LoggingTestBase
                       "project": { "id": "proj-guid-1", "name": "Platform", "visibility": "systemprivate" } },
                     "lastMergeSourceCommit": { "commitId": "head-42" },
                     "lastMergeTargetCommit": { "commitId": "base-42" } } ] }
-                """);
+                """
+            );
 
         var page = await Provider(handler, logs).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
         page.PullRequests[0].IsTargetRepoPublic.Should().BeNull("an unrecognized visibility must not read as private");
 
         var warning = logs.Capturing.MessagesAtLevel(LogLevel.Warning).Should().ContainSingle().Subject;
-        warning.Should().Contain(
-            "systemprivate", "the value the parser could not map is the whole diagnostic here");
+        warning.Should().Contain("systemprivate", "the value the parser could not map is the whole diagnostic here");
     }
 
     /// <summary>
@@ -323,21 +338,30 @@ public sealed class AdoPrProviderTests : LoggingTestBase
             .OnJson(
                 HttpMethod.Get,
                 "/_apis/projects/",
-                """{ "id": "proj-guid-1", "name": "Platform", "state": "wellFormed", "visibility": "private" }""")
+                """{ "id": "proj-guid-1", "name": "Platform", "state": "wellFormed", "visibility": "private" }"""
+            )
             .OnJson(HttpMethod.Get, "/pullrequests", PrWithProjectButNoVisibility);
 
         var page = await Provider(handler, logs).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
-        page.PullRequests[0].IsTargetRepoPublic.Should().BeFalse(
-            "the project API answered what the PR list could not, and this project is private");
-        logs.Capturing.MessagesAtLevel(LogLevel.Warning).Should().BeEmpty(
-            "a resolved visibility is a healthy poll, not a condition to warn about on every cycle");
+        page.PullRequests[0]
+            .IsTargetRepoPublic.Should()
+            .BeFalse("the project API answered what the PR list could not, and this project is private");
+        logs.Capturing.MessagesAtLevel(LogLevel.Warning)
+            .Should()
+            .BeEmpty("a resolved visibility is a healthy poll, not a condition to warn about on every cycle");
 
-        var request = handler.Requests.Should().ContainSingle(
-            r => r.Uri.ToString().Contains("/_apis/projects/", StringComparison.Ordinal)).Subject;
-        request.Uri.ToString().Should().StartWith(
-            "https://dev.azure.com/contoso/_apis/projects/Platform",
-            "the project API is ORG-scoped — the project is the resource, not a path prefix");
+        var request = handler
+            .Requests.Should()
+            .ContainSingle(r => r.Uri.ToString().Contains("/_apis/projects/", StringComparison.Ordinal))
+            .Subject;
+        request
+            .Uri.ToString()
+            .Should()
+            .StartWith(
+                "https://dev.azure.com/contoso/_apis/projects/Platform",
+                "the project API is ORG-scoped — the project is the resource, not a path prefix"
+            );
         request.Uri.Query.Should().Contain("api-version=7.1");
         request.Authorization.Should().StartWith("Basic ", "ADO PATs/bearer tokens are sent via basic auth");
     }
@@ -395,7 +419,9 @@ public sealed class AdoPrProviderTests : LoggingTestBase
     [InlineData(HttpStatusCode.OK, """{ "name": "Platform", "visibility": "systemprivate" }""")]
     [InlineData(HttpStatusCode.OK, """{ "name": "Platform" }""")]
     public async Task ListOpenPullRequests_stays_fail_closed_when_the_project_api_cannot_answer(
-        HttpStatusCode status, string body)
+        HttpStatusCode status,
+        string body
+    )
     {
         using var logs = new CapturingLoggerFactory();
         var handler = new FakeHttpMessageHandler()
@@ -404,8 +430,10 @@ public sealed class AdoPrProviderTests : LoggingTestBase
 
         var page = await Provider(handler, logs).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
-        page.PullRequests.Should().ContainSingle().Which.IsTargetRepoPublic.Should().BeNull(
-            "an unanswerable visibility is 'unknown', which fails closed — never a guess at 'private'");
+        page.PullRequests.Should()
+            .ContainSingle()
+            .Which.IsTargetRepoPublic.Should()
+            .BeNull("an unanswerable visibility is 'unknown', which fails closed — never a guess at 'private'");
     }
 
     /// <summary>
@@ -420,7 +448,8 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         var handler = new FakeHttpMessageHandler()
             .On(
                 req => req.RequestUri!.ToString().Contains("/_apis/projects/", StringComparison.Ordinal),
-                _ => throw new HttpRequestException("simulated egress denial"))
+                _ => throw new HttpRequestException("simulated egress denial")
+            )
             .OnJson(HttpMethod.Get, "/pullrequests", PrWithProjectButNoVisibility);
 
         var page = await Provider(handler, logs).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
@@ -444,7 +473,8 @@ public sealed class AdoPrProviderTests : LoggingTestBase
                 "repository": { "name": "widgets", "project": { "name": "Platform", "visibility": "private" } },
                 "lastMergeSourceCommit": { "commitId": "head-42" },
                 "lastMergeTargetCommit": { "commitId": "base-42" } } ] }
-            """);
+            """
+        );
 
         var page = await Provider(handler, logs).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
@@ -477,11 +507,14 @@ public sealed class AdoPrProviderTests : LoggingTestBase
 
         page.PullRequests[0].IsTargetRepoPublic.Should().BeNull("an unmappable visibility must not be guessed at");
         logs.Capturing.MessagesAtLevel(LogLevel.Debug)
-            .Should().ContainSingle(m => m.Contains("project API", StringComparison.Ordinal))
-            .Which.Should().Contain(
+            .Should()
+            .ContainSingle(m => m.Contains("project API", StringComparison.Ordinal))
+            .Which.Should()
+            .Contain(
                 expected,
                 "the unmapped value IS the remedy — without it the log can say the fallback failed but "
-                    + "never why, which is exactly how the PR-list sentinel went unattributed for 143 runs");
+                    + "never why, which is exactly how the PR-list sentinel went unattributed for 143 runs"
+            );
     }
 
     /// <summary>
@@ -500,7 +533,8 @@ public sealed class AdoPrProviderTests : LoggingTestBase
 
         page.PullRequests[0].IsTargetRepoPublic.Should().BeNull();
         logs.Capturing.MessagesAtLevel(LogLevel.Debug)
-            .Should().ContainSingle(m => m.Contains("project API", StringComparison.Ordinal));
+            .Should()
+            .ContainSingle(m => m.Contains("project API", StringComparison.Ordinal));
     }
 
     /// <summary>
@@ -548,7 +582,8 @@ public sealed class AdoPrProviderTests : LoggingTestBase
                 "repository": { "name": "widgets", "project": { "name": "Platform", "visibility": "organization" } },
                 "lastMergeSourceCommit": { "commitId": "head-42" },
                 "lastMergeTargetCommit": { "commitId": "base-42" } } ] }
-            """);
+            """
+        );
 
         var page = await Provider(handler, logs).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
@@ -580,10 +615,14 @@ public sealed class AdoPrProviderTests : LoggingTestBase
 
         // Select the PR-list call rather than asserting a lone request: a poll of a payload without
         // repository.project.visibility legitimately also asks the project API for it.
-        var request = handler.Requests.Should().ContainSingle(
-            r => r.Uri.ToString().Contains("/pullrequests", StringComparison.Ordinal)).Subject;
+        var request = handler
+            .Requests.Should()
+            .ContainSingle(r => r.Uri.ToString().Contains("/pullrequests", StringComparison.Ordinal))
+            .Subject;
         request.Method.Should().Be(HttpMethod.Get);
-        request.Uri.ToString().Should()
+        request
+            .Uri.ToString()
+            .Should()
             .StartWith("https://dev.azure.com/contoso/Platform/_apis/git/repositories/widgets/pullrequests");
         request.Uri.Query.Should().Contain("searchCriteria.status=active");
         request.Uri.Query.Should().Contain("api-version=7.1");
@@ -628,7 +667,11 @@ public sealed class AdoPrProviderTests : LoggingTestBase
     public async Task ListOpenPullRequests_throws_on_a_non_success_status()
     {
         var handler = new FakeHttpMessageHandler().OnJson(
-            HttpMethod.Get, "/pullrequests", """{"message":"unauthorized"}""", HttpStatusCode.Unauthorized);
+            HttpMethod.Get,
+            "/pullrequests",
+            """{"message":"unauthorized"}""",
+            HttpStatusCode.Unauthorized
+        );
 
         var act = () => Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
@@ -651,10 +694,12 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         var handler = new FakeHttpMessageHandler()
             .On(
                 req => req.RequestUri!.ToString().Contains("continuationToken=TOKEN2", StringComparison.Ordinal),
-                _ => JsonResponse(page2))
+                _ => JsonResponse(page2)
+            )
             .On(
                 req => req.RequestUri!.ToString().Contains("/pullrequests", StringComparison.Ordinal),
-                _ => JsonResponse(page1, ("x-ms-continuationtoken", "TOKEN2")));
+                _ => JsonResponse(page1, ("x-ms-continuationtoken", "TOKEN2"))
+            );
 
         var page = await Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
@@ -680,7 +725,11 @@ public sealed class AdoPrProviderTests : LoggingTestBase
     [Fact]
     public async Task ListOpenPullRequests_handles_an_empty_envelope()
     {
-        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/pullrequests", """{"count":0,"value":[]}""");
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/pullrequests",
+            """{"count":0,"value":[]}"""
+        );
 
         var page = await Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
@@ -688,50 +737,101 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         page.NextCursor.CursorVersion.Should().Be(PrPollingService.CursorVersion);
     }
 
+    [Theory]
+    [InlineData("true", PrDraftState.Draft)]
+    [InlineData("false", PrDraftState.Ready)]
+    [InlineData("null", PrDraftState.Unknown)]
+    [InlineData("\"true\"", PrDraftState.Unknown)]
+    internal async Task ListOpenPullRequests_maps_isDraft_fail_closed(string draftJson, PrDraftState expected)
+    {
+        var payload = $$"""
+            { "value": [{
+              "pullRequestId": 42, "status": "active", "isDraft": {{draftJson}},
+              "lastMergeSourceCommit": { "commitId": "head-42" },
+              "lastMergeTargetCommit": { "commitId": "base-42" }
+            }] }
+            """;
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/pullrequests", payload);
+
+        var page = await Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        page.PullRequests.Single().DraftState.Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData("true", PrDraftState.Draft)]
+    [InlineData("false", PrDraftState.Ready)]
+    [InlineData("null", PrDraftState.Unknown)]
+    [InlineData("{}", PrDraftState.Unknown)]
+    internal async Task GetPrState_maps_lifecycle_and_isDraft_independently(string draftJson, PrDraftState expected)
+    {
+        var payload = $$"""{ "pullRequestId": 42, "status": "active", "isDraft": {{draftJson}} }""";
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/pullrequests/42", payload);
+
+        var status = await Provider(handler).GetPrStateAsync(Repo, "42", CancellationToken.None);
+
+        status.Lifecycle.Should().Be(PrLifecycle.Open);
+        status.DraftState.Should().Be(expected);
+    }
+
     [Fact]
     public async Task GetPrState_maps_an_active_pr_to_open()
     {
         var handler = new FakeHttpMessageHandler().OnJson(
-            HttpMethod.Get, "/pullrequests/42", """{ "pullRequestId": 42, "status": "active" }""");
+            HttpMethod.Get,
+            "/pullrequests/42",
+            """{ "pullRequestId": 42, "status": "active" }"""
+        );
 
         var state = await Provider(handler).GetPrStateAsync(Repo, "42", CancellationToken.None);
 
-        state.Should().Be(PrLifecycle.Open);
+        state.Lifecycle.Should().Be(PrLifecycle.Open);
     }
 
     [Fact]
     public async Task GetPrState_maps_a_completed_pr_to_merged()
     {
         var handler = new FakeHttpMessageHandler().OnJson(
-            HttpMethod.Get, "/pullrequests/42", """{ "pullRequestId": 42, "status": "completed" }""");
+            HttpMethod.Get,
+            "/pullrequests/42",
+            """{ "pullRequestId": 42, "status": "completed" }"""
+        );
 
         var state = await Provider(handler).GetPrStateAsync(Repo, "42", CancellationToken.None);
 
-        state.Should().Be(PrLifecycle.Merged);
+        state.Lifecycle.Should().Be(PrLifecycle.Merged);
     }
 
     [Fact]
     public async Task GetPrState_maps_an_abandoned_pr_to_abandoned()
     {
         var handler = new FakeHttpMessageHandler().OnJson(
-            HttpMethod.Get, "/pullrequests/42", """{ "pullRequestId": 42, "status": "abandoned" }""");
+            HttpMethod.Get,
+            "/pullrequests/42",
+            """{ "pullRequestId": 42, "status": "abandoned" }"""
+        );
 
         var state = await Provider(handler).GetPrStateAsync(Repo, "42", CancellationToken.None);
 
-        state.Should().Be(PrLifecycle.Abandoned);
+        state.Lifecycle.Should().Be(PrLifecycle.Abandoned);
     }
 
     [Fact]
     public async Task GetPrState_sends_the_single_pr_request_ado_requires()
     {
         var handler = new FakeHttpMessageHandler().OnJson(
-            HttpMethod.Get, "/pullrequests/42", """{ "pullRequestId": 42, "status": "active" }""");
+            HttpMethod.Get,
+            "/pullrequests/42",
+            """{ "pullRequestId": 42, "status": "active" }"""
+        );
 
         _ = await Provider(handler).GetPrStateAsync(Repo, "42", CancellationToken.None);
 
         var request = handler.Requests.Should().ContainSingle().Subject;
         request.Method.Should().Be(HttpMethod.Get);
-        request.Uri.ToString().Should()
+        request
+            .Uri.ToString()
+            .Should()
             .StartWith("https://dev.azure.com/contoso/Platform/_apis/git/repositories/widgets/pullrequests/42");
         request.Uri.Query.Should().Contain("api-version=7.1");
         request.Authorization.Should().StartWith("Basic ", "ADO PATs/bearer tokens are sent via basic auth");
@@ -787,16 +887,17 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         // both signals null ⇒ ApplyRecencyFilter keeps it, rather than dropping on the stale opened-date. No
         // push lookup is attempted (there is no ref to query).
         var cutoff = new DateTimeOffset(2026, 7, 4, 0, 0, 0, TimeSpan.Zero);
-        var handler = new FakeHttpMessageHandler()
-            .OnJson(
-                HttpMethod.Get,
-                "/pullrequests",
-                """
-                { "value": [ { "pullRequestId": 42, "status": "active", "creationDate": "2026-06-01T00:00:00Z",
-                    "lastMergeSourceCommit": { "commitId": "head-42" }, "lastMergeTargetCommit": { "commitId": "base-42" } } ] }
-                """);
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/pullrequests",
+            """
+            { "value": [ { "pullRequestId": 42, "status": "active", "creationDate": "2026-06-01T00:00:00Z",
+                "lastMergeSourceCommit": { "commitId": "head-42" }, "lastMergeTargetCommit": { "commitId": "base-42" } } ] }
+            """
+        );
 
-        var page = await Provider(handler).ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), CancellationToken.None);
+        var page = await Provider(handler)
+            .ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), CancellationToken.None);
 
         page.PullRequests[0].UpdatedAt.Should().BeNull();
         page.PullRequests[0].CreatedAt.Should().BeNull("no source ref ⇒ recency indeterminate ⇒ kept");
@@ -821,24 +922,41 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         // implementation would show a max concurrency of 1 — but never exceed the provider's concurrency cap.
         var cutoff = new DateTimeOffset(2026, 7, 4, 0, 0, 0, TimeSpan.Zero);
         const int oldPrCount = 20;
-        var items = string.Join(",", Enumerable.Range(1, oldPrCount).Select(i =>
-            "{ \"pullRequestId\": " + i + ", \"status\": \"active\", \"creationDate\": \"2026-06-01T00:00:00Z\", "
-            + "\"sourceRefName\": \"refs/heads/f" + i + "\", "
-            + "\"lastMergeSourceCommit\": { \"commitId\": \"h" + i + "\" }, "
-            + "\"lastMergeTargetCommit\": { \"commitId\": \"b" + i + "\" } }"));
+        var items = string.Join(
+            ",",
+            Enumerable
+                .Range(1, oldPrCount)
+                .Select(i =>
+                    "{ \"pullRequestId\": "
+                    + i
+                    + ", \"status\": \"active\", \"creationDate\": \"2026-06-01T00:00:00Z\", "
+                    + "\"sourceRefName\": \"refs/heads/f"
+                    + i
+                    + "\", "
+                    + "\"lastMergeSourceCommit\": { \"commitId\": \"h"
+                    + i
+                    + "\" }, "
+                    + "\"lastMergeTargetCommit\": { \"commitId\": \"b"
+                    + i
+                    + "\" } }"
+                )
+        );
         var prsJson = "{ \"value\": [ " + items + " ] }";
 
         using var handler = new ConcurrencyTrackingHandler(prsJson);
         var provider = new AdoPrProvider(
             new HttpClient(handler),
             new FakeOAuthTokenProvider("ado", "ado-token-abc"),
-            LoggerFactory.CreateLogger<AdoPrProvider>());
+            LoggerFactory.CreateLogger<AdoPrProvider>()
+        );
 
         var page = await provider.ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), CancellationToken.None);
 
         page.PullRequests.Should().HaveCount(oldPrCount);
         handler.TotalPushes.Should().Be(oldPrCount, "every eligible old PR receives exactly one /pushes lookup");
-        handler.MaxConcurrentPushes.Should().BeGreaterThan(1, "the per-PR push lookups run concurrently, not sequentially");
+        handler
+            .MaxConcurrentPushes.Should()
+            .BeGreaterThan(1, "the per-PR push lookups run concurrently, not sequentially");
         handler.MaxConcurrentPushes.Should().BeLessThanOrEqualTo(6, "concurrency is bounded by the provider's cap");
     }
 
@@ -853,13 +971,16 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         var provider = new AdoPrProvider(
             new HttpClient(handler),
             new FakeOAuthTokenProvider("ado", "ado-token-abc"),
-            LoggerFactory.CreateLogger<AdoPrProvider>());
+            LoggerFactory.CreateLogger<AdoPrProvider>()
+        );
 
         var page = await provider.ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), CancellationToken.None);
 
         page.PullRequests.Should().ContainSingle();
         page.PullRequests[0].UpdatedAt.Should().BeNull();
-        page.PullRequests[0].CreatedAt.Should().BeNull("a timed-out push lookup leaves recency indeterminate ⇒ the PR is kept");
+        page.PullRequests[0]
+            .CreatedAt.Should()
+            .BeNull("a timed-out push lookup leaves recency indeterminate ⇒ the PR is kept");
     }
 
     [Fact]
@@ -872,7 +993,8 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         var provider = new AdoPrProvider(
             new HttpClient(handler),
             new FakeOAuthTokenProvider("ado", "ado-token-abc"),
-            LoggerFactory.CreateLogger<AdoPrProvider>());
+            LoggerFactory.CreateLogger<AdoPrProvider>()
+        );
 
         var act = async () => await provider.ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), cts.Token);
 
@@ -890,11 +1012,14 @@ public sealed class AdoPrProviderTests : LoggingTestBase
     {
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken
+        )
         {
             if (request.RequestUri!.ToString().Contains("/pullrequests", StringComparison.Ordinal))
             {
-                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(prsJson) });
+                return Task.FromResult(
+                    new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(prsJson) }
+                );
             }
 
             // Answer the project-visibility lookup normally: it runs before the push lookups, and letting it
@@ -902,10 +1027,12 @@ public sealed class AdoPrProviderTests : LoggingTestBase
             // thing they are named for — ever having been reached.
             if (request.RequestUri!.ToString().Contains("/_apis/projects/", StringComparison.Ordinal))
             {
-                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
-                {
-                    Content = new StringContent("{ \"name\": \"Platform\", \"visibility\": \"private\" }"),
-                });
+                return Task.FromResult(
+                    new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("{ \"name\": \"Platform\", \"visibility\": \"private\" }"),
+                    }
+                );
             }
 
             cancelOnPush?.Cancel();
@@ -929,7 +1056,8 @@ public sealed class AdoPrProviderTests : LoggingTestBase
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken
+        )
         {
             var uri = request.RequestUri!.ToString();
             if (uri.Contains("/pullrequests", StringComparison.Ordinal))
@@ -985,12 +1113,16 @@ public sealed class AdoPrProviderTests : LoggingTestBase
     /// <summary>Builds a PR-list page containing <paramref name="count"/> distinct active PRs.</summary>
     private static string Page(int count, int firstId)
     {
-        var items = Enumerable.Range(firstId, count).Select(id => $$"""
-            { "pullRequestId": {{id}}, "status": "active", "creationDate": "2026-08-01T00:00:00Z",
-              "sourceRefName": "refs/heads/f{{id}}",
-              "lastMergeSourceCommit": { "commitId": "head-{{id}}" },
-              "lastMergeTargetCommit": { "commitId": "base-{{id}}" } }
-            """);
+        var items = Enumerable
+            .Range(firstId, count)
+            .Select(id =>
+                $$"""
+                    { "pullRequestId": {{id}}, "status": "active", "creationDate": "2026-08-01T00:00:00Z",
+                      "sourceRefName": "refs/heads/f{{id}}",
+                      "lastMergeSourceCommit": { "commitId": "head-{{id}}" },
+                      "lastMergeTargetCommit": { "commitId": "base-{{id}}" } }
+                    """
+            );
 
         return $$"""{ "count": {{count}}, "value": [ {{string.Join(",", items)}} ] }""";
     }
@@ -1002,19 +1134,29 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         // which proves the end. A full page is indistinguishable from a truncated one — only a short
         // page terminates the listing.
         var handler = new FakeHttpMessageHandler().OnSequence(
-            HttpMethod.Get, "/pullrequests", (HttpStatusCode.OK, Page(2, 1)), (HttpStatusCode.OK, Page(1, 3)));
+            HttpMethod.Get,
+            "/pullrequests",
+            (HttpStatusCode.OK, Page(2, 1)),
+            (HttpStatusCode.OK, Page(1, 3))
+        );
         var provider = new AdoPrProvider(
             new HttpClient(handler),
             new FakeOAuthTokenProvider("ado", "ado-token-abc"),
             LoggerFactory.CreateLogger<AdoPrProvider>(),
             maxPagesPerPoll: 10,
-            maxPrsPerPage: 2);
+            maxPrsPerPage: 2
+        );
 
         var page = await provider.ListOpenPullRequestsAsync(
-            new PrPollRequest { Repo = Repo, Scope = "s" }, CancellationToken.None);
+            new PrPollRequest { Repo = Repo, Scope = "s" },
+            CancellationToken.None
+        );
 
         page.PullRequests.Should().HaveCount(3, "the short second page is the end of the list, not the start of it");
-        var urls = handler.Requests.Select(r => r.Uri.ToString()).Where(u => u.Contains("/pullrequests", StringComparison.Ordinal)).ToList();
+        var urls = handler
+            .Requests.Select(r => r.Uri.ToString())
+            .Where(u => u.Contains("/pullrequests", StringComparison.Ordinal))
+            .ToList();
         urls.Should().HaveCount(2);
         urls[0].Should().Contain("$top=2").And.NotContain("$skip");
         urls[1].Should().Contain("$skip=2", "the second page has to skip what the first already returned");
@@ -1024,20 +1166,29 @@ public sealed class AdoPrProviderTests : LoggingTestBase
     public async Task A_short_first_page_asks_for_nothing_further()
     {
         var handler = new FakeHttpMessageHandler().OnSequence(
-            HttpMethod.Get, "/pullrequests", (HttpStatusCode.OK, Page(1, 1)), (HttpStatusCode.OK, Page(1, 99)));
+            HttpMethod.Get,
+            "/pullrequests",
+            (HttpStatusCode.OK, Page(1, 1)),
+            (HttpStatusCode.OK, Page(1, 99))
+        );
         var provider = new AdoPrProvider(
             new HttpClient(handler),
             new FakeOAuthTokenProvider("ado", "ado-token-abc"),
             LoggerFactory.CreateLogger<AdoPrProvider>(),
             maxPagesPerPoll: 10,
-            maxPrsPerPage: 2);
+            maxPrsPerPage: 2
+        );
 
         var page = await provider.ListOpenPullRequestsAsync(
-            new PrPollRequest { Repo = Repo, Scope = "s" }, CancellationToken.None);
+            new PrPollRequest { Repo = Repo, Scope = "s" },
+            CancellationToken.None
+        );
 
         page.PullRequests.Should().HaveCount(1);
-        handler.CountRequests("/pullrequests").Should().Be(
-            1, "a page shorter than $top already proves there is nothing after it");
+        handler
+            .CountRequests("/pullrequests")
+            .Should()
+            .Be(1, "a page shorter than $top already proves there is nothing after it");
     }
 
     [Fact]
@@ -1053,23 +1204,30 @@ public sealed class AdoPrProviderTests : LoggingTestBase
             "/pullrequests",
             (HttpStatusCode.OK, Page(2, 1)),
             (HttpStatusCode.OK, Page(2, 3)),
-            (HttpStatusCode.OK, Page(2, 5)));
+            (HttpStatusCode.OK, Page(2, 5))
+        );
         var provider = new AdoPrProvider(
             new HttpClient(handler),
             new FakeOAuthTokenProvider("ado", "ado-token-abc"),
             logs.CreateLogger<AdoPrProvider>(),
             maxPagesPerPoll: 2,
-            maxPrsPerPage: 2);
+            maxPrsPerPage: 2
+        );
 
         var page = await provider.ListOpenPullRequestsAsync(
-            new PrPollRequest { Repo = Repo, Scope = "s" }, CancellationToken.None);
+            new PrPollRequest { Repo = Repo, Scope = "s" },
+            CancellationToken.None
+        );
 
         page.PullRequests.Should().HaveCount(4);
         handler.CountRequests("/pullrequests").Should().Be(2, "the ceiling is 2 pages");
         logs.Capturing.MessagesAtLevel(LogLevel.Warning)
             .Should()
-            .ContainSingle(m => m.Contains("stopped after", StringComparison.Ordinal)
-                && m.Contains("were NOT seen", StringComparison.Ordinal),
-                "a coverage limit nobody is told about is the defect, not the limit");
+            .ContainSingle(
+                m =>
+                    m.Contains("stopped after", StringComparison.Ordinal)
+                    && m.Contains("were NOT seen", StringComparison.Ordinal),
+                "a coverage limit nobody is told about is the defect, not the limit"
+            );
     }
 }

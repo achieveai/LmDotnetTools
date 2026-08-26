@@ -2,6 +2,9 @@ using System.Collections.Immutable;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmAgentInfra;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
@@ -10,9 +13,6 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
-using AchieveAi.LmDotnetTools.LmAgentInfra;
-using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
-using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
 using LmStreaming.Sample.Services;
@@ -121,8 +121,7 @@ public sealed class InboundS2SAuthAttribute : Attribute, IAsyncActionFilter
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        return request.Headers.ContainsKey(HeaderName)
-            || request.Headers.ContainsKey(SandboxCredential.AppIdHeader);
+        return request.Headers.ContainsKey(HeaderName) || request.Headers.ContainsKey(SandboxCredential.AppIdHeader);
     }
 
     private static void WarnGuardDisabledOnce(HttpContext httpContext)
@@ -137,7 +136,8 @@ public sealed class InboundS2SAuthAttribute : Attribute, IAsyncActionFilter
             "{ConfigKey} is not configured; the S2S inbound-auth guard is DISABLED for headless "
                 + "conversation endpoints (keyless dev path). Set {EnvVar} to enforce it.",
             SecretConfigKey,
-            "LMSTREAMING_S2S_INBOUND_SECRET");
+            "LMSTREAMING_S2S_INBOUND_SECRET"
+        );
     }
 
     /// <summary>
@@ -175,7 +175,8 @@ public class ConversationsController(
     ILogger<ConversationsController> logger,
     ILogger<AgentHierarchyService> hierarchyLogger,
     SubAgentScanCoverageCache scanCoverageCache,
-    ConversationDescendantScanner descendantScanner) : ControllerBase
+    ConversationDescendantScanner descendantScanner
+) : ControllerBase
 {
     /// <summary>
     /// Warning returned from a mode/provider switch that recreated the agent while a <c>Wait</c> was
@@ -199,8 +200,13 @@ public class ConversationsController(
     /// one thing that lets a repeated poll remember a persisted child roster this same code already
     /// scanned for on an earlier request instead of rescanning it every time.
     /// </summary>
-    private readonly AgentHierarchyService _hierarchy =
-        new(agentPool, workflowRunRegistry, store, hierarchyLogger, scanCoverageCache);
+    private readonly AgentHierarchyService _hierarchy = new(
+        agentPool,
+        workflowRunRegistry,
+        store,
+        hierarchyLogger,
+        scanCoverageCache
+    );
 
     /// <summary>
     /// Error surfaced when a mode/provider switch is HARD-blocked (issue #246) because the
@@ -221,7 +227,8 @@ public class ConversationsController(
     [HttpPost]
     public async Task<IActionResult> Provision(
         [FromBody] ProvisionConversationRequest request,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -245,7 +252,8 @@ public class ConversationsController(
             logger.LogWarning(
                 "Provision rejected: provider {ProviderId} unavailable ({Reason})",
                 request.ProviderId,
-                reason);
+                reason
+            );
             return StatusCode(
                 StatusCodes.Status503ServiceUnavailable,
                 new
@@ -254,7 +262,8 @@ public class ConversationsController(
                     code = "provider_unavailable",
                     providerId = request.ProviderId,
                     detail = reason,
-                });
+                }
+            );
         }
 
         var threadId = $"thread-{Guid.NewGuid():N}";
@@ -264,8 +273,8 @@ public class ConversationsController(
             threadId,
             existing =>
             {
-                var propertiesBuilder = existing?.Properties?.ToBuilder()
-                    ?? ImmutableDictionary.CreateBuilder<string, object>();
+                var propertiesBuilder =
+                    existing?.Properties?.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, object>();
 
                 propertiesBuilder[MultiTurnAgentPool.ProviderPropertyKey] = request.ProviderId;
                 propertiesBuilder[MultiTurnAgentPool.WorkspacePropertyKey] = request.WorkspaceId;
@@ -273,8 +282,7 @@ public class ConversationsController(
 
                 if (!string.IsNullOrWhiteSpace(request.SystemPromptAppendix))
                 {
-                    propertiesBuilder[SystemPromptAugmenter.AppendixPropertyKey] =
-                        request.SystemPromptAppendix;
+                    propertiesBuilder[SystemPromptAugmenter.AppendixPropertyKey] = request.SystemPromptAppendix;
                 }
 
                 if (!string.IsNullOrWhiteSpace(request.SubAgentModelId))
@@ -299,16 +307,14 @@ public class ConversationsController(
                     Properties = propertiesBuilder.ToImmutable(),
                 };
             },
-            ct);
+            ct
+        );
 
         return Ok(new ProvisionConversationResponse { ThreadId = threadId });
     }
 
     [HttpGet]
-    public async Task<IActionResult> List(
-        int limit = 50,
-        int offset = 0,
-        CancellationToken ct = default)
+    public async Task<IActionResult> List(int limit = 50, int offset = 0, CancellationToken ct = default)
     {
         var threads = await store.ListThreadsAsync(limit, offset, ct);
         var result = threads
@@ -320,22 +326,25 @@ public class ConversationsController(
             .Select(t => new ConversationSummary
             {
                 ThreadId = t.ThreadId,
-                Title = t.Properties?.TryGetValue("title", out var titleObj) == true
-                    ? titleObj?.ToString() ?? "New Conversation"
-                    : "New Conversation",
-                Preview = t.Properties?.TryGetValue("preview", out var previewObj) == true
-                    ? previewObj?.ToString()
-                    : null,
+                Title =
+                    t.Properties?.TryGetValue("title", out var titleObj) == true
+                        ? titleObj?.ToString() ?? "New Conversation"
+                        : "New Conversation",
+                Preview =
+                    t.Properties?.TryGetValue("preview", out var previewObj) == true ? previewObj?.ToString() : null,
                 LastUpdated = t.LastUpdated,
-                Provider = t.Properties?.TryGetValue(MultiTurnAgentPool.ProviderPropertyKey, out var providerObj) == true
-                    ? providerObj?.ToString()
-                    : null,
-                Workspace = t.Properties?.TryGetValue(MultiTurnAgentPool.WorkspacePropertyKey, out var workspaceObj) == true
-                    ? workspaceObj?.ToString()
-                    : null,
-                Mode = t.Properties?.TryGetValue(MultiTurnAgentPool.ModePropertyKey, out var modeObj) == true
-                    ? modeObj?.ToString()
-                    : null,
+                Provider =
+                    t.Properties?.TryGetValue(MultiTurnAgentPool.ProviderPropertyKey, out var providerObj) == true
+                        ? providerObj?.ToString()
+                        : null,
+                Workspace =
+                    t.Properties?.TryGetValue(MultiTurnAgentPool.WorkspacePropertyKey, out var workspaceObj) == true
+                        ? workspaceObj?.ToString()
+                        : null,
+                Mode =
+                    t.Properties?.TryGetValue(MultiTurnAgentPool.ModePropertyKey, out var modeObj) == true
+                        ? modeObj?.ToString()
+                        : null,
             });
         return Ok(result);
     }
@@ -369,10 +378,7 @@ public class ConversationsController(
     /// </para>
     /// </remarks>
     [HttpGet("{threadId}/messages")]
-    public async Task<IActionResult> GetMessages(
-        string threadId,
-        string? viewer = null,
-        CancellationToken ct = default)
+    public async Task<IActionResult> GetMessages(string threadId, string? viewer = null, CancellationToken ct = default)
     {
         if (RefuseMachineCaller(threadId, AgentOwnedThreadReadCode, viewer) is { } refusal)
         {
@@ -474,12 +480,14 @@ public class ConversationsController(
     public IActionResult GetRunState(string threadId)
     {
         var runState = agentPool.GetRunStateInfo(threadId);
-        return Ok(new ConversationRunState
-        {
-            ThreadId = threadId,
-            IsInProgress = runState.IsInProgress,
-            CurrentRunId = runState.CurrentRunId,
-        });
+        return Ok(
+            new ConversationRunState
+            {
+                ThreadId = threadId,
+                IsInProgress = runState.IsInProgress,
+                CurrentRunId = runState.CurrentRunId,
+            }
+        );
     }
 
     /// <summary>
@@ -512,7 +520,8 @@ public class ConversationsController(
         string threadId,
         bool recursive = false,
         string? viewer = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         if (recursive)
         {
@@ -544,25 +553,26 @@ public class ConversationsController(
         string threadId,
         string agentId,
         string? viewer = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         var result = await _hierarchy.ReadTranscriptAsync(threadId, agentId, viewer, ct);
         return result.Outcome switch
         {
-            AgentTranscriptOutcome.UnknownThread =>
-                NotFound(new
-                {
-                    error = $"Conversation '{threadId}' not found.",
-                    code = AgentTranscriptReasons.UnknownThread,
-                }),
-            AgentTranscriptOutcome.CollaborationUnavailable =>
-                NotFound(new
+            AgentTranscriptOutcome.UnknownThread => NotFound(
+                new { error = $"Conversation '{threadId}' not found.", code = AgentTranscriptReasons.UnknownThread }
+            ),
+            AgentTranscriptOutcome.CollaborationUnavailable => NotFound(
+                new
                 {
                     error = "Agent collaboration is not enabled.",
                     code = AgentTranscriptReasons.CollaborationUnavailable,
-                }),
-            AgentTranscriptOutcome.Denied =>
-                StatusCode(StatusCodes.Status403Forbidden, new { error = "forbidden", code = result.DenialCode }),
+                }
+            ),
+            AgentTranscriptOutcome.Denied => StatusCode(
+                StatusCodes.Status403Forbidden,
+                new { error = "forbidden", code = result.DenialCode }
+            ),
             _ => Ok(result.Messages),
         };
     }
@@ -610,12 +620,15 @@ public class ConversationsController(
 
     [HttpGet("capabilities")]
     public IActionResult GetCapabilities() =>
-        Ok(new ConversationCapabilitiesResponse
-        {
-            SchemaVersion = 1,
-            MessageIdempotency = store is IInputAcceptanceStore,
-            SpawnSuppression = true,
-        });
+        Ok(
+            new ConversationCapabilitiesResponse
+            {
+                SchemaVersion = 1,
+                MessageIdempotency = store is IInputAcceptanceStore,
+                SpawnSuppression = true,
+                PerTurnModelOverride = true,
+            }
+        );
 
     /// <summary>
     /// Queues a message onto a previously-provisioned thread. Non-blocking: returns as soon as the
@@ -633,7 +646,8 @@ public class ConversationsController(
     public async Task<IActionResult> SendMessage(
         string threadId,
         [FromBody] SendMessageRequest request,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -641,7 +655,8 @@ public class ConversationsController(
         {
             return StatusCode(
                 StatusCodes.Status403Forbidden,
-                new { error = "forbidden", code = AgentOwnedThreadWriteCode });
+                new { error = "forbidden", code = AgentOwnedThreadWriteCode }
+            );
         }
 
         // A key that cannot be turned into a durable, unambiguous id is refused rather than read as
@@ -650,15 +665,16 @@ public class ConversationsController(
         // send — the one outcome the acknowledgement exists to rule out.
         if (request.IdempotencyKey is not null && !IsUsableIdempotencyKey(request.IdempotencyKey))
         {
-            return BadRequest(new
-            {
-                error = "invalid_idempotency_key",
-                code = "invalid_idempotency_key",
-                detail =
-                    "IdempotencyKey, when supplied, must be a non-blank identifier of at most "
-                    + $"{MaxIdempotencyKeyLength} characters and must not contain control characters.",
-                threadId,
-            });
+            return BadRequest(
+                new
+                {
+                    error = "invalid_idempotency_key",
+                    code = "invalid_idempotency_key",
+                    detail = "IdempotencyKey, when supplied, must be a non-blank identifier of at most "
+                        + $"{MaxIdempotencyKeyLength} characters and must not contain control characters.",
+                    threadId,
+                }
+            );
         }
 
         var metadata = await store.LoadMetadataAsync(threadId, ct);
@@ -678,7 +694,8 @@ public class ConversationsController(
         {
             return StatusCode(
                 StatusCodes.Status500InternalServerError,
-                new { error = "Could not resolve the conversation's mode.", threadId });
+                new { error = "Could not resolve the conversation's mode.", threadId }
+            );
         }
 
         // HttpContext is null when an action is invoked directly (outside the MVC pipeline, e.g. a
@@ -694,21 +711,47 @@ public class ConversationsController(
                 mode,
                 requestedProviderId: null,
                 requestResponseDumpFileName: null,
-                callerCredential: callerCredential);
+                callerCredential: callerCredential
+            );
         }
         catch (ProviderUnavailableException ex)
         {
-            logger.LogWarning(ex, "SendMessage for thread {ThreadId} failed: provider {ProviderId} unavailable", threadId, ex.ProviderId);
+            logger.LogWarning(
+                ex,
+                "SendMessage for thread {ThreadId} failed: provider {ProviderId} unavailable",
+                threadId,
+                ex.ProviderId
+            );
             return StatusCode(
                 StatusCodes.Status503ServiceUnavailable,
-                new { error = "provider_unavailable", code = "provider_unavailable", providerId = ex.ProviderId, detail = ex.Message, threadId });
+                new
+                {
+                    error = "provider_unavailable",
+                    code = "provider_unavailable",
+                    providerId = ex.ProviderId,
+                    detail = ex.Message,
+                    threadId,
+                }
+            );
         }
         catch (SandboxSessionUnavailableException ex)
         {
-            logger.LogWarning(ex, "SendMessage for thread {ThreadId} failed: sandbox unavailable (gateway status {StatusCode})", threadId, ex.StatusCode);
+            logger.LogWarning(
+                ex,
+                "SendMessage for thread {ThreadId} failed: sandbox unavailable (gateway status {StatusCode})",
+                threadId,
+                ex.StatusCode
+            );
             return StatusCode(
                 StatusCodes.Status503ServiceUnavailable,
-                new { error = "sandbox_unavailable", code = "sandbox_unavailable", detail = ex.Message, threadId });
+                new
+                {
+                    error = "sandbox_unavailable",
+                    code = "sandbox_unavailable",
+                    detail = ex.Message,
+                    threadId,
+                }
+            );
         }
         catch (SandboxCredentialConflictException ex)
         {
@@ -719,9 +762,17 @@ public class ConversationsController(
                 "SendMessage for thread {ThreadId} rejected: caller credential conflict (existing app id {ExistingAppId}, requested app id {RequestedAppId})",
                 threadId,
                 ex.ExistingAppId ?? "(none)",
-                ex.RequestedAppId ?? "(none)");
+                ex.RequestedAppId ?? "(none)"
+            );
             return Conflict(
-                new { error = "caller_credential_conflict", code = "caller_credential_conflict", detail = ex.Message, threadId });
+                new
+                {
+                    error = "caller_credential_conflict",
+                    code = "caller_credential_conflict",
+                    detail = ex.Message,
+                    threadId,
+                }
+            );
         }
 
         var userMessage = new TextMessage { Role = Role.User, Text = request.Text };
@@ -736,16 +787,31 @@ public class ConversationsController(
             logger.LogWarning(
                 "SendMessage for thread {ThreadId} rejected: agent {AgentType} cannot enforce per-turn sub-agent spawn suppression",
                 threadId,
-                agent.GetType().Name);
-            return BadRequest(new
-            {
-                error = "spawn_suppression_unsupported",
-                code = "spawn_suppression_unsupported",
-                detail =
-                    "This conversation's agent cannot suppress sub-agent spawning for a single turn, so the "
-                    + "requested guarantee cannot be made.",
-                threadId,
-            });
+                agent.GetType().Name
+            );
+            return BadRequest(
+                new
+                {
+                    error = "spawn_suppression_unsupported",
+                    code = "spawn_suppression_unsupported",
+                    detail = "This conversation's agent cannot suppress sub-agent spawning for a single turn, so the "
+                        + "requested guarantee cannot be made.",
+                    threadId,
+                }
+            );
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.ModelId) && agent is not ISpawnSuppressingAgent)
+        {
+            return BadRequest(
+                new
+                {
+                    error = "model_override_unsupported",
+                    code = "model_override_unsupported",
+                    detail = "This conversation's agent cannot accept a per-turn model override.",
+                    threadId,
+                }
+            );
         }
 
         // An idempotent send is identified by the caller's key TOGETHER WITH the options that change what the
@@ -765,19 +831,22 @@ public class ConversationsController(
                 "SendMessage for thread {ThreadId} rejected: store {StoreType} cannot durably admit an "
                     + "input id, so an idempotency key cannot be honored",
                 threadId,
-                store.GetType().Name);
-            return BadRequest(new
-            {
-                error = "idempotency_unsupported",
-                code = "idempotency_unsupported",
-                detail =
-                    "This host cannot durably record accepted inputs, so it cannot promise that a repeated "
-                    + "IdempotencyKey will not queue a second turn.",
-                threadId,
-            });
+                store.GetType().Name
+            );
+            return BadRequest(
+                new
+                {
+                    error = "idempotency_unsupported",
+                    code = "idempotency_unsupported",
+                    detail = "This host cannot durably record accepted inputs, so it cannot promise that a repeated "
+                        + "IdempotencyKey will not queue a second turn.",
+                    threadId,
+                }
+            );
         }
 
         var idempotent = request.IdempotencyKey is not null;
+        var requestedModelId = string.IsNullOrWhiteSpace(request.ModelId) ? null : request.ModelId.Trim();
 
         // The admission describes what this send is asking to be granted. Every response below — fresh,
         // reconciled, or downgraded — is a projection of one of these, so the answer a caller gets first and
@@ -785,16 +854,16 @@ public class ConversationsController(
         var admission = new InputAcceptance(
             threadId,
             idempotent
-                ? DeriveIdempotentInputId(request.IdempotencyKey!, request.SuppressSubAgentSpawning)
+                ? DeriveIdempotentInputId(request.IdempotencyKey!, request.SuppressSubAgentSpawning, requestedModelId)
                 : ServerMintedInputIdPrefix + Guid.NewGuid().ToString("N"),
             timeProvider.GetUtcNow(),
             InputAcceptanceState.Pending,
             SpawningSuppressed: request.SuppressSubAgentSpawning,
             IdempotencyHonored: idempotent,
-            ReservationId: Guid.NewGuid());
+            ReservationId: Guid.NewGuid()
+        );
 
-        if (idempotent
-            && await TryReconcileAdmissionAsync(acceptances!, admission, ct) is { } reconciled)
+        if (idempotent && await TryReconcileAdmissionAsync(acceptances!, admission, ct) is { } reconciled)
         {
             return reconciled;
         }
@@ -813,8 +882,11 @@ public class ConversationsController(
                         [userMessage],
                         admission.InputId,
                         ParentRunId: null,
-                        SuppressSubAgentSpawning: request.SuppressSubAgentSpawning),
-                    ct)
+                        SuppressSubAgentSpawning: request.SuppressSubAgentSpawning,
+                        ModelId: requestedModelId
+                    ),
+                    ct
+                )
                 : await agent.TrySendAsync([userMessage], inputId: admission.InputId, parentRunId: null, ct);
         }
         catch when (idempotent)
@@ -833,7 +905,13 @@ public class ConversationsController(
 
             return StatusCode(
                 StatusCodes.Status503ServiceUnavailable,
-                new { error = "queue_full", code = "queue_full", threadId });
+                new
+                {
+                    error = "queue_full",
+                    code = "queue_full",
+                    threadId,
+                }
+            );
         }
 
         // The capability check got the request this far; the RECEIPT is what says this particular input will
@@ -848,7 +926,8 @@ public class ConversationsController(
                 "SendMessage for thread {ThreadId}: agent {AgentType} accepted the input but did not confirm "
                     + "sub-agent spawn suppression; the response will not claim the guarantee",
                 threadId,
-                agent.GetType().Name);
+                agent.GetType().Name
+            );
         }
 
         var granted = admission with
@@ -863,10 +942,11 @@ public class ConversationsController(
                 "Could not record the outcome of input {InputId} on thread {ThreadId}; the turn is queued but "
                     + "a repeat of this idempotency key may not reconcile to it",
                 granted.InputId,
-                threadId);
+                threadId
+            );
         }
 
-        return AcceptedAdmission(granted, queued: true);
+        return AcceptedAdmission(granted, queued: true, acceptedModelId: requestedModelId);
     }
 
     /// <summary>
@@ -902,7 +982,8 @@ public class ConversationsController(
     private async Task<IActionResult?> TryReconcileAdmissionAsync(
         IInputAcceptanceStore acceptances,
         InputAcceptance admission,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         for (var attempt = 1; ; attempt++)
         {
@@ -918,7 +999,8 @@ public class ConversationsController(
                         + "({State}); nothing was queued",
                     admission.ThreadId,
                     admission.InputId,
-                    granted.State);
+                    granted.State
+                );
 
                 return AcceptedAdmission(granted, queued: false);
             }
@@ -931,7 +1013,8 @@ public class ConversationsController(
                     "SendMessage for thread {ThreadId} reconciled to in-flight input {InputId} whose "
                         + "admission is still unsettled; nothing was queued",
                     admission.ThreadId,
-                    admission.InputId);
+                    admission.InputId
+                );
 
                 return AcceptedAdmission(granted, queued: false);
             }
@@ -944,7 +1027,8 @@ public class ConversationsController(
                     "SendMessage for thread {ThreadId} reconciled to just-admitted input {InputId} that has "
                         + "not reached the queue yet; nothing was queued",
                     admission.ThreadId,
-                    admission.InputId);
+                    admission.InputId
+                );
 
                 return AcceptedAdmission(granted, queued: false);
             }
@@ -953,18 +1037,22 @@ public class ConversationsController(
             // record, so of several retries deciding this at once exactly one can succeed — the rest find
             // the id already gone or already re-taken and reconcile to whatever now holds it, which is how
             // recovery avoids becoming the duplicate it exists to prevent.
-            if (attempt > UnsettledAdmissionRecoveryAttempts
+            if (
+                attempt > UnsettledAdmissionRecoveryAttempts
                 || !await acceptances.TryReleaseAcceptanceAsync(
                     admission.ThreadId,
                     admission.InputId,
                     granted.ReservationId,
-                    ct))
+                    ct
+                )
+            )
             {
                 logger.LogInformation(
                     "SendMessage for thread {ThreadId} left the unsettled admission for input {InputId} to "
                         + "the caller that is already recovering it; nothing was queued",
                     admission.ThreadId,
-                    admission.InputId);
+                    admission.InputId
+                );
 
                 return AcceptedAdmission(granted, queued: false);
             }
@@ -974,7 +1062,8 @@ public class ConversationsController(
                     + "settled, so this send re-took it rather than leaving the key wedged",
                 admission.InputId,
                 admission.ThreadId,
-                granted.AcceptedAt);
+                granted.AcceptedAt
+            );
         }
     }
 
@@ -986,7 +1075,8 @@ public class ConversationsController(
     private async Task<IActionResult?> ConfirmAdmissionAgainstLiveStateAsync(
         IInputAcceptanceStore acceptances,
         InputAcceptance admission,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         if (await statusResolver.ResolveByInputIdAsync(admission.ThreadId, admission.InputId, ct) is null)
         {
@@ -998,11 +1088,17 @@ public class ConversationsController(
             "SendMessage for thread {ThreadId} reconciled to in-flight input {InputId} that carries no "
                 + "admission record; nothing was queued and no suppression is claimed",
             admission.ThreadId,
-            admission.InputId);
+            admission.InputId
+        );
 
         return AcceptedAdmission(
-            admission with { State = InputAcceptanceState.Unenforced, SpawningSuppressed = false },
-            queued: false);
+            admission with
+            {
+                State = InputAcceptanceState.Unenforced,
+                SpawningSuppressed = false,
+            },
+            queued: false
+        );
     }
 
     /// <summary>
@@ -1025,20 +1121,22 @@ public class ConversationsController(
     /// The one place a <see cref="SendMessageResponse"/> is shaped, so a fresh send and a repeat of the same
     /// key can only ever answer with the same projection of the same record.
     /// </summary>
-    private IActionResult AcceptedAdmission(InputAcceptance acceptance, bool queued) =>
-        Accepted(new SendMessageResponse
-        {
-            InputId = acceptance.InputId,
-            Queued = queued,
+    private IActionResult AcceptedAdmission(InputAcceptance acceptance, bool queued, string? acceptedModelId = null) =>
+        Accepted(
+            new SendMessageResponse
+            {
+                InputId = acceptance.InputId,
+                Queued = queued,
 
-            // Only an ENFORCED record proves the guarantee: it is the state an agent's receipt put the
-            // record into. Pending carries what a host undertook when it admitted the input, and relaying
-            // that would confirm a guarantee out of the request that asked for it; Unenforced is a refusal
-            // and already carries false.
-            SpawningSuppressed =
-                acceptance.State is InputAcceptanceState.Enforced && acceptance.SpawningSuppressed,
-            IdempotencyKeyHonored = acceptance.IdempotencyHonored,
-        });
+                // Only an ENFORCED record proves the guarantee: it is the state an agent's receipt put the
+                // record into. Pending carries what a host undertook when it admitted the input, and relaying
+                // that would confirm a guarantee out of the request that asked for it; Unenforced is a refusal
+                // and already carries false.
+                SpawningSuppressed = acceptance.State is InputAcceptanceState.Enforced && acceptance.SpawningSuppressed,
+                IdempotencyKeyHonored = acceptance.IdempotencyHonored,
+                ModelId = acceptedModelId ?? ReadModelFromInputId(acceptance.InputId),
+            }
+        );
 
     /// <summary>
     /// Gives back an admission whose send did not survive to become queued work. Best-effort and never
@@ -1050,17 +1148,21 @@ public class ConversationsController(
     {
         try
         {
-            if (!await acceptances.TryReleaseAcceptanceAsync(
+            if (
+                !await acceptances.TryReleaseAcceptanceAsync(
                     admission.ThreadId,
                     admission.InputId,
                     admission.ReservationId,
-                    CancellationToken.None))
+                    CancellationToken.None
+                )
+            )
             {
                 logger.LogWarning(
                     "Admission for input {InputId} on thread {ThreadId} was not retracted because it is no "
                         + "longer this request's to retract",
                     admission.InputId,
-                    admission.ThreadId);
+                    admission.ThreadId
+                );
             }
         }
         catch (Exception ex)
@@ -1070,7 +1172,8 @@ public class ConversationsController(
                 "Could not retract the admission for input {InputId} on thread {ThreadId}; a repeat of this "
                     + "idempotency key will reconcile to a turn that was never queued",
                 admission.InputId,
-                admission.ThreadId);
+                admission.ThreadId
+            );
         }
     }
 
@@ -1083,8 +1186,16 @@ public class ConversationsController(
     /// </summary>
     private const string ServerMintedInputIdPrefix = "srv:";
 
-    /// <summary>Namespace for an id derived from a caller's idempotency key.</summary>
+    /// <summary>Namespace for the legacy id derived from a caller's idempotency key.</summary>
     private const string IdempotentInputIdPrefix = "idem:";
+
+    /// <summary>
+    /// Disjoint namespace for an idempotent input that requests a per-turn model. It cannot share the legacy
+    /// namespace because the legacy key occupies the entire suffix and may itself contain any proposed model
+    /// marker; a separate prefix is the only way to prevent a model override from aliasing a persisted ordinary
+    /// request.
+    /// </summary>
+    private const string ModelIdempotentInputIdPrefix = "idem-model:";
 
     /// <summary>
     /// A key must be storable and unambiguous as part of an input id. Control characters are rejected
@@ -1097,18 +1208,83 @@ public class ConversationsController(
         && !idempotencyKey.Any(char.IsControl);
 
     /// <summary>
-    /// Derives the durable input id an idempotent send is recorded under. The options that change what the
-    /// turn DOES are folded in, so a repeat carrying different options is a different operation instead of
-    /// silently resolving to the earlier, differently-behaving input.
+    /// Derives the durable input id an idempotent send is recorded under. An ordinary send keeps the EXACT
+    /// legacy <c>idem:&lt;flag&gt;:&lt;key&gt;</c> identity, so accepted inputs and admission rows persisted by an
+    /// earlier deployment still reconcile after an upgrade. Only an explicit model override enters the new,
+    /// disjoint namespace.
     /// <para>
-    /// The mapping is injective by construction: both variable parts sit at FIXED positions — a one-character
-    /// suppression flag immediately after the namespace, then the key as the entire remainder. A suffix
-    /// instead of a prefix would not be, because a key may itself end in whatever marker was chosen, letting
-    /// two different (key, flag) pairs derive the same id and dedupe against each other.
+    /// The model-aware mapping is injective: the UTF-8 model id is base64 (which contains no colon), followed
+    /// by the key as the entire remainder. Its namespace is disjoint from the legacy one, so neither a key nor
+    /// a model can make an override alias an ordinary request or an override for another model.
     /// </para>
     /// </summary>
-    private static string DeriveIdempotentInputId(string idempotencyKey, bool suppressSubAgentSpawning) =>
-        $"{IdempotentInputIdPrefix}{(suppressSubAgentSpawning ? '1' : '0')}:{idempotencyKey}";
+    private static string DeriveIdempotentInputId(string idempotencyKey, bool suppressSubAgentSpawning, string? modelId)
+    {
+        if (string.IsNullOrWhiteSpace(modelId))
+        {
+            return $"{IdempotentInputIdPrefix}{(suppressSubAgentSpawning ? '1' : '0')}:{idempotencyKey}";
+        }
+
+        var normalizedModel = modelId.Trim();
+        var encodedModel = Convert
+            .ToBase64String(Encoding.UTF8.GetBytes(normalizedModel))
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
+        return $"{ModelIdempotentInputIdPrefix}{(suppressSubAgentSpawning ? '1' : '0')}:{encodedModel}:{idempotencyKey}";
+    }
+
+    /// <summary>
+    /// Recovers the model carried by a model-aware input id. Persisted ids are untrusted input: this parser is
+    /// deliberately total, and only the exact namespace and grammar emitted above may influence a replay.
+    /// </summary>
+    private static string? ReadModelFromInputId(string? inputId)
+    {
+        if (inputId is null || !inputId.StartsWith(ModelIdempotentInputIdPrefix, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        var flagIndex = ModelIdempotentInputIdPrefix.Length;
+        var modelStart = flagIndex + 2;
+        if (inputId.Length <= modelStart || inputId[flagIndex] is not ('0' or '1') || inputId[flagIndex + 1] != ':')
+        {
+            return null;
+        }
+
+        var modelEnd = inputId.IndexOf(':', modelStart);
+        if (modelEnd <= modelStart || modelEnd == inputId.Length - 1)
+        {
+            return null;
+        }
+
+        var encodedModel = inputId[modelStart..modelEnd];
+        if (
+            encodedModel.Any(c => !char.IsAsciiLetterOrDigit(c) && c is not ('-' or '_'))
+            || encodedModel.Length % 4 == 1
+        )
+        {
+            return null;
+        }
+
+        try
+        {
+            var paddedModel = encodedModel.Replace('-', '+').Replace('_', '/');
+            paddedModel += new string('=', (4 - (paddedModel.Length % 4)) % 4);
+            var model = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true)
+                .GetString(Convert.FromBase64String(paddedModel))
+                .Trim();
+            return string.IsNullOrWhiteSpace(model) ? null : model;
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
+        catch (DecoderFallbackException)
+        {
+            return null;
+        }
+    }
 
     /// <summary>
     /// Polls a run's resolved status by exactly one of <paramref name="runId"/> or
@@ -1125,7 +1301,8 @@ public class ConversationsController(
         string threadId,
         string? runId = null,
         string? inputId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         if (RefuseMachineCaller(threadId, AgentOwnedThreadReadCode) is { } refusal)
         {
@@ -1143,24 +1320,29 @@ public class ConversationsController(
             return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
         }
 
-        var result = runId != null
-            ? await statusResolver.ResolveByRunIdAsync(threadId, runId, ct)
-            : await statusResolver.ResolveByInputIdAsync(threadId, inputId!, ct);
+        var result =
+            runId != null
+                ? await statusResolver.ResolveByRunIdAsync(threadId, runId, ct)
+                : await statusResolver.ResolveByInputIdAsync(threadId, inputId!, ct);
 
         if (result == null)
         {
             var idKind = runId != null ? "runId" : "inputId";
             var idValue = runId ?? inputId;
-            return NotFound(new { error = $"Unknown {idKind} '{idValue}' for thread '{threadId}'.", code = $"unknown_{idKind}" });
+            return NotFound(
+                new { error = $"Unknown {idKind} '{idValue}' for thread '{threadId}'.", code = $"unknown_{idKind}" }
+            );
         }
 
-        return Ok(new ConversationStatusResponse
-        {
-            ThreadId = result.ThreadId,
-            RunId = result.RunId,
-            Status = result.Status.ToString(),
-            Response = result.Response,
-        });
+        return Ok(
+            new ConversationStatusResponse
+            {
+                ThreadId = result.ThreadId,
+                RunId = result.RunId,
+                Status = result.Status.ToString(),
+                Response = result.Response,
+            }
+        );
     }
 
     /// <summary>
@@ -1171,7 +1353,8 @@ public class ConversationsController(
     public async Task<IActionResult> UpdateMetadata(
         string threadId,
         [FromBody] ConversationMetadataUpdate update,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(update);
 
@@ -1189,8 +1372,8 @@ public class ConversationsController(
             threadId,
             existing =>
             {
-                var propertiesBuilder = existing?.Properties?.ToBuilder()
-                    ?? ImmutableDictionary.CreateBuilder<string, object>();
+                var propertiesBuilder =
+                    existing?.Properties?.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, object>();
 
                 if (update.Title != null)
                 {
@@ -1212,7 +1395,8 @@ public class ConversationsController(
                     Properties = propertiesBuilder.ToImmutable(),
                 };
             },
-            ct);
+            ct
+        );
 
         return Ok();
     }
@@ -1223,9 +1407,7 @@ public class ConversationsController(
     /// controller can be asked to do by id alone.
     /// </summary>
     [HttpDelete("{threadId}")]
-    public async Task<IActionResult> Delete(
-        string threadId,
-        CancellationToken ct = default)
+    public async Task<IActionResult> Delete(string threadId, CancellationToken ct = default)
     {
         if (RefuseMachineCaller(threadId, AgentOwnedThreadWriteCode) is { } refusal)
         {
@@ -1250,7 +1432,8 @@ public class ConversationsController(
     public async Task<IActionResult> SwitchMode(
         string threadId,
         [FromBody] SwitchModeRequest request,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -1275,14 +1458,16 @@ public class ConversationsController(
                 runState.CurrentRunId,
                 runState.AgentIsRunning,
                 runState.RunTaskCompleted,
-                runState.IsStale);
+                runState.IsStale
+            );
             return Conflict(
                 new
                 {
                     error = "Cannot switch mode while response is streaming.",
                     code = "mode_switch_while_streaming",
                     threadId,
-                });
+                }
+            );
         }
 
         // HARD block (issue #246): an unanswered AskUserQuestion must not be silently orphaned by a
@@ -1293,14 +1478,16 @@ public class ConversationsController(
             logger.LogWarning(
                 "Blocked mode switch for thread {ThreadId} to mode {ModeId} because an AskUserQuestion is awaiting an answer.",
                 threadId,
-                request.ModeId);
+                request.ModeId
+            );
             return Conflict(
                 new
                 {
                     error = PendingAskUserQuestionBlockedMessage,
                     code = "mode_switch_blocked_by_pending_ask_user_question",
                     threadId,
-                });
+                }
+            );
         }
 
         // A mode switch recreates the agent, which tears down its trigger runtime. If a Wait is armed
@@ -1326,9 +1513,17 @@ public class ConversationsController(
                 "Mode switch for thread {ThreadId} rejected: caller credential conflict (existing app id {ExistingAppId}, requested app id {RequestedAppId})",
                 threadId,
                 ex.ExistingAppId ?? "(none)",
-                ex.RequestedAppId ?? "(none)");
+                ex.RequestedAppId ?? "(none)"
+            );
             return Conflict(
-                new { error = "caller_credential_conflict", code = "caller_credential_conflict", detail = ex.Message, threadId });
+                new
+                {
+                    error = "caller_credential_conflict",
+                    code = "caller_credential_conflict",
+                    detail = ex.Message,
+                    threadId,
+                }
+            );
         }
         catch (SandboxSessionUnavailableException ex)
         {
@@ -1337,10 +1532,18 @@ public class ConversationsController(
                 "Mode switch to {ModeId} for thread {ThreadId} failed: sandbox unavailable (gateway status {StatusCode})",
                 request.ModeId,
                 threadId,
-                ex.StatusCode);
+                ex.StatusCode
+            );
             return StatusCode(
                 StatusCodes.Status503ServiceUnavailable,
-                new { error = "sandbox_unavailable", code = "sandbox_unavailable", detail = ex.Message, threadId });
+                new
+                {
+                    error = "sandbox_unavailable",
+                    code = "sandbox_unavailable",
+                    detail = ex.Message,
+                    threadId,
+                }
+            );
         }
         catch (ProviderUnavailableException ex)
         {
@@ -1349,18 +1552,29 @@ public class ConversationsController(
                 "Mode switch to {ModeId} for thread {ThreadId} failed: provider {ProviderId} unavailable",
                 request.ModeId,
                 threadId,
-                ex.ProviderId);
+                ex.ProviderId
+            );
             return StatusCode(
                 StatusCodes.Status503ServiceUnavailable,
-                new { error = "provider_unavailable", code = "provider_unavailable", providerId = ex.ProviderId, detail = ex.Message, threadId });
+                new
+                {
+                    error = "provider_unavailable",
+                    code = "provider_unavailable",
+                    providerId = ex.ProviderId,
+                    detail = ex.Message,
+                    threadId,
+                }
+            );
         }
 
-        return Ok(new SwitchModeResponse
-        {
-            ModeId = mode.Id,
-            ModeName = mode.Name,
-            Warning = hadArmedWait ? ArmedWaitDiscardedWarning : null,
-        });
+        return Ok(
+            new SwitchModeResponse
+            {
+                ModeId = mode.Id,
+                ModeName = mode.Name,
+                Warning = hadArmedWait ? ArmedWaitDiscardedWarning : null,
+            }
+        );
     }
 
     /// <summary>
@@ -1373,7 +1587,8 @@ public class ConversationsController(
     public async Task<IActionResult> SwitchProvider(
         string threadId,
         [FromBody] SwitchProviderRequest request,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -1392,14 +1607,16 @@ public class ConversationsController(
                 runState.CurrentRunId,
                 runState.AgentIsRunning,
                 runState.RunTaskCompleted,
-                runState.IsStale);
+                runState.IsStale
+            );
             return Conflict(
                 new
                 {
                     error = "Cannot switch provider while response is streaming.",
                     code = "provider_switch_while_streaming",
                     threadId,
-                });
+                }
+            );
         }
 
         // Preserve the thread's current mode across the provider swap. Prefer the live agent's mode;
@@ -1425,7 +1642,8 @@ public class ConversationsController(
         {
             return StatusCode(
                 StatusCodes.Status500InternalServerError,
-                new { error = "Could not resolve the conversation's current mode.", threadId });
+                new { error = "Could not resolve the conversation's current mode.", threadId }
+            );
         }
 
         // HARD block (issue #246): mirrors SwitchMode — an unanswered AskUserQuestion must not be
@@ -1435,14 +1653,16 @@ public class ConversationsController(
             logger.LogWarning(
                 "Blocked provider switch for thread {ThreadId} to provider {ProviderId} because an AskUserQuestion is awaiting an answer.",
                 threadId,
-                request.ProviderId);
+                request.ProviderId
+            );
             return Conflict(
                 new
                 {
                     error = PendingAskUserQuestionBlockedMessage,
                     code = "provider_switch_blocked_by_pending_ask_user_question",
                     threadId,
-                });
+                }
+            );
         }
 
         // See SwitchMode: a provider swap recreates the agent and discards any armed Wait. Capture it
@@ -1454,7 +1674,12 @@ public class ConversationsController(
         var callerCredential = TryBuildCallerCredential(HttpContext?.Request?.Headers);
         try
         {
-            _ = await agentPool.RecreateAgentWithProviderAsync(threadId, request.ProviderId, currentMode, callerCredential);
+            _ = await agentPool.RecreateAgentWithProviderAsync(
+                threadId,
+                request.ProviderId,
+                currentMode,
+                callerCredential
+            );
         }
         catch (SandboxCredentialConflictException ex)
         {
@@ -1465,9 +1690,17 @@ public class ConversationsController(
                 "Provider switch for thread {ThreadId} rejected: caller credential conflict (existing app id {ExistingAppId}, requested app id {RequestedAppId})",
                 threadId,
                 ex.ExistingAppId ?? "(none)",
-                ex.RequestedAppId ?? "(none)");
+                ex.RequestedAppId ?? "(none)"
+            );
             return Conflict(
-                new { error = "caller_credential_conflict", code = "caller_credential_conflict", detail = ex.Message, threadId });
+                new
+                {
+                    error = "caller_credential_conflict",
+                    code = "caller_credential_conflict",
+                    detail = ex.Message,
+                    threadId,
+                }
+            );
         }
         catch (ProviderUnavailableException ex)
         {
@@ -1475,10 +1708,19 @@ public class ConversationsController(
                 ex,
                 "Provider switch to {ProviderId} for thread {ThreadId} failed: provider unavailable",
                 request.ProviderId,
-                threadId);
+                threadId
+            );
             return StatusCode(
                 StatusCodes.Status503ServiceUnavailable,
-                new { error = "provider_unavailable", code = "provider_unavailable", providerId = ex.ProviderId, detail = ex.Message, threadId });
+                new
+                {
+                    error = "provider_unavailable",
+                    code = "provider_unavailable",
+                    providerId = ex.ProviderId,
+                    detail = ex.Message,
+                    threadId,
+                }
+            );
         }
         catch (SandboxSessionUnavailableException ex)
         {
@@ -1487,17 +1729,27 @@ public class ConversationsController(
                 "Provider switch to {ProviderId} for thread {ThreadId} failed: sandbox unavailable (gateway status {StatusCode})",
                 request.ProviderId,
                 threadId,
-                ex.StatusCode);
+                ex.StatusCode
+            );
             return StatusCode(
                 StatusCodes.Status503ServiceUnavailable,
-                new { error = "sandbox_unavailable", code = "sandbox_unavailable", detail = ex.Message, threadId });
+                new
+                {
+                    error = "sandbox_unavailable",
+                    code = "sandbox_unavailable",
+                    detail = ex.Message,
+                    threadId,
+                }
+            );
         }
 
-        return Ok(new SwitchProviderResponse
-        {
-            ProviderId = request.ProviderId,
-            Warning = hadArmedWait ? ArmedWaitDiscardedWarning : null,
-        });
+        return Ok(
+            new SwitchProviderResponse
+            {
+                ProviderId = request.ProviderId,
+                Warning = hadArmedWait ? ArmedWaitDiscardedWarning : null,
+            }
+        );
     }
 
     /// <summary>
@@ -1546,8 +1798,10 @@ public class ConversationsController(
     {
         return msg switch
         {
-            ToolCallMessage tc when NeedsArgsFix(tc.FunctionArgs) =>
-                tc with { FunctionArgs = StripLeadingEmptyObject(tc.FunctionArgs!) },
+            ToolCallMessage tc when NeedsArgsFix(tc.FunctionArgs) => tc with
+            {
+                FunctionArgs = StripLeadingEmptyObject(tc.FunctionArgs!),
+            },
             _ => msg,
         };
     }

@@ -31,7 +31,8 @@ internal sealed class GitHubPrProvider : IPrProvider
         IOAuthTokenProvider tokenProvider,
         ILogger<GitHubPrProvider> logger,
         int maxPagesPerPoll = MaxPages,
-        int maxPrsPerPage = GitHubMaxPageSize)
+        int maxPrsPerPage = GitHubMaxPageSize
+    )
     {
         _httpClient = httpClient;
         _tokenProvider = tokenProvider;
@@ -53,7 +54,10 @@ internal sealed class GitHubPrProvider : IPrProvider
     /// <summary>GitHub's documented maximum for <c>per_page</c>. Both the default and the ceiling.</summary>
     private const int GitHubMaxPageSize = 100;
 
-    public async Task<PullRequestPage> ListOpenPullRequestsAsync(PrPollRequest request, CancellationToken cancellationToken)
+    public async Task<PullRequestPage> ListOpenPullRequestsAsync(
+        PrPollRequest request,
+        CancellationToken cancellationToken
+    )
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -72,8 +76,9 @@ internal sealed class GitHubPrProvider : IPrProvider
             cancellationToken.ThrowIfCancellationRequested();
             pages++;
 
-            using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url)
-                .WithOperation(SandboxOperation.ReadProviderMetadata);
+            using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url).WithOperation(
+                SandboxOperation.ReadProviderMetadata
+            );
             var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
             httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Value);
             httpRequest.Headers.UserAgent.ParseAdd(UserAgent);
@@ -88,38 +93,41 @@ internal sealed class GitHubPrProvider : IPrProvider
                 foreach (var pr in document.RootElement.EnumerateArray())
                 {
                     var updatedAt = pr.GetProperty("updated_at").GetString() ?? string.Empty;
-                    pullRequests.Add(new PullRequestDescriptor
-                    {
-                        PrId = pr.GetProperty("number").GetRawText(),
-                        HeadSha = pr.GetProperty("head").GetProperty("sha").GetString() ?? string.Empty,
-                        BaseSha = pr.GetProperty("base").GetProperty("sha").GetString() ?? string.Empty,
-                        TriggerWatermark = updatedAt,
-                        LifecycleState = MapLifecycle(pr),
-                        // Recency-filter signals: GitHub exposes both, so the filter uses updated_at (true
-                        // last activity) with created_at as the fallback.
-                        CreatedAt = ParseTimestamp(pr, "created_at"),
-                        UpdatedAt = ParseTimestamp(pr, "updated_at"),
-                        // Who OPENED the PR — addresses the per-developer feedback record. Left null when
-                        // the payload omits it (deleted account, or a shape we didn't expect) so the daemon
-                        // skips the record rather than addressing it to a placeholder.
-                        Author = LoginOf(pr, "user"),
-                        // What the PR SAYS it does. Without these the reviewer sees the diff but not the
-                        // claim it is supposed to satisfy, and "does this change do what it says?" — the
-                        // first question of any review — becomes unanswerable.
-                        Title = StringOf(pr, "title"),
-                        Description = StringOf(pr, "body"),
-                        TargetBranch = pr.TryGetProperty("base", out var baseRef)
-                            && baseRef.ValueKind is JsonValueKind.Object
-                                ? StringOf(baseRef, "ref")
+                    pullRequests.Add(
+                        new PullRequestDescriptor
+                        {
+                            PrId = pr.GetProperty("number").GetRawText(),
+                            HeadSha = pr.GetProperty("head").GetProperty("sha").GetString() ?? string.Empty,
+                            BaseSha = pr.GetProperty("base").GetProperty("sha").GetString() ?? string.Empty,
+                            TriggerWatermark = updatedAt,
+                            LifecycleState = MapLifecycle(pr),
+                            DraftState = MapDraftState(pr, "draft"),
+                            // Recency-filter signals: GitHub exposes both, so the filter uses updated_at (true
+                            // last activity) with created_at as the fallback.
+                            CreatedAt = ParseTimestamp(pr, "created_at"),
+                            UpdatedAt = ParseTimestamp(pr, "updated_at"),
+                            // Who OPENED the PR — addresses the per-developer feedback record. Left null when
+                            // the payload omits it (deleted account, or a shape we didn't expect) so the daemon
+                            // skips the record rather than addressing it to a placeholder.
+                            Author = LoginOf(pr, "user"),
+                            // What the PR SAYS it does. Without these the reviewer sees the diff but not the
+                            // claim it is supposed to satisfy, and "does this change do what it says?" — the
+                            // first question of any review — becomes unanswerable.
+                            Title = StringOf(pr, "title"),
+                            Description = StringOf(pr, "body"),
+                            TargetBranch =
+                                pr.TryGetProperty("base", out var baseRef) && baseRef.ValueKind is JsonValueKind.Object
+                                    ? StringOf(baseRef, "ref")
+                                    : null,
+                            // Confidentiality trust signal. Both stay null when the payload cannot establish them;
+                            // PrPollingService applies the fail-closed default, so an unexpected shape degrades to
+                            // exactly today's behaviour rather than opening the gate.
+                            IsForkPr = IsFork(pr),
+                            IsTargetRepoPublic = BoolOf(RepoOf(pr, "base"), "private") is { } isPrivate
+                                ? !isPrivate
                                 : null,
-                        // Confidentiality trust signal. Both stay null when the payload cannot establish them;
-                        // PrPollingService applies the fail-closed default, so an unexpected shape degrades to
-                        // exactly today's behaviour rather than opening the gate.
-                        IsForkPr = IsFork(pr),
-                        IsTargetRepoPublic = BoolOf(RepoOf(pr, "base"), "private") is { } isPrivate
-                            ? !isPrivate
-                            : null,
-                    });
+                        }
+                    );
 
                     if (string.CompareOrdinal(updatedAt, highWaterMark) > 0)
                     {
@@ -141,12 +149,21 @@ internal sealed class GitHubPrProvider : IPrProvider
                 "GitHub poll of {Owner}/{Repo} stopped after {Pages} page(s) of {PageSize} with more results "
                     + "still available; {Count} PR(s) were enumerated and the rest were NOT seen this poll. "
                     + "Raise CodeReviewDaemon:MaxPagesPerPoll if this repeats.",
-                owner, repo, pages, _pageSize, pullRequests.Count);
+                owner,
+                repo,
+                pages,
+                _pageSize,
+                pullRequests.Count
+            );
         }
 
         _logger.LogDebug(
             "GitHub poll of {Owner}/{Repo} returned {Count} open PR(s) across {Pages} page(s).",
-            owner, repo, pullRequests.Count, pages);
+            owner,
+            repo,
+            pullRequests.Count,
+            pages
+        );
 
         return new PullRequestPage
         {
@@ -167,7 +184,7 @@ internal sealed class GitHubPrProvider : IPrProvider
     /// Merged, or Abandoned (closed without merging). Used by the PR-lifecycle sweep (a later task) to
     /// decide whether to merge or delete the PR's notes branch.
     /// </summary>
-    public async Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken)
+    public async Task<PrStatus> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(repo);
         ArgumentException.ThrowIfNullOrEmpty(prId);
@@ -176,8 +193,9 @@ internal sealed class GitHubPrProvider : IPrProvider
         var repoName = repo.RepoName;
         var url = $"{BaseUrl}/repos/{owner}/{repoName}/pulls/{prId}";
 
-        using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url)
-            .WithOperation(SandboxOperation.ReadProviderMetadata);
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url).WithOperation(
+            SandboxOperation.ReadProviderMetadata
+        );
         var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
         httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Value);
         httpRequest.Headers.UserAgent.ParseAdd(UserAgent);
@@ -188,7 +206,7 @@ internal sealed class GitHubPrProvider : IPrProvider
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-        return MapPrLifecycle(document.RootElement);
+        return new PrStatus(MapPrLifecycle(document.RootElement), MapDraftState(document.RootElement, "draft"));
     }
 
     /// <summary>
@@ -237,6 +255,13 @@ internal sealed class GitHubPrProvider : IPrProvider
         return null;
     }
 
+    private static PrDraftState MapDraftState(JsonElement pr, string property) =>
+        pr.TryGetProperty(property, out var value) && value.ValueKind is JsonValueKind.True or JsonValueKind.False
+            ? value.GetBoolean()
+                ? PrDraftState.Draft
+                : PrDraftState.Ready
+            : PrDraftState.Unknown;
+
     private static PrLifecycleState MapLifecycle(JsonElement pr)
     {
         var merged = pr.TryGetProperty("merged_at", out var mergedAt) && mergedAt.ValueKind is not JsonValueKind.Null;
@@ -258,7 +283,11 @@ internal sealed class GitHubPrProvider : IPrProvider
         pr.TryGetProperty(property, out var value)
         && value.ValueKind is JsonValueKind.String
         && DateTimeOffset.TryParse(
-            value.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed)
+            value.GetString(),
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.RoundtripKind,
+            out var parsed
+        )
             ? parsed
             : null;
 

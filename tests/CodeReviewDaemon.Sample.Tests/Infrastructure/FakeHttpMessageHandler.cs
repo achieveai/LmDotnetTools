@@ -19,23 +19,31 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
     /// <summary>Registers a handler for requests matching <paramref name="predicate"/>.</summary>
     public FakeHttpMessageHandler On(
         Func<HttpRequestMessage, bool> predicate,
-        Func<HttpRequestMessage, HttpResponseMessage> respond)
+        Func<HttpRequestMessage, HttpResponseMessage> respond
+    )
     {
         _routes.Add(new Route(predicate, respond));
         return this;
     }
 
     /// <summary>Registers a JSON response for a method + URL-substring match.</summary>
-    public FakeHttpMessageHandler OnJson(HttpMethod method, string urlContains, string json, HttpStatusCode status = HttpStatusCode.OK)
+    public FakeHttpMessageHandler OnJson(
+        HttpMethod method,
+        string urlContains,
+        string json,
+        HttpStatusCode status = HttpStatusCode.OK
+    )
     {
         return On(
-            req => req.Method == method
+            req =>
+                req.Method == method
                 && req.RequestUri is not null
                 && req.RequestUri.ToString().Contains(urlContains, StringComparison.Ordinal),
             _ => new HttpResponseMessage(status)
             {
                 Content = new StringContent(json, Encoding.UTF8, "application/json"),
-            });
+            }
+        );
     }
 
     /// <summary>
@@ -46,7 +54,8 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
     public FakeHttpMessageHandler OnSequence(
         HttpMethod method,
         string urlContains,
-        params (HttpStatusCode Status, string Json)[] responses)
+        params (HttpStatusCode Status, string Json)[] responses
+    )
     {
         if (responses.Length == 0)
         {
@@ -55,7 +64,8 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
 
         var index = 0;
         return On(
-            req => req.Method == method
+            req =>
+                req.Method == method
                 && req.RequestUri is not null
                 && req.RequestUri.ToString().Contains(urlContains, StringComparison.Ordinal),
             _ =>
@@ -66,7 +76,8 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
                 {
                     Content = new StringContent(json, Encoding.UTF8, "application/json"),
                 };
-            });
+            }
+        );
     }
 
     /// <summary>
@@ -79,7 +90,9 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
         OnJson(
             HttpMethod.Get,
             "conversations/capabilities",
-            "{\"schemaVersion\":1,\"messageIdempotency\":true,\"spawnSuppression\":true}");
+            "{\"schemaVersion\":1,\"messageIdempotency\":true,\"spawnSuppression\":true,"
+                + "\"perTurnModelOverride\":true}"
+        );
 
     /// <summary>Number of requests observed whose URL contains <paramref name="urlContains"/>.</summary>
     public int CountRequests(string urlContains) =>
@@ -87,17 +100,21 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
 
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         var body = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
-        Requests.Add(new RecordedRequest(
-            request.Method,
-            request.RequestUri!,
-            request.Headers.Authorization is { } auth ? $"{auth.Scheme} {auth.Parameter}" : null,
-            request.Headers.UserAgent.ToString(),
-            body,
-            GetHeader(request, "X-Sbx-App-Id"),
-            GetHeader(request, "X-Sbx-App-Key")));
+        Requests.Add(
+            new RecordedRequest(
+                request.Method,
+                request.RequestUri!,
+                request.Headers.Authorization is { } auth ? $"{auth.Scheme} {auth.Parameter}" : null,
+                request.Headers.UserAgent.ToString(),
+                body,
+                GetHeader(request, "X-Sbx-App-Id"),
+                GetHeader(request, "X-Sbx-App-Key")
+            )
+        );
 
         foreach (var route in _routes)
         {
@@ -121,7 +138,8 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
 
     private sealed record Route(
         Func<HttpRequestMessage, bool> Predicate,
-        Func<HttpRequestMessage, HttpResponseMessage> Respond);
+        Func<HttpRequestMessage, HttpResponseMessage> Respond
+    );
 
     /// <summary>A single observed outgoing request.</summary>
     internal sealed record RecordedRequest(
@@ -131,5 +149,6 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
         string UserAgent,
         string? Body,
         string? SbxAppId = null,
-        string? SbxAppKey = null);
+        string? SbxAppKey = null
+    );
 }

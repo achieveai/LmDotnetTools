@@ -30,4 +30,10 @@
     <ProjectReference Include="..\..\samples\CodeReviewDaemon.Sample\CodeReviewDaemon.Sample.csproj" />
     <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <Content Include="..\..\samples\CodeReviewDaemon.Sample\appsettings*.json">
+      <Link>ShippedProfiles\%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
 </Project>

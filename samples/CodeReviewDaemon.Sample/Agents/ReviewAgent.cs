@@ -20,6 +20,12 @@ internal interface IDeadlineBoundedReviewLoop
     void UseDeadline(DateTimeOffset deadlineUtc);
 }
 
+/// <summary>Applies a model override to the next turn only.</summary>
+internal interface IPerTurnModelReviewLoop
+{
+    void UseModelForNextTurn(string modelId);
+}
+
 /// <summary>
 /// A review loop whose turn is durable on a HOST that outlives the daemon process: the host records the turn
 /// as an accepted input before it starts producing, so the daemon can checkpoint that input id and, after a
@@ -69,7 +75,7 @@ internal interface IResumableReviewTurn
     /// A caller whose recovery rests on the key alone therefore passes no callback.
     /// </para>
     /// </summary>
-    void ArmTurnCheckpoint(string idempotencyKey, string? acceptedInputId, Action<string>? onInputAccepted);
+    void ArmTurnCheckpoint(string idempotencyKey, string? acceptedInputId, Action<string, string?>? onInputAccepted);
 }
 
 /// <summary>
@@ -103,10 +109,7 @@ internal sealed class ReviewAgent
     /// NOT null: <see cref="S2SReviewAgent"/> supplies a scope that carries the suppression over the wire to
     /// the hosted loop, which enforces it there.
     /// </summary>
-    public ReviewAgent(
-        IMultiTurnAgent agent,
-        ILogger<ReviewAgent> logger,
-        Func<IDisposable>? suppressSpawning = null)
+    public ReviewAgent(IMultiTurnAgent agent, ILogger<ReviewAgent> logger, Func<IDisposable>? suppressSpawning = null)
     {
         _agent = agent ?? throw new ArgumentNullException(nameof(agent));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -121,7 +124,8 @@ internal sealed class ReviewAgent
     public async Task<ReviewAgentResult> CollectProvisionalAsync(
         string input,
         DateTimeOffset deadlineUtc,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(input);
 
@@ -130,7 +134,8 @@ internal sealed class ReviewAgent
             "Provisional review turn {RunId} produced {Length} chars on thread {ThreadId}; children may still be running.",
             result.RunId,
             result.ReviewText.Length,
-            result.ThreadId);
+            result.ThreadId
+        );
         return result;
     }
 
@@ -151,9 +156,23 @@ internal sealed class ReviewAgent
         string synthesisPrompt,
         bool allowInlinePosting,
         DateTimeOffset deadlineUtc,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? modelId = null
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(synthesisPrompt);
+
+        if (!string.IsNullOrWhiteSpace(modelId))
+        {
+            if (_agent is not IPerTurnModelReviewLoop perTurnModel)
+            {
+                throw new InvalidOperationException(
+                    $"The review loop {_agent.GetType().Name} cannot apply the requested synthesis model '{modelId}'."
+                );
+            }
+
+            perTurnModel.UseModelForNextTurn(modelId);
+        }
 
         ReviewAgentResult result;
         using (_suppressSpawning?.Invoke())
@@ -165,16 +184,20 @@ internal sealed class ReviewAgent
         {
             throw new InvalidOperationException(
                 $"Synthesis turn {result.RunId} on thread {result.ThreadId} produced no review text; there is "
-                    + (allowInlinePosting
-                        ? "nothing authoritative to persist and the agent was expected to post it inline."
-                        : "nothing authoritative to persist or hand to the publisher."));
+                    + (
+                        allowInlinePosting
+                            ? "nothing authoritative to persist and the agent was expected to post it inline."
+                            : "nothing authoritative to persist or hand to the publisher."
+                    )
+            );
         }
 
         _logger.LogInformation(
             "Synthesis turn {RunId} produced the authoritative review ({Length} chars, inline posting {InlinePosting}).",
             result.RunId,
             result.ReviewText.Length,
-            allowInlinePosting);
+            allowInlinePosting
+        );
         return result;
     }
 
@@ -186,19 +209,19 @@ internal sealed class ReviewAgent
     private async Task<ReviewAgentResult> RunTurnAsync(
         string input,
         DateTimeOffset deadlineUtc,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         if (DateTimeOffset.UtcNow >= deadlineUtc)
         {
             throw new TimeoutException(
-                $"The review budget expired at {deadlineUtc:O}; refusing to start a turn it cannot finish.");
+                $"The review budget expired at {deadlineUtc:O}; refusing to start a turn it cannot finish."
+            );
         }
 
         (_agent as IDeadlineBoundedReviewLoop)?.UseDeadline(deadlineUtc);
 
-        var collected = await AgentTextCollector
-            .CollectAsync(_agent, input, cancellationToken)
-            .ConfigureAwait(false);
+        var collected = await AgentTextCollector.CollectAsync(_agent, input, cancellationToken).ConfigureAwait(false);
 
         return new ReviewAgentResult(collected.Text, collected.RunId, _agent.ThreadId);
     }

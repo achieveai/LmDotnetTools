@@ -30,6 +30,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmSampleShared.Release;
 using AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.LmStreaming.Sample.Triggers;
 using AchieveAi.LmDotnetTools.LmTestUtils;
@@ -62,6 +63,12 @@ using Serilog.Exceptions;
 using Serilog.Formatting.Compact;
 using Vite.AspNetCore;
 
+if (ReleaseManifestVerifier.TryRunSelfCheck("host", AppContext.BaseDirectory, args, out var selfCheckExitCode))
+{
+    Environment.ExitCode = selfCheckExitCode;
+    return;
+}
+
 // Load .env file from workspace root (if it exists)
 EnvironmentHelper.LoadEnvIfNeeded(FindEnvFile());
 
@@ -78,6 +85,11 @@ try
     Log.Information("Starting LmStreaming.Sample application");
 
     var builder = WebApplication.CreateBuilder(args);
+    var developmentIdentity =
+        AppDomain.CurrentDomain.FriendlyName.StartsWith("testhost", StringComparison.OrdinalIgnoreCase)
+        || ReleaseManifestVerifier.IsDevelopmentIdentityAllowed(AppContext.BaseDirectory, args);
+    var releaseIdentity = ReleaseManifestVerifier.LoadAndVerify("host", AppContext.BaseDirectory, developmentIdentity);
+    _ = builder.Services.AddSingleton(releaseIdentity);
 
     // Bridge the operator-facing flat env var LMSTREAMING_S2S_INBOUND_SECRET into the section key the
     // InboundS2SAuth filter actually reads (Auth:S2SInboundSecret). The standard env-var provider only
@@ -86,8 +98,10 @@ try
     // (issue #153). Anything already bound to the section key (appsettings.json or Auth__S2SInboundSecret)
     // wins — this only fills the gap for the documented flat name.
     var s2sInboundSecretEnv = Environment.GetEnvironmentVariable("LMSTREAMING_S2S_INBOUND_SECRET");
-    if (!string.IsNullOrWhiteSpace(s2sInboundSecretEnv)
-        && string.IsNullOrWhiteSpace(builder.Configuration[InboundS2SAuthAttribute.SecretConfigKey]))
+    if (
+        !string.IsNullOrWhiteSpace(s2sInboundSecretEnv)
+        && string.IsNullOrWhiteSpace(builder.Configuration[InboundS2SAuthAttribute.SecretConfigKey])
+    )
     {
         builder.Configuration[InboundS2SAuthAttribute.SecretConfigKey] = s2sInboundSecretEnv;
     }
@@ -112,7 +126,7 @@ try
                     assemblyPrefix: "AchieveAi.", // Match our assemblies
                     filePathDepth: 3
                 ) // Include last 3 path segments
-                  // File sink with structured JSON (includes all enriched properties)
+                // File sink with structured JSON (includes all enriched properties)
                 .WriteTo.File(
                     new CompactJsonFormatter(),
                     logPath,
@@ -135,13 +149,14 @@ try
         options.WebSocketPath = "/ws";
         options.WriteIndentedJson = builder.Environment.IsDevelopment();
     });
-    _ = builder.Services
-        .AddOptions<AgentOutputTokenOptions>()
+    _ = builder
+        .Services.AddOptions<AgentOutputTokenOptions>()
         .Bind(builder.Configuration.GetSection(AgentOutputTokenOptions.SectionName))
         .Validate(options => options.Validate().Succeeded, "Invalid AgentOutputTokens configuration.")
         .ValidateOnStart();
-    _ = builder.Services.AddSingleton(sp =>
-        new AgentOutputTokenPolicy(sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AgentOutputTokenOptions>>().Value));
+    _ = builder.Services.AddSingleton(sp => new AgentOutputTokenPolicy(
+        sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AgentOutputTokenOptions>>().Value
+    ));
 
     // Service-to-service lifecycle observation and remote tool approval (ADR 0003 + ADR 0005). Both
     // are off unless the matching `Lifecycle:*:Enabled` flag is set, and this file carries no default
@@ -162,7 +177,9 @@ try
     // Raise the request-body ceiling so the file browser's multipart upload (WI #195) can carry a file of
     // exactly MaxFileBytes (64 MiB) plus a fixed 8 KiB framing allowance. The exact inclusive per-file cap
     // is enforced in FileBrowserController against both the declared and observed bytes.
-    _ = builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = LmStreaming.Sample.FileBrowser.FileBrowserLimits.MaxUploadRequestBytes);
+    _ = builder.WebHost.ConfigureKestrel(o =>
+        o.Limits.MaxRequestBodySize = LmStreaming.Sample.FileBrowser.FileBrowserLimits.MaxUploadRequestBytes
+    );
     _ = builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(o =>
         o.MultipartBodyLengthLimit = LmStreaming.Sample.FileBrowser.FileBrowserLimits.MaxUploadRequestBytes
     );
@@ -196,7 +213,8 @@ try
     // snapshot dropped, so the ceiling is what keeps a long-lived conversation's file from growing forever.
     _ = builder.Services.AddSingleton(sp => new WorkflowRunRegistry(
         Path.Combine(AppContext.BaseDirectory, "workflow-index"),
-        sp.GetRequiredService<AgentCollaborationHostOptions>().MaxPersistedHierarchyEntries));
+        sp.GetRequiredService<AgentCollaborationHostOptions>().MaxPersistedHierarchyEntries
+    ));
 
     // Process-lifetime cache of the persisted Agent-tool child roster AgentHierarchyService's cold path
     // recovers per conversation (PRRT_kwDOOPysWM6V1mjj) — shared across every AgentHierarchyService
@@ -207,7 +225,8 @@ try
     // same "how many conversations should this process remember" question. See
     // SubAgentScanCoverageCache's own remarks for the owner-keyed invalidation and eviction policy.
     _ = builder.Services.AddSingleton(sp => new SubAgentScanCoverageCache(
-        sp.GetRequiredService<AgentCollaborationHostOptions>().MaxPersistedHierarchyEntries));
+        sp.GetRequiredService<AgentCollaborationHostOptions>().MaxPersistedHierarchyEntries
+    ));
 
     // Per-root memory of the persisted DESCENDANT graph (issue #251) — a different question from the
     // direct-child roster above, and deliberately a different cache; see ConversationDescendantScanner's
@@ -215,7 +234,8 @@ try
     _ = builder.Services.AddSingleton(sp => new ConversationDescendantScanner(
         sp.GetRequiredService<IConversationStore>(),
         sp.GetRequiredService<ILogger<ConversationDescendantScanner>>(),
-        sp.GetRequiredService<AgentCollaborationHostOptions>().MaxPersistedHierarchyEntries));
+        sp.GetRequiredService<AgentCollaborationHostOptions>().MaxPersistedHierarchyEntries
+    ));
 
     // Mirror every conversation into its own workspace as JSONL (issue #251). Always on: a conversation
     // with no workspace bound resolves no sandbox session, so its flush is a no-op and costs nothing.
@@ -223,13 +243,12 @@ try
     // resolves this singleton, so a direct dependency would close a DI construction cycle. The delegate
     // only runs when a subscription ends, long after both singletons exist.
     _ = builder.Services.AddSingleton(sp => new WorkspaceTranscriptMirror(
-        threadId => sp.GetRequiredService<MultiTurnAgentPool>().TryGet(threadId, out var agent)
-            ? agent
-            : null,
+        threadId => sp.GetRequiredService<MultiTurnAgentPool>().TryGet(threadId, out var agent) ? agent : null,
         sp.GetRequiredService<IConversationStore>(),
         sp.GetRequiredService<IWorkspaceFileBrowser>(),
         sp.GetRequiredService<ConversationDescendantScanner>(),
-        sp.GetRequiredService<ILoggerFactory>()));
+        sp.GetRequiredService<ILoggerFactory>()
+    ));
 
     // Mock provider host: eagerly-started in-process Kestrel app that the *-mock providers
     // point at. Singleton-as-IHostedService so it boots in Host.StartAsync; the registry
@@ -319,10 +338,7 @@ try
     }
 
     _ = builder.Services.AddSingleton(sandboxOptions);
-    var workspaceCatalogIdentity = GatewayWorkspaceCatalogIdentity.Create(
-        sandboxOptions.BaseUrl,
-        sandboxOptions.AppId
-    );
+    var workspaceCatalogIdentity = GatewayWorkspaceCatalogIdentity.Create(sandboxOptions.BaseUrl, sandboxOptions.AppId);
     _ = builder.Services.AddSingleton(workspaceCatalogIdentity);
 
     // Every gateway-bound HttpClient gets the per-app bearer handler (ADR 0029) so its REST calls carry
@@ -339,7 +355,8 @@ try
             new GatewayAuthHandler(sandboxOptions.AppId, sandboxOptions.AppKey)
             {
                 InnerHandler = new HttpClientHandler { AllowAutoRedirect = false },
-            });
+            }
+        );
         if (timeout is { } t)
         {
             client.Timeout = t;
@@ -368,8 +385,7 @@ try
     _ = builder.Services.AddSingleton<WorkspaceCatalogCompatibilityService>();
 
     // OAuth auth-provider services (GitHub + Azure DevOps token injection for sandbox egress).
-    var authOptions =
-        builder.Configuration.GetSection(AuthOptions.SectionName).Get<AuthOptions>() ?? new AuthOptions();
+    var authOptions = builder.Configuration.GetSection(AuthOptions.SectionName).Get<AuthOptions>() ?? new AuthOptions();
     _ = builder.Services.AddSingleton(authOptions);
     var oauthTokenDir = string.IsNullOrWhiteSpace(authOptions.TokenStoreDir)
         ? Path.Combine(AppContext.BaseDirectory, "oauth-tokens")
@@ -479,7 +495,8 @@ try
     _ = builder.Services.AddSingleton(sp => new WorkspaceSubAgentLoader(
         sp.GetRequiredService<SandboxSessionRegistry>(),
         sp.GetRequiredService<ILogger<WorkspaceSubAgentLoader>>(),
-        sp.GetRequiredService<SubAgentModelResolver>()));
+        sp.GetRequiredService<SubAgentModelResolver>()
+    ));
 
     // Marketplace sub-agent bridge. Maps the agents the UI's marketplace browser lists (the
     // gateway's read-only catalog) into spawnable templates, filling any gap left by workspace
@@ -509,8 +526,7 @@ try
     // With the section absent (the default) ToCollaborationOptions() returns null, which is the
     // library's feature gate: legacy tool schemas, one level of nesting, and no collaboration state.
     var collaborationHostOptions =
-        builder.Configuration.GetSection(AgentCollaborationHostOptions.SectionName)
-            .Get<AgentCollaborationHostOptions>()
+        builder.Configuration.GetSection(AgentCollaborationHostOptions.SectionName).Get<AgentCollaborationHostOptions>()
         ?? new AgentCollaborationHostOptions();
     _ = collaborationHostOptions.ToCollaborationOptions();
     _ = builder.Services.AddSingleton(collaborationHostOptions);
@@ -566,8 +582,9 @@ try
     {
         notifyWaitDbPath = Path.Combine(AppContext.BaseDirectory, "notify-waits.db");
     }
-    _ = builder.Services.AddSingleton<INotifyWaitStore>(_ =>
-        new SqliteNotifyWaitStore(new SqliteConnectionFactory(notifyWaitDbPath)));
+    _ = builder.Services.AddSingleton<INotifyWaitStore>(_ => new SqliteNotifyWaitStore(
+        new SqliteConnectionFactory(notifyWaitDbPath)
+    ));
 
     // The REST status resolver (ConversationsController dependency) reads the conversation store plus
     // its run ledger. Resolve the ledger from the registered IConversationStore so a test host that
@@ -668,7 +685,8 @@ try
 
     // Register the MultiTurnAgentPool with provider- and mode-aware factory
     _ = builder.Services.AddSingleton<IPricingResolver>(sp =>
-        AppSettingsPricingResolver.FromConfiguration(sp.GetRequiredService<IConfiguration>()));
+        AppSettingsPricingResolver.FromConfiguration(sp.GetRequiredService<IConfiguration>())
+    );
 
     _ = builder.Services.AddSingleton(sp =>
     {
@@ -709,13 +727,12 @@ try
         var webToolsOptions = WebToolsOptions.FromEnvironment();
         var webToolsErrors = webToolsOptions.Validate();
         JinaWebProvider? jinaWebProvider = null;
-        if (webToolsErrors.Count == 0
-            && string.Equals(webToolsOptions.Backend, "jina", StringComparison.OrdinalIgnoreCase))
+        if (
+            webToolsErrors.Count == 0
+            && string.Equals(webToolsOptions.Backend, "jina", StringComparison.OrdinalIgnoreCase)
+        )
         {
-            jinaWebProvider = new JinaWebProvider(
-                webToolsOptions,
-                loggerFactory.CreateLogger<JinaWebProvider>()
-            );
+            jinaWebProvider = new JinaWebProvider(webToolsOptions, loggerFactory.CreateLogger<JinaWebProvider>());
         }
         else if (webToolsErrors.Count > 0)
         {
@@ -841,15 +858,9 @@ try
                     // NEITHER the workflow-authoring tools (its provider arm returns before they are wired)
                     // NOR any sandbox tools — so reject it here too, rather than establishing a live session
                     // and appending a system-prompt suffix that promises Read/Grep/Skill it can't have.
-                    var copilotUnsupportedInWorkflowAuthor =
-                        isWorkflowAuthorMode && normalizedProviderId is "copilot";
+                    var copilotUnsupportedInWorkflowAuthor = isWorkflowAuthorMode && normalizedProviderId is "copilot";
                     if (
-                        normalizedProviderId
-                        is "codex"
-                            or "claude"
-                            or "codex-mock"
-                            or "claude-mock"
-                            or "copilot-mock"
+                        normalizedProviderId is "codex" or "claude" or "codex-mock" or "claude-mock" or "copilot-mock"
                         || copilotUnsupportedInWorkflowAuthor
                     )
                     {
@@ -874,7 +885,8 @@ try
                         effectiveWorkspaceId,
                         workspace?.DirectoryRelPath,
                         workspace?.Marketplaces,
-                        workspace?.HomeRelPath);
+                        workspace?.HomeRelPath
+                    );
                     if (workspace is not null)
                     {
                         try
@@ -944,7 +956,8 @@ try
                         sandboxRegistry,
                         sandboxSession,
                         sp.GetRequiredService<ContextDiscoveryFormatter>(),
-                        loggerFactory.CreateLogger("LmStreaming.Sample.ContextDiscoverySeed"));
+                        loggerFactory.CreateLogger("LmStreaming.Sample.ContextDiscoverySeed")
+                    );
                     if (!string.IsNullOrEmpty(contextSuffix))
                     {
                         wsSuffix += contextSuffix;
@@ -1119,10 +1132,7 @@ try
 
                     var cliHostedSearch = CopilotWebSearchRegistration.TryRegister(
                         copilotRegistry,
-                        WebToolRegistrationPolicy.ResolveEnabledTools(
-                            mode.EnabledTools,
-                            mode.EnabledBuiltInTools
-                        ),
+                        WebToolRegistrationPolicy.ResolveEnabledTools(mode.EnabledTools, mode.EnabledBuiltInTools),
                         s_copilotTokenProvider.Value,
                         s_copilotSession.Value,
                         new CopilotOptions(),
@@ -1133,10 +1143,7 @@ try
                         _ = WebToolRegistrationPolicy.Apply(
                             copilotRegistry,
                             normalizedProviderId,
-                            WebToolRegistrationPolicy.ResolveEnabledTools(
-                                mode.EnabledTools,
-                                mode.EnabledBuiltInTools
-                            ),
+                            WebToolRegistrationPolicy.ResolveEnabledTools(mode.EnabledTools, mode.EnabledBuiltInTools),
                             jinaWebProvider,
                             webToolsOptions,
                             loggerFactory,
@@ -1156,10 +1163,7 @@ try
                             {
                                 ["X-Session-ID"] = sandboxSession!.SessionId,
                             };
-                            AddSandboxAuthHeaders(
-                                sandboxMcpHeaders,
-                                callerCredential ?? sandboxCredential
-                            );
+                            AddSandboxAuthHeaders(sandboxMcpHeaders, callerCredential ?? sandboxCredential);
                         }
 
                         return new MultiTurnAgentPool.AgentCreationResult(
@@ -1171,7 +1175,11 @@ try
                                 conversationStore,
                                 loggerFactory,
                                 extraMcpServers: isWorkspaceMode
-                                    ? BuildHttpMcpServer("sandbox", $"{sandboxLifetime.GatewayBaseUrl}/mcp", sandboxMcpHeaders!)
+                                    ? BuildHttpMcpServer(
+                                        "sandbox",
+                                        $"{sandboxLifetime.GatewayBaseUrl}/mcp",
+                                        sandboxMcpHeaders!
+                                    )
                                     : null,
                                 workingDirectoryOverride: isWorkspaceMode ? sandboxSession!.HostPath : null,
                                 lifecycleServices: lifecycleServices
@@ -1314,7 +1322,8 @@ try
                         // user rather than hallucinating tool calls.
                         effectiveMode = mode with
                         {
-                            SystemPrompt = mode.SystemPrompt
+                            SystemPrompt =
+                                mode.SystemPrompt
                                 + "\n\nIMPORTANT: The sandbox workspace is currently UNAVAILABLE (its MCP endpoint "
                                 + "could not be reached), so NO file or shell tools exist in this conversation. "
                                 + "Do not claim or attempt to use them. Tell the user the workspace is offline and "
@@ -1379,7 +1388,8 @@ try
                         // hallucinating tool calls.
                         effectiveMode = mode with
                         {
-                            SystemPrompt = mode.SystemPrompt
+                            SystemPrompt =
+                                mode.SystemPrompt
                                 + "\n\nIMPORTANT: The sandbox workspace is currently UNAVAILABLE (its MCP endpoint "
                                 + "could not be reached), so the Read/Grep/Skill tools do not exist in this "
                                 + "conversation. Do not claim or attempt to use them. Tell the user the workspace "
@@ -1402,10 +1412,16 @@ try
                 // and left untouched.
                 // Resolve the discovered Copilot model (if any) backing this provider once; its
                 // transport and raw id drive the model-id, reasoning, and web-tool wiring below.
-                var isCopilotBackedModel = providerRegistry.TryGetCopilotModel(normalizedProviderId, out var copilotModelInfo);
+                var isCopilotBackedModel = providerRegistry.TryGetCopilotModel(
+                    normalizedProviderId,
+                    out var copilotModelInfo
+                );
                 // Same resolution for a discovered Anthropic-compatible provider-family model (e.g.
                 // DeepSeek); its raw model id drives the model-id and web-tool wiring below.
-                var isAnthropicCompatModel = providerRegistry.TryGetAnthropicCompatModel(normalizedProviderId, out var anthropicCompatModelInfo);
+                var isAnthropicCompatModel = providerRegistry.TryGetAnthropicCompatModel(
+                    normalizedProviderId,
+                    out var anthropicCompatModelInfo
+                );
 
                 var enabledWebTools = WebToolRegistrationPolicy.ResolveEnabledTools(
                     mode.EnabledTools,
@@ -1451,11 +1467,10 @@ try
                     // Discovered Copilot models use their raw model id verbatim; discovered
                     // Anthropic-compatible models likewise use their configured model name verbatim;
                     // fixed providers keep the curated per-provider id map.
-                    var modelId = isCopilotBackedModel
-                        ? copilotModelInfo.Id
-                        : isAnthropicCompatModel
-                            ? anthropicCompatModelInfo.ModelName
-                            : GetModelIdForProvider(normalizedProviderId);
+                    var modelId =
+                        isCopilotBackedModel ? copilotModelInfo.Id
+                        : isAnthropicCompatModel ? anthropicCompatModelInfo.ModelName
+                        : GetModelIdForProvider(normalizedProviderId);
 
                     // Built-in (server-side) tools are selected by the MODE — never injected per
                     // provider or via a per-mode override. A mode declares its server-side built-ins in
@@ -1512,7 +1527,8 @@ try
                             collabOptions,
                             collaborationId: threadId,
                             agentId: threadId,
-                            name: "conversation")
+                            name: "conversation"
+                        )
                         : null;
 
                     var characteristicsAgentFactory = new CharacteristicsAgentFactory(
@@ -1524,8 +1540,8 @@ try
                         // Parent-model-reuse fallback: a classic Copilot Anthropic parent (advertises no
                         // efforts, so Copilot shaping is empty) or a non-Copilot parent still passes its OWN
                         // reasoning (e.g. a classic Thinking budget) to an inherited-model sub-agent.
-                        parentReasoningExtraProperties: extraProperties)
-                        .Create;
+                        parentReasoningExtraProperties: extraProperties
+                    ).Create;
                     var outputTokenPolicy = sp.GetRequiredService<AgentOutputTokenPolicy>();
                     var subAgentOptions = BuildSubAgentOptionsAsync(
                             isTestMode,
@@ -1537,7 +1553,8 @@ try
                             sp.GetRequiredService<WorkspaceSubAgentLoader>(),
                             sp.GetRequiredService<MarketplaceSubAgentLoader>(),
                             sp.GetRequiredService<IWorkspaceStore>(),
-                            loggerFactory.CreateLogger("LmStreaming.Sample.SubAgentCatalog"))
+                            loggerFactory.CreateLogger("LmStreaming.Sample.SubAgentCatalog")
+                        )
                         .GetAwaiter()
                         .GetResult();
 
@@ -1587,8 +1604,7 @@ try
                     // and therefore carries no classic extraProperties). The plain-path counterpart
                     // (InheritedReasoning) is seeded on the controller's own options, not here.
                     var parentCanThink =
-                        !extraProperties.IsEmpty
-                        || (isCopilotBackedModel && copilotModelInfo.SupportsAdaptiveThinking);
+                        !extraProperties.IsEmpty || (isCopilotBackedModel && copilotModelInfo.SupportsAdaptiveThinking);
                     if (subAgentOptions is not null && parentCanThink)
                     {
                         subAgentOptions = subAgentOptions with { InheritedEffort = ReasoningEffort.High };
@@ -1607,8 +1623,9 @@ try
                             sandboxSession.SessionId,
                             threadId,
                             subAgentOptions.Templates,
-subAgentFactory,
-                            characteristicsAgentFactory);
+                            subAgentFactory,
+                            characteristicsAgentFactory
+                        );
                         sharedSubAgentSource = binding.Source;
 
                         // Register this agent's threadId against the session so the
@@ -1632,7 +1649,8 @@ subAgentFactory,
                     // so leaving the store null keeps it from being attached to a thrown-away options value.)
                     var triggerOptions = SampleTriggerRegistrations.Build(
                         sandboxEnabled: sandboxSession is not null,
-                        subAgentManagerAccessor: () => agent?.SubAgentManager) with
+                        subAgentManagerAccessor: () => agent?.SubAgentManager
+                    ) with
                     {
                         NotifyWaitStore = isTestMode ? notifyWaitStore : null,
                         ThreadId = isTestMode ? threadId : null,
@@ -1657,8 +1675,7 @@ subAgentFactory,
                     {
                         // Q2: the controller runs on a single, FIXED, pre-configured model — a configured
                         // value if present, else the conversation's own default model. Never the caller's.
-                        var configuredControllerModel =
-                            Environment.GetEnvironmentVariable("WORKFLOW_CONTROLLER_MODEL");
+                        var configuredControllerModel = Environment.GetEnvironmentVariable("WORKFLOW_CONTROLLER_MODEL");
                         var controllerModelId = string.IsNullOrWhiteSpace(configuredControllerModel)
                             ? modelId
                             : configuredControllerModel;
@@ -1668,7 +1685,8 @@ subAgentFactory,
                             int.TryParse(
                                 Environment.GetEnvironmentVariable("WORKFLOW_MAX_CONCURRENT"),
                                 out var configuredCap
-                            ) && configuredCap >= 1
+                            )
+                            && configuredCap >= 1
                                 ? configuredCap
                                 : 8;
 
@@ -1691,8 +1709,8 @@ subAgentFactory,
                                     enrichedCatalog,
                                     () => agentFactory(providerId)
                                 )
-                                : BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(
-                                    () => agentFactory(providerId)
+                                : BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(() =>
+                                    agentFactory(providerId)
                                 );
 
                             var opts = new SubAgentOptions
@@ -1735,18 +1753,13 @@ subAgentFactory,
                                 // against the discovered Copilot catalog (drop unknown → inherit the controller
                                 // model) and list the valid ids in the tool descriptor so the controller stops
                                 // inventing them.
-                                ModelOverrideValidator =
-                                    sp.GetRequiredService<SubAgentModelResolver>().IsKnownModel,
-                                AvailableModelIds =
-                                    sp.GetRequiredService<SubAgentModelResolver>().AvailableModelIds,
+                                ModelOverrideValidator = sp.GetRequiredService<SubAgentModelResolver>().IsKnownModel,
+                                AvailableModelIds = sp.GetRequiredService<SubAgentModelResolver>().AvailableModelIds,
                             };
 
                             // Persist nested delegate transcripts (subagent-{agentId}) to the shared store so a
                             // nested workflow tab survives a page reload (live streaming works regardless).
-                            return ApplyDefaultSubAgentStore(
-                                outputTokenPolicy.ApplyDelegated(opts),
-                                conversationStore
-                            );
+                            return ApplyDefaultSubAgentStore(outputTokenPolicy.ApplyDelegated(opts), conversationStore);
                         }
 
                         var controllerSubAgentOptions = BuildControllerOptions(normalizedProviderId);
@@ -1768,7 +1781,6 @@ subAgentFactory,
                                 }
                             },
                             maxConcurrentWorkflows: maxConcurrentWorkflows,
-
                             controllerDefaultOptions: outputTokenPolicy.ApplyDelegated(
                                 new GenerateReplyOptions
                                 {
@@ -1802,8 +1814,7 @@ subAgentFactory,
                             // turns) to the shared store under the workflow-{id} thread so the ⚙ workflow tab is
                             // viewable after the run completes. Non-owning so controller teardown never disposes
                             // the shared store.
-                            controllerConversationStore:
-                                new NonOwningConversationStore(conversationStore),
+                            controllerConversationStore: new NonOwningConversationStore(conversationStore),
                             // A StartWorkflowAgent run may pass a preferred provider; build its controller agent
                             // AND delegate templates on that provider. Validation happens on the tool (below);
                             // this factory trusts the id. Must be agentFactory-buildable (openai/anthropic/test/
@@ -1820,9 +1831,7 @@ subAgentFactory,
                                 // Provider switch must also replace the launching provider's default model.
                                 // For discovered Copilot providers the provider id is the raw model id; for
                                 // family providers this is the same id the host's agent factory accepts.
-                                outputTokenPolicy.ApplyDelegated(
-                                    new GenerateReplyOptions { ModelId = providerId }
-                                )
+                                outputTokenPolicy.ApplyDelegated(new GenerateReplyOptions { ModelId = providerId })
                             ),
                             // Scope the controller's persistence thread to THIS conversation so a human-chosen
                             // (non-unique) workflowId can never map two different conversations onto the same
@@ -1832,20 +1841,21 @@ subAgentFactory,
                             // built before the root `agent` loop exists).
                             launchConversationId: () => agent?.ThreadId,
                             lifecycleServices: lifecycleServices
-
                         );
 
-                        _ = filteredRegistry.AddProvider(new StartWorkflowToolProvider(
-                            workflowManager,
-                            validatePreferredProvider: p =>
-                                !providerRegistry.IsKnown(p) ? $"Unknown provider '{p}'."
-                                : !providerRegistry.IsAvailable(p) ? $"Provider '{p}' is not available."
-                                : null,
-                            // Admits the run's controller as a hierarchy node under the LAUNCHING agent.
-                            // Passed as a thunk (not a value) purely for symmetry with the other late-bound
-                            // launch inputs above; the handle itself is already built.
-                            callerCollaboration: () => rootCollaboration
-                        ));
+                        _ = filteredRegistry.AddProvider(
+                            new StartWorkflowToolProvider(
+                                workflowManager,
+                                validatePreferredProvider: p =>
+                                    !providerRegistry.IsKnown(p) ? $"Unknown provider '{p}'."
+                                    : !providerRegistry.IsAvailable(p) ? $"Provider '{p}' is not available."
+                                    : null,
+                                // Admits the run's controller as a hierarchy node under the LAUNCHING agent.
+                                // Passed as a thunk (not a value) purely for symmetry with the other late-bound
+                                // launch inputs above; the handle itself is already built.
+                                callerCollaboration: () => rootCollaboration
+                            )
+                        );
                         ownedResources.Add(workflowManager);
 
                         // Publish this conversation's WorkflowManager so /subagents + the sub-agent WebSocket
@@ -1887,9 +1897,11 @@ subAgentFactory,
                                 sp.GetRequiredService<WorkflowRunRegistry>(),
                                 conversationStore,
                                 sp.GetRequiredService<ILogger<AgentHierarchyService>>(),
-                                sp.GetRequiredService<SubAgentScanCoverageCache>()),
+                                sp.GetRequiredService<SubAgentScanCoverageCache>()
+                            ),
                             threadId,
-                            rootCollaboration.AgentId);
+                            rootCollaboration.AgentId
+                        );
                     }
 
                     // Persist spawned sub-agent transcripts (keyed per subagent-{agentId} thread) to the
@@ -1902,12 +1914,13 @@ subAgentFactory,
                             subAgentOptions,
                             conversationStore,
                             parentThreadId: threadId,
-                            describeChild: childThreadId => agent?.SubAgentManager
-                                ?.ListAgents()
-                                .FirstOrDefault(s => string.Equals(
-                                    s.ThreadId,
-                                    childThreadId,
-                                    StringComparison.Ordinal)));
+                            describeChild: childThreadId =>
+                                agent
+                                    ?.SubAgentManager?.ListAgents()
+                                    .FirstOrDefault(s =>
+                                        string.Equals(s.ThreadId, childThreadId, StringComparison.Ordinal)
+                                    )
+                        );
                     }
 
                     agent = new MultiTurnAgentLoop(
@@ -1925,7 +1938,8 @@ subAgentFactory,
                                 conversationStore,
                                 threadId,
                                 effectiveMode.SystemPrompt,
-                                logger: loggerFactory.CreateLogger("LmStreaming.Sample.SystemPromptCompose"))
+                                logger: loggerFactory.CreateLogger("LmStreaming.Sample.SystemPromptCompose")
+                            )
                             .GetAwaiter()
                             .GetResult(),
                         defaultOptions: outputTokenPolicy.ApplyPrimary(
@@ -1991,10 +2005,7 @@ subAgentFactory,
             // sandbox-established binding through it as part of the agent-entry commit/removal (WI #195).
             bindingSink: sandboxRegistryForCleanup,
             liveSessionResolver: (binding, ct) =>
-                sandboxRegistryForCleanup.GetOrCreateLiveSessionAsync(
-                    binding.WorkspaceRef,
-                    ct,
-                    binding.Credential),
+                sandboxRegistryForCleanup.GetOrCreateLiveSessionAsync(binding.WorkspaceRef, ct, binding.Credential),
             lifecycleServices: hostLifecycleServices
         );
 
@@ -2208,8 +2219,7 @@ subAgentFactory,
             if (string.IsNullOrWhiteSpace(parentThreadId) || string.IsNullOrWhiteSpace(agentId))
             {
                 context.Response.StatusCode = StatusCodes.Status400BadRequest;
-                await context.Response.WriteAsync(
-                    "parentThreadId and agentId are required", cancellationToken);
+                await context.Response.WriteAsync("parentThreadId and agentId are required", cancellationToken);
                 return;
             }
 
@@ -2222,12 +2232,7 @@ subAgentFactory,
 
             try
             {
-                await wsManager.HandleSubAgentConnectionAsync(
-                    webSocket,
-                    parentThreadId,
-                    agentId,
-                    cancellationToken
-                );
+                await wsManager.HandleSubAgentConnectionAsync(webSocket, parentThreadId, agentId, cancellationToken);
             }
             finally
             {
@@ -2241,16 +2246,33 @@ subAgentFactory,
                 }
 
                 webSocket.Dispose();
-                wsLogger.LogInformation(
-                    "Sub-agent WebSocket connection closed for agent {AgentId}",
-                    agentId
-                );
+                wsLogger.LogInformation("Sub-agent WebSocket connection closed for agent {AgentId}", agentId);
             }
         }
     );
 
     // Map controllers (conversations, chat-modes, tools, diagnostics)
     _ = app.MapControllers();
+    _ = app.MapGet(
+        "/api/system/release",
+        (ReleaseIdentity identity) =>
+            Results.Ok(
+                new
+                {
+                    identity.ReleaseId,
+                    identity.SourceContentSha256,
+                    identity.BaseCommit,
+                    identity.IsDirty,
+                    identity.HostApiContractVersion,
+                    identity.Capabilities,
+                    identity.DatabaseSchemaMinimum,
+                    identity.DatabaseSchemaMaximum,
+                    Ready = true,
+                    ActiveReviewCount = 0,
+                    FailureReasons = Array.Empty<string>(),
+                }
+            )
+    );
 
     // Fallback for SPA routing.
     // In Development, route through Vite dev server (proxied at /dist/*).
@@ -2298,7 +2320,8 @@ public partial class Program
     internal static ImmutableDictionary<string, object?> BuildReasoningExtraProperties(
         string normalizedProviderId,
         CopilotModelTransport? copilotTransport = null,
-        bool copilotSupportsAdaptiveThinking = false)
+        bool copilotSupportsAdaptiveThinking = false
+    )
     {
         var extraProperties = ImmutableDictionary<string, object?>.Empty;
         if (
@@ -2349,7 +2372,8 @@ public partial class Program
         ProviderRegistry providerRegistry,
         string copilotModelKey,
         string fallbackProviderId,
-        ReasoningEffort effort = ReasoningEffort.High)
+        ReasoningEffort effort = ReasoningEffort.High
+    )
     {
         ArgumentNullException.ThrowIfNull(providerRegistry);
 
@@ -2375,6 +2399,7 @@ public partial class Program
 
         return BuildReasoningExtraProperties(fallbackProviderId);
     }
+
     private static IStreamingAgent CreateTestAgent(ILoggerFactory loggerFactory, ITestAgentBuilder testAgentBuilder)
     {
         var testHandler = testAgentBuilder.CreateHandler("test", loggerFactory);
@@ -2517,10 +2542,7 @@ public partial class Program
         {
             CopilotModelTransport.Anthropic => CreateCopilotAnthropicAgent(model.DisplayName, loggerFactory),
             CopilotModelTransport.Responses => CreateCopilotResponsesAgent(model.DisplayName, loggerFactory),
-            _ => throw new ProviderUnavailableException(
-                model.Id,
-                $"unsupported Copilot transport {model.Transport}"
-            ),
+            _ => throw new ProviderUnavailableException(model.Id, $"unsupported Copilot transport {model.Transport}"),
         };
     }
 
@@ -2549,10 +2571,7 @@ public partial class Program
     ///     <c>COPILOT_RESPONSE_TIMEOUT_SECONDS</c>.
     /// </summary>
     private static TimeSpan CopilotResponseTimeout =>
-        int.TryParse(
-            Environment.GetEnvironmentVariable("COPILOT_RESPONSE_TIMEOUT_SECONDS"),
-            out var seconds
-        )
+        int.TryParse(Environment.GetEnvironmentVariable("COPILOT_RESPONSE_TIMEOUT_SECONDS"), out var seconds)
         && seconds > 0
             ? TimeSpan.FromSeconds(seconds)
             : TimeSpan.FromSeconds(120);
@@ -2897,7 +2916,8 @@ public partial class Program
     /// </summary>
     internal static SubAgentOptions ApplyCharacteristicsAgentFactory(
         SubAgentOptions options,
-        Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsAgentFactory)
+        Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsAgentFactory
+    )
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(characteristicsAgentFactory);
@@ -2906,22 +2926,23 @@ public partial class Program
         {
             Templates = options.Templates.ToDictionary(
                 entry => entry.Key,
-                entry => entry.Value with
-                {
-                    CharacteristicsAgentFactory = characteristics =>
+                entry =>
+                    entry.Value with
                     {
-                        var provider = characteristicsAgentFactory(characteristics);
-                        return characteristics.IsModelExplicitlySelected
-                            || characteristics.IsModelTierResolved
-                            ? provider
-                            : provider with
-                            {
-                                Agent = entry.Value.AgentFactory(),
-                                OwnsAgent = true,
-                            };
+                        CharacteristicsAgentFactory = characteristics =>
+                        {
+                            var provider = characteristicsAgentFactory(characteristics);
+                            return characteristics.IsModelExplicitlySelected || characteristics.IsModelTierResolved
+                                ? provider
+                                : provider with
+                                {
+                                    Agent = entry.Value.AgentFactory(),
+                                    OwnsAgent = true,
+                                };
+                        },
                     },
-                },
-                StringComparer.Ordinal),
+                StringComparer.Ordinal
+            ),
         };
     }
 
@@ -2944,7 +2965,8 @@ public partial class Program
         SubAgentOptions options,
         IConversationStore store,
         string? parentThreadId = null,
-        Func<string, SubAgentSnapshot?>? describeChild = null)
+        Func<string, SubAgentSnapshot?>? describeChild = null
+    )
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(store);
@@ -2957,15 +2979,13 @@ public partial class Program
             ? options
             : options with
             {
-                DefaultConversationStoreFactory = childThreadId =>
-                    new NonOwningConversationStore(
-                        store,
-                        provenanceThreadId: parentThreadId is null ? null : childThreadId,
-                        provenance: parentThreadId is null
-                            ? null
-                            : () => SubAgentProvenance.Build(
-                                parentThreadId,
-                                describeChild?.Invoke(childThreadId))),
+                DefaultConversationStoreFactory = childThreadId => new NonOwningConversationStore(
+                    store,
+                    provenanceThreadId: parentThreadId is null ? null : childThreadId,
+                    provenance: parentThreadId is null
+                        ? null
+                        : () => SubAgentProvenance.Build(parentThreadId, describeChild?.Invoke(childThreadId))
+                ),
             };
     }
 
@@ -2995,7 +3015,8 @@ public partial class Program
         SubAgentOptions? subAgentOptions,
         AgentHierarchyService hierarchy,
         string threadId,
-        string readerAgentId)
+        string readerAgentId
+    )
     {
         ArgumentNullException.ThrowIfNull(registry);
         ArgumentNullException.ThrowIfNull(hierarchy);
@@ -3011,8 +3032,11 @@ public partial class Program
                     .. subAgentOptions.NonInheritedToolNames ?? [],
                     .. AgentTranscriptToolProvider.ToolNames,
                 ],
-                ChildToolProviderFactory = childAgentId =>
-                    new AgentTranscriptToolProvider(hierarchy, threadId, childAgentId),
+                ChildToolProviderFactory = childAgentId => new AgentTranscriptToolProvider(
+                    hierarchy,
+                    threadId,
+                    childAgentId
+                ),
             };
     }
 
@@ -3022,7 +3046,8 @@ public partial class Program
         string conversationId,
         IReadOnlyDictionary<string, SubAgentTemplate> templates,
         Func<IStreamingAgent> agentFactory,
-        Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsAgentFactory)
+        Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsAgentFactory
+    )
     {
         ArgumentNullException.ThrowIfNull(registry);
         return registry.AddOrUpdateSubAgentBinding(
@@ -3030,7 +3055,8 @@ public partial class Program
             conversationId,
             templates,
             agentFactory,
-            characteristicsAgentFactory);
+            characteristicsAgentFactory
+        );
     }
 
     private static async Task<SubAgentOptions?> BuildSubAgentOptionsAsync(
@@ -3043,7 +3069,8 @@ public partial class Program
         WorkspaceSubAgentLoader workspaceLoader,
         MarketplaceSubAgentLoader marketplaceLoader,
         IWorkspaceStore workspaceStore,
-        Microsoft.Extensions.Logging.ILogger logger)
+        Microsoft.Extensions.Logging.ILogger logger
+    )
     {
         // Base catalog: mock providers go through the ITestAgentBuilder seam (built-ins by default,
         // or scripted templates an E2E test injected); real providers start from the shared built-ins.
@@ -3064,9 +3091,7 @@ public partial class Program
 
         if (sandboxSession is null)
         {
-            return ApplyCharacteristicsAgentFactory(
-                baseOptions,
-                characteristicsAgentFactory);
+            return ApplyCharacteristicsAgentFactory(baseOptions, characteristicsAgentFactory);
         }
 
         var templates = new Dictionary<string, SubAgentTemplate>(baseOptions.Templates, StringComparer.Ordinal);
@@ -3078,12 +3103,17 @@ public partial class Program
                 workspaceLoader,
                 marketplaceLoader,
                 workspaceStore,
-                logger)
+                logger
+            )
             .ConfigureAwait(false);
 
         return ApplyCharacteristicsAgentFactory(
-            baseOptions with { Templates = templates },
-            characteristicsAgentFactory);
+            baseOptions with
+            {
+                Templates = templates,
+            },
+            characteristicsAgentFactory
+        );
     }
 
     /// <summary>
@@ -3109,7 +3139,8 @@ public partial class Program
         WorkspaceSubAgentLoader workspaceLoader,
         MarketplaceSubAgentLoader marketplaceLoader,
         IWorkspaceStore workspaceStore,
-        Microsoft.Extensions.Logging.ILogger logger)
+        Microsoft.Extensions.Logging.ILogger logger
+    )
     {
         // Workspace file-discovery and the marketplace catalog are independent gateway round-trips.
         // Fetch them concurrently so the (sync-over-async) blocking window is one round-trip, not two.
@@ -3118,9 +3149,15 @@ public partial class Program
         var discoveredTask = workspaceLoader.LoadWithCharacteristicsAsync(
             sandboxSession,
             providerAgentFactory,
-            characteristicsAgentFactory);
+            characteristicsAgentFactory
+        );
         var marketplaceTask = LoadMarketplaceSubAgentsAsync(
-            marketplaceLoader, workspaceStore, sandboxSession.WorkspaceId, providerAgentFactory, logger);
+            marketplaceLoader,
+            workspaceStore,
+            sandboxSession.WorkspaceId,
+            providerAgentFactory,
+            logger
+        );
 
         _ = await Task.WhenAll(discoveredTask, marketplaceTask).ConfigureAwait(false);
 
@@ -3139,14 +3176,13 @@ public partial class Program
         IWorkspaceStore workspaceStore,
         string workspaceId,
         Func<IStreamingAgent> providerAgentFactory,
-        Microsoft.Extensions.Logging.ILogger logger)
+        Microsoft.Extensions.Logging.ILogger logger
+    )
     {
         var marketplaces = await ResolveWorkspaceMarketplacesAsync(workspaceStore, workspaceId, logger)
             .ConfigureAwait(false);
 
-        return await marketplaceLoader
-            .LoadAsync(marketplaces, providerAgentFactory)
-            .ConfigureAwait(false);
+        return await marketplaceLoader.LoadAsync(marketplaces, providerAgentFactory).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -3158,7 +3194,8 @@ public partial class Program
     private static async Task<IReadOnlyList<string>?> ResolveWorkspaceMarketplacesAsync(
         IWorkspaceStore workspaceStore,
         string workspaceId,
-        Microsoft.Extensions.Logging.ILogger logger)
+        Microsoft.Extensions.Logging.ILogger logger
+    )
     {
         try
         {
@@ -3170,7 +3207,8 @@ public partial class Program
             logger.LogWarning(
                 ex,
                 "Failed to resolve marketplaces for workspace {WorkspaceId}; using the gateway default set.",
-                workspaceId);
+                workspaceId
+            );
             return null;
         }
     }
@@ -3192,7 +3230,8 @@ public partial class Program
         SandboxSessionRegistry sandboxRegistry,
         SandboxSession sandboxSession,
         ContextDiscoveryFormatter formatter,
-        Microsoft.Extensions.Logging.ILogger logger)
+        Microsoft.Extensions.Logging.ILogger logger
+    )
     {
         const string ContextFileKind = "context_file";
 
@@ -3230,7 +3269,8 @@ public partial class Program
                     ex,
                     "Failed to read workspace root context file {Path} for session {SessionId}; gateway unreachable, skipping root context seed.",
                     path,
-                    sandboxSession.SessionId);
+                    sandboxSession.SessionId
+                );
                 return string.Empty;
             }
 
@@ -3254,13 +3294,15 @@ public partial class Program
                 sandboxSession.SessionId,
                 SandboxSessionRegistry.SessionDiscoveryTarget,
                 ContextFileKind,
-                path);
+                path
+            );
 
             logger.LogInformation(
                 "Seeded workspace root context file {Path} ({Length} chars) into the system prompt for session {SessionId}.",
                 path,
                 content.Length,
-                sandboxSession.SessionId);
+                sandboxSession.SessionId
+            );
 
             return "\n\n" + block;
         }
@@ -3470,10 +3512,7 @@ public partial class Program
         // advertises (e.g. Workspace Agent's EnabledBuiltInTools=["web_search"] must expand to
         // include the renamed "WebSearch"/"WebFetch" function tools, not just the literal built-in
         // name).
-        var enabledTools = WebToolRegistrationPolicy.ResolveEnabledTools(
-            mode.EnabledTools,
-            mode.EnabledBuiltInTools
-        );
+        var enabledTools = WebToolRegistrationPolicy.ResolveEnabledTools(mode.EnabledTools, mode.EnabledBuiltInTools);
 
         var copilotOptions = new CopilotSdkOptions
         {

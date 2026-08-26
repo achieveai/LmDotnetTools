@@ -3,6 +3,7 @@ using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Xunit.Abstractions;
 
@@ -16,9 +17,7 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 public sealed class PrOrchestratorTests : LoggingTestBase
 {
     public PrOrchestratorTests(ITestOutputHelper output)
-        : base(output)
-    {
-    }
+        : base(output) { }
 
     [Fact]
     public async Task A_fresh_run_executes_every_stage_in_order_and_completes()
@@ -26,15 +25,18 @@ public sealed class PrOrchestratorTests : LoggingTestBase
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
         var executor = new RecordingStageExecutor();
-        var orchestrator = new PrOrchestrator(store, executor, LoggerFactory.CreateLogger<PrOrchestrator>());
+        var orchestrator = new PrOrchestrator(
+            store,
+            executor,
+            LoggerFactory.CreateLogger<PrOrchestrator>(),
+            providers: [ReadyProvider()]
+        );
 
         var run = await orchestrator.RunAsync(SeedRun(store), CancellationToken.None);
 
-        executor.ExecutedStages.Should().Equal(
-            ReviewStage.ContextReady,
-            ReviewStage.Reviewed,
-            ReviewStage.Judged,
-            ReviewStage.Posted);
+        executor
+            .ExecutedStages.Should()
+            .Equal(ReviewStage.ContextReady, ReviewStage.Reviewed, ReviewStage.Judged, ReviewStage.Posted);
         run.Stage.Should().Be(ReviewStage.Posted);
         run.WorkflowStatus.Should().Be(WorkflowStatus.Completed);
     }
@@ -46,10 +48,20 @@ public sealed class PrOrchestratorTests : LoggingTestBase
         using var store = new ReviewStore(db.ConnectionString);
         var first = new RecordingStageExecutor();
         var seed = SeedRun(store);
-        _ = await new PrOrchestrator(store, first, LoggerFactory.CreateLogger<PrOrchestrator>()).RunAsync(seed, CancellationToken.None);
+        _ = await new PrOrchestrator(
+            store,
+            first,
+            LoggerFactory.CreateLogger<PrOrchestrator>(),
+            providers: [ReadyProvider()]
+        ).RunAsync(seed, CancellationToken.None);
 
         var second = new RecordingStageExecutor();
-        var run = await new PrOrchestrator(store, second, LoggerFactory.CreateLogger<PrOrchestrator>()).RunAsync(seed, CancellationToken.None);
+        var run = await new PrOrchestrator(
+            store,
+            second,
+            LoggerFactory.CreateLogger<PrOrchestrator>(),
+            providers: [ReadyProvider()]
+        ).RunAsync(seed, CancellationToken.None);
 
         second.ExecutedStages.Should().BeEmpty("a run already at the terminal stage has no outstanding work");
         run.Stage.Should().Be(ReviewStage.Posted);
@@ -64,7 +76,12 @@ public sealed class PrOrchestratorTests : LoggingTestBase
         // First attempt fails at Judged: ContextReady + Reviewed complete and persist, then it throws.
         var crashing = new RecordingStageExecutor(throwAtStage: ReviewStage.Judged);
         var seed = SeedRun(store);
-        var crashingOrchestrator = new PrOrchestrator(store, crashing, LoggerFactory.CreateLogger<PrOrchestrator>());
+        var crashingOrchestrator = new PrOrchestrator(
+            store,
+            crashing,
+            LoggerFactory.CreateLogger<PrOrchestrator>(),
+            providers: [ReadyProvider()]
+        );
 
         var act = async () => await crashingOrchestrator.RunAsync(seed, CancellationToken.None);
         await act.Should().ThrowAsync<InvalidOperationException>();
@@ -78,12 +95,146 @@ public sealed class PrOrchestratorTests : LoggingTestBase
 
         // Second attempt resumes: only Judged + Posted run, no completed stage replays.
         var resuming = new RecordingStageExecutor();
-        var run = await new PrOrchestrator(store, resuming, LoggerFactory.CreateLogger<PrOrchestrator>())
-            .RunAsync(seed, CancellationToken.None);
+        var run = await new PrOrchestrator(
+            store,
+            resuming,
+            LoggerFactory.CreateLogger<PrOrchestrator>(),
+            providers: [ReadyProvider()]
+        ).RunAsync(seed, CancellationToken.None);
 
         resuming.ExecutedStages.Should().Equal(ReviewStage.Judged, ReviewStage.Posted);
         run.Stage.Should().Be(ReviewStage.Posted);
         run.WorkflowStatus.Should().Be(WorkflowStatus.Completed);
+    }
+
+    [Theory]
+    [InlineData(PrDraftState.Draft)]
+    [InlineData(PrDraftState.Unknown)]
+    internal async Task Execution_preflight_blocks_non_ready_runs_without_stage_retry_or_lease_leak(PrDraftState state)
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var executor = new RecordingStageExecutor();
+        var provider = new MockPrProvider(
+            "github",
+            [],
+            new OpaqueCursor
+            {
+                Provider = "github",
+                Scope = "scope",
+                CursorVersion = 1,
+                CursorPayload = "{}",
+            }
+        )
+        {
+            PrState = new PrStatus(PrLifecycle.Open, state),
+        };
+        var seed = SeedRun(store);
+        store.UpdateReviewRunState(seed.Id, seed.Stage, WorkflowStatus.RetryPending, seed.PrLifecycleState);
+        var orchestrator = new PrOrchestrator(
+            store,
+            executor,
+            LoggerFactory.CreateLogger<PrOrchestrator>(),
+            providers: [provider]
+        );
+
+        var result = await orchestrator.RunAsync(seed, CancellationToken.None);
+
+        executor.ExecutedStages.Should().BeEmpty();
+        executor.ReleaseCount.Should().Be(1, "the finally path releases any pooled lease even when preflight blocks");
+        store.ReadOwner(result.Id).Should().BeNull();
+        store.GetReviewRun(result.Id)!.WorkflowStatus.Should().Be(WorkflowStatus.RetryPending);
+        store.GetReviewRun(result.Id)!.PrDraftState.Should().Be(state);
+    }
+
+    [Fact]
+    public async Task Missing_provider_fails_closed_without_stage_attempt_and_releases_ownership()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var executor = new RecordingStageExecutor();
+        var seed = SeedRun(store) with { PrDraftState = PrDraftState.Ready };
+        var orchestrator = new PrOrchestrator(store, executor, LoggerFactory.CreateLogger<PrOrchestrator>());
+
+        var result = await orchestrator.ExecuteAsync(seed, CancellationToken.None);
+
+        result.Outcome.Should().Be(PrExecutionOutcome.ReadinessDeferred);
+        result.ConsumedReviewAttempt.Should().BeFalse();
+        executor.ExecutedStages.Should().BeEmpty();
+        store
+            .GetReviewRun(seed.Id)!
+            .PrDraftState.Should()
+            .Be(PrDraftState.Unknown, "persisted Ready is not authority when fresh provider resolution is missing");
+        store.ReadOwner(seed.Id).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Missing_repository_fails_closed_without_stage_attempt_and_releases_ownership()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var executor = new RecordingStageExecutor();
+        var seed = SeedRun(store) with { PrDraftState = PrDraftState.Ready };
+        using (var connection = new SqliteConnection(db.ConnectionString))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA foreign_keys = OFF; DELETE FROM repo WHERE id = $repoId;";
+            command.Parameters.AddWithValue("$repoId", seed.RepoId);
+            _ = command.ExecuteNonQuery();
+        }
+        var orchestrator = new PrOrchestrator(
+            store,
+            executor,
+            LoggerFactory.CreateLogger<PrOrchestrator>(),
+            providers: [ReadyProvider()]
+        );
+
+        var result = await orchestrator.ExecuteAsync(seed, CancellationToken.None);
+
+        result.Outcome.Should().Be(PrExecutionOutcome.ReadinessDeferred);
+        result.ConsumedReviewAttempt.Should().BeFalse();
+        executor.ExecutedStages.Should().BeEmpty();
+        store.GetReviewRun(result.Run.Id)!.PrDraftState.Should().Be(PrDraftState.Unknown);
+        store.ReadOwner(result.Run.Id).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Readiness_change_between_stages_blocks_every_later_dispatch_and_ready_resumes_checkpoint()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var provider = new SequencedStatusProvider(
+            new PrStatus(PrLifecycle.Open, PrDraftState.Ready),
+            new PrStatus(PrLifecycle.Open, PrDraftState.Ready),
+            new PrStatus(PrLifecycle.Open, PrDraftState.Draft)
+        );
+        var firstExecutor = new RecordingStageExecutor();
+        var seed = SeedRun(store);
+        var first = new PrOrchestrator(
+            store,
+            firstExecutor,
+            LoggerFactory.CreateLogger<PrOrchestrator>(),
+            providers: [provider]
+        );
+
+        var deferred = await first.RunAsync(seed, CancellationToken.None);
+
+        firstExecutor.ExecutedStages.Should().Equal(ReviewStage.ContextReady);
+        deferred.Stage.Should().Be(ReviewStage.ContextReady);
+        store.ReadOwner(deferred.Id).Should().BeNull();
+
+        provider.SetStatuses([.. Enumerable.Repeat(new PrStatus(PrLifecycle.Open, PrDraftState.Ready), 4)]);
+        var secondExecutor = new RecordingStageExecutor();
+        var resumed = await new PrOrchestrator(
+            store,
+            secondExecutor,
+            LoggerFactory.CreateLogger<PrOrchestrator>(),
+            providers: [provider]
+        ).RunAsync(seed, CancellationToken.None);
+
+        secondExecutor.ExecutedStages.Should().Equal(ReviewStage.Reviewed, ReviewStage.Judged, ReviewStage.Posted);
+        resumed.Stage.Should().Be(ReviewStage.Posted);
     }
 
     [Fact]
@@ -92,7 +243,12 @@ public sealed class PrOrchestratorTests : LoggingTestBase
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
         var executor = new RecordingStageExecutor();
-        var orchestrator = new PrOrchestrator(store, executor, LoggerFactory.CreateLogger<PrOrchestrator>());
+        var orchestrator = new PrOrchestrator(
+            store,
+            executor,
+            LoggerFactory.CreateLogger<PrOrchestrator>(),
+            providers: [ReadyProvider()]
+        );
         var repoId = store.EnsureRepo(SampleRepo());
 
         var seed = SampleSeed(repoId) with { PrLifecycleState = PrLifecycleState.Merged };
@@ -109,15 +265,23 @@ public sealed class PrOrchestratorTests : LoggingTestBase
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
         var run = SeedRun(store) with { Mode = "post" };
-        store.AddArtifact(new ReviewArtifact
-        {
-            ReviewRunId = run.Id,
-            ArtifactSchemaVersion = 1,
-            ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
-            Provider = "github",
-            Payload = "{\"ReviewText\":\"No new findings since the last review.\",\"RunId\":\"r\",\"VariantId\":\"primary\"}",
-        });
-        var orchestrator = new PrOrchestrator(store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
+        store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = run.Id,
+                ArtifactSchemaVersion = 1,
+                ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
+                Provider = "github",
+                Payload =
+                    "{\"ReviewText\":\"No new findings since the last review.\",\"RunId\":\"r\",\"VariantId\":\"primary\"}",
+            }
+        );
+        var orchestrator = new PrOrchestrator(
+            store,
+            new RecordingStageExecutor(),
+            LoggerFactory.CreateLogger<PrOrchestrator>(),
+            providers: [ReadyProvider()]
+        );
 
         orchestrator.ClassifyDeliveryOutcome(run).Should().Be("no new findings — nothing posted");
     }
@@ -134,21 +298,32 @@ public sealed class PrOrchestratorTests : LoggingTestBase
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
         var run = SeedRun(store) with { Mode = "post" };
-        store.AddArtifact(new ReviewArtifact
-        {
-            ReviewRunId = run.Id,
-            ArtifactSchemaVersion = 1,
-            ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
-            Provider = "github",
-            Payload =
-                "{\"ReviewText\":\"No new findings in the auth module, but the migration adds a NOT NULL "
-                + "column with no default.\",\"RunId\":\"r\",\"VariantId\":\"primary\"}",
-        });
-        var orchestrator = new PrOrchestrator(store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
+        store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = run.Id,
+                ArtifactSchemaVersion = 1,
+                ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
+                Provider = "github",
+                Payload =
+                    "{\"ReviewText\":\"No new findings in the auth module, but the migration adds a NOT NULL "
+                    + "column with no default.\",\"RunId\":\"r\",\"VariantId\":\"primary\"}",
+            }
+        );
+        var orchestrator = new PrOrchestrator(
+            store,
+            new RecordingStageExecutor(),
+            LoggerFactory.CreateLogger<PrOrchestrator>(),
+            providers: [ReadyProvider()]
+        );
 
-        orchestrator.ClassifyDeliveryOutcome(run).Should().NotBe(
-            "no new findings — nothing posted",
-            "this run produced a finding, so whatever its delivery outcome is, it is not 'nothing to post'");
+        orchestrator
+            .ClassifyDeliveryOutcome(run)
+            .Should()
+            .NotBe(
+                "no new findings — nothing posted",
+                "this run produced a finding, so whatever its delivery outcome is, it is not 'nothing to post'"
+            );
     }
 
     [Fact]
@@ -157,19 +332,26 @@ public sealed class PrOrchestratorTests : LoggingTestBase
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
         var run = SeedRun(store) with { Mode = "post" };
-        var orchestrator = new PrOrchestrator(store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
+        var orchestrator = new PrOrchestrator(
+            store,
+            new RecordingStageExecutor(),
+            LoggerFactory.CreateLogger<PrOrchestrator>(),
+            providers: [ReadyProvider()]
+        );
 
         orchestrator.ClassifyDeliveryOutcome(run).Should().Be("completed without provider-visible post evidence");
 
-        var entry = store.EnqueueOutbox(new OutboxEntry
-        {
-            IdempotencyKey = "delivery-proof",
-            Provider = "github",
-            ReviewRunId = run.Id,
-            Operation = ReviewPoster.PostReviewCommentOperation,
-            ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
-            Status = OutboxStatus.Pending,
-        });
+        var entry = store.EnqueueOutbox(
+            new OutboxEntry
+            {
+                IdempotencyKey = "delivery-proof",
+                Provider = "github",
+                ReviewRunId = run.Id,
+                Operation = ReviewPoster.PostReviewCommentOperation,
+                ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
+                Status = OutboxStatus.Pending,
+            }
+        );
         _ = store.TryTransitionOutbox(entry.Id, OutboxStatus.Pending, OutboxStatus.Posted, "comment-42");
 
         orchestrator.ClassifyDeliveryOutcome(run).Should().Be("posted");
@@ -181,7 +363,12 @@ public sealed class PrOrchestratorTests : LoggingTestBase
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
         var executor = new RecordingStageExecutor(throwAtStage: ReviewStage.ContextReady);
-        var orchestrator = new PrOrchestrator(store, executor, LoggerFactory.CreateLogger<PrOrchestrator>());
+        var orchestrator = new PrOrchestrator(
+            store,
+            executor,
+            LoggerFactory.CreateLogger<PrOrchestrator>(),
+            providers: [ReadyProvider()]
+        );
         var seed = SeedRun(store);
 
         var act = async () => await orchestrator.RunAsync(seed, CancellationToken.None);
@@ -192,6 +379,23 @@ public sealed class PrOrchestratorTests : LoggingTestBase
         persisted.Stage.Should().Be(ReviewStage.Discovered, "no stage completed before the failure");
     }
 
+    private sealed class SequencedStatusProvider(params PrStatus[] statuses) : IPrProvider
+    {
+        private Queue<PrStatus> _statuses = new(statuses);
+
+        public string Provider => "github";
+
+        public void SetStatuses(params PrStatus[] next) => _statuses = new Queue<PrStatus>(next);
+
+        public Task<PullRequestPage> ListOpenPullRequestsAsync(
+            PrPollRequest request,
+            CancellationToken cancellationToken
+        ) => throw new NotSupportedException();
+
+        public Task<PrStatus> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
+            Task.FromResult(_statuses.Count > 1 ? _statuses.Dequeue() : _statuses.Peek());
+    }
+
     // ── fixtures ──────────────────────────────────────────────────────────────────────────────────
 
     private static ReviewRun SeedRun(ReviewStore store)
@@ -200,26 +404,44 @@ public sealed class PrOrchestratorTests : LoggingTestBase
         return store.CreateOrGetReviewRun(SampleSeed(repoId));
     }
 
-    private static RepoIdentity SampleRepo() => new()
-    {
-        Provider = "github",
-        OrgOrOwner = "achieveai",
-        RepoName = "LmDotnetTools",
-        RepoStableId = "R_node_123",
-    };
+    private static MockPrProvider ReadyProvider() =>
+        new(
+            "github",
+            [],
+            new OpaqueCursor
+            {
+                Provider = "github",
+                Scope = "scope",
+                CursorVersion = 1,
+                CursorPayload = "{}",
+            }
+        )
+        {
+            PrState = new PrStatus(PrLifecycle.Open, PrDraftState.Ready),
+        };
 
-    private static ReviewRun SampleSeed(long repoId) => new()
-    {
-        RepoId = repoId,
-        PrId = "118",
-        HeadSha = "head-sha",
-        BaseSha = "base-sha",
-        TriggerWatermark = "wm-1",
-        ReviewKind = "full",
-        VariantId = "primary",
-        Mode = "collect-only",
-        Stage = ReviewStage.Discovered,
-        WorkflowStatus = WorkflowStatus.Pending,
-        PrLifecycleState = PrLifecycleState.Open,
-    };
+    private static RepoIdentity SampleRepo() =>
+        new()
+        {
+            Provider = "github",
+            OrgOrOwner = "achieveai",
+            RepoName = "LmDotnetTools",
+            RepoStableId = "R_node_123",
+        };
+
+    private static ReviewRun SampleSeed(long repoId) =>
+        new()
+        {
+            RepoId = repoId,
+            PrId = "118",
+            HeadSha = "head-sha",
+            BaseSha = "base-sha",
+            TriggerWatermark = "wm-1",
+            ReviewKind = "full",
+            VariantId = "primary",
+            Mode = "collect-only",
+            Stage = ReviewStage.Discovered,
+            WorkflowStatus = WorkflowStatus.Pending,
+            PrLifecycleState = PrLifecycleState.Open,
+        };
 }

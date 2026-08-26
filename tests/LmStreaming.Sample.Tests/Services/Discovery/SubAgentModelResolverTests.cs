@@ -219,11 +219,7 @@ public sealed class SubAgentModelResolverTests
         // drops them — the sub-agent inherits the parent/tier model instead of burning tokens on a model
         // the deployment never sanctioned.
         var resolver = CreateResolver(
-            new Dictionary<int, string[]>
-            {
-                [1] = ["gpt-5.6-luna", "unsupported-model"],
-                [5] = ["claude-opus-5"],
-            },
+            new Dictionary<int, string[]> { [1] = ["gpt-5.6-luna", "unsupported-model"], [5] = ["claude-opus-5"] },
             Model("gpt-5.6-luna", CopilotModelTransport.Responses),
             Model("claude-opus-5", CopilotModelTransport.Anthropic),
             Model("gpt-5.4", CopilotModelTransport.Responses), // real catalog id sanctioned by NO tier
@@ -246,11 +242,7 @@ public sealed class SubAgentModelResolverTests
     public void AvailableModelIds_ReturnsTierSanctionedRoutableIdsOnly()
     {
         var resolver = CreateResolver(
-            new Dictionary<int, string[]>
-            {
-                [1] = ["gpt-5.6-luna", "unsupported-model"],
-                [5] = ["claude-opus-5"],
-            },
+            new Dictionary<int, string[]> { [1] = ["gpt-5.6-luna", "unsupported-model"], [5] = ["claude-opus-5"] },
             Model("gpt-5.6-luna", CopilotModelTransport.Responses),
             Model("claude-opus-5", CopilotModelTransport.Anthropic),
             Model("gpt-5.4", CopilotModelTransport.Responses),
@@ -266,17 +258,15 @@ public sealed class SubAgentModelResolverTests
     public void AvailableModelIds_DedupesAcrossTiersAndCanonicalizesCasing()
     {
         var resolver = CreateResolver(
-            new Dictionary<int, string[]>
-            {
-                [1] = ["gpt-5.6-luna"],
-                [3] = ["GPT-5.6-LUNA", "claude-sonnet-5"],
-            },
+            new Dictionary<int, string[]> { [1] = ["gpt-5.6-luna"], [3] = ["GPT-5.6-LUNA", "claude-sonnet-5"] },
             Model("gpt-5.6-luna", CopilotModelTransport.Responses),
             Model("claude-sonnet-5", CopilotModelTransport.Anthropic)
         );
 
         resolver.AvailableModelIds.Should().BeEquivalentTo(["gpt-5.6-luna", "claude-sonnet-5"]);
-        resolver.AvailableModelIds.Should().OnlyHaveUniqueItems("a model configured in several tiers is advertised once");
+        resolver
+            .AvailableModelIds.Should()
+            .OnlyHaveUniqueItems("a model configured in several tiers is advertised once");
     }
 
     [Fact]
@@ -308,22 +298,29 @@ public sealed class SubAgentModelResolverTests
             .Build();
         var options = SubAgentIntelligenceOptions.Load(
             configuration,
-            new CapturingLogger<SubAgentIntelligenceOptions>());
+            new CapturingLogger<SubAgentIntelligenceOptions>()
+        );
 
         var resolver = CreateResolver(
             options,
             new CapturingLogger<SubAgentModelResolver>(),
             Model(InUseModelId, CopilotModelTransport.Responses),
-            Model("claude-opus-5", CopilotModelTransport.Anthropic),
             Model("gpt-5.6-terra", CopilotModelTransport.Responses),
-            Model("gpt-5.6-sol", CopilotModelTransport.Responses));
+            Model("gpt-5.6-sol", CopilotModelTransport.Responses)
+        );
 
         options.Tiers.Should().NotBeEmpty("an all-empty ladder is what emptied the allow-list");
-        resolver.IsKnownModel(InUseModelId).Should()
+        resolver
+            .IsKnownModel(InUseModelId)
+            .Should()
             .BeTrue($"{InUseModelId} is the model in use; the allow-list must never reject it");
-        resolver.AvailableModelIds.Should()
-            .Contain(InUseModelId, "the Agent tool descriptor advertises this menu; an empty menu is what "
-                + "made the parent LLM invent ids like 'gpt-5' and 'sonnet'");
+        resolver
+            .AvailableModelIds.Should()
+            .Contain(
+                InUseModelId,
+                "the Agent tool descriptor advertises this menu; an empty menu is what "
+                    + "made the parent LLM invent ids like 'gpt-5' and 'sonnet'"
+            );
     }
 
     [Fact]
@@ -337,14 +334,15 @@ public sealed class SubAgentModelResolverTests
             .Build();
         var options = SubAgentIntelligenceOptions.Load(
             configuration,
-            new CapturingLogger<SubAgentIntelligenceOptions>());
+            new CapturingLogger<SubAgentIntelligenceOptions>()
+        );
         var resolver = CreateResolver(
             options,
             new CapturingLogger<SubAgentModelResolver>(),
             Model(InUseModelId, CopilotModelTransport.Responses),
-            Model("claude-opus-5", CopilotModelTransport.Anthropic),
             Model("gpt-5.6-terra", CopilotModelTransport.Responses),
-            Model("gpt-5.6-sol", CopilotModelTransport.Responses));
+            Model("gpt-5.6-sol", CopilotModelTransport.Responses)
+        );
 
         // Guard against vacuity: with an empty ladder this loop iterates nothing and the test would pass
         // while asserting precisely nothing — which is the defect it exists to catch.
@@ -352,7 +350,9 @@ public sealed class SubAgentModelResolverTests
 
         foreach (var tier in options.Tiers.Keys)
         {
-            resolver.Resolve(explicitModel: null, tier).Should()
+            resolver
+                .Resolve(explicitModel: null, tier)
+                .Should()
                 .NotBeNull($"tier {tier} is configured, so it must resolve to a routable model");
         }
     }

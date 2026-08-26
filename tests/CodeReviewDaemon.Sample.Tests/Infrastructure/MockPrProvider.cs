@@ -13,10 +13,7 @@ internal sealed class MockPrProvider : IPrProvider
     private readonly IReadOnlyList<PullRequestDescriptor> _pullRequests;
     private readonly OpaqueCursor _nextCursor;
 
-    public MockPrProvider(
-        string provider,
-        IReadOnlyList<PullRequestDescriptor> pullRequests,
-        OpaqueCursor nextCursor)
+    public MockPrProvider(string provider, IReadOnlyList<PullRequestDescriptor> pullRequests, OpaqueCursor nextCursor)
     {
         Provider = provider;
         _pullRequests = pullRequests;
@@ -34,21 +31,17 @@ internal sealed class MockPrProvider : IPrProvider
     /// <summary>Number of times the provider was polled.</summary>
     public int CallCount { get; private set; }
 
-    /// <summary>Lifecycle returned by <see cref="GetPrStateAsync"/>; defaults to Open, settable per test.</summary>
-    public PrLifecycle PrState { get; set; } = PrLifecycle.Open;
+    /// <summary>Status returned by <see cref="GetPrStateAsync"/>; defaults to open and ready.</summary>
+    public PrStatus PrState { get; set; } = new(PrLifecycle.Open, PrDraftState.Ready);
 
     public Task<PullRequestPage> ListOpenPullRequestsAsync(PrPollRequest request, CancellationToken cancellationToken)
     {
         CallCount++;
         LastRequestedCursor = request.Cursor;
         LastRecencyCutoff = request.RecencyCutoff;
-        return Task.FromResult(new PullRequestPage
-        {
-            PullRequests = _pullRequests,
-            NextCursor = _nextCursor,
-        });
+        return Task.FromResult(new PullRequestPage { PullRequests = _pullRequests, NextCursor = _nextCursor });
     }
 
-    public Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
+    public Task<PrStatus> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken cancellationToken) =>
         Task.FromResult(PrState);
 }
