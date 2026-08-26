@@ -43,6 +43,16 @@ public sealed partial class SandboxClient : IDisposable
     internal bool OwnsTransport { get; }
 
     /// <summary>
+    /// The clock that arms every per-call transport budget
+    /// (<see cref="SandboxClientOptions.TransportTimeout"/>). Production always runs on the system
+    /// clock (identical behavior to <see cref="CancellationTokenSource.CancelAfter(TimeSpan)"/>).
+    /// Internal test seam: a deterministic test substitutes a manual <see cref="TimeProvider"/> and
+    /// fires the expiry itself — an observed synchronous event — instead of racing a real ThreadPool
+    /// timer, which a starved CI runner can delay past any fixed guard (issues #330/#343).
+    /// </summary>
+    internal TimeProvider TransportClock { get; init; } = TimeProvider.System;
+
+    /// <summary>
     /// Creates a client that OWNS its transport: a dedicated <see cref="HttpClient"/> configured with
     /// no automatic redirects and no automatic retries, disposed when this instance is disposed.
     /// </summary>
