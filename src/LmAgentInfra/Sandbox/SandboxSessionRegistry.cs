@@ -200,6 +200,14 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// known and the round-trip buys nothing. Deliberately far shorter than any plausible gateway idle
     /// timeout, so the worst case a stale window can cost is one extra recreate on the next acquisition —
     /// the same thing that happens today when a session is evicted between two probes.
+    ///
+    /// <para>
+    /// The tradeoff this accepts: if the GATEWAY restarts inside the window, an acquisition can hand back
+    /// a session the gateway no longer knows, and the caller sees the failure at first use instead of as a
+    /// clean recreate here. That is bounded by this constant and is not a new failure mode — a gateway
+    /// that dies immediately after a probe does the same thing today. Recovery is the pool's lifecycle
+    /// refresh, not this registry: nothing here re-probes a session on a schedule, and deliberately so.
+    /// </para>
     /// </remarks>
     private static readonly TimeSpan SessionLivenessFreshness = TimeSpan.FromSeconds(30);
 
@@ -350,8 +358,12 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// <summary>
     /// When each live session was last confirmed alive by a gateway probe, as UTC ticks. Read by
     /// <see cref="IsRecentlyVerified"/> to skip the per-acquisition liveness probe inside
-    /// <see cref="SessionLivenessFreshness"/>; written only by <see cref="MarkSessionVerified"/>, and
-    /// cleared wherever <see cref="_sessionsById"/> is cleared.
+    /// <see cref="SessionLivenessFreshness"/>; written only by <see cref="MarkSessionVerified"/>. Entries
+    /// are removed per-session by <c>EvictSessionStateAsync</c> and en masse by <c>DisposeAsync</c>, which
+    /// together are every path that drops a session — a per-session-id map left growing across a
+    /// long-lived process is a leak, and a stale entry for a REUSED id would suppress a probe that ought
+    /// to run. Neither is currently reachable (ids are gateway-allocated and never reissued), so this is
+    /// upheld as a contract rather than as a fix for an observed bug.
     /// </summary>
     /// <remarks>
     /// A side map rather than a field on <see cref="SandboxSession"/> or a wrapper around the cached
@@ -1709,6 +1721,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             _sessions.Clear();
             _subAgentBindings.Clear();
             _sessionsById.Clear();
+            _sessionVerifiedAtUtcTicks.Clear();
             _sessionThreads.Clear();
             _discoverySeen.Clear();
             _sessionCredentials.Clear();

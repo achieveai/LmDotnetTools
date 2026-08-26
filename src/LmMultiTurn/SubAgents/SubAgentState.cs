@@ -229,8 +229,8 @@ internal class SubAgentState
     private const int OwnedProviderDisposeDisposed = 2;
     private int _ownedProviderDisposeState;
 
-    // Latched once this run parks on its own AskUserQuestion; cleared only by the completion that
-    // actually settles the caller with a real result. See ParkedOnQuestion.
+    // Latched once this run parks on its own AskUserQuestion; consumed by the first completion that
+    // either settles the caller or is absorbed as a text-free post-answer run. See ParkedOnQuestion.
     private int _parkedOnQuestion;
 
     /// <summary>
@@ -630,6 +630,16 @@ internal class SubAgentState
     /// the caller with the <c>"(no text response)"</c> placeholder; because a <c>TaskCompletionSource</c>
     /// settles once, the real answer that followed was discarded silently. A latch survives the
     /// resolution, so the window is closed by construction rather than by timing.
+    ///
+    /// <para>
+    /// Deliberately per-state rather than per-run-generation, unlike most bookkeeping on this type. The
+    /// latch is armed by an observed deferred <c>AskUserQuestion</c> placeholder and consumed by the very
+    /// next completion that reaches a decision — either one settling the caller, or the single text-free
+    /// run the monitor absorbs after an answer. It therefore cannot outlive the generation that set it by
+    /// more than that one completion, which is exactly the span it is meant to cover. Stamping it with a
+    /// generation would add a second thing to keep in sync (and a second way to get it wrong) to buy
+    /// precision this bound already provides.
+    /// </para>
     /// </remarks>
     public bool ParkedOnQuestion => Volatile.Read(ref _parkedOnQuestion) != 0;
 
@@ -640,9 +650,11 @@ internal class SubAgentState
     public void LatchParkedOnQuestion() => Volatile.Write(ref _parkedOnQuestion, 1);
 
     /// <summary>
-    /// Clears the parked latch. Called only from the completion that actually settles the caller (with
-    /// text or with an error), so the latch spans exactly the interval between parking and the arrival
-    /// of the real answer-derived result.
+    /// Consumes the parked latch. Called from the completion that settles the caller (with text or with
+    /// an error) AND from the single text-free post-answer completion the monitor absorbs — so the latch
+    /// spans the interval between parking and the real answer-derived result, but can never span more
+    /// than one absorbed run. That bound is what keeps a legitimately text-free final run from wedging
+    /// the caller forever; see the <c>awaitingAnswerText</c> branch in <c>SubAgentManager</c>.
     /// </summary>
     public void ClearParkedOnQuestion() => Volatile.Write(ref _parkedOnQuestion, 0);
 

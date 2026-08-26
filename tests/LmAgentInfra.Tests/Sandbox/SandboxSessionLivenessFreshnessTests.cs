@@ -131,10 +131,16 @@ public class SandboxSessionLivenessFreshnessTests
         gateway = fake;
 
         var options = new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl };
+
+        // The lifetime gets its OWN handler, deliberately not `fake`. It is a separate transport in
+        // production, and pointing it at the recording handler would fold its traffic into LivenessGets —
+        // the one list every assertion here reads. Named rather than inlined so it is clear this instance
+        // is intentionally never inspected.
+        var lifetimeGateway = new FakeGateway();
         var lifetime = new SandboxGatewayLifetime(
             options,
             NullLogger<SandboxGatewayLifetime>.Instance,
-            new HttpClient(new FakeGateway())
+            new HttpClient(lifetimeGateway)
         );
 
         return new SandboxSessionRegistry(
