@@ -209,6 +209,13 @@ public sealed record WorkspaceTranscriptLine
     ///     anchor it is relative to is the conversation root, fixed, for every line the writer emits.
     ///     </para>
     ///     <para>
+    ///     <b>The <c>{leaf}</c> in the path is the leaf in force when the line was WRITTEN, and it does
+    ///     not track later retitles.</b> Nothing rewrites a line after it is appended, so a retitle
+    ///     deliberately leaves the sidecar directory where it is and a conversation renamed twice can
+    ///     hold several — one per leaf that externalised anything. A reader resolves each reference as
+    ///     written and does not derive the directory from the file's CURRENT name.
+    ///     </para>
+    ///     <para>
     ///     <b>The anchor is not the containing file's directory, and for sub-agent lines the two differ.</b>
     ///     Sub-agent rows are appended through the same path as main-file rows and their references are
     ///     built the same way, but their FILE lives one level down in <c>{leaf}_agents/</c>. So a reference

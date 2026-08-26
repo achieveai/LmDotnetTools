@@ -180,8 +180,9 @@ public sealed class ConversationTranscriptWriter
     /// <remarks>
     ///     Shared rather than per-file because sidecars are keyed by <c>uid</c>, which is derived from the
     ///     persisted row id and so is already unique across the conversation's whole file set. A directory
-    ///     per sub-agent would multiply what a retitle has to move without making a single name safer.
+    ///     per sub-agent would multiply the directories without making a single name safer.
     /// </remarks>
+    /// <seealso cref="MoveLeafAsync"/>
     public const string BlobsDirectorySuffix = "_blobs";
 
     /// <summary>
@@ -735,16 +736,6 @@ public sealed class ConversationTranscriptWriter
     private bool _transcriptExists;
 
     private bool _agentsDirectoryTouched;
-
-    /// <summary>
-    ///     Whether a <c>_blobs</c> directory exists for this conversation that a retitle has to move
-    ///     (#254). Exactly parallel to <see cref="_agentsDirectoryTouched"/>, including the cold-start
-    ///     recovery: a restart forgets it, so <see cref="AdoptExistingLeafAsync"/> re-derives it from the
-    ///     directory listing. Without that, the first retitle after a restart moves the file and orphans
-    ///     the sidecars - worse than the <c>_agents</c> version of the same bug, because every
-    ///     externalised line in the renamed transcript then points at a path that no longer exists.
-    /// </summary>
-    private bool _blobsDirectoryTouched;
     private int _subAgentCursor;
     private int _sawSubAgentActivity;
     private int _sweepRestartRequested;
@@ -1153,7 +1144,7 @@ public sealed class ConversationTranscriptWriter
             return true;
         }
 
-        if (await MoveLeafAsync(sessionId, _leaf, leaf, _agentsDirectoryTouched, _blobsDirectoryTouched, ct)
+        if (await MoveLeafAsync(sessionId, _leaf, leaf, _agentsDirectoryTouched, ct)
             .ConfigureAwait(false))
         {
             _leaf = leaf;
@@ -1247,16 +1238,9 @@ public sealed class ConversationTranscriptWriter
                 && IsAddressableName(entry)
                 && string.Equals(entry.Name, subject + AgentsDirectorySuffix, StringComparison.Ordinal));
 
-        // Same recovery for the sidecar directory (#254), and it matters more: an orphaned _agents
-        // directory is a stray folder, whereas an orphaned _blobs directory breaks every
-        // message_json_ref in the file that just moved away from it.
-        _blobsDirectoryTouched =
-            _blobsDirectoryTouched
-            || entries.Any(entry =>
-                entry.Type == SandboxEntryType.Directory
-                && IsAddressableName(entry)
-                && string.Equals(entry.Name, subject + BlobsDirectorySuffix, StringComparison.Ordinal));
-
+        // Deliberately no equivalent for the sidecar directory (#254): a retitle never moves it, so there
+        // is no flag for a cold start to recover. Its references name the leaf they were written under
+        // and keep resolving from TranscriptDirectory wherever the file goes. See MoveLeafAsync.
         if (stale is null)
         {
             return (true, null);
@@ -1271,7 +1255,7 @@ public sealed class ConversationTranscriptWriter
 
         return (
             true,
-            await MoveLeafAsync(sessionId, stale, leaf, _agentsDirectoryTouched, _blobsDirectoryTouched, ct)
+            await MoveLeafAsync(sessionId, stale, leaf, _agentsDirectoryTouched, ct)
                 .ConfigureAwait(false)
                 ? leaf
                 : stale);
@@ -1329,22 +1313,41 @@ public sealed class ConversationTranscriptWriter
         && !string.Equals(entry.Name, "..", StringComparison.Ordinal);
 
     /// <summary>
-    ///     Renames one transcript file and, when asked, its sibling sub-agent and sidecar directories.
+    ///     Renames one transcript file and, when asked, its sibling sub-agent directory. The sidecar
+    ///     directory is deliberately NOT renamed — see the remarks.
     /// </summary>
     /// <returns>Whether the FILE moved — the only condition under which the new leaf may be adopted.</returns>
     /// <remarks>
-    ///     A failed <c>_blobs</c> move is logged and the retitle continues, because the outcome is benign
-    ///     in the direction that matters: the directory stays put under the old name, and every
-    ///     <c>message_json_ref</c> already written points at that old name, so those references still
-    ///     resolve. What is lost is future tidiness, not a past record — and refusing the whole retitle
-    ///     over it would leave the FILE under a name the conversation no longer has.
+    ///     <para>
+    ///     <b><c>{leaf}</c><see cref="BlobsDirectorySuffix"/> stays at the name it was written under,
+    ///     permanently.</b> A <c>message_json_ref</c> is stamped with the leaf in force at WRITE time
+    ///     (<see cref="ExternalizeIfOversizedAsync"/>) and is anchored at <see cref="TranscriptDirectory"/>,
+    ///     and nothing ever rewrites a line once it is appended. So renaming the sidecar directory
+    ///     invalidates every reference already in the file — a retitle that hollows out the record rather
+    ///     than merely relocating it. Leaving the directory alone is what keeps those references true, and
+    ///     it is the whole reason the reference embeds a leaf instead of a fixed directory name.
+    ///     </para>
+    ///     <para>
+    ///     What that costs is a directory under a name the conversation no longer has, once per retitle
+    ///     that externalised anything. That is litter and nothing worse: it lives inside
+    ///     <see cref="TranscriptDirectory"/>, which the containment <c>.gitignore</c> covers whole, and it
+    ///     holds payloads that are still addressed by the references that named them. The sub-agent
+    ///     directory moves precisely because it carries no such stamped-in references — the file's rows
+    ///     are found by walking the directory, not by a path written into a line.
+    ///     </para>
+    ///     <para>
+    ///     Oversized writes AFTER a retitle need no repair step: the reference they mint carries the new
+    ///     leaf, and the PUT that follows creates <c>{newLeaf}</c><see cref="BlobsDirectorySuffix"/>
+    ///     through the SDK's one-shot parent-directory self-heal
+    ///     (<c>SandboxSessionRegistry.WriteWorkspaceFileBytesAsync</c>). The two directories simply coexist,
+    ///     each addressed by the references written while its leaf was current.
+    ///     </para>
     /// </remarks>
     private async Task<bool> MoveLeafAsync(
         string sessionId,
         string from,
         string to,
         bool moveAgents,
-        bool moveBlobs,
         CancellationToken ct)
     {
         if (!await TryMoveAsync(
@@ -1366,23 +1369,6 @@ public sealed class ConversationTranscriptWriter
             ).ConfigureAwait(false))
         {
             DropSubAgentState();
-        }
-
-        if (moveBlobs
-            && !await TryMoveAsync(
-                sessionId,
-                $"{TranscriptDirectory}/{from}{BlobsDirectorySuffix}",
-                $"{TranscriptDirectory}/{to}{BlobsDirectorySuffix}",
-                ct
-            ).ConfigureAwait(false))
-        {
-            _logger.LogWarning(
-                "The transcript sidecar directory of thread {ThreadId} stayed at {From}{Suffix} while the file "
-                    + "moved to {To}; already-written references still resolve there",
-                ThreadId,
-                from,
-                BlobsDirectorySuffix,
-                to);
         }
 
         return true;
@@ -1625,6 +1611,14 @@ public sealed class ConversationTranscriptWriter
     ///     in this class, so a symlink planted at the sidecar name is REFUSED - the payload inlines - and
     ///     never followed and never repaired, which is the invariant the rest of the writer holds to.
     ///     </para>
+    ///     <para>
+    ///     <b>The reference is stamped with the leaf in force RIGHT NOW, and that stamp is permanent.</b>
+    ///     Nothing rewrites a line once it is appended, so this is the moment the sidecar's address is
+    ///     fixed for good - which is why a retitle must leave <see cref="BlobsDirectorySuffix"/>
+    ///     directories exactly where they are. See <see cref="MoveLeafAsync"/>. A conversation retitled
+    ///     twice therefore accumulates one sidecar directory per leaf that externalised anything, each
+    ///     still addressed by the lines written under it.
+    ///     </para>
     /// </remarks>
     private async Task<WorkspaceTranscriptLine> ExternalizeIfOversizedAsync(
         string sessionId,
@@ -1667,7 +1661,6 @@ public sealed class ConversationTranscriptWriter
             return line;
         }
 
-        _blobsDirectoryTouched = true;
         return line with { MessageJson = null, MessageJsonRef = reference };
     }
 

@@ -1837,6 +1837,41 @@ public sealed class ConversationTranscriptWriterTests
             messageType: nameof(ToolsCallResultMessage),
             messageJson: "\"" + new string('x', bytes - 2) + "\"");
 
+    /// <summary>
+    /// Where <paramref name="path"/> ends up after the directory renames in <paramref name="commands"/>
+    /// are replayed over it, in order. This is the only way to ask a double that MODELS a workspace the
+    /// question that actually matters about a reference — does the path a line names still hold the
+    /// payload — rather than asserting on the argv of the renames and calling that an answer.
+    /// </summary>
+    /// <remarks>
+    /// A rename relocates the subtree, so a path INSIDE the moved directory follows it; that is the case
+    /// the sidecar references live in, and a replay that only matched the directory itself would report
+    /// every reference as intact no matter what the writer did.
+    /// </remarks>
+    private static string AfterRenames(string path, IEnumerable<SandboxCommand> commands)
+    {
+        var current = path;
+        foreach (var move in commands.Where(IsMove))
+        {
+            var from = move.Arguments[^2];
+            var to = move.Arguments[^1];
+            if (string.Equals(current, from, StringComparison.Ordinal))
+            {
+                current = to;
+            }
+            else if (current.StartsWith(from + "/", StringComparison.Ordinal))
+            {
+                current = to + current[from.Length..];
+            }
+        }
+
+        return current;
+    }
+
+    /// <summary>The workspace path a line's <c>message_json_ref</c> names, resolved from the conversation root.</summary>
+    private static string Resolve(string? reference) =>
+        $"{ConversationTranscriptWriter.TranscriptDirectory}/{reference}";
+
     /// <summary>The sidecar directory that sits beside the transcript file of <paramref name="title"/>.</summary>
     private static string BlobsDirectory(string? title) =>
         $"{ConversationTranscriptWriter.TranscriptDirectory}/"
@@ -1983,18 +2018,24 @@ public sealed class ConversationTranscriptWriterTests
     }
 
     /// <summary>
-    /// The retention clause: "retitle and delete treat sidecars the same way they treat the
-    /// <c>_agents/</c> directory". Retitle used to move two paths; it moves three now. A sidecar left
-    /// behind under the old leaf is worse than an orphaned file — every externalised line in the renamed
-    /// transcript would point at a path that no longer exists, so the retitle would silently hollow out
-    /// the record rather than merely litter.
+    /// What a retitle moves, and what it pointedly does not. The file and the <c>_agents/</c> directory
+    /// follow the new slug; <c>{leaf}_blobs</c> does NOT, because its contents are addressed by
+    /// references already written into lines that nothing will rewrite. The asymmetry is the design:
+    /// the sub-agent directory is found by walking to it, so its name is free to change.
     /// </summary>
+    /// <remarks>
+    /// The stranded-payload consequence of moving it is stated as an invariant in
+    /// <see cref="ARefWrittenBeforeARetitle_StillNamesItsPayloadAfterwards"/>. This test is the
+    /// mechanical half — which paths appear in the argv — and exists to keep the two moves that SHOULD
+    /// happen from being lost along with the one that should not.
+    /// </remarks>
     [Fact]
-    public async Task Retitle_MovesTheBlobsDirectory_AlongsideTheFileAndTheAgentsDirectory()
+    public async Task Retitle_MovesTheFileAndTheAgentsDirectory_ButNeverTheBlobsDirectory()
     {
         var store = new InMemoryConversationStore();
         await SeedConversationAsync(store);
         await store.AppendMessagesAsync(ThreadId, [BigToolResult("m1", 1)]);
+        await SeedSubAgentAsync(store, "a1", "alpha", Msg("a1a", 10, threadId: "subagent-a1"));
 
         var browser = new FakeFileBrowser();
         var writer = CreateWriter(store, browser);
@@ -2002,18 +2043,68 @@ public sealed class ConversationTranscriptWriterTests
 
         await SeedConversationAsync(store, title: RetitledTo);
         await store.AppendMessagesAsync(ThreadId, [Msg("m2", 2)]);
+        browser.Commands.Clear();
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
 
-        var from = WorkspaceTranscriptLine.MainFileLeaf(Title, ShortThreadId);
-        var to = WorkspaceTranscriptLine.MainFileLeaf(RetitledTo, ShortThreadId);
-        var moves = browser.Commands.Where(c => IsMove(c)).ToList();
+        var moves = browser.Commands.Where(IsMove)
+            .Select(c => (From: c.Arguments[^2], To: c.Arguments[^1]))
+            .ToList();
 
-        var movedBlobs = moves.Any(c =>
-            c.Arguments[^2] == $"{ConversationTranscriptWriter.TranscriptDirectory}/{from}{ConversationTranscriptWriter.BlobsDirectorySuffix}"
-            && c.Arguments[^1] == $"{ConversationTranscriptWriter.TranscriptDirectory}/{to}{ConversationTranscriptWriter.BlobsDirectorySuffix}");
+        _ = moves.Should().Equal(
+            [
+                (MainPath(Title), MainPath(RetitledTo)),
+                (AgentsDirectory(Title), AgentsDirectory(RetitledTo)),
+            ],
+            "the file and the sub-agent directory follow the slug, and nothing else does");
 
-        _ = movedBlobs.Should().BeTrue(
-            "a renamed transcript whose sidecars stayed behind references paths that no longer exist");
+        // Said again against the suffix itself, so a rename of the helpers cannot hide a third move.
+        _ = browser.Commands.SelectMany(c => c.Arguments).Should().NotContain(
+            argument => argument.Contains(ConversationTranscriptWriter.BlobsDirectorySuffix, StringComparison.Ordinal),
+            "no shell call may touch the sidecar directory during a retitle");
+    }
+
+    /// <summary>
+    /// The invariant every other sidecar test is downstream of: a <c>message_json_ref</c>, once written,
+    /// keeps naming the payload. References are stamped with the leaf in force at WRITE time and nothing
+    /// rewrites a line after it is appended, so any later relocation of <c>{leaf}_blobs</c> silently
+    /// invalidates every reference already in the file — the retitle hollows out the record instead of
+    /// merely littering.
+    /// </summary>
+    /// <remarks>
+    /// Stated as "the path the line names still holds the payload" rather than as an argv assertion,
+    /// because that is the property a reader depends on and it is the one an argv assertion cannot see.
+    /// </remarks>
+    [Fact]
+    public async Task ARefWrittenBeforeARetitle_StillNamesItsPayloadAfterwards()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        var big = BigToolResult("m1", 1);
+        await store.AppendMessagesAsync(ThreadId, [big]);
+
+        var browser = new FakeFileBrowser();
+        var writer = CreateWriter(store, browser);
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        // What the line committed to, and where the bytes went, BEFORE any retitle.
+        var reference = Field(Written(browser, 0), 0, "message_json_ref");
+        _ = reference.Should().NotBeNull("the fixture is only meaningful if this row was externalised");
+        var payloadPath = Resolve(reference);
+        _ = browser.Writes.Select(w => w.Path).Should().Contain(payloadPath);
+
+        await SeedConversationAsync(store, title: RetitledTo);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m2", 2)]);
+        browser.Commands.Clear();
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        // The retitle really happened - otherwise this asserts nothing.
+        _ = browser.Commands.Where(IsMove).Select(c => (c.Arguments[^2], c.Arguments[^1]))
+            .Should().Contain((MainPath(Title), MainPath(RetitledTo)));
+
+        _ = AfterRenames(payloadPath, browser.Commands).Should().Be(
+            payloadPath,
+            "the reference was stamped with the leaf in force when it was written and nothing rewrites "
+                + "a line afterwards, so moving the sidecar out from under it strands the payload");
     }
 
     /// <summary>
@@ -2055,22 +2146,21 @@ public sealed class ConversationTranscriptWriterTests
     }
 
     /// <summary>
-    /// The same retitle, reached the way it actually happens in production: the host restarted, so the
-    /// writer that renames is NOT the writer that wrote the sidecars. Its <c>_blobs</c> flag starts false
-    /// and its only route to "there is a sidecar directory to move" is the directory listing it adopts
-    /// the stale leaf from.
+    /// The same invariant reached the way a retitle actually happens in production: the host restarted,
+    /// so the writer that renames is NOT the writer that wrote the sidecars and adopts the stale leaf out
+    /// of a directory listing. A cold writer must leave the sidecar directory alone for the same reason
+    /// a warm one must — the references naming it are in a file nothing rewrites — and it has less to go
+    /// on, since it never saw those references being written.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// <see cref="Retitle_MovesTheBlobsDirectory_AlongsideTheFileAndTheAgentsDirectory"/> cannot see this:
-    /// it drives both flushes through ONE writer, so the flag is already true in-process and the
-    /// re-derivation never decides anything. Deleting that re-derivation outright leaves that test green.
-    /// A cold start is exactly when it matters — an orphaned <c>_agents</c> directory is litter, whereas
-    /// sidecars left under a name the transcript no longer has are payloads nothing addresses.
-    /// </para>
+    /// This is the case a suite driving both flushes through ONE writer cannot reach at all, which is why
+    /// it is spelled out separately from
+    /// <see cref="ARefWrittenBeforeARetitle_StillNamesItsPayloadAfterwards"/>. It also pins the second
+    /// half of the design: the post-retitle write mints a reference under the NEW leaf, so the two
+    /// sidecar directories coexist, each addressed by the lines written while its leaf was current.
     /// </remarks>
     [Fact]
-    public async Task AColdWriter_MovesTheBlobsDirectoryOnRetitle_FromTheDirectoryListingAlone()
+    public async Task AColdWriter_AdoptingAStaleLeaf_LeavesTheBlobsDirectoryWhereItWasWritten()
     {
         var store = new InMemoryConversationStore();
         await SeedConversationAsync(store);
@@ -2083,9 +2173,10 @@ public sealed class ConversationTranscriptWriterTests
 
         var stale = WorkspaceTranscriptLine.MainFileLeaf(Title, ShortThreadId);
         var uid = WorkspaceTranscriptLine.DeriveUid(big.Id);
+        var oldReference = Field(Written(browser, 0), 0, "message_json_ref");
         _ = browser.Writes.Select(w => w.Path).Should().Contain(
-            $"{BlobsDirectory(Title)}/{uid}.json",
-            "the fixture is only a cold start if there is really a sidecar directory to rediscover");
+            Resolve(oldReference),
+            "the fixture is only a cold start if a sidecar was really left behind");
 
         // What that process left behind, as the listing a fresh writer sees it through.
         browser.Listings[ConversationTranscriptWriter.TranscriptDirectory] =
@@ -2111,21 +2202,23 @@ public sealed class ConversationTranscriptWriterTests
 
         _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
 
-        var moves = browser.Commands.Where(IsMove)
-            .Select(c => (From: c.Arguments[^2], To: c.Arguments[^1]))
-            .ToList();
+        // The adoption this path exists for really ran...
+        _ = browser.Commands.Where(IsMove).Select(c => (c.Arguments[^2], c.Arguments[^1]))
+            .Should().Contain((MainPath(Title), MainPath(RetitledTo)));
 
-        _ = moves.Should().Contain(
-            (MainPath(Title), MainPath(RetitledTo)),
-            "the adoption this whole path exists for");
-        _ = moves.Should().Contain(
-            (BlobsDirectory(Title), BlobsDirectory(RetitledTo)),
-            "a writer that forgot the sidecar directory across a restart strands it under the old name");
+        // ...and the reference the previous process wrote still names its payload.
+        _ = AfterRenames(Resolve(oldReference), browser.Commands).Should().Be(
+            Resolve(oldReference),
+            "a cold writer knows nothing about the references already in the file, so the only safe "
+                + "thing it can do with the sidecar directory is nothing");
 
-        // And the sidecars this writer goes on to write address the directory it just moved.
-        _ = Field(Written(browser, 0), 0, "message_json_ref").Should()
-            .Be($"{WorkspaceTranscriptLine.MainFileLeaf(RetitledTo, ShortThreadId)}"
-                + $"{ConversationTranscriptWriter.BlobsDirectorySuffix}/{uid}.json");
+        // The other half: what this writer externalises now lands under the CURRENT leaf, so the two
+        // directories coexist rather than one being rewritten into the other.
+        var newReference = Field(Written(browser, 0), 0, "message_json_ref");
+        _ = newReference.Should().Be(
+            $"{WorkspaceTranscriptLine.MainFileLeaf(RetitledTo, ShortThreadId)}"
+            + $"{ConversationTranscriptWriter.BlobsDirectorySuffix}/{uid}.json");
+        _ = browser.Writes.Select(w => w.Path).Should().Contain(Resolve(newReference));
     }
 
     /// <summary>
