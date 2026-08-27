@@ -1655,7 +1655,8 @@ subAgentFactory,
                     // so leaving the store null keeps it from being attached to a thrown-away options value.)
                     var triggerOptions = SampleTriggerRegistrations.Build(
                         sandboxEnabled: sandboxSession is not null,
-                        subAgentManagerAccessor: () => agent?.SubAgentManager) with
+                        subAgentManagerAccessor: () => agent?.SubAgentManager,
+                        loggerFactory: loggerFactory) with
                     {
                         NotifyWaitStore = isTestMode ? notifyWaitStore : null,
                         ThreadId = isTestMode ? threadId : null,

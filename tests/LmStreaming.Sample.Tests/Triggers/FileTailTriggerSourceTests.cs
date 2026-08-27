@@ -257,6 +257,40 @@ public class FileTailTriggerSourceTests
         evt.Payload.Should().Contain("ERROR");
     }
 
+    /// <summary>
+    /// Envelope-escaping is not privacy redaction (#161). A matched log line is forwarded into the
+    /// model's context and persisted in conversation history, so credentials and personal data in
+    /// it must not survive the trip — while the surrounding non-secret text, which is the whole
+    /// reason the wait was armed, must.
+    /// </summary>
+    [Fact]
+    public async Task Fire_Payload_RedactsSecretsAndPii_ButKeepsTheSurroundingContext()
+    {
+        var root = CreateTempDir();
+        var file = Path.Combine(root, "app.log");
+        await File.WriteAllTextAsync(file, "");
+        var src = new FileTailTriggerSource([root]);
+        var fired = new TaskCompletionSource<TriggerFireEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sink = new CompletingSink(fired);
+
+        await using var handle = await src.ArmAsync(ArmReq(path: file), sink, CancellationToken.None);
+        await File.AppendAllTextAsync(
+            file,
+            "ERROR checkout failed for alice@example.com "
+                + "Authorization: Bearer sk-live-9f8e7d6c5b4a3210zyxw "
+                + "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789\n");
+
+        await Wait.UntilAsync(
+            () => fired.Task.IsCompleted,
+            "the file_tail watcher delivered the secret-bearing line");
+        var evt = await fired.Task;
+
+        evt.Payload.Should().NotContain("alice@example.com", "an email address is PII");
+        evt.Payload.Should().NotContain("sk-live-9f8e7d6c5b4a3210zyxw", "a bearer token is a credential");
+        evt.Payload.Should().NotContain("ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789", "a PAT is a credential");
+        evt.Payload.Should().Contain("ERROR checkout failed", "the non-secret context is the point of the wait");
+    }
+
     [Fact]
     public async Task Fire_Payload_IsTruncated_ForOversizedLine()
     {
