@@ -1123,11 +1123,13 @@ public class TaskManagerTests
     ///         <see cref="ArgumentException" /> from a Count that no longer matches the CopyTo.
     ///     </para>
     ///     <para>
-    ///         Readers that hold <c>_sync</c> for their whole body — GetTask,
-    ///         JsonSerializeTasks — are deliberately not driven here. They are fully
-    ///         serialised against the writer, so they can neither fail nor discriminate, and
-    ///         serialising the whole tree on every iteration is the most expensive thing this
-    ///         test could do for the least information.
+    ///         GetTask is not driven here: its own <c>lock (_sync)</c> is redundant, because
+    ///         the traversal it delegates to — <c>FindTaskByStringId</c> — takes <c>_sync</c>
+    ///         itself, so removing GetTask's lock changes nothing to observe. The two JSON
+    ///         serializers are not driven here either. Their locks are real and their removal
+    ///         is observable, but not as an exception: see
+    ///         <see cref="JsonSerializers_ConcurrentWithNestedAdds_ShouldEmitAConsistentSnapshot" />,
+    ///         which pins them on a snapshot invariant instead.
     ///     </para>
     /// </summary>
     [Fact]
@@ -1222,68 +1224,69 @@ public class TaskManagerTests
     [InlineData(true)]
     public async Task JsonSerializers_ConcurrentWithNestedAdds_ShouldEmitAConsistentSnapshot(bool viaJsonElement)
     {
-        // Arrange - the churn goes under root 1, which ManagerState serializes before every
-        // other root and before nextId, so the whole document is written across the window.
-        const int RootCount = 400;
-        const int NestedSeedCount = 200;
-        const int ReaderIterations = 100;
-        const int WriterCap = 20000;
-
-        for (var i = 0; i < RootCount; i++)
-        {
-            _ = _taskManager.AddTask($"Seed {i}");
-        }
-
-        for (var i = 0; i < NestedSeedCount; i++)
-        {
-            _ = _taskManager.AddTask($"Nested {i}", "1");
-        }
+        // Arrange - many short rounds against a fresh manager, rather than one long run. The
+        // writer is orders of magnitude faster than a reader that serializes the whole tree,
+        // so a long run just inflates the document until every read is expensive and none of
+        // them is contended: that shape takes minutes and still reports nothing. Short rounds
+        // keep every read racing a live writer and keep the document small. The churn goes
+        // under root 1, which ManagerState serializes before every other root and before
+        // nextId, so the window spans the whole document.
+        const int Rounds = 30;
+        const int RootCount = 100;
+        const int NestedSeedCount = 100;
+        const int ReadsPerRound = 6;
+        const int WriterCapPerRound = 50000;
 
         var violations = new ConcurrentBag<string>();
-        using var startingGun = new ManualResetEventSlim(false);
-        var stop = 0;
 
         // Act
-        var writer = Task.Run(() =>
+        for (var round = 0; round < Rounds && violations.IsEmpty; round++)
         {
-            startingGun.Wait();
-            var i = 0;
-            while (Volatile.Read(ref stop) == 0 && i < WriterCap)
+            var manager = new TaskManager();
+            for (var i = 0; i < RootCount; i++)
             {
-                _ = _taskManager.AddTask($"Churn {i++}", "1");
+                _ = manager.AddTask($"Seed {i}");
             }
-        });
 
-        var readers = Enumerable
-            .Range(0, 4)
-            .Select(readerIndex =>
-                Task.Run(() =>
+            for (var i = 0; i < NestedSeedCount; i++)
+            {
+                _ = manager.AddTask($"Nested {i}", "1");
+            }
+
+            using var startingGun = new ManualResetEventSlim(false);
+            var stop = 0;
+
+            var writer = Task.Run(() =>
+            {
+                startingGun.Wait();
+                var i = 0;
+                while (Volatile.Read(ref stop) == 0 && i < WriterCapPerRound)
                 {
-                    startingGun.Wait();
-                    for (var i = 0; i < ReaderIterations; i++)
-                    {
-                        try
-                        {
-                            var json = viaJsonElement
-                                ? _taskManager.JsonSerializeTasksToJsonElements().GetRawText()
-                                : _taskManager.JsonSerializeTasks();
+                    _ = manager.AddTask($"Churn {i++}", "1");
+                }
+            });
 
-                            using var document = JsonDocument.Parse(json);
-                            CollectSnapshotViolations(document.RootElement, violations);
-                        }
-                        catch (Exception ex)
-                        {
-                            violations.Add($"{ex.GetType().Name}: {ex.Message}");
-                        }
-                    }
-                })
-            )
-            .ToArray();
+            startingGun.Set();
+            for (var i = 0; i < ReadsPerRound; i++)
+            {
+                try
+                {
+                    var json = viaJsonElement
+                        ? manager.JsonSerializeTasksToJsonElements().GetRawText()
+                        : manager.JsonSerializeTasks();
 
-        startingGun.Set();
-        await Task.WhenAll(readers);
-        Volatile.Write(ref stop, 1);
-        await writer;
+                    using var document = JsonDocument.Parse(json);
+                    CollectSnapshotViolations(document.RootElement, violations);
+                }
+                catch (Exception ex)
+                {
+                    violations.Add($"{ex.GetType().Name}: {ex.Message}");
+                }
+            }
+
+            Volatile.Write(ref stop, 1);
+            await writer;
+        }
 
         // Assert
         violations.Should().BeEmpty();
