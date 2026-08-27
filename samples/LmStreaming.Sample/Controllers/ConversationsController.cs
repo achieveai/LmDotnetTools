@@ -361,7 +361,13 @@ public class ConversationsController(
                 // Read straight off the row rather than out of Properties: visibility is a
                 // first-class stamped field (spec 8.3), and it is what the share control reflects.
                 Visibility = ConversationSummary.ToWireVisibility(t.Visibility),
-            });
+            })
+            // Materialized inside the action, as ListShares does at the end of its own projection.
+            // ToWireVisibility throws on a visibility it has no name for, and a lazy enumerable
+            // would defer that throw to response serialization - truncating a 200 mid-body rather
+            // than failing as a clean 500. Nothing produces that today; this decides how it fails
+            // if a fourth member is ever added without a wire name.
+            .ToArray();
         return Ok(result);
     }
 
