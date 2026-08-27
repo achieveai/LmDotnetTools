@@ -4,8 +4,38 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace LmStreaming.Sample.Controllers;
 
+/// <summary>
+/// The chat-mode catalog: a mode is a persona, a system prompt and a tool allowlist, so every route
+/// below decides what an agent is subsequently allowed to say and do.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>Two guards cover this controller, and they answer different questions.</b>
+/// <c>IdentityMiddleware</c> already gates <c>/api/chat-modes</c> — it guards every <c>/api</c> path
+/// that is not one of its three named exemptions, and this is not one of them — so under
+/// <c>Identity:Enforce</c> an anonymous caller is refused 401 before any action here runs. That guard
+/// asks "is there a principal at all". <see cref="InboundS2SAuthAttribute"/> asks a different
+/// question: does a caller <i>claiming to be a service</i> hold the inbound shared secret.
+/// </para>
+/// <para>
+/// The second guard was missing here while three sibling controllers carried it
+/// (<see cref="ConversationsController"/>, <see cref="WorkspacesController"/>,
+/// <see cref="FileBrowserController"/>), and the gap was observable: with
+/// <c>Identity:Enforce</c> off — the default — and <c>Auth:S2SInboundSecret</c> set, a caller
+/// presenting <c>X-Sbx-App-Id</c> with a wrong or absent <c>X-S2S-Auth</c> was refused 401 on all
+/// three of those and reached <c>Create</c>/<c>Update</c>/<c>Delete</c>/<c>Copy</c> here. That is the
+/// same shape as the <c>api/workspaces</c> hole closed in <c>7c9b4dc3</c>, on a surface where the
+/// forged write edits the instructions an agent then executes.
+/// </para>
+/// <para>
+/// Ownership and per-tenant scoping of modes are deliberately NOT here: <see cref="ChatMode"/> has no
+/// owner field and <see cref="IChatModeStore"/> takes no caller, by design. That is issue #304's work,
+/// and this guard neither anticipates nor blocks it.
+/// </para>
+/// </remarks>
 [ApiController]
 [Route("api/chat-modes")]
+[InboundS2SAuth]
 public class ChatModesController(IChatModeStore modeStore) : ControllerBase
 {
     [HttpGet]

@@ -65,7 +65,7 @@ namespace LmStreaming.Sample.Controllers;
 /// </para>
 /// </summary>
 [AttributeUsage(AttributeTargets.Class)]
-public sealed class InboundS2SAuthAttribute : Attribute, IAsyncActionFilter
+public sealed class InboundS2SAuthAttribute : Attribute, IAsyncActionFilter, IOrderedFilter
 {
     /// <summary>
     /// Configuration key the inbound shared secret is read from. Operators set the flat env var
@@ -82,6 +82,30 @@ public sealed class InboundS2SAuthAttribute : Attribute, IAsyncActionFilter
     // guard is disabled doesn't vary between requests, so this avoids log spam under load while
     // still surfacing the keyless dev path at least once.
     private static int s_disabledWarningLogged;
+
+    /// <summary>
+    /// Runs ahead of MVC's model-state validation filter so an unauthenticated S2S caller is refused
+    /// before model binding, validation or JSON deserialization can answer on the route's behalf.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="ApiControllerAttribute"/> installs that filter at <c>Order = -2000</c>, and an
+    /// attribute filter that does not implement <see cref="IOrderedFilter"/> sits at <c>Order = 0</c>.
+    /// This one did, so on every body-taking route it guards — <c>POST /api/conversations</c>,
+    /// <c>POST</c>/<c>PUT /api/workspaces</c>, the file-browser writes, and now the chat-mode
+    /// mutations — a caller presenting a forged S2S credential and a malformed body was answered
+    /// <c>400</c> by validation and never reached the guard. A <c>400</c> is not a refusal: it
+    /// confirms the route exists, discloses its request schema, and reaches the JSON deserializer,
+    /// all for a caller this filter exists to turn away.
+    /// </para>
+    /// <para>
+    /// <c>-2100</c> is not a fresh number: it is exactly what
+    /// <see cref="OperatorSecretAuthAttribute.Order"/> uses, for exactly this reason. Ordering ahead
+    /// of model binding costs this guard nothing — it reads request headers and configuration only,
+    /// never <see cref="ActionExecutingContext.ActionArguments"/>.
+    /// </para>
+    /// </remarks>
+    public int Order => -2100;
 
     /// <inheritdoc />
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
