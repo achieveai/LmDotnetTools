@@ -47,7 +47,8 @@ the shipped behaviour, the criterion has been amended and the amendment is calle
 - **User Story**: As a user, I need a way to represent tasks with hierarchical relationships and metadata so that I can organize my work effectively.
 
 #### Acceptance Criteria:
-1. **Task Structure**: WHEN creating the task model THEN it SHALL include properties for ID (int), Title (string), Status (enum), Notes (List<string>), and SubTasks (List<Task>)
+1. **Task Structure**: WHEN creating the task model THEN it SHALL include properties for ID (string — the dotted path its parent chain produces), Title (string), Status (enum), Notes (List<string>), and SubTasks (List<TaskItem>)
+   - *Amended.* This criterion previously said `ID (int)`, which contradicted criterion 3: an int cannot name `1.2.3`. `TaskItem.Id` is the dotted path string, and every tool takes and returns that path. An int sibling ordinal is still kept internally, but it is not the addressable ID.
 2. **Status Enum**: WHEN defining task status THEN it SHALL support "NotStarted", "InProgress", "Completed", and "Removed" states
 3. **Hierarchy Depth**: WHEN adding subtasks THEN the system SHALL impose no depth limit — a task may be nested arbitrarily deep, and every task SHALL be addressable by the dotted path its parent chain produces (`1`, `1.2`, `1.2.3`, ...)
    - *Amended.* This criterion previously required a maximum depth of 2 levels. The shipped implementation nests without limit, the tool descriptions advertise depth-3 examples, and the cap was never enforced. The cap is withdrawn rather than retrofitted.
@@ -59,6 +60,7 @@ the shipped behaviour, the criterion has been amended and the amendment is calle
 
 #### Acceptance Criteria:
 1. **Function Exposure**: WHEN registering functions THEN "add-task" SHALL be available to LLM with parameters for `title` and optional `parentId`
+   - *Amended.* The parameter is `parentId`, not `parent_id`. The tool schema is generated from the C# parameter names verbatim, so the snake_case spellings this document used throughout named parameters that do not exist.
 2. **Main Task Creation**: WHEN calling add-task without `parentId` THEN it SHALL create a new main task with auto-incremented ID and "NotStarted" status
 3. **Subtask Creation**: WHEN calling add-task with a valid `parentId` THEN it SHALL create a subtask under the specified parent, at any depth
 4. **Error Handling**: WHEN calling add-task with an invalid or blank `parentId` THEN it SHALL return an error message in markdown format. A blank `parentId` SHALL NOT be treated as an omitted one
@@ -69,6 +71,7 @@ the shipped behaviour, the criterion has been amended and the amendment is calle
 
 #### Acceptance Criteria:
 1. **Function Exposure**: WHEN registering functions THEN "update-task" SHALL be available with parameters for `taskId` and `status`
+   - *Amended.* The parameter is `taskId`, not `task_id` — see the note on Requirement 2.1.
 2. **Status Validation**: WHEN updating status THEN it SHALL accept "not started", "in progress", "completed", or "removed", along with the hyphenated and underscored spellings a model is apt to emit ("not-started", "in-progress", "to-do", ...)
 3. **Task Lookup**: WHEN updating task status THEN it SHALL find tasks by dotted path across all hierarchy levels
 4. **Error Handling**: WHEN `taskId` is invalid THEN it SHALL return error message in markdown format
@@ -79,7 +82,7 @@ the shipped behaviour, the criterion has been amended and the amendment is calle
 
 #### Acceptance Criteria:
 1. **Function Exposure**: WHEN registering functions THEN "add-note" SHALL be available with parameters for `taskId` and `noteText`, alongside "edit-note", "delete-note" and "list-notes"
-   - *Amended.* The tool is named `add-note`, not `add-task-notes`.
+   - *Amended.* The tool is named `add-note`, not `add-task-notes`, and its parameters are `taskId` and `noteText`, not `task_id` and `note` — see the note on Requirement 2.1.
 2. **Note Appending**: WHEN adding notes THEN it SHALL append to the existing notes list for the task
 3. **Task Lookup**: WHEN adding notes THEN it SHALL find tasks by dotted path across all hierarchy levels, not only the first two
 4. **Error Handling**: WHEN `taskId` is invalid THEN it SHALL return error message in markdown format
@@ -90,6 +93,7 @@ the shipped behaviour, the criterion has been amended and the amendment is calle
 
 #### Acceptance Criteria:
 1. **Function Exposure**: WHEN registering functions THEN "list-tasks" SHALL be available with optional `status` and `mainOnly` parameters
+   - *Amended.* This criterion previously said "with no parameters". The shipped tool takes two optional filters.
 2. **Hierarchical Display**: WHEN listing tasks THEN it SHALL show main tasks with indented subtasks, two spaces per level
 3. **Status Indicators**: WHEN displaying tasks THEN it SHALL use `[ ]` for not started, `[-]` for in progress, `[x]` for completed and `[~]` for removed, with a trailing ` (removed)` on a removed task
    - *Amended.* The removed marker is stated explicitly. It was previously `[d]`; `[~]` was chosen because it reads as "struck through" rather than as an abbreviation, and nothing else in the format uses `~`.
@@ -142,4 +146,5 @@ Note that the counts describe *active* work: a `[~]` removed task is excluded fr
 2. **Function Registration**: WHEN getting functions THEN `TypeFunctionProvider` SHALL return FunctionDescriptor objects for all eleven operations: add-task, bulk-initialize, update-task, delete-task, get-task, add-note, edit-note, delete-note, list-notes, list-tasks, search-tasks
 3. **Parameter Mapping**: WHEN functions are called THEN arguments SHALL bind even when the model's JSON types differ from the declared ones — a quoted number onto a numeric parameter, an unquoted number onto a string parameter — and a parameter the model omitted SHALL take its declared C# default rather than the type's zero value
 4. **Error Handling**: WHEN operations fail THEN it SHALL return descriptive error messages instead of throwing exceptions, and SHOULD mark the tool result as an error so the model and the host can tell a failure from a successful answer whose text happens to start with "Error"
+   - *Amended — deferred; see [#521](https://github.com/achieveai/LmDotnetTools/issues/521).* The first half is shipped: every failure returns a message rather than throwing. The second half is not. `FunctionResult` and the `TypeFunctionProvider` support for it are in place, but no `TaskManager` tool routes its failures through them yet, so every one of the eleven tools still reaches the model with `IsError = false`. #521 tracks the routing.
 5. **Statefulness**: WHEN a provider is built around a live instance THEN its descriptors SHALL be marked `IsStateful`, so hosts that only accept stateless tools exclude it rather than sharing one conversation's list with another

@@ -1092,27 +1092,48 @@ public class TaskManagerTests
     }
 
     /// <summary>
-    ///     Smoke test only. It exercises every read path against a live writer, but it does
-    ///     NOT discriminate synchronised from unsynchronised: with an append-only writer the
-    ///     unsynchronised read is silent on .NET 9 rather than throwing, because both LINQ's
-    ///     FirstOrDefault over a List and System.Text.Json's list converter iterate by index
-    ///     and never consult the collection's version. Removing the locks leaves this test
-    ///     green. The lock coverage it accompanies is argued structurally, not by this test.
+    ///     Pins the lock coverage of the four read paths that walk <em>nested</em> SubTasks
+    ///     lists after taking <c>_sync</c>: ListTasks, the GetMarkdown that delegates to it,
+    ///     SearchTasks, and the GetTaskCounts branch of SearchTasks.
+    ///     <para>
+    ///         It discriminates by construction, and each of the three requirements matters:
+    ///         the writer nests (<c>AddTask(title, "1")</c>) so it appends to a nested list
+    ///         rather than to the root list; that same nested list is pre-seeded so a reader
+    ///         spends real time inside it; and the readers are exactly the methods that
+    ///         traverse it. Widen or drop any of those three <c>lock (_sync)</c> blocks and
+    ///         this test fails within a handful of iterations — <c>GetAllTasksFlat</c>'s bare
+    ///         <c>foreach</c> throws <see cref="InvalidOperationException" /> off the list's
+    ///         version stamp, and a <c>[.. list]</c> copy of a concurrently grown list throws
+    ///         <see cref="ArgumentException" /> from a Count that no longer matches the CopyTo.
+    ///     </para>
+    ///     <para>
+    ///         Readers that hold <c>_sync</c> for their whole body — GetTask,
+    ///         JsonSerializeTasks — are deliberately not driven here. They are fully
+    ///         serialised against the writer, so they can neither fail nor discriminate, and
+    ///         serialising the whole tree on every iteration is the most expensive thing this
+    ///         test could do for the least information.
+    ///     </para>
     /// </summary>
     [Fact]
-    public async Task ReadOperations_ConcurrentWithAdds_ShouldNotThrow()
+    public async Task NestedReadOperations_ConcurrentWithNestedAdds_ShouldNotThrow()
     {
-        // Arrange - readers scan for the last seeded id so each lookup walks the whole list,
-        // while the writer appends to that same list for as long as the readers are running.
-        // The writer is bounded by the readers rather than by its own iteration count: a
-        // fixed-count writer finishes in milliseconds and the readers then run alone.
-        const int SeedCount = 200;
-        const int ReaderIterations = 400;
+        // Arrange - a shallow spread of roots plus one deep list under task 1. The writer
+        // appends to that deep list; the readers walk it. The writer is bounded by the
+        // readers rather than by its own count: a fixed-count writer finishes in
+        // milliseconds and the readers then run alone against a frozen tree.
+        const int RootCount = 20;
+        const int NestedSeedCount = 200;
+        const int ReaderIterations = 100;
         const int WriterCap = 20000;
 
-        for (var i = 0; i < SeedCount; i++)
+        for (var i = 0; i < RootCount; i++)
         {
             _ = _taskManager.AddTask($"Seed {i}");
+        }
+
+        for (var i = 0; i < NestedSeedCount; i++)
+        {
+            _ = _taskManager.AddTask($"Nested {i}", "1");
         }
 
         var failures = new ConcurrentBag<Exception>();
@@ -1126,7 +1147,7 @@ public class TaskManagerTests
             var i = 0;
             while (Volatile.Read(ref stop) == 0 && i < WriterCap)
             {
-                _ = _taskManager.AddTask($"Churn {i++}");
+                _ = _taskManager.AddTask($"Churn {i++}", "1");
             }
         });
 
@@ -1140,8 +1161,9 @@ public class TaskManagerTests
                     {
                         try
                         {
-                            _ = _taskManager.GetTask(SeedCount.ToString());
-                            _ = _taskManager.JsonSerializeTasks();
+                            _ = _taskManager.ListTasks();
+                            _ = _taskManager.SearchTasks("Nested");
+                            _ = _taskManager.SearchTasks(countType: "total");
                         }
                         catch (Exception ex)
                         {

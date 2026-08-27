@@ -710,12 +710,6 @@ Examples:
         [Description("Show only main tasks (exclude subtasks)")] bool mainOnly = false
     )
     {
-        List<PrivateTaskItem> rootTasksCopy;
-        lock (_sync)
-        {
-            rootTasksCopy = [.. _state.RootTasks];
-        }
-
         TaskStatus? filterStatus = null;
         if (!string.IsNullOrEmpty(status))
         {
@@ -727,44 +721,50 @@ Examples:
             filterStatus = parsedStatus;
         }
 
-        var sb = new StringBuilder();
-
-        // Count tasks by status for summary
-        var allTasks = GetAllTasksFlat(rootTasksCopy);
-        var notStartedCount = allTasks.Count(t => t.Status == TaskStatus.NotStarted);
-        var inProgressCount = allTasks.Count(t => t.Status == TaskStatus.InProgress);
-        var completedCount = allTasks.Count(t => t.Status == TaskStatus.Completed);
-        var totalActive = notStartedCount + inProgressCount;
-
-        // Beautiful header with task summary
-        AppendLine(sb, "# 📋 Task List");
-        if (filterStatus == null && !mainOnly)
+        // Snapshotting the root list is not enough: everything below the roots is walked here,
+        // and AddTask appends to a nested SubTasks list holding only _sync. The lock therefore
+        // has to span the whole traversal, not just the copy.
+        lock (_sync)
         {
+            var sb = new StringBuilder();
+
+            // Count tasks by status for summary
+            var allTasks = GetAllTasksFlat(_state.RootTasks);
+            var notStartedCount = allTasks.Count(t => t.Status == TaskStatus.NotStarted);
+            var inProgressCount = allTasks.Count(t => t.Status == TaskStatus.InProgress);
+            var completedCount = allTasks.Count(t => t.Status == TaskStatus.Completed);
+            var totalActive = notStartedCount + inProgressCount;
+
+            // Beautiful header with task summary
+            AppendLine(sb, "# 📋 Task List");
+            if (filterStatus == null && !mainOnly)
+            {
+                AppendLine(sb);
+                AppendLine(
+                    sb,
+                    $"**Status**: {inProgressCount} in progress | {notStartedCount} pending | {completedCount} completed"
+                );
+                AppendLine(sb, $"**Total**: {totalActive} active tasks");
+            }
+
             AppendLine(sb);
-            AppendLine(
-                sb,
-                $"**Status**: {inProgressCount} in progress | {notStartedCount} pending | {completedCount} completed"
-            );
-            AppendLine(sb, $"**Total**: {totalActive} active tasks");
+
+            // Render the body separately so "nothing to show" is decided by what was actually
+            // written, not by sniffing the tail of the assembled string.
+            var body = new StringBuilder();
+            foreach (var task in _state.RootTasks)
+            {
+                AppendTaskMarkdown(body, task, 0, filterStatus, mainOnly);
+            }
+
+            // An empty list still gets the header — a bare "No tasks found." gives the model no
+            // clue which tool answered it.
+            _ = body.Length == 0
+                ? sb.Append(_state.RootTasks.Count == 0 ? "No tasks found." : "No tasks match the specified criteria.")
+                : sb.Append(body);
+
+            return sb.ToString().TrimEnd();
         }
-
-        AppendLine(sb);
-
-        // Render the body separately so "nothing to show" is decided by what was actually
-        // written, not by sniffing the tail of the assembled string.
-        var body = new StringBuilder();
-        foreach (var task in rootTasksCopy)
-        {
-            AppendTaskMarkdown(body, task, 0, filterStatus, mainOnly);
-        }
-
-        // An empty list still gets the header — a bare "No tasks found." gives the model no
-        // clue which tool answered it.
-        _ = body.Length == 0
-            ? sb.Append(rootTasksCopy.Count == 0 ? "No tasks found." : "No tasks match the specified criteria.")
-            : sb.Append(body);
-
-        return sb.ToString().TrimEnd();
     }
 
     public IList<TaskItem> GetTasks()
@@ -801,33 +801,37 @@ Examples:
 
         var matches = new List<(PrivateTaskItem task, string path)>();
 
-        List<PrivateTaskItem> rootTasksCopy;
+        // SearchTaskRecursive descends into every nested SubTasks list, which AddTask appends
+        // to under _sync alone — so the lock has to be held for the descent, not just for a
+        // snapshot of the roots.
         lock (_sync)
         {
-            rootTasksCopy = [.. _state.RootTasks];
-        }
+            foreach (var task in _state.RootTasks)
+            {
+                SearchTaskRecursive(task, searchTerm.Trim(), task.Id.ToString(), matches);
+            }
 
-        foreach (var task in rootTasksCopy)
-        {
-            SearchTaskRecursive(task, searchTerm.Trim(), task.Id.ToString(), matches);
-        }
+            if (matches.Count == 0)
+            {
+                return $"No tasks found matching '{searchTerm}'.";
+            }
 
-        if (matches.Count == 0)
-        {
-            return $"No tasks found matching '{searchTerm}'.";
-        }
+            var sb = new StringBuilder();
+            AppendLine(sb, $"Found {matches.Count} task(s) matching '{searchTerm}':");
+            foreach (var (task, path) in matches)
+            {
+                var statusSymbol = GetStatusSymbol(task.Status);
+                AppendLine(sb, $"- {statusSymbol} {path}: {task.Title}");
+            }
 
-        var sb = new StringBuilder();
-        AppendLine(sb, $"Found {matches.Count} task(s) matching '{searchTerm}':");
-        foreach (var (task, path) in matches)
-        {
-            var statusSymbol = GetStatusSymbol(task.Status);
-            AppendLine(sb, $"- {statusSymbol} {path}: {task.Title}");
+            return sb.ToString().TrimEnd();
         }
-
-        return sb.ToString().TrimEnd();
     }
 
+    /// <summary>
+    ///     Renders the whole tree as markdown. It delegates to <see cref="ListTasks" />, and so
+    ///     inherits that method's lock coverage rather than walking the tree itself.
+    /// </summary>
     public string GetMarkdown()
     {
         return ListTasks();
@@ -1142,17 +1146,21 @@ Examples:
 
     private string GetTaskCounts(string countType)
     {
-        List<PrivateTaskItem> rootTasksCopy;
+        int total;
+        int completed;
+        int pending;
+        int removed;
+
+        // GetAllTasksFlat recurses through nested SubTasks lists that AddTask appends to
+        // under _sync alone; a snapshot of the roots leaves that traversal unguarded.
         lock (_sync)
         {
-            rootTasksCopy = [.. _state.RootTasks];
+            var allTasks = GetAllTasksFlat(_state.RootTasks);
+            total = allTasks.Count;
+            completed = allTasks.Count(t => t.Status == TaskStatus.Completed);
+            pending = allTasks.Count(t => t.Status is TaskStatus.NotStarted or TaskStatus.InProgress);
+            removed = allTasks.Count(t => t.Status == TaskStatus.Removed);
         }
-
-        var allTasks = GetAllTasksFlat(rootTasksCopy);
-        var total = allTasks.Count;
-        var completed = allTasks.Count(t => t.Status == TaskStatus.Completed);
-        var pending = allTasks.Count(t => t.Status is TaskStatus.NotStarted or TaskStatus.InProgress);
-        var removed = allTasks.Count(t => t.Status == TaskStatus.Removed);
 
         return countType switch
         {

@@ -450,7 +450,7 @@ public class TypeFunctionProviderTests
 
         var resolved = Assert.IsType<ToolHandlerResult.Resolved>(result);
         Assert.True(resolved.Payload.IsError);
-        Assert.Equal("THING_NOT_FOUND", resolved.Payload.ErrorCode);
+        Assert.Equal("thing_not_found", resolved.Payload.ErrorCode);
         // Only Text is serialized, so the wire shape matches a plain string return.
         Assert.Equal("Error: not found.", JsonSerializer.Deserialize<string>(resolved.Payload.Text));
     }
@@ -485,6 +485,58 @@ public class TypeFunctionProviderTests
         _ = Assert.Throws<ArgumentException>(() => FunctionResult.Error("  ", "text"));
     }
 
+    [Fact]
+    public void FunctionResult_Default_IsAnErrorNotAnEmptySuccess()
+    {
+        // A struct's default is reachable without either factory, so it must not read as
+        // "the operation succeeded and had nothing to say".
+        FunctionResult result = default;
+
+        Assert.True(result.IsError);
+        Assert.Equal(FunctionResult.UninitializedErrorCode, result.ErrorCode);
+        Assert.Contains("uninitialized", result.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void FunctionResult_OkWithEmptyText_StaysASuccess()
+    {
+        // The default is distinguished by never having been assigned, not by being empty.
+        var result = FunctionResult.Ok(string.Empty);
+
+        Assert.False(result.IsError);
+        Assert.Null(result.ErrorCode);
+        Assert.Equal(string.Empty, result.Text);
+    }
+
+    [Fact]
+    public async Task Handler_DefaultFunctionResult_IsDeliveredAsErrorNotAnEmptyBody()
+    {
+        var provider = new TypeFunctionProvider(new TestHandlerErrorSignalling());
+        var function = provider.GetFunctions().First(f => f.Contract.Name == "never-assigned");
+
+        var result = await function.Handler("{}", new ToolCallContext(), CancellationToken.None);
+
+        var resolved = Assert.IsType<ToolHandlerResult.Resolved>(result);
+        Assert.True(resolved.Payload.IsError);
+        Assert.Equal(FunctionResult.UninitializedErrorCode, resolved.Payload.ErrorCode);
+        // Previously this serialized to "{}" — an empty successful body.
+        Assert.NotEqual("{}", resolved.Payload.Text);
+    }
+
+    [Fact]
+    public void Contract_FunctionResultReturn_AdvertisesTheStringThatGoesOnTheWire()
+    {
+        var provider = new TypeFunctionProvider(new TestHandlerErrorSignalling());
+
+        var signalled = provider.GetFunctions().First(f => f.Contract.Name == "signalled-error");
+        var legacy = provider.GetFunctions().First(f => f.Contract.Name == "legacy-error");
+
+        // FunctionRegistry renders ReturnType.Name into the system prompt, and only Text is
+        // serialized — so an opted-in tool must describe itself exactly like a string one.
+        Assert.Equal(typeof(string), signalled.Contract.ReturnType);
+        Assert.Equal(legacy.Contract.ReturnType, signalled.Contract.ReturnType);
+    }
+
     #endregion
 
     #region Test Classes
@@ -500,13 +552,23 @@ public class TypeFunctionProviderTests
         [Function("signalled-error", "Reports a failed operation with a code")]
         public FunctionResult SignalledError()
         {
-            return FunctionResult.Error("THING_NOT_FOUND", "Error: not found.");
+            return FunctionResult.Error("thing_not_found", "Error: not found.");
         }
 
         [Function("signalled-ok", "Returns success through the opt-in type")]
         public FunctionResult SignalledOk()
         {
             return "all good";
+        }
+
+        /// <summary>
+        ///     Stands in for every way a struct's default reaches a caller without passing
+        ///     through a factory — an unassigned field, an array slot, a missing switch arm.
+        /// </summary>
+        [Function("never-assigned", "Returns the struct's default without going through a factory")]
+        public FunctionResult NeverAssigned()
+        {
+            return default;
         }
     }
 

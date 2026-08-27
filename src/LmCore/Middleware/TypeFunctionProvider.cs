@@ -162,9 +162,35 @@ public class TypeFunctionProvider : IFunctionProvider
             Name = name,
             Description = description,
             Parameters = parameters,
-            ReturnType = method.ReturnType != typeof(void) ? method.ReturnType : null,
+            ReturnType = ContractReturnType(method.ReturnType),
             ReturnDescription = returnDescription,
         };
+    }
+
+    /// <summary>
+    ///     The type the caller actually receives, which is what the contract must advertise —
+    ///     <see cref="FunctionRegistry" /> renders <c>ReturnType.Name</c> straight into the
+    ///     system prompt. A method returning <see cref="FunctionResult" /> puts only its
+    ///     <c>Text</c> on the wire, so the model sees a <see cref="string" />; naming the
+    ///     wrapper would describe a shape that never arrives.
+    /// </summary>
+    private static Type? ContractReturnType(Type returnType)
+    {
+        if (returnType == typeof(void))
+        {
+            return null;
+        }
+
+        if (returnType == typeof(FunctionResult))
+        {
+            return typeof(string);
+        }
+
+        return returnType.IsGenericType
+            && returnType.GetGenericTypeDefinition() == typeof(Task<>)
+            && returnType.GetGenericArguments()[0] == typeof(FunctionResult)
+            ? typeof(string)
+            : returnType;
     }
 
     private FunctionParameterContract CreateParameterContract(ParameterInfo parameter)
