@@ -60,14 +60,9 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
         SqliteConnection.ClearAllPools();
         await Task.Delay(50);
 
-        try
-        {
-            Directory.Delete(_root, recursive: true);
-        }
-        catch (IOException)
-        {
-            // A leaked temp directory is not a test failure.
-        }
+        // #477: the "file" store kind here is a FileConversationStore with the exclusive-create retry
+        // loop, so detach-then-delete rather than recursive-delete in place — see DetachedStoreTeardown.
+        DetachedStoreTeardown.Purge(_root);
     }
 
     /// <summary>The three store flavours, by name, so a failure says which one drifted.</summary>

@@ -570,18 +570,8 @@ public sealed class FileRunLifecycleStoreTests : RunLifecycleStoreTestsBase
     /// <inheritdoc />
     protected override Task DisposeStoreAsync()
     {
-        try
-        {
-            if (Directory.Exists(_directory))
-            {
-                Directory.Delete(_directory, recursive: true);
-            }
-        }
-        catch (IOException)
-        {
-            // Ignore - a temp directory left behind is not worth failing a green test over.
-        }
-
+        // #477: detach-then-delete rather than recursive-delete in place — see DetachedStoreTeardown.
+        DetachedStoreTeardown.Purge(_directory);
         return Task.CompletedTask;
     }
 }
