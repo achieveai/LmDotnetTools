@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
+using static CodeReviewDaemon.Sample.Agents.KnowledgeIndexRegenerator;
 
 namespace CodeReviewDaemon.Sample.Agents;
 
@@ -16,9 +17,9 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// </summary>
 internal sealed class KnowledgeAgent
 {
-    private const string KnowledgeBaseDirectory = "KnowledgeBase";
-    private const string TocFileName = "_toc.md";
-    private const string IndexFileName = "_index.jsonl";
+    private const string KnowledgeBaseDirectory = KnowledgeIndexRegenerator.KnowledgeBaseDirectory;
+    private const string TocFileName = KnowledgeIndexRegenerator.TocFileName;
+    private const string IndexFileName = KnowledgeIndexRegenerator.IndexFileName;
 
     /// <summary>The gate sentinel: the extraction agent replies with this when nothing durable is worth writing.</summary>
     private const string NoKnowledgeSentinel = "NO_KNOWLEDGE";
@@ -81,12 +82,14 @@ internal sealed class KnowledgeAgent
     private readonly IMultiTurnAgent _agent;
     private readonly ISandboxFileSystem _fileSystem;
     private readonly ILogger<KnowledgeAgent> _logger;
+    private readonly KnowledgeIndexRegenerator _regenerator;
 
     public KnowledgeAgent(IMultiTurnAgent agent, ISandboxFileSystem fileSystem, ILogger<KnowledgeAgent> logger)
     {
         _agent = agent ?? throw new ArgumentNullException(nameof(agent));
         _fileSystem = fileSystem ?? throw new ArgumentNullException(nameof(fileSystem));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _regenerator = new KnowledgeIndexRegenerator(_fileSystem, _logger);
     }
 
     /// <summary>
@@ -224,7 +227,7 @@ internal sealed class KnowledgeAgent
         var entryMarkdown = BuildEntry(title, tags, scope, sourcePrs, todayUtc, parsed.Body);
         await _fileSystem.WriteFileAsync(targetPath, entryMarkdown, cancellationToken).ConfigureAwait(false);
 
-        await RegenerateIndexAndTocAsync(knowledgeBaseDir, cancellationToken).ConfigureAwait(false);
+        _ = await _regenerator.RegenerateAsync(knowledgeBaseDir, cancellationToken).ConfigureAwait(false);
 
         _logger.LogInformation(
             "Knowledge run {RunId} wrote entry '{Entry}' and regenerated the index + table of contents.",
@@ -431,6 +434,21 @@ internal sealed class KnowledgeAgent
         if (!string.IsNullOrWhiteSpace(parsed.Updates))
         {
             var updatesRel = NormalizeUpdatesRelPath(parsed.Updates);
+            if (updatesRel is not null)
+            {
+                // Reconcile CASE before anything looks the path up, and before the refusals below run. The
+                // extraction agent is an LLM that cases a scope (and a slug) inconsistently across runs, so an
+                // explicit "update this entry" naming a real file in the wrong case used to miss it on a
+                // case-sensitive store and fall through to a fresh SCOPE+TITLE create — abandoning the merge
+                // the model asked for and leaving a near-duplicate beside the real entry (issue #218 item 8).
+                //
+                // Doing it FIRST also means every refusal below judges the path that would actually be
+                // written, not the model's spelling of it: a re-cased bookkeeping name now reconciles onto the
+                // real bookkeeping file and is caught, where before it slipped past an ordinal comparison.
+                updatesRel = await ReconcileUpdatesCaseAsync(knowledgeBaseDir, updatesRel, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
             if (updatesRel is null)
             {
                 _logger.LogWarning(
@@ -722,146 +740,80 @@ internal sealed class KnowledgeAgent
         return tags;
     }
 
-    /// <summary>
-    /// Regenerates <c>_index.jsonl</c> and <c>_toc.md</c> from the layered entries actually present, so
-    /// neither ever drifts from the directory. Walks each scope directory under
-    /// <paramref name="knowledgeBaseDir"/>, parses each entry's frontmatter, and skips (with a log) any
-    /// entry that has none — malformed frontmatter never aborts the regen (design §6).
-    /// </summary>
-    private async Task RegenerateIndexAndTocAsync(string knowledgeBaseDir, CancellationToken cancellationToken)
-    {
-        var metas = await CollectEntryMetasAsync(knowledgeBaseDir, cancellationToken).ConfigureAwait(false);
-
-        var index = KnowledgeIndex.RenderIndex(metas);
-        await _fileSystem
-            .WriteFileAsync(JoinPath(knowledgeBaseDir, IndexFileName), index, cancellationToken)
-            .ConfigureAwait(false);
-
-        // _toc.md link labels: the blank-title fallback to file path lives in
-        // KnowledgeTableOfContents.RenderItems now (issue #259), so every caller gets it for free —
-        // pass the raw Title through here.
-        var tocEntries = metas.Select(meta => new KnowledgeEntry(meta.File, meta.Title)).ToList();
-        var toc = KnowledgeTableOfContents.Render(tocEntries);
-        await _fileSystem
-            .WriteFileAsync(JoinPath(knowledgeBaseDir, TocFileName), toc, cancellationToken)
-            .ConfigureAwait(false);
-    }
-
-    private async Task<IReadOnlyList<KnowledgeEntryMeta>> CollectEntryMetasAsync(
-        string knowledgeBaseDir,
-        CancellationToken cancellationToken
-    )
-    {
-        var metas = new List<KnowledgeEntryMeta>();
-        var children = await _fileSystem.ListFilesAsync(knowledgeBaseDir, cancellationToken).ConfigureAwait(false);
-
-        foreach (var child in children)
-        {
-            if (IsBookkeeping(child) || IsDevelopersDirectory(child))
-            {
-                continue;
-            }
-
-            if (child.EndsWith(".md", StringComparison.Ordinal))
-            {
-                // A legacy flat entry (no scope directory): included only if it carries frontmatter.
-                await TryAddMetaAsync(metas, knowledgeBaseDir, child, cancellationToken).ConfigureAwait(false);
-                continue;
-            }
-
-            // Otherwise a scope directory (system/, <repo>/): walk its Markdown entries.
-            var scopeDir = JoinPath(knowledgeBaseDir, child);
-            var names = await _fileSystem.ListFilesAsync(scopeDir, cancellationToken).ConfigureAwait(false);
-            foreach (var name in names)
-            {
-                if (IsBookkeeping(name) || !name.EndsWith(".md", StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                await TryAddMetaAsync(metas, knowledgeBaseDir, $"{child}/{name}", cancellationToken)
-                    .ConfigureAwait(false);
-            }
-        }
-
-        return metas;
-    }
-
-    private async Task TryAddMetaAsync(
-        List<KnowledgeEntryMeta> metas,
-        string knowledgeBaseDir,
-        string relFile,
-        CancellationToken cancellationToken
-    )
-    {
-        var read = await _fileSystem
-            .ReadFileAsync(
-                JoinPath(knowledgeBaseDir, relFile),
-                SandboxReadLimits.KnowledgeEntryBytes,
-                cancellationToken
-            )
-            .ConfigureAwait(false);
-        if (read.TooLarge)
-        {
-            // LISTED, not skipped. This regen REPLACES both listings, and the reviewer reads _toc.md as the
-            // set of entries that exist — so dropping an unreadable entry here does not merely fail to index
-            // it, it deletes the only route anything has to a file still sitting in the store. Listed under a
-            // path-derived title with no metadata: honest about what is unknown, and the link still resolves.
-            _logger.LogWarning(
-                "Knowledge Base entry '{Entry}' exceeds the {Limit}-byte read limit; listing it without "
-                    + "frontmatter rather than dropping it from the regenerated index and table of contents.",
-                relFile,
-                SandboxReadLimits.KnowledgeEntryBytes
-            );
-            metas.Add(
-                new KnowledgeEntryMeta(
-                    relFile,
-                    $"{SlugFromRelPath(relFile)} — too large to index; frontmatter unread",
-                    [],
-                    ScopeSegment(relFile) ?? string.Empty,
-                    [],
-                    string.Empty
-                )
-            );
-            return;
-        }
-
-        var content = read.Content;
-        var meta = content is null ? null : KnowledgeIndex.ParseFrontmatter(relFile, content);
-        if (meta is null)
-        {
-            _logger.LogDebug("Skipping Knowledge Base entry '{Entry}' with no parseable frontmatter during regen.", relFile);
-            return;
-        }
-
-        metas.Add(meta);
-    }
-
-    /// <summary>True for the ToC/index bookkeeping files and dotfiles the entry walk must ignore.</summary>
-    private static bool IsBookkeeping(string name) =>
-        name.StartsWith('.')
-        || string.Equals(name, TocFileName, StringComparison.Ordinal)
-        || string.Equals(name, IndexFileName, StringComparison.Ordinal);
-
-    /// <summary>
-    /// True for the reserved per-developer review-feedback directory
-    /// (<see cref="ReviewFeedbackAgent.DevelopersDirectory"/>). Those records are about ONE person and are
-    /// delivered by targeted injection into that person's own PRs; letting them into <c>_index.jsonl</c> /
-    /// <c>_toc.md</c> would put every developer's record into every reviewer's context and spend the shared
-    /// retrieval budget on it. Matched case-insensitively because a case-insensitive checkout (Windows)
-    /// collapses <c>Developers/</c> onto <c>developers/</c>.
-    /// </summary>
-    private static bool IsDevelopersDirectory(string name) =>
-        string.Equals(name, ReviewFeedbackAgent.DevelopersDirectory, StringComparison.OrdinalIgnoreCase);
-
     /// <summary>The final path segment (file name) of a KB-relative path such as <c>system/x.md</c>.</summary>
     private static string LeafName(string relPath) => relPath[(relPath.LastIndexOf('/') + 1)..];
 
-    /// <summary>The scope (first path segment) of <paramref name="relPath"/>, or <c>null</c> when it has none.</summary>
-    private static string? ScopeSegment(string relPath)
+    /// <summary>
+    /// Returns <paramref name="updatesRel"/> re-cased onto the entry that already exists, matching each
+    /// segment case-insensitively against what is actually on disk: the scope directory under
+    /// <paramref name="knowledgeBaseDir"/>, then the entry file under that directory. Segments with no
+    /// case-insensitive match are left exactly as the model wrote them, so a genuinely NEW target still
+    /// resolves to itself and is never bent onto an unrelated entry.
+    /// <para>
+    /// This only ever substitutes a name the listing returned, so the result cannot introduce a segment the
+    /// model did not already name modulo case — and it stays subject to every validation the caller applies
+    /// afterwards. A listing failure never blocks the write: it falls back to the model's spelling.
+    /// </para>
+    /// </summary>
+    private async Task<string> ReconcileUpdatesCaseAsync(
+        string knowledgeBaseDir, string updatesRel, CancellationToken cancellationToken)
     {
-        var slash = relPath.IndexOf('/', StringComparison.Ordinal);
-        return slash > 0 ? relPath[..slash] : null;
+        var scope = ScopeSegment(updatesRel);
+        if (scope is null)
+        {
+            // Legacy flat "<slug>.md": one segment, matched directly against the Knowledge Base root.
+            return await ReconcileChildCaseAsync(knowledgeBaseDir, updatesRel, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        var reconciledScope = await ReconcileScopeCaseAsync(knowledgeBaseDir, scope, cancellationToken)
+            .ConfigureAwait(false);
+        var reconciledLeaf = await ReconcileChildCaseAsync(
+                JoinPath(knowledgeBaseDir, reconciledScope), LeafName(updatesRel), cancellationToken)
+            .ConfigureAwait(false);
+        return $"{reconciledScope}/{reconciledLeaf}";
+    }
+
+    /// <summary>
+    /// Returns the entry directly under <paramref name="directory"/> whose name matches
+    /// <paramref name="name"/> case-insensitively, or <paramref name="name"/> unchanged when there is no
+    /// such entry (or the directory cannot be listed).
+    /// </summary>
+    private async Task<string> ReconcileChildCaseAsync(
+        string directory, string name, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<string> children;
+        try
+        {
+            children = await _fileSystem.ListFilesAsync(directory, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex, "Listing '{Directory}' to reconcile '{Name}' case failed; using it as-is.", directory, name);
+            return name;
+        }
+
+        // EXACT first. A case-sensitive store can hold both variants of one name -- the duplicate pair this
+        // reconciliation exists to stop creating, and reachable on any Linux checkout. When the model spells
+        // one of them exactly, that is the entry it meant; re-pointing it at its sibling because a
+        // case-insensitive scan returned that sibling first would be the reconciliation causing the very
+        // collision it is here to prevent.
+        var existing = children.FirstOrDefault(
+                child => string.Equals(child, name, StringComparison.Ordinal))
+            ?? children.FirstOrDefault(
+                child => string.Equals(child, name, StringComparison.OrdinalIgnoreCase));
+        if (existing is not null && !string.Equals(existing, name, StringComparison.Ordinal))
+        {
+            _logger.LogInformation(
+                "Reconciling Knowledge Base '## UPDATES' target '{Name}' to the existing entry '{Existing}' "
+                    + "so the update merges instead of creating a case-variant duplicate.",
+                name,
+                existing);
+            return existing;
+        }
+
+        return name;
     }
 
     /// <summary>
@@ -886,8 +838,15 @@ internal sealed class KnowledgeAgent
             return scope;
         }
 
+        // EXACT first. A case-sensitive store can hold both variants of one name -- the duplicate pair this
+        // reconciliation exists to stop creating, and reachable on any Linux checkout. When the model spells
+        // one of them exactly, that is the entry it meant; re-pointing it at its sibling because a
+        // case-insensitive scan returned that sibling first would be the reconciliation causing the very
+        // collision it is here to prevent.
         var existing = children.FirstOrDefault(
-            child => string.Equals(child, scope, StringComparison.OrdinalIgnoreCase));
+                child => string.Equals(child, scope, StringComparison.Ordinal))
+            ?? children.FirstOrDefault(
+                child => string.Equals(child, scope, StringComparison.OrdinalIgnoreCase));
         if (existing is not null && !string.Equals(existing, scope, StringComparison.Ordinal))
         {
             _logger.LogInformation(
@@ -899,13 +858,6 @@ internal sealed class KnowledgeAgent
         }
 
         return scope;
-    }
-
-    /// <summary>The file stem of <paramref name="relPath"/> (a last-resort title when the model omits one).</summary>
-    private static string SlugFromRelPath(string relPath)
-    {
-        var name = relPath[(relPath.LastIndexOf('/') + 1)..];
-        return name.EndsWith(".md", StringComparison.Ordinal) ? name[..^3] : name;
     }
 
     /// <summary>
@@ -938,8 +890,6 @@ internal sealed class KnowledgeAgent
         return slug.Length == 0 ? "entry" : slug;
     }
 
-    private static string JoinPath(string root, string relative) =>
-        $"{root.TrimEnd('/')}/{relative.TrimStart('/')}";
 }
 
 /// <summary>How an extraction attempt ended. The distinction is load-bearing: only <see cref="Failed"/>

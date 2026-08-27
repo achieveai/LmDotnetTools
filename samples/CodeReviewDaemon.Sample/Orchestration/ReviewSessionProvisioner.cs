@@ -133,6 +133,12 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
         _diskSpaceProbe = diskSpaceProbe;
     }
 
+    /// <summary>
+    /// The gateway base URL this provisioner hands to every session it creates. Exposed so a test can assert
+    /// the boot wiring gives every gateway consumer the SAME resolved URL (issue #218 item 10).
+    /// </summary>
+    internal string GatewayBaseUrl => _gatewayBaseUrl;
+
     public static string WorkspaceId(ReviewRun run) => WorkspaceId(run.Id);
 
     public static string WorkspaceId(long runId) => $"review-run-{runId}";

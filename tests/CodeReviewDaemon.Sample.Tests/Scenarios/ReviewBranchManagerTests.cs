@@ -46,12 +46,14 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
 
     private ReviewBranchManager CreateManager(
         ISandboxCommandRunner runner,
-        ISandboxFileSystem fileSystem
+        ISandboxFileSystem fileSystem,
+        Func<string, CancellationToken, Task<bool>>? rebuildDerivedKnowledgeAsync = null
     ) =>
         new(
             new GitRunner(runner),
             fileSystem,
-            LoggerFactory.CreateLogger<ReviewBranchManager>());
+            LoggerFactory.CreateLogger<ReviewBranchManager>(),
+            rebuildDerivedKnowledgeAsync);
 
     [Fact]
     public async Task CommitNotes_creates_the_branch_from_default_when_it_does_not_exist_yet()
@@ -446,6 +448,149 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         var act = () => CreateManager(runner, fs).DeleteBranchAsync(RepoRoot, ReviewBranch, CancellationToken.None);
 
         await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task MergeToDefault_rebuilds_the_derived_knowledge_listings_after_a_merge_commit_and_commits_them()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            $"merge --ff-only origin/{ReviewBranch}",
+            new SandboxCommandResult(1, string.Empty, "not possible to fast-forward"));
+        // Exit 1 from `diff --cached --quiet` means there IS a staged difference — the rebuilt listings.
+        runner.OnArgvContains("diff --cached --quiet", new SandboxCommandResult(1, string.Empty, string.Empty));
+        var fs = new FakeSandboxFileSystem();
+
+        // The reconcile records WHEN it ran, measured in git commands issued so far, so the ordering
+        // assertions below pin it between the merge and the push rather than merely proving it ran.
+        var reconciledAfterCommands = -1;
+        var reconcileCalls = 0;
+        var result = await CreateManager(
+                runner,
+                fs,
+                (repoRoot, _) =>
+                {
+                    repoRoot.Should().Be(RepoRoot);
+                    reconcileCalls++;
+                    reconciledAfterCommands = runner.Commands.Count;
+                    return Task.FromResult(true);
+                })
+            .MergeToDefaultAsync(RepoRoot, ReviewBranch, DefaultBranch, CancellationToken.None);
+
+        result.Should().BeTrue();
+        reconcileCalls.Should().Be(1);
+
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+
+        // `-X theirs` resolved every conflicting hunk in favour of the notes branch. _index.jsonl and
+        // _toc.md are whole-file rewrites, so they conflict whenever a concurrent PR's knowledge merged
+        // into the default branch first — and taking the notes branch's copy wholesale drops that PR's
+        // entries out of the listings while their .md files stay in the tree. The listings are pure
+        // functions of the entries, so they get REBUILT from the merged tree instead (issue #218 item 6).
+        reconciledAfterCommands
+            .Should()
+            .BeGreaterThan(
+                IndexOf(commands, $"merge --no-edit -X theirs origin/{ReviewBranch}"),
+                "the listings must describe the MERGED tree, so the rebuild cannot precede the merge");
+        reconciledAfterCommands
+            .Should()
+            .BeLessThanOrEqualTo(
+                IndexOf(commands, $"push origin {DefaultBranch}"),
+                "the rebuilt listings must ride the same push, not land in a follow-up sweep");
+
+        IndexOf(commands, "add -- KnowledgeBase")
+            .Should()
+            .BeGreaterThan(IndexOf(commands, $"merge --no-edit -X theirs origin/{ReviewBranch}"));
+        IndexOf(commands, "add -- KnowledgeBase")
+            .Should()
+            .BeLessThan(IndexOf(commands, "commit -m"));
+        IndexOf(commands, "commit -m")
+            .Should()
+            .BeLessThan(IndexOf(commands, $"push origin {DefaultBranch}"));
+    }
+
+    [Fact]
+    public async Task MergeToDefault_does_not_commit_when_the_rebuild_reports_a_change_but_nothing_is_staged()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            $"merge --ff-only origin/{ReviewBranch}",
+            new SandboxCommandResult(1, string.Empty, "not possible to fast-forward"));
+        // Exit 0 from `diff --cached --quiet` means NO staged difference.
+        runner.OnArgvContains("diff --cached --quiet", new SandboxCommandResult(0, string.Empty, string.Empty));
+        // What git really does when asked to commit an empty index — and RunGitAsync throws on it.
+        runner.OnArgvContains(
+            "commit -m",
+            new SandboxCommandResult(1, "nothing to commit, working tree clean", string.Empty));
+        var fs = new FakeSandboxFileSystem();
+
+        // The regenerator answers "changed" whenever it could not establish the current content — an
+        // _index.jsonl over the 8 MiB listing ceiling, or an unreadable one — because keeping the
+        // regenerated file is the safe answer there. That is not a promise the index has anything to
+        // commit. Believing it would throw out of MergeToDefaultAsync, leaving the notes branch undeleted
+        // so the identical merge re-throws on every subsequent sweep: one oversized listing wedges the
+        // sweep permanently. Ask git what is actually staged instead.
+        var act = async () => await CreateManager(runner, fs, (_, _) => Task.FromResult(true))
+            .MergeToDefaultAsync(RepoRoot, ReviewBranch, DefaultBranch, CancellationToken.None);
+
+        (await act.Should().NotThrowAsync()).Which.Should().BeTrue();
+
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().NotContain(a => a.Contains("commit -m", StringComparison.Ordinal));
+        commands
+            .Should()
+            .Contain(
+                a => a.Contains($"push origin {DefaultBranch}", StringComparison.Ordinal),
+                "the merge must still land; skipping an empty commit is not skipping the merge");
+    }
+
+    [Fact]
+    public async Task MergeToDefault_commits_nothing_when_the_merged_tree_already_matches_the_listings()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            $"merge --ff-only origin/{ReviewBranch}",
+            new SandboxCommandResult(1, string.Empty, "not possible to fast-forward"));
+        var fs = new FakeSandboxFileSystem();
+
+        var result = await CreateManager(runner, fs, (_, _) => Task.FromResult(false))
+            .MergeToDefaultAsync(RepoRoot, ReviewBranch, DefaultBranch, CancellationToken.None);
+
+        result.Should().BeTrue();
+
+        // The renderers are deterministic and sorted, so an unchanged rebuild is the ORDINARY outcome —
+        // every merge of a PR whose knowledge nobody raced. Committing anyway would put an empty commit
+        // on the default branch on every single sweep.
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().NotContain(a => a.Contains("add -- KnowledgeBase", StringComparison.Ordinal));
+        commands.Should().NotContain(a => a.Contains("commit -m", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task MergeToDefault_does_not_rebuild_the_listings_on_a_fast_forward()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        var fs = new FakeSandboxFileSystem();
+
+        var reconcileCalls = 0;
+        var result = await CreateManager(
+                runner,
+                fs,
+                (_, _) =>
+                {
+                    reconcileCalls++;
+                    return Task.FromResult(true);
+                })
+            .MergeToDefaultAsync(RepoRoot, ReviewBranch, DefaultBranch, CancellationToken.None);
+
+        result.Should().BeTrue();
+
+        // A fast-forward means the default branch is an ANCESTOR of the notes branch: nothing landed on
+        // the default since the notes branch was checked out, so the listings the extraction regenerated
+        // there already describe the resulting tree exactly. Nothing was resolved, so nothing was lost.
+        reconcileCalls
+            .Should()
+            .Be(0, "a fast-forward discards no side, so there is nothing for a rebuild to recover");
     }
 
     private static int IndexOf(List<string> commands, string contains) =>

@@ -256,6 +256,147 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
             .Should().ContainSingle();
     }
 
+    /// <summary>
+    /// Issue #218 item 8 — the scope-case reconciliation used to run only on the SCOPE fallback, AFTER the
+    /// UPDATES path had already been looked up verbatim. The extraction agent is an LLM that cases a scope
+    /// inconsistently across runs, so an explicit "update this entry" naming the same file in a different
+    /// case missed it on a case-sensitive store and fell through to a fresh SCOPE+TITLE create — silently
+    /// abandoning the merge the model asked for and leaving a near-duplicate beside the real entry.
+    /// </summary>
+    [Fact]
+    public async Task TryExtractAsync_updates_the_existing_entry_when_the_UPDATES_path_differs_only_in_case()
+    {
+        var fs = new FakeSandboxFileSystem();
+        // The entry's file name is NOT Slugify(TITLE) — the model titled it differently on the run that
+        // created it. That is what makes this case distinguishing: the SCOPE+TITLE fallback resolves to
+        // "mcqdbdev/x-invariant.md", so only an UPDATES lookup that survives the case mismatch can reach
+        // the real entry. A fixture whose slug happened to match would pass either way.
+        fs.Files[KbDir + "/mcqdbdev/legacy-slug.md"] =
+            "---\n"
+            + "title: X Invariant\n"
+            + "tags: [alpha]\n"
+            + "scope: mcqdbdev\n"
+            + "sourcePrs: [\"old\"]\n"
+            + "updated: 2026-07-01\n"
+            + "---\n\n# X Invariant\noriginal body";
+        // Both segments re-cased by the model: the scope directory AND the entry's file name.
+        var agent = AgentReturning(
+            "## SCOPE: MCQdbDEV\n"
+            + "## TITLE: X Invariant\n"
+            + "## TAGS: alpha\n"
+            + "## UPDATES: MCQdbDEV/Legacy-Slug.md\n\n"
+            + "refined body with more detail");
+
+        var result = await Knowledge(agent, fs).TryExtractAsync(
+            RepoRoot, "distill these notes", "github/o-r/99", Today, CancellationToken.None);
+
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
+        result.EntryFileName.Should().Be("mcqdbdev/legacy-slug.md");
+
+        // The merge actually happened: ONE entry file, carrying both source PRs and the refined body — no
+        // near-duplicate "mcqdbdev/x-invariant.md" created beside it.
+        fs.Files.Keys
+            .Where(key => key.EndsWith(".md", StringComparison.Ordinal)
+                && key.StartsWith(KbDir + "/", StringComparison.Ordinal)
+                && !key.EndsWith("/_toc.md", StringComparison.Ordinal))
+            .Should().ContainSingle().Which.Should().Be(KbDir + "/mcqdbdev/legacy-slug.md");
+
+        var meta = KnowledgeIndex.ParseFrontmatter(
+            "mcqdbdev/legacy-slug.md", fs.Files[KbDir + "/mcqdbdev/legacy-slug.md"]);
+        meta!.SourcePrs.Should().Equal(
+            ["old", "github/o-r/99"], "an explicit UPDATES must merge, not start a second entry");
+        fs.Files[KbDir + "/mcqdbdev/legacy-slug.md"].Should().Contain("refined body with more detail");
+    }
+
+    /// <summary>
+    /// A case-SENSITIVE store can already hold both case-variants of one name — that duplicate pair is the
+    /// very state the reconciliation exists to stop creating, and on a Linux checkout it is reachable. When
+    /// the model names one of them EXACTLY, that is the entry it meant, and the reconciliation must not
+    /// re-point it at its sibling on the strength of a case-insensitive match that listing order happened to
+    /// return first.
+    /// </summary>
+    [Fact]
+    public async Task TryExtractAsync_updates_the_exactly_named_entry_when_both_case_variants_exist()
+    {
+        var fs = new FakeSandboxFileSystem();
+        // Ordinal listing order puts "Legacy-Slug.md" ('L' = 0x4C) ahead of "legacy-slug.md" ('l' = 0x6C),
+        // so a first-case-insensitive-match reconciliation picks the WRONG one — which is what makes this
+        // fixture distinguishing rather than merely descriptive.
+        fs.Files[KbDir + "/mcqdbdev/Legacy-Slug.md"] =
+            "---\ntitle: Upper Variant\nscope: mcqdbdev\nsourcePrs: [\"upper\"]\nupdated: 2026-07-01\n---\n\n# Upper\nupper body";
+        fs.Files[KbDir + "/mcqdbdev/legacy-slug.md"] =
+            "---\ntitle: Lower Variant\nscope: mcqdbdev\nsourcePrs: [\"lower\"]\nupdated: 2026-07-01\n---\n\n# Lower\nlower body";
+        var agent = AgentReturning(
+            "## SCOPE: mcqdbdev\n"
+            + "## TITLE: Lower Variant\n"
+            + "## UPDATES: mcqdbdev/legacy-slug.md\n\n"
+            + "refined lower body");
+
+        var result = await Knowledge(agent, fs).TryExtractAsync(
+            RepoRoot, "distill these notes", "github/o-r/99", Today, CancellationToken.None);
+
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
+        result.EntryFileName
+            .Should()
+            .Be("mcqdbdev/legacy-slug.md", "an exact name is the model's answer, not a near-miss to be corrected");
+
+        fs.Files[KbDir + "/mcqdbdev/legacy-slug.md"].Should().Contain("refined lower body");
+        fs.Files[KbDir + "/mcqdbdev/Legacy-Slug.md"]
+            .Should()
+            .Contain("upper body", "the sibling variant must be left exactly as it was");
+    }
+
+    /// <summary>
+    /// The same exact-match rule on the SCOPE half of the path: two scope directories differing only in case
+    /// can coexist on a case-sensitive store, and a scope the model spells exactly must resolve to itself.
+    /// </summary>
+    [Fact]
+    public async Task TryExtractAsync_uses_the_exactly_named_scope_when_both_case_variants_exist()
+    {
+        var fs = new FakeSandboxFileSystem();
+        // "MCQdbDEV" sorts ahead of "mcqdbdev" ordinally, so it is what a first-insensitive-match returns.
+        fs.Files[KbDir + "/MCQdbDEV/upper-entry.md"] =
+            "---\ntitle: Upper Entry\nscope: MCQdbDEV\nsourcePrs: [\"upper\"]\nupdated: 2026-07-01\n---\n\n# Upper\nupper body";
+        fs.Files[KbDir + "/mcqdbdev/lower-entry.md"] =
+            "---\ntitle: Lower Entry\nscope: mcqdbdev\nsourcePrs: [\"lower\"]\nupdated: 2026-07-01\n---\n\n# Lower\nlower body";
+        var agent = AgentReturning(
+            "## SCOPE: mcqdbdev\n"
+            + "## TITLE: Lower Entry\n"
+            + "## UPDATES: mcqdbdev/lower-entry.md\n\n"
+            + "refined lower body");
+
+        var result = await Knowledge(agent, fs).TryExtractAsync(
+            RepoRoot, "distill these notes", "github/o-r/99", Today, CancellationToken.None);
+
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
+        result.EntryFileName.Should().Be("mcqdbdev/lower-entry.md");
+        fs.Files[KbDir + "/mcqdbdev/lower-entry.md"].Should().Contain("refined lower body");
+    }
+
+    /// <summary>
+    /// The reconciliation reuses an EXISTING name; it must never invent one. A genuinely new entry named by
+    /// UPDATES still falls through to the SCOPE+TITLE create rather than being bent onto an unrelated file.
+    /// </summary>
+    [Fact]
+    public async Task TryExtractAsync_still_creates_when_no_existing_entry_matches_the_UPDATES_path()
+    {
+        var fs = new FakeSandboxFileSystem();
+        fs.Files[KbDir + "/system/x.md"] =
+            "---\ntitle: X\nscope: system\nsourcePrs: [\"old\"]\nupdated: 2026-07-01\n---\n\n# X\nbody";
+        var agent = AgentReturning(
+            "## SCOPE: system\n"
+            + "## TITLE: Brand New\n"
+            + "## UPDATES: system/brand-new.md\n\n"
+            + "new body");
+
+        var result = await Knowledge(agent, fs).TryExtractAsync(
+            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
+        result.EntryFileName.Should().Be("system/brand-new.md");
+        fs.Files[KbDir + "/system/x.md"].Should().Contain("# X", "an unrelated entry must not be rewritten");
+    }
+
     // ---- Fix 1: path-traversal hardening on SCOPE / UPDATES -----------------------------------------
 
     [Fact]

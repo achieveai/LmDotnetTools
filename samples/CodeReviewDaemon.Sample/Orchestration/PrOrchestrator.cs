@@ -2,6 +2,7 @@ using System.Text.Json;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
+using CodeReviewDaemon.Sample.Workspace;
 
 namespace CodeReviewDaemon.Sample.Orchestration;
 
@@ -169,9 +170,14 @@ internal sealed class PrOrchestrator
     }
 
     /// <summary>
-    /// Whether a stage's outcomes are accounted by the <see cref="RetryGovernor"/> at all. Deliberately tiny:
-    /// the governor exists to park work that CANNOT self-heal by being retried on the poll interval, and
-    /// widening it turns ordinary transients into abandoned reviews.
+    /// Whether a stage CLEARS the run's accumulated retry state when it succeeds. Every executed stage does,
+    /// and it has to: a stage whose failures can charge the budget (see <see cref="IsGovernedFailure"/>, which
+    /// now charges a slot-preparation failure wherever prep re-ran) must also be able to un-charge it, or one
+    /// persistent-then-recovered prep would follow the run to a park it no longer deserves.
+    /// <para>
+    /// The narrow judgement lives in <see cref="IsGovernedFailure"/>, not here. That is the one that decides
+    /// what a stuck run IS, and widening THAT is what turns ordinary transients into abandoned reviews.
+    /// </para>
     /// </summary>
     internal string ClassifyDeliveryOutcome(ReviewRun run)
     {
@@ -213,7 +219,7 @@ internal sealed class PrOrchestrator
     }
 
     private static bool IsGovernedStage(ReviewStage stage) =>
-        stage is ReviewStage.ContextReady or ReviewStage.Reviewed;
+        stage is ReviewStage.ContextReady or ReviewStage.Reviewed or ReviewStage.Judged or ReviewStage.Posted;
 
     /// <summary>
     /// Whether <paramref name="ex"/> is a failure the governor should charge against the run's budget. Any
@@ -228,15 +234,30 @@ internal sealed class PrOrchestrator
     /// transients: they have to park eventually. A provider blip, a host 5xx or a blank synthesis stays
     /// outside the budget and keeps retrying.
     /// </summary>
-    private static bool IsGovernedFailure(ReviewStage stage, Exception ex) => stage switch
+    private static bool IsGovernedFailure(ReviewStage stage, Exception ex)
     {
-        ReviewStage.ContextReady => true,
-        ReviewStage.Reviewed => ex
-            is ReviewBarrierDeadlineException
-                or ReviewCheckpointCorruptException
-                or ReviewHostContractException,
-        _ => false,
-    };
+        // Slot PREPARATION is governed wherever it runs, not only under the stage it usually runs under. The
+        // slot lease lives in memory only, so a run that persisted Stage=ContextReady in an earlier process (a
+        // restart, or a resume after RetryPending) arrives at Reviewed/Judged/Posted with no lease and
+        // re-prepares a slot there. These three are the same stuck-store conditions ContextReady already
+        // parks — a store that will not clone, a tree that will not clean, a path that cannot be established
+        // as contained — and none of them is made better by waiting one more poll interval. Tagged with a
+        // later stage they used to escape the budget entirely and busy-loop forever (issue #218 item 7).
+        if (ex is SlotNeedsRecloneException or SlotCorruptException or SlotAddressUnusableException)
+        {
+            return true;
+        }
+
+        return stage switch
+        {
+            ReviewStage.ContextReady => true,
+            ReviewStage.Reviewed => ex
+                is ReviewBarrierDeadlineException
+                    or ReviewCheckpointCorruptException
+                    or ReviewHostContractException,
+            _ => false,
+        };
+    }
 
     /// <summary>Human-readable reason a PR was picked this cycle: a brand-new run is "new PR" (no prior
     /// review of this PR) or "new commit {sha}" (its head advanced past the last reviewed commit); an

@@ -3,6 +3,7 @@ using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
+using CodeReviewDaemon.Sample.Workspace;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Orchestration;
@@ -203,6 +204,91 @@ public sealed class PrOrchestratorRetryTests : IDisposable
         await attempt.Should().ThrowAsync<InvalidOperationException>();
 
         executor.FailStageCalls.Should().Be(2, "a transient review failure keeps retrying on the poll interval");
+    }
+
+    /// <summary>
+    /// Issue #218 item 7 — slot preparation does not only run under ContextReady. The slot lease lives in
+    /// memory only, so a run that persisted Stage=ContextReady in an earlier process (a daemon restart, or a
+    /// resume after RetryPending) arrives at Reviewed/Judged/Posted with no lease and RE-PREPARES a slot
+    /// there. The prep failures are the same stuck-store conditions ContextReady governs — a store that will
+    /// not clone, a path that cannot be established as contained — but under a later stage tag they escaped
+    /// the budget entirely and busy-looped every poll forever.
+    /// <para>
+    /// Governance follows the FAILURE, not the stage that happened to host it.
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData(nameof(ReviewStage.Reviewed))]
+    [InlineData(nameof(ReviewStage.Judged))]
+    [InlineData(nameof(ReviewStage.Posted))]
+    public async Task A_slot_prep_failure_is_charged_to_the_retry_budget_at_every_stage_that_re_prepares(
+        string stageName)
+    {
+        var stage = Enum.Parse<ReviewStage>(stageName);
+        var governor = Governor(maxAttempts: 1);
+        var executor = new FailsAtStageExecutor(
+            stage, () => new SlotNeedsRecloneException("store has no .git"));
+        var orchestrator = new PrOrchestrator(
+            _store, executor, NullLogger<PrOrchestrator>.Instance, retryGovernor: governor);
+        var run = SeedRun();
+
+        var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
+        await attempt.Should().ThrowAsync<SlotNeedsRecloneException>();
+        executor.FailStageCalls.Should().Be(1);
+
+        _ = await orchestrator.RunAsync(run, CancellationToken.None);
+        executor.FailStageCalls.Should().Be(
+            1, "a store that cannot be prepared is stuck wherever the prep ran, so it must park, not busy-loop");
+    }
+
+    /// <summary>
+    /// All three slot-recovery conditions are the same class of stuck: re-cloning or re-addressing is what
+    /// they need, and nothing about waiting one more poll interval supplies it.
+    /// </summary>
+    [Theory]
+    [InlineData("reclone")]
+    [InlineData("corrupt")]
+    [InlineData("address")]
+    public async Task Every_slot_recovery_failure_at_a_later_stage_is_charged_to_the_retry_budget(string kind)
+    {
+        Func<Exception> error = kind switch
+        {
+            "reclone" => () => new SlotNeedsRecloneException("store has no .git"),
+            "corrupt" => () => new SlotCorruptException("stale index.lock survived cleaning"),
+            _ => () => new SlotAddressUnusableException("store path is a junction"),
+        };
+        var governor = Governor(maxAttempts: 1);
+        var executor = new FailsAtStageExecutor(ReviewStage.Judged, error);
+        var orchestrator = new PrOrchestrator(
+            _store, executor, NullLogger<PrOrchestrator>.Instance, retryGovernor: governor);
+        var run = SeedRun();
+
+        var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
+        await attempt.Should().ThrowAsync<Exception>();
+        executor.FailStageCalls.Should().Be(1);
+
+        _ = await orchestrator.RunAsync(run, CancellationToken.None);
+        executor.FailStageCalls.Should().Be(1, "every slot-recovery condition parks rather than busy-looping");
+    }
+
+    /// <summary>
+    /// The widened budget must not park work that heals itself. A transient at a later stage still retries
+    /// every poll, exactly as before — the distinction is the exception type, not the stage.
+    /// </summary>
+    [Fact]
+    public async Task A_transient_failure_at_Posted_still_retries_after_the_slot_prep_widening()
+    {
+        var governor = Governor(maxAttempts: 1);
+        var executor = new FailsAtStageExecutor(ReviewStage.Posted, () => new InvalidOperationException("502"));
+        var orchestrator = new PrOrchestrator(
+            _store, executor, NullLogger<PrOrchestrator>.Instance, retryGovernor: governor);
+        var run = SeedRun();
+
+        var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
+        await attempt.Should().ThrowAsync<InvalidOperationException>();
+        await attempt.Should().ThrowAsync<InvalidOperationException>();
+
+        executor.FailStageCalls.Should().Be(2, "a transient posting failure must not be parked");
     }
 
     private RetryGovernor Governor(int maxAttempts) => new(
