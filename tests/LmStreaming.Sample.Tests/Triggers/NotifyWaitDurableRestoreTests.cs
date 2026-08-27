@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using AchieveAi.LmDotnetTools.LmStreaming.Sample.Triggers;
+using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
@@ -135,8 +136,15 @@ public sealed class NotifyWaitDurableRestoreTests
         finally
         {
             SqliteConnection.ClearAllPools();
-            TryDeleteDir(root);
         }
+
+        // #477: detach-then-delete rather than recursive-delete in place - see DetachedStoreTeardown.
+        // Deliberately NOT in a finally: Purge throws when it cannot detach, and a throw from a finally
+        // REPLACES the assertion failure that is unwinding through it. A leaked temp directory is a far
+        // cheaper outcome than losing the reason the test failed. ClearAllPools stays in the finally
+        // because it must always run and cannot throw - and because Purge cannot detach the root until
+        // the pooled SQLite handles it releases are actually closed.
+        DetachedStoreTeardown.Purge(root);
     }
 
     [Fact]
@@ -203,8 +211,15 @@ public sealed class NotifyWaitDurableRestoreTests
         finally
         {
             SqliteConnection.ClearAllPools();
-            TryDeleteDir(root);
         }
+
+        // #477: detach-then-delete rather than recursive-delete in place - see DetachedStoreTeardown.
+        // Deliberately NOT in a finally: Purge throws when it cannot detach, and a throw from a finally
+        // REPLACES the assertion failure that is unwinding through it. A leaked temp directory is a far
+        // cheaper outcome than losing the reason the test failed. ClearAllPools stays in the finally
+        // because it must always run and cannot throw - and because Purge cannot detach the root until
+        // the pooled SQLite handles it releases are actually closed.
+        DetachedStoreTeardown.Purge(root);
     }
 
     [Fact]
@@ -265,8 +280,15 @@ public sealed class NotifyWaitDurableRestoreTests
         finally
         {
             SqliteConnection.ClearAllPools();
-            TryDeleteDir(root);
         }
+
+        // #477: detach-then-delete rather than recursive-delete in place - see DetachedStoreTeardown.
+        // Deliberately NOT in a finally: Purge throws when it cannot detach, and a throw from a finally
+        // REPLACES the assertion failure that is unwinding through it. A leaked temp directory is a far
+        // cheaper outcome than losing the reason the test failed. ClearAllPools stays in the finally
+        // because it must always run and cannot throw - and because Purge cannot detach the root until
+        // the pooled SQLite handles it releases are actually closed.
+        DetachedStoreTeardown.Purge(root);
     }
 
     [Fact]
@@ -326,8 +348,15 @@ public sealed class NotifyWaitDurableRestoreTests
         finally
         {
             SqliteConnection.ClearAllPools();
-            TryDeleteDir(root);
         }
+
+        // #477: detach-then-delete rather than recursive-delete in place - see DetachedStoreTeardown.
+        // Deliberately NOT in a finally: Purge throws when it cannot detach, and a throw from a finally
+        // REPLACES the assertion failure that is unwinding through it. A leaked temp directory is a far
+        // cheaper outcome than losing the reason the test failed. ClearAllPools stays in the finally
+        // because it must always run and cannot throw - and because Purge cannot detach the root until
+        // the pooled SQLite handles it releases are actually closed.
+        DetachedStoreTeardown.Purge(root);
     }
 
     [Fact]
@@ -390,8 +419,15 @@ public sealed class NotifyWaitDurableRestoreTests
         finally
         {
             SqliteConnection.ClearAllPools();
-            TryDeleteDir(root);
         }
+
+        // #477: detach-then-delete rather than recursive-delete in place - see DetachedStoreTeardown.
+        // Deliberately NOT in a finally: Purge throws when it cannot detach, and a throw from a finally
+        // REPLACES the assertion failure that is unwinding through it. A leaked temp directory is a far
+        // cheaper outcome than losing the reason the test failed. ClearAllPools stays in the finally
+        // because it must always run and cannot throw - and because Purge cannot detach the root until
+        // the pooled SQLite handles it releases are actually closed.
+        DetachedStoreTeardown.Purge(root);
     }
 
     // --- helpers -----------------------------------------------------------------------------
@@ -460,20 +496,5 @@ public sealed class NotifyWaitDurableRestoreTests
         }
 
         return active;
-    }
-
-    private static void TryDeleteDir(string root)
-    {
-        try
-        {
-            if (Directory.Exists(root))
-            {
-                Directory.Delete(root, recursive: true);
-            }
-        }
-        catch
-        {
-            // Best-effort cleanup; a leftover temp dir must not fail the test.
-        }
     }
 }

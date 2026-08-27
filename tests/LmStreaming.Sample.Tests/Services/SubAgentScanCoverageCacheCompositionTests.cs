@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 using LmStreaming.Sample.Configuration;
 using LmStreaming.Sample.Services;
 using Microsoft.AspNetCore.Hosting;
@@ -82,10 +83,14 @@ public sealed class SubAgentScanCoverageCacheCompositionTests
         var root = Path.Combine(
             Path.GetTempPath(), "lmstreaming-collab-cache-composition-test", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
-        try
+        // An explicit `await using` BLOCK, not a method-scoped `await using var`: the host must be
+        // disposed before the purge below, and method scope would dispose it at the method's closing
+        // brace, i.e. AFTER. This test resolves no agent pool, so its host is a latent store writer
+        // rather than a live one - but the ordering is what makes that a property of the test rather
+        // than of luck, and the block is the shape that needs no assumption about whether this factory
+        // subclass is idempotent on a second disposal.
+        await using (var host = new CollaborationCacheWebAppFactory(Path.Combine(root, "conversations")))
         {
-            await using var host = new CollaborationCacheWebAppFactory(Path.Combine(root, "conversations"));
-
             var options = host.Services.GetRequiredService<AgentCollaborationHostOptions>();
             options.MaxPersistedHierarchyEntries.Should().Be(
                 ConfiguredCapacity,
@@ -125,24 +130,11 @@ public sealed class SubAgentScanCoverageCacheCompositionTests
                     + "library default) — proving Program.cs actually threads "
                     + "AgentCollaboration:MaxPersistedHierarchyEntries into this singleton");
         }
-        finally
-        {
-            TryDeleteDir(root);
-        }
-    }
 
-    private static void TryDeleteDir(string root)
-    {
-        try
-        {
-            if (Directory.Exists(root))
-            {
-                Directory.Delete(root, recursive: true);
-            }
-        }
-        catch
-        {
-            // Best-effort cleanup; a leftover temp dir must not fail the test.
-        }
+        // #477: detach-then-delete rather than recursive-delete in place - see DetachedStoreTeardown.
+        // Deliberately NOT in a finally: Purge throws when it cannot detach, and a throw from a finally
+        // REPLACES the assertion failure that is unwinding through it. A leaked temp directory is a far
+        // cheaper outcome than losing the reason the test failed.
+        DetachedStoreTeardown.Purge(root);
     }
 }

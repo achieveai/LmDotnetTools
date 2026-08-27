@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 using LmStreaming.Sample.Services;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -59,12 +60,15 @@ public sealed class WorkspaceThreadRegistrationCompositionTests
             Guid.NewGuid().ToString("N")
         );
         _ = Directory.CreateDirectory(root);
-        try
+        var gateway = new FakeSandboxGateway();
+        var probe = new ThreadAwareActivityProbe();
+        // An explicit `await using` BLOCK, not a method-scoped `await using var`: the host must be
+        // disposed before the purge below, and method scope would dispose it at the method's closing
+        // brace, i.e. AFTER. This test drives pool.GetOrCreateAgent, so the host is a live
+        // conversation-store writer holding FileShare.None handles under `root`. The block is the shape that needs no
+        // assumption about whether this factory subclass is idempotent on a second disposal.
+        await using (var host = new WorkspaceCompositionWebAppFactory(root, gateway, probe))
         {
-            var gateway = new FakeSandboxGateway();
-            var probe = new ThreadAwareActivityProbe();
-            await using var host = new WorkspaceCompositionWebAppFactory(root, gateway, probe);
-
             // A real workspace with a real marketplace — the default workspace cannot be updated, and
             // the migration validates the selection against the (stubbed) catalog before it does
             // anything else, so the selection below has to be genuinely legal here.
@@ -147,10 +151,12 @@ public sealed class WorkspaceThreadRegistrationCompositionTests
             stored!.PluginSelection.Should().BeNull("a timed-out migration must not persist the selection");
             stored.PluginsRevision.Should().Be(0, "a timed-out migration must not consume the revision");
         }
-        finally
-        {
-            TryDeleteDir(root);
-        }
+
+        // #477: detach-then-delete rather than recursive-delete in place - see DetachedStoreTeardown.
+        // Deliberately NOT in a finally: Purge throws when it cannot detach, and a throw from a finally
+        // REPLACES the assertion failure that is unwinding through it. A leaked temp directory is a far
+        // cheaper outcome than losing the reason the test failed.
+        DetachedStoreTeardown.Purge(root);
     }
 
     /// <summary>
@@ -383,21 +389,6 @@ public sealed class WorkspaceThreadRegistrationCompositionTests
                     Content = new StringContent(responseBody, Encoding.UTF8, "application/json"),
                 }
             );
-        }
-    }
-
-    private static void TryDeleteDir(string root)
-    {
-        try
-        {
-            if (Directory.Exists(root))
-            {
-                Directory.Delete(root, recursive: true);
-            }
-        }
-        catch
-        {
-            // Best-effort cleanup; a leftover temp dir must not fail the test.
         }
     }
 }

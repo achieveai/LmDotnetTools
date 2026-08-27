@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 using LmStreaming.Sample.Persistence;
 using LmStreaming.Sample.Services;
 using Microsoft.AspNetCore.Hosting;
@@ -396,15 +397,20 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
     /// </remarks>
     /// <param name="path">Directory to remove.</param>
     /// <param name="delete">
-    /// Seam for the delete itself. Defaults to <see cref="Directory.Delete(string, bool)"/>; a test
-    /// substitutes it because the interesting cases — a transient failure that clears, and one that
-    /// never does — cannot be provoked portably. Holding a file handle blocks removal on Windows and
-    /// does not on Linux, so an OS-level reproduction would assert different things on the two
-    /// platforms, and this runs on both.
+    /// Seam for the delete itself. Defaults to <see cref="DetachedStoreTeardown.Purge(string)"/> — the
+    /// same detach-then-delete used by every other <c>FileConversationStore</c> root in the solution,
+    /// which additionally guards against the #477 legal-success-window class; a test substitutes it
+    /// because the interesting cases — a transient failure that clears, and one that never does —
+    /// cannot be provoked portably. Holding a file handle blocks removal on Windows and does not on
+    /// Linux, so an OS-level reproduction would assert different things on the two platforms, and this
+    /// runs on both. This method's own retry-and-swallow loop still wraps whatever the delegate does,
+    /// so a root <see cref="DetachedStoreTeardown.Purge(string)"/> cannot detach is retried here too,
+    /// and only reported — never thrown — once the budget below is exhausted; see the class remarks for
+    /// why a throw must not reach <see cref="Dispose"/>.
     /// </param>
     internal static void TryDeleteFactoryTempDirectory(string path, Action<string>? delete = null)
     {
-        delete ??= static target => Directory.Delete(target, recursive: true);
+        delete ??= static target => DetachedStoreTeardown.Purge(target);
 
         const int Attempts = 5;
         for (var attempt = 1; attempt <= Attempts; attempt++)

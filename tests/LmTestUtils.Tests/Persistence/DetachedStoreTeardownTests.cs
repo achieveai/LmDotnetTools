@@ -1,7 +1,6 @@
-using FluentAssertions;
-using Xunit;
+using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 
-namespace LmMultiTurn.Tests.Persistence;
+namespace AchieveAi.LmDotnetTools.LmTestUtils.Tests.Persistence;
 
 /// <summary>
 /// <see cref="DetachedStoreTeardown"/> exists to keep a teardown from ever recursive-deleting a store root
@@ -53,17 +52,17 @@ public sealed class DetachedStoreTeardownTests : IDisposable
         // Asserted BEFORE the exception: this is the defect itself. A fallback that recursive-deletes the
         // attached root frees the unlocked sibling first and only then trips over the lock, so a missing
         // survivor says "deleted around the writer" even when nothing was thrown.
-        File.Exists(survivorFile).Should().BeTrue(
+        Assert.True(
+            File.Exists(survivorFile),
             "an in-place recursive delete frees sibling records first, so this file is the canary for one");
-        Directory.Exists(_root).Should().BeTrue(
+        Assert.True(
+            Directory.Exists(_root),
             "the attached root must be left exactly as found when it could not be detached");
 
-        var refusal = thrown.Should().BeOfType<IOException>(
-            "a teardown that cannot detach the root must surface the writer holding it, not delete around it")
-            .Which;
-        _ = refusal.Message.Should().Contain(
-            _root,
-            "the offending suite is only findable if the failure names the root it could not detach");
+        // A teardown that cannot detach the root must surface the writer holding it, not delete around it.
+        var refusal = Assert.IsType<IOException>(thrown);
+        // The offending suite is only findable if the failure names the root it could not detach.
+        Assert.Contains(_root, refusal.Message, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -84,27 +83,29 @@ public sealed class DetachedStoreTeardownTests : IDisposable
 
         DetachedStoreTeardown.Purge(_root);
 
-        Directory.Exists(_root).Should().BeFalse();
-        Directory.EnumerateDirectories(
+        Assert.False(Directory.Exists(_root));
+        // The detached copy is deleted, not merely renamed out of the way.
+        Assert.Empty(
+            Directory.EnumerateDirectories(
                 Path.GetDirectoryName(_root)!,
-                Path.GetFileName(_root) + "-detached*")
-            .Should().BeEmpty("the detached copy is deleted, not merely renamed out of the way");
+                Path.GetFileName(_root) + "-detached*"));
     }
 
     /// <summary>A root that was never created — or that a previous purge already took — is not a failure.</summary>
     [Fact]
     public void Purge_OnAMissingRoot_IsANoOp()
     {
-        Directory.Exists(_root).Should().BeFalse("precondition: nothing created this root");
+        Assert.False(Directory.Exists(_root)); // precondition: nothing created this root
 
-        var purgeNeverCreated = () => DetachedStoreTeardown.Purge(_root);
-        _ = purgeNeverCreated.Should().NotThrow();
+        var purgeNeverCreated = Record.Exception(() => DetachedStoreTeardown.Purge(_root));
+        Assert.Null(purgeNeverCreated);
 
         // The second half of the claim: a root a previous purge already took is equally not a failure.
         _ = Directory.CreateDirectory(_root);
         DetachedStoreTeardown.Purge(_root);
-        var purgeAgain = () => DetachedStoreTeardown.Purge(_root);
-        _ = purgeAgain.Should().NotThrow("teardown runs per test, and the second call must be inert");
+        // Teardown runs per test, and the second call must be inert.
+        var purgeAgain = Record.Exception(() => DetachedStoreTeardown.Purge(_root));
+        Assert.Null(purgeAgain);
     }
 
     public void Dispose()
