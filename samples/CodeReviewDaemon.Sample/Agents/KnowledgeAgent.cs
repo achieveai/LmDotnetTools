@@ -794,8 +794,15 @@ internal sealed class KnowledgeAgent
             return name;
         }
 
+        // EXACT first. A case-sensitive store can hold both variants of one name -- the duplicate pair this
+        // reconciliation exists to stop creating, and reachable on any Linux checkout. When the model spells
+        // one of them exactly, that is the entry it meant; re-pointing it at its sibling because a
+        // case-insensitive scan returned that sibling first would be the reconciliation causing the very
+        // collision it is here to prevent.
         var existing = children.FirstOrDefault(
-            child => string.Equals(child, name, StringComparison.OrdinalIgnoreCase));
+                child => string.Equals(child, name, StringComparison.Ordinal))
+            ?? children.FirstOrDefault(
+                child => string.Equals(child, name, StringComparison.OrdinalIgnoreCase));
         if (existing is not null && !string.Equals(existing, name, StringComparison.Ordinal))
         {
             _logger.LogInformation(
@@ -831,8 +838,15 @@ internal sealed class KnowledgeAgent
             return scope;
         }
 
+        // EXACT first. A case-sensitive store can hold both variants of one name -- the duplicate pair this
+        // reconciliation exists to stop creating, and reachable on any Linux checkout. When the model spells
+        // one of them exactly, that is the entry it meant; re-pointing it at its sibling because a
+        // case-insensitive scan returned that sibling first would be the reconciliation causing the very
+        // collision it is here to prevent.
         var existing = children.FirstOrDefault(
-            child => string.Equals(child, scope, StringComparison.OrdinalIgnoreCase));
+                child => string.Equals(child, scope, StringComparison.Ordinal))
+            ?? children.FirstOrDefault(
+                child => string.Equals(child, scope, StringComparison.OrdinalIgnoreCase));
         if (existing is not null && !string.Equals(existing, scope, StringComparison.Ordinal))
         {
             _logger.LogInformation(

@@ -457,6 +457,8 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         runner.OnArgvContains(
             $"merge --ff-only origin/{ReviewBranch}",
             new SandboxCommandResult(1, string.Empty, "not possible to fast-forward"));
+        // Exit 1 from `diff --cached --quiet` means there IS a staged difference — the rebuilt listings.
+        runner.OnArgvContains("diff --cached --quiet", new SandboxCommandResult(1, string.Empty, string.Empty));
         var fs = new FakeSandboxFileSystem();
 
         // The reconcile records WHEN it ran, measured in git commands issued so far, so the ordering
@@ -505,6 +507,41 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         IndexOf(commands, "commit -m")
             .Should()
             .BeLessThan(IndexOf(commands, $"push origin {DefaultBranch}"));
+    }
+
+    [Fact]
+    public async Task MergeToDefault_does_not_commit_when_the_rebuild_reports_a_change_but_nothing_is_staged()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            $"merge --ff-only origin/{ReviewBranch}",
+            new SandboxCommandResult(1, string.Empty, "not possible to fast-forward"));
+        // Exit 0 from `diff --cached --quiet` means NO staged difference.
+        runner.OnArgvContains("diff --cached --quiet", new SandboxCommandResult(0, string.Empty, string.Empty));
+        // What git really does when asked to commit an empty index — and RunGitAsync throws on it.
+        runner.OnArgvContains(
+            "commit -m",
+            new SandboxCommandResult(1, "nothing to commit, working tree clean", string.Empty));
+        var fs = new FakeSandboxFileSystem();
+
+        // The regenerator answers "changed" whenever it could not establish the current content — an
+        // _index.jsonl over the 8 MiB listing ceiling, or an unreadable one — because keeping the
+        // regenerated file is the safe answer there. That is not a promise the index has anything to
+        // commit. Believing it would throw out of MergeToDefaultAsync, leaving the notes branch undeleted
+        // so the identical merge re-throws on every subsequent sweep: one oversized listing wedges the
+        // sweep permanently. Ask git what is actually staged instead.
+        var act = async () => await CreateManager(runner, fs, (_, _) => Task.FromResult(true))
+            .MergeToDefaultAsync(RepoRoot, ReviewBranch, DefaultBranch, CancellationToken.None);
+
+        (await act.Should().NotThrowAsync()).Which.Should().BeTrue();
+
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().NotContain(a => a.Contains("commit -m", StringComparison.Ordinal));
+        commands
+            .Should()
+            .Contain(
+                a => a.Contains($"push origin {DefaultBranch}", StringComparison.Ordinal),
+                "the merge must still land; skipping an empty commit is not skipping the merge");
     }
 
     [Fact]

@@ -309,6 +309,71 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
     }
 
     /// <summary>
+    /// A case-SENSITIVE store can already hold both case-variants of one name — that duplicate pair is the
+    /// very state the reconciliation exists to stop creating, and on a Linux checkout it is reachable. When
+    /// the model names one of them EXACTLY, that is the entry it meant, and the reconciliation must not
+    /// re-point it at its sibling on the strength of a case-insensitive match that listing order happened to
+    /// return first.
+    /// </summary>
+    [Fact]
+    public async Task TryExtractAsync_updates_the_exactly_named_entry_when_both_case_variants_exist()
+    {
+        var fs = new FakeSandboxFileSystem();
+        // Ordinal listing order puts "Legacy-Slug.md" ('L' = 0x4C) ahead of "legacy-slug.md" ('l' = 0x6C),
+        // so a first-case-insensitive-match reconciliation picks the WRONG one — which is what makes this
+        // fixture distinguishing rather than merely descriptive.
+        fs.Files[KbDir + "/mcqdbdev/Legacy-Slug.md"] =
+            "---\ntitle: Upper Variant\nscope: mcqdbdev\nsourcePrs: [\"upper\"]\nupdated: 2026-07-01\n---\n\n# Upper\nupper body";
+        fs.Files[KbDir + "/mcqdbdev/legacy-slug.md"] =
+            "---\ntitle: Lower Variant\nscope: mcqdbdev\nsourcePrs: [\"lower\"]\nupdated: 2026-07-01\n---\n\n# Lower\nlower body";
+        var agent = AgentReturning(
+            "## SCOPE: mcqdbdev\n"
+            + "## TITLE: Lower Variant\n"
+            + "## UPDATES: mcqdbdev/legacy-slug.md\n\n"
+            + "refined lower body");
+
+        var result = await Knowledge(agent, fs).TryExtractAsync(
+            RepoRoot, "distill these notes", "github/o-r/99", Today, CancellationToken.None);
+
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
+        result.EntryFileName
+            .Should()
+            .Be("mcqdbdev/legacy-slug.md", "an exact name is the model's answer, not a near-miss to be corrected");
+
+        fs.Files[KbDir + "/mcqdbdev/legacy-slug.md"].Should().Contain("refined lower body");
+        fs.Files[KbDir + "/mcqdbdev/Legacy-Slug.md"]
+            .Should()
+            .Contain("upper body", "the sibling variant must be left exactly as it was");
+    }
+
+    /// <summary>
+    /// The same exact-match rule on the SCOPE half of the path: two scope directories differing only in case
+    /// can coexist on a case-sensitive store, and a scope the model spells exactly must resolve to itself.
+    /// </summary>
+    [Fact]
+    public async Task TryExtractAsync_uses_the_exactly_named_scope_when_both_case_variants_exist()
+    {
+        var fs = new FakeSandboxFileSystem();
+        // "MCQdbDEV" sorts ahead of "mcqdbdev" ordinally, so it is what a first-insensitive-match returns.
+        fs.Files[KbDir + "/MCQdbDEV/upper-entry.md"] =
+            "---\ntitle: Upper Entry\nscope: MCQdbDEV\nsourcePrs: [\"upper\"]\nupdated: 2026-07-01\n---\n\n# Upper\nupper body";
+        fs.Files[KbDir + "/mcqdbdev/lower-entry.md"] =
+            "---\ntitle: Lower Entry\nscope: mcqdbdev\nsourcePrs: [\"lower\"]\nupdated: 2026-07-01\n---\n\n# Lower\nlower body";
+        var agent = AgentReturning(
+            "## SCOPE: mcqdbdev\n"
+            + "## TITLE: Lower Entry\n"
+            + "## UPDATES: mcqdbdev/lower-entry.md\n\n"
+            + "refined lower body");
+
+        var result = await Knowledge(agent, fs).TryExtractAsync(
+            RepoRoot, "distill these notes", "github/o-r/99", Today, CancellationToken.None);
+
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
+        result.EntryFileName.Should().Be("mcqdbdev/lower-entry.md");
+        fs.Files[KbDir + "/mcqdbdev/lower-entry.md"].Should().Contain("refined lower body");
+    }
+
+    /// <summary>
     /// The reconciliation reuses an EXISTING name; it must never invent one. A genuinely new entry named by
     /// UPDATES still falls through to the SCOPE+TITLE create rather than being bent onto an unrelated file.
     /// </summary>

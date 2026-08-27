@@ -459,6 +459,24 @@ internal sealed class ReviewBranchManager
         }
 
         await RunGitAsync(["add", "--", KnowledgeBaseDir], repoRoot, cancellationToken).ConfigureAwait(false);
+
+        // `changed` is the REGENERATOR's answer, and it deliberately reports "changed" when it could not
+        // establish the current content at all -- a listing over the 8 MiB ceiling, or an unreadable one --
+        // because keeping the regenerated file is the safe answer there. It is NOT a promise that the index
+        // has something to commit. `git commit` on an empty index exits non-zero and RunGitAsync throws for
+        // every verb but push/pull, so believing `changed` here would throw out of MergeToDefaultAsync: the
+        // notes branch is never deleted and the identical merge re-throws on every subsequent sweep, forever.
+        // Ask git what is actually staged. Exit 0 from `--quiet` means no staged difference.
+        var staged = await RunGitAsync(
+                ["diff", "--cached", "--quiet"], repoRoot, cancellationToken, allowFailure: true)
+            .ConfigureAwait(false);
+        if (staged.Succeeded)
+        {
+            return;
+        }
+
+        // Deliberately NOT allowFailure: past this point a failing commit has a real cause (a rejecting
+        // hook, an unwritable index) that must stay loud rather than be absorbed as "nothing to do".
         await RunGitAsync(
                 ["commit", "-m", "kb: rebuild the knowledge listings from the merged tree"],
                 repoRoot,
