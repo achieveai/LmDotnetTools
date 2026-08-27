@@ -112,6 +112,72 @@ public class MultiTurnAgentPoolDisposalDrainTests
         );
     }
 
+    [Fact]
+    public async Task DisposeAsync_DrainsTheRunTaskEvenWhenTheAgentsOwnStopDoesNot()
+    {
+        var store = new InMemoryConversationStore();
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var written = 0;
+
+        // A plain IMultiTurnAgent whose StopAsync returns Task.CompletedTask without touching the run
+        // — the shape MultiTurnAgentBase is NOT, and the reason the pool cannot delegate this wait to
+        // the agent. Nothing in IMultiTurnAgent obliges a stop to drain the run task, so the only
+        // thing that can wait for the task the pool started is the pool.
+        var agent = new FakeMultiTurnAgent("thread-lingering")
+        {
+            RunBehavior = async runCt =>
+            {
+                // Deliberately unused: the write below must survive the pool cancelling this token.
+                _ = runCt;
+                _ = entered.TrySetResult();
+
+                // Uncancellable: a writer past its own cancellation check is what disposal must wait
+                // out, not one it can cancel away.
+                await gate.Task;
+
+                await store.UpdateMetadataAsync(
+                    "thread-lingering",
+                    existing => existing
+                        ?? new ThreadMetadata
+                        {
+                            ThreadId = "thread-lingering",
+                            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        },
+                    CancellationToken.None
+                );
+
+                _ = Interlocked.Exchange(ref written, 1);
+            },
+        };
+
+        var pool = new MultiTurnAgentPool(
+            _ => new MultiTurnAgentPool.AgentCreationResult(agent),
+            providerRegistry: null,
+            conversationStore: null,
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
+
+        _ = pool.GetOrCreateAgent("thread-lingering", Mode);
+
+        await entered.Task.WaitAsync(Generous);
+
+        var dispose = pool.DisposeAsync().AsTask();
+
+        var raced = await Task.WhenAny(dispose, Task.Delay(BlockedObservation));
+        _ = raced.Should().NotBeSameAs(
+            dispose,
+            "the pool must drain the run task it started itself, rather than assume the agent's own StopAsync did"
+        );
+
+        gate.TrySetResult();
+
+        await dispose.WaitAsync(Generous);
+        _ = (Volatile.Read(ref written) != 0).Should().BeTrue(
+            "the run task's store write must have landed before disposal returned"
+        );
+    }
+
     /// <summary>
     /// Forwards everything to a real in-memory store, but holds <c>UpdateMetadataAsync</c> open until
     /// released — the single call the pool's discarded binding persist makes.

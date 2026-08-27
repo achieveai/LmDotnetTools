@@ -244,9 +244,21 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent, IAcceptanceReportingAgent
         }
     }
 
+    /// <summary>
+    /// Replaces the default park-until-cancelled run loop. Set it when a test needs the run task to do
+    /// something the pool has to wait for.
+    /// </summary>
+    /// <remarks>
+    /// The pairing with <see cref="StopAsync"/> below is the point rather than an oversight: nothing in
+    /// <see cref="IMultiTurnAgent"/> obliges a stop to drain the run, and this fake's stop does not. An
+    /// agent shaped like that is what proves the pool waits for the task IT started
+    /// (<c>AgentEntry.RunTask</c>) instead of leaning on the agent's teardown to have done it.
+    /// </remarks>
+    public Func<CancellationToken, Task>? RunBehavior { get; set; }
+
     public Task RunAsync(CancellationToken ct = default)
     {
-        return Task.Delay(Timeout.InfiniteTimeSpan, ct);
+        return RunBehavior is null ? Task.Delay(Timeout.InfiniteTimeSpan, ct) : RunBehavior(ct);
     }
 
     public Task StopAsync(TimeSpan? timeout = null)
