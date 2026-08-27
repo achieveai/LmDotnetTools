@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
@@ -13,6 +14,17 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 /// </summary>
 public class TypeFunctionProvider : IFunctionProvider
 {
+    /// <summary>
+    ///     Options used to bind a single tool argument onto a method parameter.
+    ///     <see cref="JsonNumberHandling.AllowReadingFromString" /> is set because models
+    ///     routinely emit numeric arguments as JSON strings (<c>{"taskId":"1"}</c>).
+    /// </summary>
+    private static readonly JsonSerializerOptions ArgumentOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        NumberHandling = JsonNumberHandling.AllowReadingFromString,
+    };
+
     private readonly List<FunctionDescriptor> _functions;
     private readonly object? _instance;
     private readonly Type _type;
@@ -77,6 +89,12 @@ public class TypeFunctionProvider : IFunctionProvider
                 Contract = contract,
                 Handler = handler,
                 ProviderName = ProviderName,
+                // An instance-backed provider closes over that instance, so every caller
+                // sharing the provider shares its state. Static-only providers hold none.
+                // Left unset this reported false, and StatelessFunctionProviderWrapper —
+                // whose whole job is to keep stateful functions off a shared MCP surface —
+                // would wave a per-session object through.
+                IsStateful = _instance != null,
             };
 
             functions.Add(descriptor);
@@ -228,9 +246,13 @@ public class TypeFunctionProvider : IFunctionProvider
                 var parameters = method.GetParameters();
                 var paramValues = new object?[parameters.Length];
 
-                if (!string.IsNullOrEmpty(argsJson) && parameters.Length > 0)
+                if (parameters.Length > 0)
                 {
-                    var argsDict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsJson);
+                    // An absent payload is not the same as an empty one: every parameter still
+                    // has to fall through to its declared default rather than staying null.
+                    var argsDict = string.IsNullOrEmpty(argsJson)
+                        ? null
+                        : JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsJson);
 
                     for (var i = 0; i < parameters.Length; i++)
                     {
@@ -238,12 +260,7 @@ public class TypeFunctionProvider : IFunctionProvider
 
                         if (argsDict != null && argsDict.TryGetValue(param.Name!, out var argValue))
                         {
-                            // Deserialize the argument
-                            paramValues[i] = JsonSerializer.Deserialize(
-                                argValue.GetRawText(),
-                                param.ParameterType,
-                                new JsonSerializerOptions { PropertyNameCaseInsensitive = true }
-                            );
+                            paramValues[i] = BindArgument(argValue, param.ParameterType);
                         }
                         else
                         {
@@ -320,6 +337,25 @@ public class TypeFunctionProvider : IFunctionProvider
                 return ToolHandlerResult.FromError(errorJson);
             }
         };
+    }
+
+    /// <summary>
+    ///     Binds one JSON argument onto a parameter type, tolerating the two shapes models
+    ///     get wrong most often: a quoted number for a numeric parameter, and a bare number
+    ///     for a string parameter (dotted ids such as <c>"1.2"</c> are declared as strings,
+    ///     so a model that sends <c>{"taskId": 1}</c> must still bind).
+    /// </summary>
+    private static object? BindArgument(JsonElement argValue, Type parameterType)
+    {
+        if (
+            parameterType == typeof(string)
+            && argValue.ValueKind is JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False
+        )
+        {
+            return argValue.GetRawText();
+        }
+
+        return JsonSerializer.Deserialize(argValue.GetRawText(), parameterType, ArgumentOptions);
     }
 
     private static bool IsAsyncMethod(MethodInfo method)

@@ -334,7 +334,123 @@ public class TypeFunctionProviderTests
         Assert.False(textParam.IsRequired);
     }
 
+    #region Argument Binding Tests
+
+    [Fact]
+    public async Task Handler_QuotedNumber_BindsToIntParameter()
+    {
+        // Arrange - LLMs routinely emit numeric arguments as JSON strings.
+        var provider = new TypeFunctionProvider(new TestHandlerBinding());
+        var function = provider.GetFunctions().First(f => f.Contract.Name == "bind-int");
+
+        // Act
+        var result = await function.Handler(
+            """{"taskId":"1"}""",
+            new ToolCallContext(),
+            CancellationToken.None
+        );
+
+        // Assert
+        Assert.False(result is ToolHandlerResult.Resolved { Payload.IsError: true });
+        Assert.Equal("int:1", JsonSerializer.Deserialize<string>(result.ResultText));
+    }
+
+    [Fact]
+    public async Task Handler_UnquotedNumber_BindsToStringParameter()
+    {
+        // Arrange - the mirror case: a string parameter (dotted ids like "1.2")
+        // receiving a bare JSON number.
+        var provider = new TypeFunctionProvider(new TestHandlerBinding());
+        var function = provider.GetFunctions().First(f => f.Contract.Name == "bind-string");
+
+        // Act
+        var result = await function.Handler("""{"taskId":1}""", new ToolCallContext(), CancellationToken.None);
+
+        // Assert
+        Assert.False(result is ToolHandlerResult.Resolved { Payload.IsError: true });
+        Assert.Equal("string:1", JsonSerializer.Deserialize<string>(result.ResultText));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(null)]
+    public async Task Handler_EmptyArgumentPayload_AppliesDeclaredDefaults(string? argsJson)
+    {
+        // Arrange - an empty/null payload must still honour the C# default.
+        var provider = new TypeFunctionProvider(new TestHandlerBinding());
+        var function = provider.GetFunctions().First(f => f.Contract.Name == "bind-defaulted");
+
+        // Act
+        var result = await function.Handler(argsJson!, new ToolCallContext(), CancellationToken.None);
+
+        // Assert
+        Assert.False(result is ToolHandlerResult.Resolved { Payload.IsError: true });
+        Assert.Equal("limit:7,flag:False", JsonSerializer.Deserialize<string>(result.ResultText));
+    }
+
+    [Fact]
+    public async Task Handler_EmptyArgumentPayload_SuppliesValueTypeDefaults()
+    {
+        // Arrange - a value-type parameter with no C# default must still bind.
+        var provider = new TypeFunctionProvider(new TestHandlerBinding());
+        var function = provider.GetFunctions().First(f => f.Contract.Name == "bind-required-flag");
+
+        // Act
+        var result = await function.Handler("", new ToolCallContext(), CancellationToken.None);
+
+        // Assert
+        Assert.False(result is ToolHandlerResult.Resolved { Payload.IsError: true });
+        Assert.Equal("required:False", JsonSerializer.Deserialize<string>(result.ResultText));
+    }
+
+    [Fact]
+    public void InstanceProvider_MarksFunctionsStateful()
+    {
+        // An instance-backed provider closes over that instance; sharing the provider
+        // shares its state. StatelessFunctionProviderWrapper filters on exactly this flag.
+        var provider = new TypeFunctionProvider(new TestHandlerBinding());
+
+        Assert.All(provider.GetFunctions(), f => Assert.True(f.IsStateful));
+    }
+
+    [Fact]
+    public void StaticProvider_MarksFunctionsStateless()
+    {
+        var provider = new TypeFunctionProvider(typeof(TestHandlerWithFunctionAttribute));
+
+        Assert.All(provider.GetFunctions(), f => Assert.False(f.IsStateful));
+    }
+
+    #endregion
+
     #region Test Classes
+
+    public class TestHandlerBinding
+    {
+        [Function("bind-int", "Echoes an int parameter")]
+        public string BindInt(int taskId)
+        {
+            return $"int:{taskId}";
+        }
+
+        [Function("bind-string", "Echoes a string parameter")]
+        public string BindString(string taskId)
+        {
+            return $"string:{taskId}";
+        }
+
+        [Function("bind-defaulted", "Echoes parameters that declare C# defaults")]
+        public string BindDefaulted(int limit = 7, bool flag = false)
+        {
+            return $"limit:{limit},flag:{flag}";
+        }
+
+        [Function("bind-required-flag", "Echoes a value-type parameter with no default")]
+        public string BindRequiredFlag(bool enabled)
+        {
+            return $"required:{enabled}";
+        }
+    }
 
     public class TestHandlerWithFunctionAttribute
     {
