@@ -94,6 +94,12 @@ jobs:
     # does NOT cover is anything that only fails at install/runtime inside the container (a missing
     # apt-level shared library, a build that needs a compiler). Those belong to an image build, not
     # to a per-PR gate.
+    #
+    # TRIAGING A RED HERE: this gate is non-hermetic BY DESIGN. Direct dependencies are `==`-pinned
+    # but their transitives float, so a new upstream release can turn this job red on a PR that
+    # touches nothing Python. That is the gate working, not a flake — the image build would break
+    # identically. Read it as "requirements.txt has drifted out of resolvability; pin the offending
+    # transitive", never as "rerun it". A rerun that goes green only means the index moved again.
     name: PythonMCPServer requirements resolve
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -109,12 +115,21 @@ jobs:
       # certifying 3.10 after someone bumps the base image — the same silent drift between what ships
       # and what is checked that let the original breakage survive. Failing loudly on an unparseable
       # FROM line is the point too: a gate that cannot find its target must not quietly pass.
+      #
+      # The trailing alternation has to admit whitespace, not just `.`/`-`/EOL: the tag suffix is
+      # `[^[:space:]]*` and anything after it (` AS builder`, a stray CR from a CRLF Dockerfile) is a
+      # separate optional group. Without that, `FROM python:3.10 AS builder` matched nothing and the
+      # job failed with an error that named the symptom but not the cause (#480).
+      #
+      # `tail -n1` — not `head -n1` — because in a multi-stage Dockerfile the image that actually
+      # ships is the LAST stage. Taking the first `FROM python:` would certify the builder stage's
+      # interpreter while the runtime stage ran a different one.
       - name: Read the image's Python version
         id: python-version
         run: |
-          version="$(sed -nE 's/^FROM[[:space:]]+python:([0-9]+\.[0-9]+)([.-].*)?$/\1/p' Dockerfile | head -n1)"
+          version="$(sed -nE 's/^FROM[[:space:]]+python:([0-9]+\.[0-9]+)([.-][^[:space:]]*)?([[:space:]].*)?$/\1/p' Dockerfile | tail -n1)"
           if [ -z "$version" ]; then
-            echo "::error::Could not parse a 'FROM python:<major>.<minor>...' line from Dockerfile." >&2
+            echo "::error::Could not parse a 'FROM python:<major>.<minor>...' line from Dockerfile. Expected a line like 'FROM python:3.10-slim' or 'FROM python:3.10 AS builder'; got: $(grep -n '^FROM' Dockerfile | tr '\n' ' ')" >&2
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
