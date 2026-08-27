@@ -852,6 +852,72 @@ internal sealed class ReviewStore : IDisposable
     }
 
     /// <summary>
+    /// Every artifact of a run whose kind is one of <paramref name="artifactKinds"/>, in append order.
+    /// <para>
+    /// The middle of the three reads this table offers, and the one that was missing (#453).
+    /// <see cref="GetArtifacts"/> materialises every payload the run holds — the largest by far being
+    /// <c>review-context</c>, which carries the whole diff as a .NET string — and
+    /// <see cref="TryGetLatestArtifact"/> returns a single row. A caller that wants <i>all</i> rows of
+    /// <i>one</i> kind, as the eval corpus sweep does when it matches a judge row per review variant,
+    /// had to take the first and throw away the diffs. Filtering in SQL is the difference between
+    /// reading a grade and reading every diff in the window to find one.
+    /// </para>
+    /// <para>
+    /// The append-only history is untouched, exactly as with the two reads beside it: this is a
+    /// projection of the same rows, and <see cref="GetArtifacts"/> still returns all of them.
+    /// </para>
+    /// </summary>
+    /// <param name="reviewRunId">The run whose artifacts to list.</param>
+    /// <param name="artifactKinds">
+    /// The kinds to return. At least one, and none blank — an empty list would compile to an
+    /// <c>IN ()</c> that matches nothing, and an empty result is indistinguishable from a run that
+    /// recorded nothing. For the sweep that difference is every candidate of the run silently
+    /// counting as ungraded, so it is refused rather than answered.
+    /// </param>
+    /// <exception cref="ArgumentException">No kind was given, or one of them is blank.</exception>
+    public IReadOnlyList<ReviewArtifact> ListArtifacts(long reviewRunId, params string[] artifactKinds)
+    {
+        ArgumentNullException.ThrowIfNull(artifactKinds);
+
+        if (artifactKinds.Length == 0)
+        {
+            throw new ArgumentException(
+                "A kind-filtered artifact listing needs at least one artifact kind; an empty filter "
+                + "matches no row, which reads as a run that recorded nothing.",
+                nameof(artifactKinds));
+        }
+
+        foreach (var kind in artifactKinds)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(kind, nameof(artifactKinds));
+        }
+
+        var results = new List<ReviewArtifact>();
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+
+        // Parameterised per kind rather than interpolated: the kinds are constants today, and the
+        // day one arrives from configuration is the day an interpolated IN list becomes an injection.
+        var placeholders = string.Join(", ", artifactKinds.Select((_, i) => $"$kind{i}"));
+        command.CommandText =
+            $"SELECT * FROM review_artifact WHERE review_run_id = $runId AND artifact_kind IN ({placeholders}) ORDER BY id;";
+        _ = command.Parameters.AddWithValue("$runId", reviewRunId);
+
+        for (var i = 0; i < artifactKinds.Length; i++)
+        {
+            _ = command.Parameters.AddWithValue($"$kind{i}", artifactKinds[i]);
+        }
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            results.Add(MapArtifact(reader));
+        }
+
+        return results;
+    }
+
+    /// <summary>
     /// The most recently appended artifact of <paramref name="artifactKind"/> for a run, or <c>null</c> when the
     /// run has none. This is the single lookup every "what did this run last record?" read goes through —
     /// including the checkpoint reads that resume an interrupted review — so the "latest wins" rule is defined

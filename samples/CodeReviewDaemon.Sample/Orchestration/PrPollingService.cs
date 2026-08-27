@@ -4,6 +4,40 @@ using CodeReviewDaemon.Sample.Persistence.Models;
 namespace CodeReviewDaemon.Sample.Orchestration;
 
 /// <summary>
+/// A maintenance sweep that threw, carrying <b>which</b> one.
+/// <para>
+/// The poller has one maintenance seam and four sweeps are chained into it — PR lifecycle, deep-link
+/// retention, stranded-run reconciliation and the eval corpus sweep. Its failure log named the first
+/// of them, which was true when there was one and is now wrong three times out of four; an operator
+/// reading "PR-lifecycle sweep failed" while the eval sweep was the one throwing looks in the wrong
+/// place first (#455 item 5).
+/// </para>
+/// <para>
+/// The name is carried on the exception rather than pushed into the seam's signature because the
+/// seam is a single <c>Func</c> by design — the poller does not know how many sweeps are behind it,
+/// and giving it a list would move the composition decision out of the composition root. Cancellation
+/// is deliberately NOT wrapped: the poller tells a cancelled shutdown from a failure by type, and a
+/// wrapped <see cref="OperationCanceledException"/> would be logged as an error on every clean stop.
+/// </para>
+/// </summary>
+/// <param name="sweepName">Short, stable name of the sweep that failed.</param>
+/// <param name="inner">What it threw.</param>
+internal sealed class MaintenanceSweepException(string sweepName, Exception inner)
+    : Exception($"The {sweepName} maintenance sweep failed.", inner)
+{
+    /// <summary>Which sweep threw.</summary>
+    public string SweepName { get; } = sweepName;
+
+    /// <summary>
+    /// The sweep name to log for <paramref name="exception"/>, or <c>"unnamed"</c> when it did not
+    /// come through a named composition — which in production it always does, and in a test with a
+    /// hand-rolled seam it does not.
+    /// </summary>
+    public static string NameOf(Exception exception) =>
+        (exception as MaintenanceSweepException)?.SweepName ?? "unnamed";
+}
+
+/// <summary>
 /// The PR-watching loop. The daemon does not receive PR webhooks — it polls each configured target on
 /// an interval, advancing the opaque poll cursor (§12) and handing every discovered PR to the
 /// <see cref="PrOrchestrator"/>. Each poll cycle is isolated: a failure on one cycle is logged and the
@@ -61,23 +95,9 @@ internal sealed class PrPollingService : BackgroundService
                 _logger.LogError(ex, "Poll cycle failed; continuing after the interval.");
             }
 
-            // PR-lifecycle sweep (design §4.5): merge-on-close / delete-on-abandon for reviewed PRs' notes
-            // branches, on the same cadence as polling. Isolated from the poll so a sweep failure never stops
-            // the poller (the sweeper is itself degrade-not-throw per PR).
-            if (_sweepAsync is not null)
+            if (!await RunMaintenanceSweepAsync(stoppingToken).ConfigureAwait(false))
             {
-                try
-                {
-                    await _sweepAsync(stoppingToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                {
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "PR-lifecycle sweep failed; continuing after the interval.");
-                }
+                break;
             }
 
             try
@@ -89,6 +109,53 @@ internal sealed class PrPollingService : BackgroundService
                 break;
             }
         }
+    }
+
+    /// <summary>
+    /// Runs the maintenance seam once (design §4.5): the PR-lifecycle sweep, the deep-link retention
+    /// sweep, the stranded-run reconciler and the eval corpus sweep, chained at the composition root.
+    /// Isolated from the poll, so a sweep failure never stops the poller — each sweeper is itself
+    /// degrade-not-throw per PR, and the composition already skips the rest of the cycle on the first
+    /// throw.
+    /// <para>
+    /// Internal and separated from <see cref="ExecuteAsync"/> for the reason
+    /// <see cref="PollOnceAsync"/> is: the loop above has a delay in it, and the one thing here worth
+    /// asserting — which sweep the failure line names — would otherwise be reachable only by starting
+    /// the service and racing its interval.
+    /// </para>
+    /// </summary>
+    /// <returns>
+    /// False when the sweep was cancelled by shutdown, which is the caller's signal to stop looping —
+    /// never a report about whether the sweep succeeded, because a failed sweep is a logged event the
+    /// poller deliberately continues past.
+    /// </returns>
+    internal async Task<bool> RunMaintenanceSweepAsync(CancellationToken cancellationToken)
+    {
+        if (_sweepAsync is null)
+        {
+            return true;
+        }
+
+        try
+        {
+            await _sweepAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
+        catch (Exception ex)
+        {
+            // Named, because four sweeps share this one seam. The name rides on the exception rather
+            // than on the seam's signature — the poller does not know how many sweeps are behind it,
+            // and it should not have to.
+            _logger.LogError(
+                ex,
+                "The {SweepName} maintenance sweep failed; continuing after the interval.",
+                MaintenanceSweepException.NameOf(ex));
+        }
+
+        return true;
     }
 
     /// <summary>

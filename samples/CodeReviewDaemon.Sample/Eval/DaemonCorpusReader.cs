@@ -16,6 +16,12 @@ namespace CodeReviewDaemon.Sample.Eval;
 /// as <i>not the judge's family</i> — and the eval run segments those rows out of its aggregates
 /// rather than pooling them.
 /// </para>
+/// <para>
+/// The daemon supplies exactly one implementation, <see cref="ModelFamilies.Of"/>, which is also what
+/// <see cref="JudgeAgent"/> derives a ballot's judge family with. The seam stays a delegate so a test
+/// can state a family directly instead of encoding one in a model id, not so a second policy can be
+/// wired in: two family rules in one daemon is the defect #456 closed.
+/// </para>
 /// </summary>
 /// <param name="modelId">The model that produced the review, or null when the run recorded none.</param>
 internal delegate string? ModelFamilyResolver(string? modelId);
@@ -53,31 +59,6 @@ internal sealed class DaemonCorpusReader : ICorpusReader
 
     /// <summary>Variant label for the primary arm when the run recorded none.</summary>
     private const string PrimaryVariantFallback = "primary";
-
-    /// <summary>
-    /// The daemon's own model-id convention read as a family: everything before the first
-    /// <c>/</c> in <c>provider/model</c>, which is the same string
-    /// <see cref="JudgeAgent"/> records as a ballot's model family.
-    /// <para>
-    /// An id this convention does not fit resolves to <b>null</b>, not to itself. Null is recorded
-    /// as <i>unknown</i> and segmented out of the aggregates; a bare id returned as its own family
-    /// would be recorded as a family that is <i>not the judge's</i>, which is the answer
-    /// generator-family exclusion acts on — so guessing here turns "we cannot classify this model"
-    /// into "this model is safe to grade", silently, for every id whose provider was never recorded.
-    /// </para>
-    /// </summary>
-    /// <param name="modelId">The model that produced the review, or null when the run recorded none.</param>
-    public static string? ProviderFamily(string? modelId)
-    {
-        if (string.IsNullOrWhiteSpace(modelId))
-        {
-            return null;
-        }
-
-        var slash = modelId.IndexOf('/', StringComparison.Ordinal);
-
-        return slash > 0 ? modelId[..slash] : null;
-    }
 
     private readonly ReviewStore _store;
     private readonly ModelFamilyResolver _familyResolver;

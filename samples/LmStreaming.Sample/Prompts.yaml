@@ -87,6 +87,19 @@ chatModes:
     enabledTools: []
     enabledBuiltInTools:
       - web_search
+    # The families the host wires at agent-construction time. These used to be granted by an
+    # `id == "workspace-agent"` check, which meant a COPY of this mode got none of them; they are
+    # declared here instead so a copy inherits exactly what this mode has.
+    #
+    # `sandbox:*` (not an enumerated list) is load-bearing: a workspace's marketplace plugins add
+    # tools to the gateway at runtime, and an explicit list would silently drop them.
+    enabledCapabilityTools:
+      - sandbox:*
+      - subagents:*
+      - workflow:StartWorkflowAgent
+      - workflow:GetWorkflows
+      - workflow:CheckWorkflow
+      - workflow:WaitWorkflow
 
   - id: workflow-author
     name: Workflow Author
@@ -178,3 +191,18 @@ chatModes:
       Narrate what you are doing at each step - which tool you are calling
       and why - so the person testing this mode can follow along.
     enabledTools: []
+    # Deliberately narrower than Workspace Agent, and the narrowness is the point:
+    #  - a READ-ONLY slice of the sandbox (no Write/Edit/Bash), matching this mode's system prompt;
+    #  - the full workflow authoring surface plus the launch family;
+    #  - the LEGACY sub-agent surface only. CheckAgents/WaitForAgents/GetAgents are omitted on
+    #    purpose — selecting any of them turns on the hierarchy-wide collaboration surface, which
+    #    this mode has never had.
+    enabledCapabilityTools:
+      - sandbox:Read
+      - sandbox:Grep
+      - sandbox:Skill
+      - workflow:*
+      - subagents:Agent
+      - subagents:SendMessage
+      - subagents:CheckAgent
+      - subagents:WaitAgent

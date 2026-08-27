@@ -79,6 +79,11 @@ public sealed class FileChatModeStore : IChatModeStore
                 Description = mode.Description,
                 SystemPrompt = mode.SystemPrompt,
                 EnabledTools = mode.EnabledTools,
+                // Both of these were absent from the DTO and so were dropped on every create/update:
+                // a mode could not keep its server-side built-ins (web_search), and had no way to
+                // record a sandbox/sub-agent/workflow selection at all.
+                EnabledBuiltInTools = mode.EnabledBuiltInTools,
+                EnabledCapabilityTools = mode.EnabledCapabilityTools,
                 IsSystemDefined = false,
                 CreatedAt = now,
                 UpdatedAt = now,
@@ -126,6 +131,8 @@ public sealed class FileChatModeStore : IChatModeStore
                 Description = mode.Description,
                 SystemPrompt = mode.SystemPrompt,
                 EnabledTools = mode.EnabledTools,
+                EnabledBuiltInTools = mode.EnabledBuiltInTools,
+                EnabledCapabilityTools = mode.EnabledCapabilityTools,
                 UpdatedAt = now,
             };
 
@@ -186,6 +193,9 @@ public sealed class FileChatModeStore : IChatModeStore
                 SystemPrompt = sourceMode.SystemPrompt,
                 EnabledTools = sourceMode.EnabledTools,
                 EnabledBuiltInTools = sourceMode.EnabledBuiltInTools,
+                // Carrying this across is what makes a copy of Workspace Agent behave like Workspace
+                // Agent: capability is derived from the selection, not from the mode's id.
+                EnabledCapabilityTools = sourceMode.EnabledCapabilityTools,
                 IsSystemDefined = false,
                 CreatedAt = now,
                 UpdatedAt = now,
