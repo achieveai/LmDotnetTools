@@ -24,7 +24,10 @@ public sealed class S2SReviewAgentLoopFactoryTests
         Id: "review", Name: "Review Agent", SystemPrompt: "REVIEW METHODOLOGY",
         EnabledTools: null, EnabledBuiltInTools: []);
 
-    private static S2SReviewAgentLoopFactory NewFactory(FakeHttpMessageHandler handler, HttpClient http) =>
+    private static S2SReviewAgentLoopFactory NewFactory(
+        FakeHttpMessageHandler handler,
+        HttpClient http,
+        string subAgentModelId = "") =>
         new(
             new LmStreamingS2SClient(http, "s", "id", "key"),
             new CodeReviewDaemonOptions
@@ -32,6 +35,7 @@ public sealed class S2SReviewAgentLoopFactoryTests
                 UseS2SReviewAgent = true,
                 LmStreamingProviderId = "openai",
                 LmStreamingModeId = "workspace-agent",
+                SubAgentModelId = subAgentModelId,
             },
             NullLoggerFactory.Instance);
 
@@ -152,5 +156,80 @@ public sealed class S2SReviewAgentLoopFactoryTests
         handler.Requests.Should().Contain(
             r => r.Body != null && r.Body.Contains("\"modeId\"", StringComparison.Ordinal),
             "the first turn of a new review still mints its conversation");
+    }
+
+    /// <summary>
+    /// The test the original defect needed and did not have (#529). <c>CodeReviewDaemonOptions</c> declared
+    /// <c>SubAgentModelId</c>, both live profiles set it to <c>gpt-5.6-sol</c>, and repo-wide NOTHING read
+    /// it: the only test that named it asserted the DEFAULT was empty, which stays green whether or not a
+    /// reader exists. So every review sub-agent silently ran the orchestrator's model and the two-model
+    /// split both profiles advertise never happened.
+    /// <para>
+    /// This asserts on the provision REQUEST BODY, the daemon's last chance to state the choice: provision
+    /// is the only moment the value can be set, because the host builds a thread's sub-agent options once,
+    /// when it creates the agent. Deleting the <c>subAgentModelId:</c> argument in <c>Create</c> — the
+    /// single line that reads the option — leaves every other test in this repository green and fails only
+    /// this one.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Create_puts_the_configured_SubAgentModelId_on_the_provision_wire()
+    {
+        var handler = new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities()
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
+            .OnJson(HttpMethod.Put, "/metadata", "{}")
+            .OnJson(
+                HttpMethod.Get,
+                "/status",
+                "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"fresh answer\"}}")
+            .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-fresh\"}");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5051/") };
+
+        await using var agent = NewFactory(handler, http, subAgentModelId: "gpt-5.6-sol").Create(
+            Profile, modelId: null, threadId: "review-run-7-a", reviewWorkspace: Workspace);
+
+        _ = await DriveAsync(agent, "review this PR");
+
+        var provision = handler.Requests
+            .Should()
+            .ContainSingle(r => r.Body != null && r.Body.Contains("\"modeId\"", StringComparison.Ordinal))
+            .Subject;
+        provision.Body.Should().Contain(
+            "\"subAgentModelId\":\"gpt-5.6-sol\"",
+            "the operator configured this model for the review sub-agents, and provision is the only call "
+                + "that can carry it to the host");
+    }
+
+    /// <summary>
+    /// The unconfigured default, and the half that keeps <c>""</c> meaning "inherit
+    /// <c>ReviewModelId</c>" all the way onto the wire.
+    /// <see cref="CodeReviewDaemonOptions.SubAgentModelId"/> defaults to the empty string rather than null,
+    /// so this is the path EVERY daemon that has not opted in takes on every provision. It must send an
+    /// explicit <c>null</c>: a host that stored <c>""</c> would hand each spawn a blank model id instead of
+    /// leaving it to inherit the parent.
+    /// </summary>
+    [Fact]
+    public async Task Create_sends_null_rather_than_a_blank_model_when_SubAgentModelId_is_unset()
+    {
+        var handler = new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities()
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
+            .OnJson(HttpMethod.Put, "/metadata", "{}")
+            .OnJson(
+                HttpMethod.Get,
+                "/status",
+                "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"fresh answer\"}}")
+            .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-fresh\"}");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5051/") };
+
+        await using var agent = NewFactory(handler, http).Create(
+            Profile, modelId: null, threadId: "review-run-7-a", reviewWorkspace: Workspace);
+
+        _ = await DriveAsync(agent, "review this PR");
+
+        var provision = handler.Requests
+            .Should()
+            .ContainSingle(r => r.Body != null && r.Body.Contains("\"modeId\"", StringComparison.Ordinal))
+            .Subject;
+        provision.Body.Should().Contain("\"subAgentModelId\":null");
     }
 }

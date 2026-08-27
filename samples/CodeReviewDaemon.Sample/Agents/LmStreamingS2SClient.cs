@@ -106,12 +106,22 @@ internal sealed class LmStreamingS2SClient
     /// back off the outbound provider request.
     /// </para>
     /// A null/blank value is sent as <c>null</c>, which the host treats the same as absent.
+    /// <para>
+    /// <paramref name="subAgentModelId"/> is the model every sub-agent spawned in this conversation runs on
+    /// unless the spawn names its own. It is conversation-scoped rather than per-turn because the host builds
+    /// its sub-agent options once per thread, when the agent is created. Optional and additive: a host that
+    /// predates the field ignores it and every child inherits the parent model, which is the behavior this
+    /// call had before — so unlike the spawn-suppression and idempotency flags below, there is nothing to
+    /// acknowledge and no contract to fail. Blank is sent as <c>null</c>, never as an empty string: a host
+    /// that stored <c>""</c> would hand each spawn a blank model id instead of leaving it to inherit.
+    /// </para>
     /// </summary>
     public async Task<string> ProvisionAsync(
         string workspaceId,
         string providerId,
         string modeId,
         string? systemPromptAppendix,
+        string? subAgentModelId,
         CancellationToken ct)
     {
         var body = await SendReadAsync(
@@ -125,6 +135,7 @@ internal sealed class LmStreamingS2SClient
                 SystemPromptAppendix = string.IsNullOrWhiteSpace(systemPromptAppendix)
                     ? null
                     : systemPromptAppendix,
+                SubAgentModelId = string.IsNullOrWhiteSpace(subAgentModelId) ? null : subAgentModelId,
             },
             ct);
         return ReadStringProperty(body, "threadId");

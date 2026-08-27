@@ -183,6 +183,28 @@ public record SubAgentOptions
     public IReadOnlyCollection<string>? AvailableModelIds { get; init; }
 
     /// <summary>
+    /// Host-supplied model id every sub-agent spawned in this conversation runs on unless the SPAWN itself
+    /// named a model or a tier. It is the operator's conversation-wide default — the knob that splits a
+    /// cheap orchestrator from stronger workers — and so it sits at a specific rung of the ladder:
+    /// <code>spawn-model &gt; spawn-tier &gt; DefaultSubAgentModelId &gt; template-model &gt; template-tier &gt; parent</code>
+    /// <para>
+    /// It deliberately outranks the TEMPLATE's own <c>model:</c>/<c>modelintelligence:</c> frontmatter. A
+    /// template is authored wherever its markdown lives — for a review host, in a workspace the operator
+    /// does not edit and the calling daemon cannot read — so a template-declared model would otherwise
+    /// silently override the one the operator configured and pays for. A per-spawn choice still wins,
+    /// because that is the parent agent making a deliberate, task-specific decision at dispatch time.
+    /// </para>
+    /// <para>
+    /// Null/blank (default) = no conversation default, so every existing consumer keeps the previous
+    /// ordering exactly. When it does apply, the selection is reported as <c>conversation-default</c> in
+    /// <see cref="SubAgentModelRouting.SelectionSource"/>, which is the only way an operator can tell "the
+    /// configured model won" from "nothing was configured and the child inherited the parent" — the two
+    /// states this knob exists to distinguish and previously could not.
+    /// </para>
+    /// </summary>
+    public string? DefaultSubAgentModelId { get; init; }
+
+    /// <summary>
     /// Host-supplied gate consulted at the <c>Agent</c> tool boundary just before a spawn: given the spawn's
     /// <c>name</c> argument (null when omitted), it returns <c>null</c> to ALLOW the spawn or a corrective
     /// message to REJECT it as a recoverable tool error (surfaced to the caller like the other
