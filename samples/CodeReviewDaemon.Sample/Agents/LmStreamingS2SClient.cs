@@ -91,9 +91,21 @@ internal sealed class LmStreamingS2SClient
     /// Provisions a new conversation thread and returns its server-minted thread id.
     /// <paramref name="systemPromptAppendix"/> is the review profile's system prompt: provision carries no
     /// model or tool overrides, so it is the ONLY channel by which the daemon's review methodology, output
-    /// contract and sub-agent-dispatch instructions reach the hosted agent. The host appends it to the
-    /// workspace-agent mode's own prompt (additive, not a replacement). A null/blank value is sent as
-    /// <c>null</c>, which the host treats the same as absent.
+    /// contract and sub-agent-dispatch instructions reach the hosted agent. The host records it in thread
+    /// metadata and composes it into the prompt at agent build via
+    /// <c>SystemPromptAugmenter.ComposeAsync</c>, LAST — after the mode prompt, the workspace suffix and
+    /// the discovered CLAUDE.md/AGENTS.md block (additive, not a replacement).
+    /// <para>
+    /// That was NOT true until #528. The value was sent, stored, and read by nothing: the only function
+    /// that could apply an appendix had zero production callers, so every S2S review ran under the bare
+    /// workspace-agent prompt — precisely the state <c>S2SReviewAgentLoopFactory</c>'s own
+    /// ArgumentException was written to prevent. Sending it here is still only half the contract; a test
+    /// asserting this call carries the field proves delivery to the host, not application to the model.
+    /// The test that proves application is
+    /// <c>LmStreaming.Sample.E2E.Tests.SystemPromptCompositionTests</c>, which reads the composed prompt
+    /// back off the outbound provider request.
+    /// </para>
+    /// A null/blank value is sent as <c>null</c>, which the host treats the same as absent.
     /// </summary>
     public async Task<string> ProvisionAsync(
         string workspaceId,

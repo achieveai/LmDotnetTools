@@ -1956,7 +1956,23 @@ subAgentFactory,
                         providerAgent,
                         filteredRegistry,
                         threadId,
-                        systemPrompt: effectiveMode.SystemPrompt,
+                        // The caller's own instructions (the code-review daemon's methodology, output
+                        // contract and sub-agent-dispatch protocol), recorded at provision and appended
+                        // LAST. Composed HERE, at the point of use, rather than where the workspace suffix
+                        // is built: the degraded-sandbox branch above rebuilds effectiveMode from the bare
+                        // `mode`, so anything folded in earlier is silently dropped on exactly the runs that
+                        // are already going wrong.
+                        systemPrompt: SystemPromptAugmenter
+                            .ComposeAsync(
+                                conversationStore,
+                                threadId,
+                                effectiveMode.SystemPrompt,
+                                logger: loggerFactory.CreateLogger(
+                                    "LmStreaming.Sample.SystemPromptCompose"
+                                )
+                            )
+                            .GetAwaiter()
+                            .GetResult(),
                         defaultOptions: outputTokenPolicy.ApplyPrimary(
                             new GenerateReplyOptions
                             {
