@@ -30,6 +30,32 @@ namespace LmMultiTurn.Tests.Persistence;
 /// getting the unsafe delete. Moving the root somewhere else is not an escape: on Windows any
 /// <see cref="Directory.Move(string, string)"/> fails while a descendant handle is open.
 /// </para>
+/// <para>
+/// <b>Coverage — what this helper does and does not reach.</b> Every
+/// <c>FileConversationStore</c> root in THIS assembly is purged through here:
+/// <c>FileConversationStoreTests</c> (the fixture root and
+/// <c>Constructor_CreatesBaseDirectory</c>'s own), <c>FileRunLedgerStoreTests</c>,
+/// <c>ConversationOwnershipTests</c>, <c>FileRunLifecycleStoreTests</c>,
+/// <c>InputAcceptanceStoreTests</c>, and <c>ConversationUsageProjectionTests</c>. The one remaining
+/// recursive delete in the assembly — <c>SqliteConnectionFactoryTests</c> — backs SQLite, which has no
+/// exclusive-create loop, so the window class cannot apply to it.
+/// </para>
+/// <para>
+/// <b>NOT swept, and why.</b> Five further <c>FileConversationStore</c> roots live in OTHER test
+/// assemblies and cannot reach this helper at all: it is <c>internal</c> to <c>LmMultiTurn.Tests</c>,
+/// no <c>InternalsVisibleTo</c> exists between test assemblies, and there is no shared
+/// test-infrastructure project to host it. Hardening them needs that shared home first, so it is a
+/// follow-up rather than something this file can fix. They are
+/// <c>LmStreaming.Sample.Tests</c>' <c>NotifyWaitDurableRestoreTests</c>,
+/// <c>SubAgentScanCoverageCacheCompositionTests</c>, <c>WorkspaceThreadRegistrationCompositionTests</c>
+/// and <c>WorkspaceTranscriptMirrorAttachCompositionTests</c>, plus
+/// <c>LmStreaming.Sample.Browser.E2E.Tests</c>' <c>BrowserWebAppFactory</c>. Two of those are LIVE
+/// writers rather than latent ones, so they are the ones that matter: <c>NotifyWaitDurableRestoreTests</c>
+/// (the pool's agent run task is stored but never awaited by any disposal path, and <c>StopAsync</c>
+/// both no-ops during pre-loop recovery and only logs on timeout, so store I/O can outlive teardown),
+/// and <c>BrowserWebAppFactory</c> (whose own remarks document the race and answer it with a retrying
+/// recursive delete, an answer explicitly scoped to "the writer is finishing, not restarting").
+/// </para>
 /// </summary>
 internal static class DetachedStoreTeardown
 {
@@ -81,6 +107,10 @@ internal static class DetachedStoreTeardown
             catch (DirectoryNotFoundException)
             {
                 // The root went away between the check above and here. Nothing is attached to protect.
+                // Racing that window needs a seam this helper does not have, so this arm is deliberately
+                // NOT covered by a test: mutating the return to a throw leaves the suite green. It earns
+                // its place on diagnostics — without it a vanished root would exhaust the retries below
+                // and report "something is still holding the tree", which would be simply false.
                 return;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
