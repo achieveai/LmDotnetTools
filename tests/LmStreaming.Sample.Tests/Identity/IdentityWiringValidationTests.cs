@@ -1,8 +1,12 @@
+using System.Text.Encodings.Web;
 using LmStreaming.Sample.Identity;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace LmStreaming.Sample.Tests.Identity;
 
@@ -220,11 +224,47 @@ public sealed class IdentityWiringValidationTests : IDisposable
         _ = thrown.Should().BeNull();
     }
 
+    [Fact]
+    public void AnEnforcingHostWhoseOnlySchemeIsUnrelatedToThisPipeline_RefusesToBoot()
+    {
+        // A registered authentication scheme is NOT a front door here, and this is the case that
+        // separates the two. This pipeline builds a principal from exactly two places: the
+        // resolution stashed by the bearer handler's OnTokenValidated, and an
+        // IRequestPrincipalSource. Nothing in it ever reads HttpContext.User. So the scheme below
+        // authenticates in ASP.NET Core's sense and is invisible to everything downstream - the host
+        // answers 401 on every guarded route forever, which is the exact outcome this gate exists to
+        // refuse. A gate that counted AuthenticationOptions.SchemeMap would let it boot.
+        var thrown = WireWith(
+            Enforcing(),
+            services => services.AddAuthentication()
+                .AddScheme<AuthenticationSchemeOptions, StubAuthenticationHandler>(
+                    "UnrelatedScheme",
+                    configureOptions: null));
+
+        // Message-asserted for the same reason the other refusals are: UseAuthorization throws the
+        // same type from the same Record.Exception scope.
+        _ = thrown.Should().BeOfType<InvalidOperationException>()
+            .Which.Message.Should().Contain("no front door");
+    }
+
     public void Dispose() => File.Delete(_databasePath);
 
     private sealed class StubPrincipalSource : IRequestPrincipalSource
     {
         public ValueTask<PrincipalResolution?> ResolveAsync(HttpContext context, CancellationToken ct) =>
             ValueTask.FromResult<PrincipalResolution?>(null);
+    }
+
+    /// <summary>
+    /// A scheme this pipeline knows nothing about. It succeeds at ASP.NET Core authentication and
+    /// still leaves the identity pipeline with nothing to read, which is the whole point.
+    /// </summary>
+    private sealed class StubAuthenticationHandler(
+        IOptionsMonitor<AuthenticationSchemeOptions> options,
+        ILoggerFactory logger,
+        UrlEncoder encoder) : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
+    {
+        protected override Task<AuthenticateResult> HandleAuthenticateAsync() =>
+            Task.FromResult(AuthenticateResult.NoResult());
     }
 }

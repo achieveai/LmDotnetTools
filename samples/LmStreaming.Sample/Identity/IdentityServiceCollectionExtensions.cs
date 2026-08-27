@@ -1,7 +1,6 @@
 using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using LmStreaming.Sample.Controllers;
-using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Extensions.Options;
 using Microsoft.Identity.Web;
@@ -161,13 +160,21 @@ public static class IdentityServiceCollectionExtensions
     /// The bearer escape is a different case, and not a deferred one. WHETHER it is configured is
     /// legible in configuration alone - <see cref="AddBearerAuthentication"/> gates on
     /// <see cref="ClientIdConfigKey"/>, which it reads straight from <see cref="IConfiguration"/>.
-    /// What defers the check is the discriminator chosen for it: <c>SchemeMap</c> lives on a BUILT
-    /// <c>AuthenticationOptions</c>, materialised only by resolving <c>IOptions&lt;&gt;</c> from a
-    /// container. It is preferred over re-reading the client id because it asks whether a handler
-    /// was actually registered rather than whether a setting is present:
-    /// <c>AddAuthentication(scheme)</c> only sets a default scheme NAME, and it is
-    /// <c>AddMicrosoftIdentityWebApi</c> - reached only with a client id configured - that adds the
-    /// entry a handler is resolved from.
+    /// What defers the check is the discriminator chosen for it:
+    /// <see cref="BearerPrincipalStashMarker"/> is a container registration, so reading it needs a
+    /// built provider.
+    /// </para>
+    /// <para>
+    /// <b>The marker, not the registered authentication schemes.</b> Counting schemes was the
+    /// obvious proxy and it is the wrong question. This pipeline can build a
+    /// <see cref="Principal"/> from exactly two places: the resolution stashed by
+    /// <see cref="OnTokenValidatedAsync"/>, and an <see cref="IRequestPrincipalSource"/>. Nothing
+    /// anywhere reads <c>HttpContext.User</c>. So a host that registers cookies, or a scheme of its
+    /// own, populates <c>AuthenticationOptions.SchemeMap</c> and still cannot ever produce a
+    /// principal - it would satisfy a scheme count and boot into precisely the dead host this gate
+    /// exists to refuse. <see cref="AddPrincipalResolution"/> registers the marker in the same
+    /// statement block that installs the <c>OnTokenValidated</c> handler doing the stashing, so the
+    /// marker's presence is the stash wiring's presence and the two cannot drift apart.
     /// </para>
     /// </remarks>
     private static void ValidateSomeFrontDoorExists(IServiceProvider services)
@@ -181,7 +188,7 @@ public static class IdentityServiceCollectionExtensions
             return;
         }
 
-        if (services.GetRequiredService<IOptions<AuthenticationOptions>>().Value.SchemeMap.Count > 0)
+        if (services.GetService<BearerPrincipalStashMarker>() is not null)
         {
             return;
         }
@@ -264,8 +271,9 @@ public static class IdentityServiceCollectionExtensions
     /// the handler emit a <c>401</c> challenge, and a browser client answers a <c>401</c> by
     /// signing in again - which cannot produce a provisioned tenant, so it would loop forever.
     /// </remarks>
-    private static void AddPrincipalResolution(IServiceCollection services) =>
-        services.Configure<JwtBearerOptions>(
+    private static void AddPrincipalResolution(IServiceCollection services)
+    {
+        _ = services.Configure<JwtBearerOptions>(
             JwtBearerDefaults.AuthenticationScheme,
             options =>
             {
@@ -281,6 +289,28 @@ public static class IdentityServiceCollectionExtensions
                 options.Events ??= new JwtBearerEvents();
                 options.Events.OnTokenValidated = context => OnTokenValidatedAsync(context, inner);
             });
+
+        // Deliberately in the SAME statement block as the handler above, not merely on the same
+        // branch. The Configure call above is the only wiring that ever writes
+        // IdentityHttpItems.ResolutionKey, so a marker registered beside it reports the presence of
+        // the stash itself rather than of some setting that correlates with it today.
+        _ = services.AddSingleton(new BearerPrincipalStashMarker());
+    }
+
+    /// <summary>
+    /// Present in the container exactly when <see cref="AddPrincipalResolution"/> has wired the
+    /// bearer handler that stashes a resolution for <see cref="IdentityMiddleware"/> to read.
+    /// </summary>
+    /// <remarks>
+    /// Carries no state and is never resolved by anything that does work; its whole purpose is to
+    /// let <see cref="ValidateSomeFrontDoorExists"/> ask "is the bearer front door wired" and get an
+    /// answer about THIS pipeline rather than about ASP.NET Core's scheme registry, which answers a
+    /// wider question this pipeline cannot act on.
+    /// </remarks>
+    private sealed class BearerPrincipalStashMarker
+    {
+    }
+
     /// <summary>
     /// Runs the inner <c>OnTokenValidated</c> first, then resolves our own principal and stashes it
     /// for <see cref="IdentityMiddleware"/> to read.
