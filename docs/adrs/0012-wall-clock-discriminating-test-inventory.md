@@ -90,12 +90,30 @@ attempts). Reverted; full suite green.
 
 ### Explicitly justified — no change
 
+* **`tests/LmMultiTurn.Tests/SubAgents/SubAgentStateLifecycleTests.cs::
+  BeginTerminalDisposal_UnblocksWedgedInjectSend_ViaLifecycleTokenCancellation`** — uses
+  `await x.WaitAsync(TimeSpan.FromSeconds(5))` purely as a hang-prevention ceiling around a
+  signal-based assertion. It does not assert on the *elapsed* duration; a slow runner just makes the
+  test take longer within the 5s budget, it does not change the pass/fail outcome. Not a discriminator.
+
 * **`tests/LmStreaming.Sample.Tests/Triggers/FileTailTriggerSourceTests.cs::Fire_Payload_EscapesInjectionAttempts`**
-  and **`tests/LmMultiTurn.Tests/SubAgents/SubAgentStateLifecycleTests.cs::
-  BeginTerminalDisposal_UnblocksWedgedInjectSend_ViaLifecycleTokenCancellation`** — both use
-  `await x.WaitAsync(TimeSpan.FromSeconds(5))` purely as a hang-prevention ceiling around content- or
-  signal-based assertions. Neither asserts on the *elapsed* duration; a slow runner just makes the test
-  take longer within the 5s budget, it does not change the pass/fail outcome. Not a discriminator.
+  — **this entry was wrong, and #452 is the correction.** It was originally filed here alongside the
+  entry above, on the same reasoning: a 5s `WaitAsync` read as a hang ceiling around a content
+  assertion. That reasoning held only if the watcher was guaranteed to observe the append at all, and
+  it was not. `FileTailArmedTrigger` captured its starting byte offset *after* `RunAsync`'s opening
+  `await Task.Yield()`, while `ArmAsync` returned a completed `ValueTask` and so never yielded — so
+  the test's append could land inside an unsynchronized window and be measured into the baseline as
+  pre-existing history. Whether the runner lost that race **was** the pass/fail outcome, which is the
+  definition of a discriminator this ADR set out to find. Mutation A on PR #462 demonstrates it:
+  deferring the baseline read turns this test red deterministically.
+
+  Corrected state: #452 removed the race in production (the baseline is now captured synchronously in
+  the constructor, before `ArmAsync` returns), and the wait moved to `Wait.UntilAsync` — a 10s bound
+  that fails loudly naming what it waited for. **Now** the bound is a genuine hang guard and not a
+  discriminator, because the thing being waited for can no longer be lost. The general lesson is worth
+  keeping: a timeout is only "just a ceiling" if the event it waits for is guaranteed to be *produced*.
+  Classifying a wait without checking that the producer cannot drop the signal is how a real defect
+  gets filed as justified.
 
 * **`tests/LmAgentInfra.Tests/Sandbox/SandboxSessionRegistryPluginSelectionTests.cs`** — two
   `elapsed.Elapsed.Should().BeLessThan(...)` checks (a 500ms operation budget against a 1,100ms ceiling,
