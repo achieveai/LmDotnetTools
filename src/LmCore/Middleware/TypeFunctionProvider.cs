@@ -308,6 +308,17 @@ public class TypeFunctionProvider : IFunctionProvider
                     result = method.Invoke(target, paramValues);
                 }
 
+                // A method that opts in by returning FunctionResult can distinguish a failed
+                // operation from a successful one. Only its Text is serialized, so the wire
+                // shape is identical to a method that returns a plain string — what differs is
+                // the IsError flag and error code carried alongside it.
+                var errorCode = null as string;
+                if (result is FunctionResult functionResult)
+                {
+                    errorCode = functionResult.ErrorCode;
+                    result = functionResult.Text;
+                }
+
                 // Reflective handlers always resolve synchronously — they don't have access to a
                 // ToolCallId or DeferralContext. Wrap the serialized result as Resolved.
                 var serialized = result != null && method.ReturnType != typeof(void)
@@ -320,7 +331,10 @@ public class TypeFunctionProvider : IFunctionProvider
                         }
                     )
                     : "{}";
-                return ToolHandlerResult.FromText(serialized);
+
+                return errorCode == null
+                    ? ToolHandlerResult.FromText(serialized)
+                    : ToolHandlerResult.FromError(serialized, errorCode);
             }
             catch (TargetInvocationException tie)
             {

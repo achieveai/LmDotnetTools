@@ -423,7 +423,92 @@ public class TypeFunctionProviderTests
 
     #endregion
 
+    #region Error Signalling Tests
+
+    [Fact]
+    public async Task Handler_PlainStringReturn_IsDeliveredAsSuccess()
+    {
+        // A method that has not opted in must be unaffected, even when its text says "Error".
+        var provider = new TypeFunctionProvider(new TestHandlerErrorSignalling());
+        var function = provider.GetFunctions().First(f => f.Contract.Name == "legacy-error");
+
+        var result = await function.Handler("{}", new ToolCallContext(), CancellationToken.None);
+
+        var resolved = Assert.IsType<ToolHandlerResult.Resolved>(result);
+        Assert.False(resolved.Payload.IsError);
+        Assert.Null(resolved.Payload.ErrorCode);
+        Assert.Equal("Error: not found.", JsonSerializer.Deserialize<string>(resolved.Payload.Text));
+    }
+
+    [Fact]
+    public async Task Handler_FunctionResultError_IsDeliveredAsErrorWithCode()
+    {
+        var provider = new TypeFunctionProvider(new TestHandlerErrorSignalling());
+        var function = provider.GetFunctions().First(f => f.Contract.Name == "signalled-error");
+
+        var result = await function.Handler("{}", new ToolCallContext(), CancellationToken.None);
+
+        var resolved = Assert.IsType<ToolHandlerResult.Resolved>(result);
+        Assert.True(resolved.Payload.IsError);
+        Assert.Equal("THING_NOT_FOUND", resolved.Payload.ErrorCode);
+        // Only Text is serialized, so the wire shape matches a plain string return.
+        Assert.Equal("Error: not found.", JsonSerializer.Deserialize<string>(resolved.Payload.Text));
+    }
+
+    [Fact]
+    public async Task Handler_FunctionResultSuccess_IsDeliveredAsSuccess()
+    {
+        var provider = new TypeFunctionProvider(new TestHandlerErrorSignalling());
+        var function = provider.GetFunctions().First(f => f.Contract.Name == "signalled-ok");
+
+        var result = await function.Handler("{}", new ToolCallContext(), CancellationToken.None);
+
+        var resolved = Assert.IsType<ToolHandlerResult.Resolved>(result);
+        Assert.False(resolved.Payload.IsError);
+        Assert.Null(resolved.Payload.ErrorCode);
+        Assert.Equal("all good", JsonSerializer.Deserialize<string>(resolved.Payload.Text));
+    }
+
+    [Fact]
+    public void FunctionResult_ImplicitlyConvertsFromString_AsSuccess()
+    {
+        FunctionResult result = "hello";
+
+        Assert.False(result.IsError);
+        Assert.Null(result.ErrorCode);
+        Assert.Equal("hello", result.Text);
+    }
+
+    [Fact]
+    public void FunctionResult_Error_RequiresACode()
+    {
+        _ = Assert.Throws<ArgumentException>(() => FunctionResult.Error("  ", "text"));
+    }
+
+    #endregion
+
     #region Test Classes
+
+    public class TestHandlerErrorSignalling
+    {
+        [Function("legacy-error", "Returns an error-looking string without opting in")]
+        public string LegacyError()
+        {
+            return "Error: not found.";
+        }
+
+        [Function("signalled-error", "Reports a failed operation with a code")]
+        public FunctionResult SignalledError()
+        {
+            return FunctionResult.Error("THING_NOT_FOUND", "Error: not found.");
+        }
+
+        [Function("signalled-ok", "Returns success through the opt-in type")]
+        public FunctionResult SignalledOk()
+        {
+            return "all good";
+        }
+    }
 
     public class TestHandlerBinding
     {
