@@ -22,10 +22,8 @@ public class FileConversationStoreTests : IDisposable
     public void Dispose()
     {
         GC.SuppressFinalize(this);
-        if (Directory.Exists(_testDirectory))
-        {
-            Directory.Delete(_testDirectory, recursive: true);
-        }
+        // #477: detach-then-delete rather than recursive-delete in place — see DetachedStoreTeardown.
+        DetachedStoreTeardown.Purge(_testDirectory);
     }
 
     #region Constructor Tests
@@ -36,21 +34,17 @@ public class FileConversationStoreTests : IDisposable
         // Arrange
         var tempDir = Path.Combine(Path.GetTempPath(), $"FileStoreTest_{Guid.NewGuid()}");
 
-        try
-        {
-            // Act
-            _ = new FileConversationStore(tempDir);
+        // Act
+        _ = new FileConversationStore(tempDir);
 
-            // Assert
-            Directory.Exists(tempDir).Should().BeTrue();
-        }
-        finally
-        {
-            if (Directory.Exists(tempDir))
-            {
-                Directory.Delete(tempDir, recursive: true);
-            }
-        }
+        // Assert
+        Directory.Exists(tempDir).Should().BeTrue();
+
+        // #477: detach-then-delete rather than recursive-delete in place — see DetachedStoreTeardown.
+        // Deliberately NOT in a finally: Purge throws when it cannot detach, and a throw from a finally
+        // REPLACES the assertion failure that is unwinding through it. A leaked temp directory is a far
+        // cheaper outcome than losing the reason the test failed.
+        DetachedStoreTeardown.Purge(tempDir);
     }
 
     [Fact]

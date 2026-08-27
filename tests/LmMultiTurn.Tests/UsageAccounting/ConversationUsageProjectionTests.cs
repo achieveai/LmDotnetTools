@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using FluentAssertions;
+using LmMultiTurn.Tests.Persistence;
 using Microsoft.Data.Sqlite;
 using Xunit;
 
@@ -61,17 +62,14 @@ public class ConversationUsageProjectionTests
     public async Task RoundTrips_ThroughFileStore()
     {
         var dir = Path.Combine(Path.GetTempPath(), $"usage_proj_{Guid.NewGuid():N}");
-        try
-        {
-            await AssertRoundTripsAsync(new FileConversationStore(dir));
-        }
-        finally
-        {
-            if (Directory.Exists(dir))
-            {
-                Directory.Delete(dir, recursive: true);
-            }
-        }
+
+        await AssertRoundTripsAsync(new FileConversationStore(dir));
+
+        // #477: detach-then-delete rather than recursive-delete in place — see DetachedStoreTeardown.
+        // Deliberately NOT in a finally: Purge throws when it cannot detach, and a throw from a finally
+        // REPLACES the assertion failure that is unwinding through it. A leaked temp directory is a far
+        // cheaper outcome than losing the reason the test failed.
+        DetachedStoreTeardown.Purge(dir);
     }
 
     [Fact]

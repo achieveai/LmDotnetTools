@@ -21,10 +21,8 @@ public class FileRunLedgerStoreTests : IDisposable
     public void Dispose()
     {
         GC.SuppressFinalize(this);
-        if (Directory.Exists(_testDirectory))
-        {
-            Directory.Delete(_testDirectory, recursive: true);
-        }
+        // #477: detach-then-delete rather than recursive-delete in place — see DetachedStoreTeardown.
+        DetachedStoreTeardown.Purge(_testDirectory);
     }
 
     #region Run Ledger Tests

@@ -51,17 +51,14 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
 
         // SQLite keeps pooled connections on the file; clearing them is what lets the directory delete.
         SqliteConnection.ClearAllPools();
-        try
-        {
-            if (Directory.Exists(_root))
-            {
-                Directory.Delete(_root, recursive: true);
-            }
-        }
-        catch (IOException)
-        {
-            // A still-locked temp file must not fail an otherwise passing test run.
-        }
+
+        // #477: this suite's file-backed stores are exactly the exclusive-create retry loop the window is
+        // about — and AReserveWhoseDirectoryVanishes_KeepsYieldingRatherThanSpinningUncancellably, further
+        // down this file, deliberately pins a reserve in that loop — so the root is detached before deleting
+        // rather than recursive-deleted in place. No settle delay is needed between the clear above and the
+        // purge: Purge's own retry waits for the pooled handle to actually close, rather than guessing how
+        // long that takes the way a flat delay would.
+        DetachedStoreTeardown.Purge(_root);
     }
 
     /// <summary>
