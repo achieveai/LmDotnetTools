@@ -531,8 +531,7 @@ public class TypeFunctionProviderTests
         var signalled = provider.GetFunctions().First(f => f.Contract.Name == "signalled-error");
         var legacy = provider.GetFunctions().First(f => f.Contract.Name == "legacy-error");
 
-        // FunctionRegistry renders ReturnType.Name into the system prompt, and only Text is
-        // serialized — so an opted-in tool must describe itself exactly like a string one.
+        // Only Text is serialized, so an opted-in tool must describe itself exactly like a string one.
         Assert.Equal(typeof(string), signalled.Contract.ReturnType);
         Assert.Equal(legacy.Contract.ReturnType, signalled.Contract.ReturnType);
     }

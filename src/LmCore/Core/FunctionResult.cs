@@ -80,9 +80,7 @@ public readonly record struct FunctionResult
 
     /// <param name="errorCode">
     ///     Stable identifier for the failure. Use lower_snake_case — that is what every error
-    ///     code already in this repository uses, and consumers such as
-    ///     <c>MultiTurnAgentLoop.ClassifyToolOutcome</c> match codes exactly, so a
-    ///     differently-cased code silently falls through to the default arm. Treat it as part
+    ///     code already in this repository uses. Treat it as part
     ///     of the tool's contract; hosts may branch on it.
     /// </param>
     /// <param name="text">Human- and model-readable explanation.</param>

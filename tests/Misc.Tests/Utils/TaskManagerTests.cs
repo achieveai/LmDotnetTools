@@ -1029,15 +1029,13 @@ public class TaskManagerTests
         _taskManager.ListTasks().Should().NotContain("Level 3");
 
         // Positive control. Under-deletion is only half the failure mode: detaching the root
-        // ancestor instead of the target satisfies every negative assertion above, because the
-        // success message is composed from taskId and Title before the removal happens. The
+        // ancestor instead of the target satisfies every negative assertion above. The
         // ancestors must survive.
         _taskManager.ListTasks().Should().Contain("Level 1").And.Contain("Level 2");
         _taskManager.GetTask("1.1").Should().Contain("Task 1.1: Level 2");
 
-        // Exactly which absence this is matters: "not found" is emitted by three different
-        // guards on this path (invalid format, root missing, node missing along the path), so
-        // a substring match cannot tell "the leaf is gone" from "the tree is gone".
+        // Exactly which absence this is matters: a substring match cannot tell "the leaf is
+        // gone" from "the tree is gone".
         _taskManager.GetTask("1.1.1").Should().Be("Error: Task '1.1.1' not found.");
     }
 
@@ -1235,7 +1233,7 @@ public class TaskManagerTests
         // them is contended: that shape takes minutes and still reports nothing. Short rounds
         // keep every read racing a live writer and keep the document small. The churn goes
         // under root 1, which ManagerState serializes before every other root and before
-        // nextId, so the window spans the whole document.
+        // nextId.
         const int Rounds = 30;
         const int RootCount = 100;
         const int NestedSeedCount = 100;

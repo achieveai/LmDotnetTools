@@ -168,9 +168,8 @@ public class TypeFunctionProvider : IFunctionProvider
     }
 
     /// <summary>
-    ///     The type the caller actually receives, which is what the contract must advertise —
-    ///     <see cref="FunctionRegistry" /> renders <c>ReturnType.Name</c> straight into the
-    ///     system prompt. A method returning <see cref="FunctionResult" /> puts only its
+    ///     The type the caller actually receives, which is what the contract must advertise.
+    ///     A method returning <see cref="FunctionResult" /> puts only its
     ///     <c>Text</c> on the wire, so the model sees a <see cref="string" />; naming the
     ///     wrapper would describe a shape that never arrives.
     /// </summary>
