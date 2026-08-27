@@ -40,6 +40,7 @@
          sample: a test project's own test-only dependency should not be at the mercy of what the
          code under test happens to re-export. -->
     <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
+    <ProjectReference Include="../../src/LmTestUtils.Xunit/LmTestUtils.Xunit.csproj" />
   </ItemGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />

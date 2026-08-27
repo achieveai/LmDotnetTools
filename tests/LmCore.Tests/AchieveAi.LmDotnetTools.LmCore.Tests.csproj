@@ -32,6 +32,7 @@
     <ProjectReference Include="..\..\src\LmLifecycle\AchieveAi.LmDotnetTools.LmLifecycle.csproj" />
     <ProjectReference Include="..\..\src\LmConfig\AchieveAi.LmDotnetTools.LmConfig.csproj" />
     <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
+    <ProjectReference Include="../../src/LmTestUtils.Xunit/LmTestUtils.Xunit.csproj" />
     <ProjectReference Include="..\..\src\Misc\AchieveAi.LmDotnetTools.Misc.csproj" />
     <ProjectReference Include="..\..\src\OpenAIProvider\AchieveAi.LmDotnetTools.OpenAIProvider.csproj" />
     <ProjectReference Include="..\TestUtils\AchieveAi.LmDotnetTools.TestUtils.csproj" />

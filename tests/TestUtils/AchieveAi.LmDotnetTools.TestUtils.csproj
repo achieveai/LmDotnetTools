@@ -13,6 +13,7 @@
     <ProjectReference Include="..\..\src\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
     <ProjectReference Include="..\..\src\McpMiddleware\AchieveAi.LmDotnetTools.McpMiddleware.csproj" />
     <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
+    <ProjectReference Include="../../src/LmTestUtils.Xunit/LmTestUtils.Xunit.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.0" />

@@ -18,6 +18,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
+    <ProjectReference Include="../../src/LmTestUtils.Xunit/LmTestUtils.Xunit.csproj" />
     <ProjectReference Include="..\..\src\OpenAIProvider\AchieveAi.LmDotnetTools.OpenAIProvider.csproj" />
   </ItemGroup>
 </Project>

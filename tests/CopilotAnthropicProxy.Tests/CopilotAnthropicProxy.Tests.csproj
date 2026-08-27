@@ -22,6 +22,7 @@
     <ProjectReference Include="..\..\samples\CopilotAnthropicProxy.Sample\CopilotAnthropicProxy.Sample.csproj" />
     <ProjectReference Include="..\..\src\GithubCopilotProvider\AchieveAi.LmDotnetTools.GithubCopilotProvider.csproj" />
     <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
+    <ProjectReference Include="../../src/LmTestUtils.Xunit/LmTestUtils.Xunit.csproj" />
     <ProjectReference Include="..\..\src\Misc\AchieveAi.LmDotnetTools.Misc.csproj" />
   </ItemGroup>
   <ItemGroup>

@@ -28,6 +28,7 @@
     <ProjectReference Include="..\..\src\ClaudeAgentSdkProvider\AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.csproj" />
     <ProjectReference Include="..\..\src\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
     <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
+    <ProjectReference Include="../../src/LmTestUtils.Xunit/LmTestUtils.Xunit.csproj" />
     <ProjectReference Include="..\TestUtils\AchieveAi.LmDotnetTools.TestUtils.csproj" />
   </ItemGroup>
 </Project>
