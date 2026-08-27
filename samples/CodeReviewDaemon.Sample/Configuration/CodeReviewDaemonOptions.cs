@@ -309,6 +309,11 @@ internal sealed class CodeReviewDaemonOptions
     /// These are only added to the run's submodule allow-list when the confidentiality gate
     /// (<c>DaemonReviewStageExecutor.AllowsCrossRepoCoLocation</c>, Task 17) permits it for the run — a
     /// fork or public-repo PR never gets them, regardless of this configuration.
+    /// <para>
+    /// Names are matched against the parsed request URL path, which is NOT URL-decoded, so a URL-encoded
+    /// segment must be listed exactly as it appears in the URL (e.g. <c>Microsoft%20Orleans</c>, not
+    /// <c>Microsoft Orleans</c>).
+    /// </para>
     /// </summary>
     public IReadOnlyList<string> CrossRepoSiblings { get; init; } = [];
 

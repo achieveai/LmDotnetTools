@@ -1601,6 +1601,37 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     /// <summary>
+    /// Issue #479 item 1 — the seam test above pins that the release ABSORBS a cancelled teardown, but it
+    /// puts no run failure in flight, so the MASK half of its name is unproven by it: a method that never
+    /// throws cannot mask anything, and a method that throws only when something else already failed is the
+    /// case that matters. This drives the real thing through the orchestrator: a stage fails, and the
+    /// terminal <c>finally</c> then runs a teardown that is cancelled. The exception that reaches the caller
+    /// — the one every log line and retry decision downstream reads — must be the STAGE's, not the
+    /// teardown's.
+    /// </summary>
+    [Fact]
+    public async Task Orchestrator_surfaces_the_stage_failure_when_the_terminal_teardown_is_cancelled()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // ContextReady (delegated to the real executor) leases a slot; Reviewed throws; the orchestrator's
+        // terminal finally then calls ReleaseReviewLeaseAsync, whose teardown is cancelled.
+        var executor = new ThrowAfterStageExecutor(fixture.Executor, throwAt: ReviewStage.Reviewed);
+        var orchestrator = new PrOrchestrator(fixture.Store, executor, NullLogger<PrOrchestrator>.Instance);
+        fixture.Provisioner.DestroyFailure = new OperationCanceledException("the gateway call was cancelled");
+
+        var act = () => orchestrator.RunAsync(run, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>(
+                "the run died at Reviewed; a cancelled cleanup must not rewrite its cause of death"))
+            .WithMessage("*Simulated failure at stage Reviewed*");
+        fixture.CleanupOrder.Should().ContainInOrder(
+            ["destroy", "return"], "the teardown still ran, and its failure did not cost the slot");
+        fixture.Pool.ReturnCount.Should().Be(1);
+    }
+
+    /// <summary>
     /// The containment must not cost idempotency: the atomic removal is what stops a concurrent release (or
     /// the Posted stage) from double-returning the slot, and the pool's semaphore throws on an over-return.
     /// </summary>
@@ -1741,6 +1772,33 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var commands = fixture.HostRunner.Commands.Select(Describe).ToList();
         commands.Should().Contain(a => a.Contains($"add -- {NotesRelPath}") && a.Contains("/pool/slot-1/store"));
         fixture.Pool.ReturnCount.Should().Be(1, "the re-leased slot is stripped and returned on the terminal stage");
+    }
+
+    /// <summary>
+    /// Issue #479 item 2 — the sibling exit of the predicate the release path's catch closed. The Posted
+    /// stage tears the session down too, and there the teardown is uncaught: an
+    /// <see cref="OperationCanceledException"/> from it failed a stage whose externally visible work — the
+    /// review comment on the PR — had ALREADY landed, sending the run back to RetryPending to re-run a
+    /// terminal stage that had nothing left to do. It also skipped the retention and the slot return below.
+    /// A best-effort cleanup must not be able to undo a delivered review.
+    /// </summary>
+    [Fact]
+    public async Task Posted_completes_and_returns_the_slot_when_the_session_teardown_is_cancelled()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+        fixture.Provisioner.DestroyFailure = new OperationCanceledException("the gateway call was cancelled");
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        await act.Should().NotThrowAsync("the review is already delivered; a cancelled teardown cannot undo it");
+        fixture.CleanupOrder.Should().Contain("destroy", "the teardown is still attempted, only contained");
+        fixture.Pool.ReturnCount.Should().Be(
+            1, "retention and the slot return sit BELOW the teardown and must still run");
     }
 
     [Fact]

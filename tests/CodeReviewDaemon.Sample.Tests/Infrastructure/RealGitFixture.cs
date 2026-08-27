@@ -128,9 +128,18 @@ internal sealed class RealGitFixture : IDisposable
     /// temp repo does not clean up, it merely stops complaining, and every run leaks a repository into TEMP.
     /// Clear the attribute first, then delete; retry a couple of times for the brief window in which a git
     /// child process still holds a handle.
+    /// <para>
+    /// The LAST attempt swallows instead of rethrowing (issue #479 item 3). This runs from
+    /// <see cref="Dispose"/>, and an exception leaving a <c>using</c>'s Dispose REPLACES the one already in
+    /// flight — so a fixture that could not delete its temp tree would erase the assertion failure the test
+    /// was actually reporting and put a <c>UnauthorizedAccessException</c> about TEMP in its place. Cleaning
+    /// up is never worth more than the result it would hide; the leak is written to the console so it is
+    /// still visible without being fatal.
+    /// </para>
     /// </summary>
     public static void ForceDelete(string path)
     {
+        const int LastAttempt = 4;
         for (var attempt = 0; ; attempt++)
         {
             if (!Directory.Exists(path))
@@ -144,8 +153,16 @@ internal sealed class RealGitFixture : IDisposable
                 Directory.Delete(path, recursive: true);
                 return;
             }
-            catch (Exception ex) when (ex is UnauthorizedAccessException or IOException && attempt < 4)
+            catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
             {
+                if (attempt >= LastAttempt)
+                {
+                    Console.WriteLine(
+                        $"RealGitFixture: could not delete temp tree '{path}' after {LastAttempt + 1} attempts "
+                            + $"({ex.GetType().Name}: {ex.Message}). Leaking it rather than throwing out of Dispose.");
+                    return;
+                }
+
                 Thread.Sleep(50 * (attempt + 1));
             }
         }

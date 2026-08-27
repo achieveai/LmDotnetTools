@@ -122,4 +122,86 @@ public sealed class GitRemoteUrlTests
         canonical.Host.Should().Be(expectedHost);
         canonical.RepoPath.Should().Be(expectedPath);
     }
+
+    /// <summary>
+    /// Issue #478 — the clone URL and the submodule ALLOW-LIST path are two spellings of one identity, and
+    /// they are compared against each other: the clone URL is re-parsed and its <c>RepoPath</c> matched
+    /// against the rules built from the same org/project/repo. Encoding one side alone — the obvious fix for
+    /// a spaced Azure DevOps org, which raw makes the remote malformed — desynchronizes a security matcher.
+    /// This pins the agreement itself rather than either spelling: whatever the encoding is, the parsed clone
+    /// URL must land exactly on the allow-list path.
+    /// </summary>
+    [Theory]
+    [InlineData("ado", "contoso org", "MCQdb Development", "My Repo")]
+    [InlineData("azure-devops", "contoso org", "MCQdb Development", "My Repo")]
+    [InlineData("azure-devops", "mcqdbdev", "MCQdb_Development", "MCQdbDEV")]
+    [InlineData("github", "acme", null, "widgets")]
+    [InlineData("github", "acme org", null, "my widgets")]
+    public void The_clone_url_reparses_onto_exactly_the_allow_list_path(
+        string provider, string org, string? project, string repoName)
+    {
+        var parsed = GitRemoteUrl.Parse(GitRemoteUrl.CloneUrlFor(provider, org, project, repoName));
+
+        parsed.Kind.Should().Be(GitUrlKind.Https);
+        parsed.Host.Should().Be(GitRemoteUrl.HostFor(provider));
+        parsed.RepoPath.Should().Be(
+            GitRemoteUrl.RepoPathFor(provider, org, project, repoName),
+            "the allow-list rule and the URL actually cloned must be the same path, or the matcher gates "
+                + "nothing while looking like it does");
+    }
+
+    /// <summary>
+    /// The encoding itself, stated once so a change to it is a visible edit rather than a silent drift: a
+    /// space becomes <c>%20</c> and never survives raw into an argv element <c>git clone</c> has to parse
+    /// as a URL.
+    /// </summary>
+    [Fact]
+    public void A_spaced_ado_identity_produces_a_well_formed_clone_url()
+    {
+        GitRemoteUrl.CloneUrlFor("ado", "contoso org", "MCQdb Development", "My Repo")
+            .Should().Be("https://dev.azure.com/contoso%20org/MCQdb%20Development/_git/My%20Repo");
+    }
+
+    /// <summary>
+    /// A separator inside a NAME must stay data. Encoded it is one segment (<c>%2F</c>); raw it would open a
+    /// second path segment and address a different repo than the allow rule was written for.
+    /// </summary>
+    [Fact]
+    public void A_separator_inside_a_name_stays_one_path_segment()
+    {
+        var path = GitRemoteUrl.RepoPathFor("github", "acme", null, "widgets/../secrets");
+
+        path.Should().Be("/acme/widgets%2F..%2Fsecrets");
+        path.Split('/', StringSplitOptions.RemoveEmptyEntries).Should().HaveCount(2);
+    }
+
+    /// <summary>
+    /// Both provider spellings the daemon carries (<c>azure-devops</c> as persisted, <c>ado</c> as
+    /// normalized) classify identically. They did not before: the clone URL tested <c>"ado"</c>
+    /// case-SENSITIVELY while the allow-list accepted either spelling case-insensitively, so a differently
+    /// cased provider built a github.com clone URL against dev.azure.com allow rules.
+    /// </summary>
+    [Theory]
+    [InlineData("ado")]
+    [InlineData("ADO")]
+    [InlineData("azure-devops")]
+    [InlineData("Azure-DevOps")]
+    public void Every_azure_devops_provider_spelling_resolves_to_the_same_host(string provider)
+    {
+        GitRemoteUrl.IsAzureDevOps(provider).Should().BeTrue();
+        GitRemoteUrl.HostFor(provider).Should().Be("dev.azure.com");
+    }
+
+    /// <summary>
+    /// The identity prefix is encoded even when the leaf is a configured, already-URL-form name: those two
+    /// halves come from different sources (human-form repo identity vs. a setting documented as the URL's own
+    /// spelling) and both must end up as the <c>.gitmodules</c> URL spells them. Re-encoding the leaf would
+    /// make <c>%20</c> into <c>%2520</c> and drop a configured submodule off the allow-list.
+    /// </summary>
+    [Fact]
+    public void A_configured_url_form_submodule_name_is_not_encoded_again_under_an_encoded_prefix()
+    {
+        GitRemoteUrl.RepoPathForUrlSegment("ado", "contoso org", "MCQdb Development", "Microsoft%20Orleans")
+            .Should().Be("/contoso%20org/MCQdb%20Development/_git/Microsoft%20Orleans");
+    }
 }

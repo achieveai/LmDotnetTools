@@ -1453,17 +1453,53 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
         // The reviewed repo's own submodule + the shared Contracts layer are always allow-listed. The host
         // and repo-path shape are provider-specific — GitHub is /{owner}/{repo} on github.com, Azure DevOps
-        // is /{org}/{project}/_git/{repo} on dev.azure.com — mirroring TargetRemoteUrl so the rule matches the
-        // exact URL SubmoduleTargetsRepo resolves.
-        var isAdo = string.Equals(repo.Provider, "azure-devops", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(repo.Provider, "ado", StringComparison.OrdinalIgnoreCase);
-        var host = isAdo ? "dev.azure.com" : "github.com";
-        string RepoPath(string name) =>
-            isAdo ? $"/{repo.OrgOrOwner}/{repo.Project}/_git/{name}" : $"/{repo.OrgOrOwner}/{name}";
+        // is /{org}/{project}/_git/{repo} on dev.azure.com — and both are spelled by GitRemoteUrl, the SAME
+        // builder TargetRemoteUrl uses, so the rule matches the exact URL SubmoduleTargetsRepo resolves.
+        // Not "mirroring" it (issue #478): a mirror is two interpolations someone has to keep in step, and
+        // the day one of them learns to encode a spaced Azure DevOps org while the other does not, this
+        // security matcher stops matching legitimately allow-listed repos with no error anywhere.
+        var isAdo = GitRemoteUrl.IsAzureDevOps(repo.Provider);
+        var host = GitRemoteUrl.HostFor(repo.Provider);
+
+        // Two entry points, because two kinds of name arrive here. The reviewed repo's own name comes from
+        // the repo IDENTITY in human form (the same value the REST callers pass), so it is encoded — that is
+        // what makes this rule the path TargetRemoteUrl actually clones. Every other name is a configured
+        // ReviewedRepoSubmodules/CrossRepoSiblings entry, whose documented contract is the URL's own spelling
+        // ("Microsoft%20Orleans", not "Microsoft Orleans"), so it goes in verbatim; re-encoding one would
+        // make it %2520 and silently drop it off the allow-list.
+        string RepoPath(string urlFormName) =>
+            GitRemoteUrl.RepoPathForUrlSegment(repo.Provider, repo.OrgOrOwner, repo.Project, urlFormName);
+
+        // ...and because those names go in VERBATIM, a raw character the URL form must percent-encode — a
+        // space above all — builds a rule that can never match the (never-decoded) path the parser hands the
+        // matcher. That failure is SILENT: the submodule is simply never allowed, exactly as if it had not
+        // been configured. Say so, or the only symptom is a dependency that mysteriously never initializes.
+        void WarnIfNotUrlForm(string setting, string configuredName)
+        {
+            foreach (var segment in configuredName.Split('/', StringSplitOptions.RemoveEmptyEntries))
+            {
+                // Escaping the segment must be a no-op once the escape INTRODUCER is discounted, so an
+                // already-correct "Microsoft%20Orleans" (which would otherwise round-trip to %2520) is quiet.
+                var urlForm = Uri.EscapeDataString(segment).Replace("%25", "%", StringComparison.Ordinal);
+                if (!string.Equals(urlForm, segment, StringComparison.Ordinal))
+                {
+                    _logger.LogWarning(
+                        "{Setting} entry '{Name}' is not in URL form: segment '{Segment}' contains a character "
+                            + "that must be percent-encoded ('{UrlForm}'). Configured names are matched verbatim "
+                            + "against the undecoded request path, so this entry will never match and the "
+                            + "submodule stays denied.",
+                        setting,
+                        configuredName,
+                        segment,
+                        urlForm);
+                    return;
+                }
+            }
+        }
 
         var rules = new List<SubmoduleAllowRule>
         {
-            new(host, RepoPath(repo.RepoName)),
+            new(host, GitRemoteUrl.RepoPathFor(repo.Provider, repo.OrgOrOwner, repo.Project, repo.RepoName)),
             new(host, RepoPath("Contracts")),
         };
 
@@ -1474,6 +1510,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // attacker adds or repoints to any other name/host is denied.
         foreach (var submodule in _options.ReviewedRepoSubmodules)
         {
+            WarnIfNotUrlForm(nameof(CodeReviewDaemonOptions.ReviewedRepoSubmodules), submodule);
             rules.Add(new SubmoduleAllowRule(host, RepoPath(submodule)));
         }
 
@@ -1481,8 +1518,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         {
             foreach (var sibling in _options.CrossRepoSiblings)
             {
-                // GitHub siblings are configured as owner/repo (absolute path); ADO siblings resolve under
-                // the same org/project as the reviewed repo.
+                // GitHub siblings are configured as owner/repo (an absolute path, in the URL's own spelling);
+                // ADO siblings are a bare name resolving under the same org/project as the reviewed repo.
+                WarnIfNotUrlForm(nameof(CodeReviewDaemonOptions.CrossRepoSiblings), sibling);
                 rules.Add(new SubmoduleAllowRule(host, isAdo ? RepoPath(sibling) : $"/{sibling}"));
             }
         }
@@ -1502,11 +1540,17 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// </summary>
     internal bool AllowsCrossRepoCoLocation(ReviewRun run, RepoIdentity repo) => !run.IsForkPr && !run.IsTargetRepoPublic;
 
-    /// <summary>Builds the HTTPS clone URL for the target repo from its identity + provider.</summary>
-    private static string TargetRemoteUrl(RepoIdentity repo, string provider) =>
-        string.Equals(provider, "ado", StringComparison.Ordinal)
-            ? $"https://dev.azure.com/{repo.OrgOrOwner}/{repo.Project}/_git/{repo.RepoName}"
-            : $"https://github.com/{repo.OrgOrOwner}/{repo.RepoName}.git";
+    /// <summary>
+    /// The HTTPS clone URL for the target repo. Delegates to <see cref="GitRemoteUrl.CloneUrlFor"/> — the
+    /// single place org/project/repo names are spelled into a path — because this string has TWO consumers
+    /// that must agree byte-for-byte: <c>git clone</c>'s argv, and <see cref="GitRemoteUrl.Parse"/>, whose
+    /// <c>RepoPath</c> is matched against the submodule allow rules
+    /// <see cref="BuildStoreSubmoduleAllowList"/> builds from the same identity (issue #478). Sharing the
+    /// builder is what makes that agreement structural instead of a convention two interpolations a
+    /// thousand lines apart are trusted to keep.
+    /// </summary>
+    internal static string TargetRemoteUrl(RepoIdentity repo, string provider) =>
+        GitRemoteUrl.CloneUrlFor(provider, repo.OrgOrOwner, repo.Project, repo.RepoName);
 
     private async Task ReviewAsync(ReviewRun run, CancellationToken cancellationToken)
     {
@@ -1593,9 +1637,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             // Injected so the review BODY self-identifies with the same name; also passed to the
             // code-reviewer:post-pr-review skill as its botPrefix (step 5).
             ["bot_name"] = botName,
-            // The reviewed repo + PR the agent posts to via code-reviewer:post-pr-review (step 5). GitHub
-            // "owner/repo"; the skill also re-resolves the provider from the checkout's git remote.
-            ["repository"] = $"{repo.OrgOrOwner}/{repo.RepoName}",
+            // No ["repository"] here (issue #479 item 4): daemon-prompts.yaml carries no {{repository}} token,
+            // so it rendered nowhere. The identity the agent actually posts with is the escaped gh_*/ado_*
+            // pair below — an unread second spelling of the same repo, in the RAW form the escaped pair exists
+            // to avoid, is a trap for whoever adds the token later.
             ["pr_number"] = prId,
             // Whether this run posts (EnableCommentPosting). Collect-only => the agent produces the review
             // but does NOT call the post skill.
@@ -1616,8 +1661,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             // resource. What makes that safe is the input, not the escaping: GitHub and Azure DevOps both
             // forbid all three in owner, project and repository names, so the only characters that can reach
             // a Uri here are ones it does escape. The prompt seam cannot lean on that: curl gets a bare
-            // string with no
-            // escaping step at all, so a legal ADO name with a space is already enough to break it.
+            // string with no escaping step at all, so a legal ADO name with a space is already enough to
+            // break it.
             ["gh_owner"] = Uri.EscapeDataString(repo.OrgOrOwner),
             ["gh_repo"] = Uri.EscapeDataString(repo.RepoName),
             ["ado_org"] = Uri.EscapeDataString(repo.OrgOrOwner),
@@ -3737,7 +3782,28 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // strip below is skipped on the same condition — see the comment there.
         if (_options.EnableToolAssistedReview && _provisioner is not null && !_options.UseS2SReviewAgent)
         {
-            await _provisioner.DestroyAsync(run, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await _provisioner.DestroyAsync(run, cancellationToken).ConfigureAwait(false);
+            }
+            // The sibling exit of the predicate ReleaseReviewLeaseAsync's catch closed (issue #479 item 2).
+            // The failure mode here is different and no less real: by this line the review comment has ALREADY
+            // been posted to the PR, so letting a best-effort teardown throw fails an otherwise-successful
+            // Posted stage — the run goes back to RetryPending and re-runs a terminal stage whose externally
+            // visible work is done. OperationCanceledException is the sharp case (a cancelled DestroyAsync is
+            // a teardown detail, not a statement that the caller wants the run abandoned) but the containment
+            // is deliberately by CLASS, not by type: nothing this teardown can report is worth undoing a
+            // delivered review. The slot below is unaffected either way — the orchestrator's terminal
+            // ReleaseReviewLeaseAsync returns it on every exit — so what is contained here is only the stage
+            // outcome.
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "Run {RunId}: terminal-stage session teardown failed after the review was already posted; "
+                        + "continuing so the delivered review is not undone by a cleanup failure.",
+                    run.Id);
+            }
         }
 
         // Retention (design §4.4, the commit gate) — only when there is content to retain. A run that leased a

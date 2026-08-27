@@ -4,6 +4,8 @@ using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace;
+using CodeReviewDaemon.Sample.Workspace.Git;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Orchestration;
@@ -120,6 +122,86 @@ public sealed class CrossRepoCheckoutTests
             .IsAllowed.Should().BeFalse("only explicitly listed submodules are allowed");
     }
 
+    /// <summary>
+    /// Issue #478 — the clone URL and the allow-list are built from the SAME identity and then compared to
+    /// each other: <c>TargetRemoteUrl</c> is re-parsed and its host+path matched against these rules (that is
+    /// how the daemon decides which store submodule is the reviewed repo, and which submodule URLs a review
+    /// may fetch at all). An Azure DevOps org or project name may legally contain a space, which raw makes
+    /// the clone URL malformed — but encoding only the URL would leave this matcher comparing raw segments
+    /// against an encoded path and silently stop matching a legitimately allow-listed repo.
+    /// <para>
+    /// This pins the AGREEMENT at the two production sites, not either spelling: whatever encoding is
+    /// canonical, the parsed clone URL must land exactly on the rule, and the run's policy must then permit
+    /// fetching it.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void StoreSubmoduleAllowList_AgreesWithTheCloneUrl_ForASpacedAdoIdentity()
+    {
+        var spaced = new RepoIdentity
+        {
+            Provider = "azure-devops",
+            OrgOrOwner = "contoso org",
+            Project = "MCQdb Development",
+            RepoName = "My Repo",
+            RepoStableId = "ado-guid-2",
+        };
+        using var db = new TempSqliteDatabase();
+        var executor = BuildExecutor(db, new CodeReviewDaemonOptions { EnableToolAssistedReview = true });
+        var run = SeedRun();
+
+        var cloneUrl = DaemonReviewStageExecutor.TargetRemoteUrl(spaced, "ado");
+        var parsed = GitRemoteUrl.Parse(cloneUrl);
+        var rules = executor.BuildStoreSubmoduleAllowList(run, spaced);
+
+        cloneUrl.Should().NotContain(" ", "a raw space makes the argv git clone parses a malformed URL");
+        rules.Should().Contain(
+            r => r.Host == parsed.Host && r.RepoPath == parsed.RepoPath,
+            "the reviewed repo's allow rule must be the exact path the clone URL addresses");
+
+        var policy = DaemonOperationPolicy.BuildForRun(
+            spaced,
+            DaemonReviewStageExecutor.TargetRemoteUrl(spaced with { RepoName = "MCQdbReview" }, "ado"),
+            allowWriteOperations: false,
+            allowedSubmodules: rules);
+
+        FetchAdo(policy, $"{parsed.RepoPath}.git/info/refs?service=git-upload-pack")
+            .IsAllowed.Should().BeTrue("the spaced-org repo the daemon clones is the one the policy permits");
+        FetchAdo(policy, "/contoso%20org/MCQdb%20Development/_git/Unlisted.git/info/refs?service=git-upload-pack")
+            .IsAllowed.Should().BeFalse("the allow-list is still explicit — no same-org wildcard");
+    }
+
+    /// <summary>
+    /// A configured submodule/sibling name goes into the allow rule VERBATIM (its documented contract is the
+    /// URL's own spelling). Configure a RAW space and the rule is built from a path the parser — which never
+    /// decodes — can never produce, so the submodule is silently never allowed: indistinguishable from having
+    /// left it out. The warning is the only thing that tells the two apart, so it is the deliverable here.
+    /// </summary>
+    [Fact]
+    public void StoreSubmoduleAllowList_WarnsWhenAConfiguredNameIsNotInUrlForm()
+    {
+        using var db = new TempSqliteDatabase();
+        using var loggers = new CapturingLoggerFactory();
+        var options = new CodeReviewDaemonOptions
+        {
+            EnableToolAssistedReview = true,
+            // The correct spelling and the foot-gun side by side: only the raw-space one may be reported.
+            ReviewedRepoSubmodules = ["Microsoft%20Orleans", "Microsoft Orleans", "LibProfiler"],
+        };
+        var executor = BuildExecutor(db, options, loggers);
+
+        var rules = executor.BuildStoreSubmoduleAllowList(SeedRun(), McqdbDev);
+
+        loggers.Capturing.CountAtLevel(LogLevel.Warning, "is not in URL form").Should().Be(
+            1,
+            "the raw-space entry never matches, and only the log can distinguish that from an unconfigured one");
+        loggers.Capturing.CountAtLevel(LogLevel.Warning, "Microsoft Orleans").Should().Be(
+            1, "the warning must name the offending entry");
+        rules.Should().Contain(
+            r => r.RepoPath.EndsWith("/Microsoft%20Orleans", StringComparison.Ordinal),
+            "the already-correct URL-form entry is left alone and must not be reported");
+    }
+
     [Fact]
     public void StoreSubmoduleAllowList_NotToolAssisted_IsEmpty()
     {
@@ -137,7 +219,10 @@ public sealed class CrossRepoCheckoutTests
     private static PolicyDecision FetchAdo(OperationPolicy policy, string path) =>
         policy.Decide(new OperationRequest(SandboxOperation.FetchSubmodule, "ado", "dev.azure.com", "GET", path));
 
-    private static DaemonReviewStageExecutor BuildExecutor(TempSqliteDatabase db, CodeReviewDaemonOptions options) =>
+    private static DaemonReviewStageExecutor BuildExecutor(
+        TempSqliteDatabase db,
+        CodeReviewDaemonOptions options,
+        ILoggerFactory? loggerFactory = null) =>
         new(
             new ReviewStore(db.ConnectionString),
             new FakeReviewAgentLoopFactory(),
@@ -145,7 +230,7 @@ public sealed class CrossRepoCheckoutTests
             new FakeSandboxFileSystem(),
             options,
             [new FakeReviewCommentPublisher("github")],
-            NullLoggerFactory.Instance);
+            loggerFactory ?? NullLoggerFactory.Instance);
 
     private static ReviewRun SeedRun() => new()
     {

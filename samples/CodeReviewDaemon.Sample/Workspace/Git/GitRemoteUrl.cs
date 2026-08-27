@@ -30,6 +30,89 @@ internal sealed record GitRemoteUrl(GitUrlKind Kind, string Host, string RepoPat
 {
     public bool IsRelative => Kind == GitUrlKind.Relative;
 
+    /// <summary>The Azure DevOps host every modern ADO remote lives on.</summary>
+    private const string AdoHost = "dev.azure.com";
+
+    /// <summary>The GitHub host.</summary>
+    private const string GitHubHost = "github.com";
+
+    /// <summary>
+    /// Whether <paramref name="provider"/> names Azure DevOps. Accepts both spellings the daemon carries
+    /// (<c>azure-devops</c> as persisted on <c>RepoIdentity</c>, <c>ado</c> as normalized by
+    /// <c>ResolveRepo</c>) case-insensitively, so every caller classifies a provider the same way. That
+    /// matters here more than tidiness: the clone URL and the submodule allow-list are compared against each
+    /// other, and a provider test that disagreed between them would build a github.com URL for a repo whose
+    /// allow rule names dev.azure.com — a mismatch that reads as "no such submodule", not as an error.
+    /// </summary>
+    public static bool IsAzureDevOps(string provider) =>
+        string.Equals(provider, "ado", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(provider, "azure-devops", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The remote host for <paramref name="provider"/>.</summary>
+    public static string HostFor(string provider) => IsAzureDevOps(provider) ? AdoHost : GitHubHost;
+
+    /// <summary>
+    /// The canonical repo path for an identity — <c>/{org}/{project}/_git/{repo}</c> on Azure DevOps,
+    /// <c>/{owner}/{repo}</c> on GitHub — with every NAME percent-encoded as one path segment (issue #478).
+    /// <para>
+    /// This is the single place the daemon spells a repo path, and it exists because two consumers must
+    /// agree byte-for-byte: the clone URL handed to <c>git clone</c> as argv (<see cref="CloneUrlFor"/>,
+    /// whose path is literally this string), and the host+path submodule ALLOW RULE that gates which
+    /// submodule URLs a review may fetch. Encoding only the clone URL — the obvious fix for a spaced Azure
+    /// DevOps org or project, which raw makes the remote malformed — would leave the security matcher
+    /// comparing raw segments against an encoded URL and silently stop matching legitimately allow-listed
+    /// repos. Encoding is also what keeps each name ONE segment: a separator inside a name stays data
+    /// instead of re-pointing the path at a different repo.
+    /// </para>
+    /// <para>
+    /// Nothing DECODES here, and <see cref="Parse"/> deliberately does not either. Submodule URLs are
+    /// attacker-controlled; normalizing them before comparison is how <c>%2F</c> becomes a separator after
+    /// the check that was supposed to catch it. The no-decode stance is what makes the OPERATOR-built side
+    /// agree byte-for-byte with the clone URL — but only that side is built here. The attacker's
+    /// <c>.gitmodules</c> side is not, so agreement is not enough on its own: it is compared byte-exactly
+    /// against this prefix, and <c>OperationPolicy.PathUnderRepo</c> additionally refuses any percent-escape
+    /// in the path SUFFIX beyond it, because that is the part the upstream server would decode back into a
+    /// separator after the check.
+    /// </para>
+    /// </summary>
+    public static string RepoPathFor(string provider, string orgOrOwner, string? project, string repoName) =>
+        RepoPathForUrlSegment(provider, orgOrOwner, project, Segment(repoName));
+
+    /// <summary>
+    /// The same path shape as <see cref="RepoPathFor"/>, but for a repo-name segment that is ALREADY in URL
+    /// form and must be used verbatim — <c>CodeReviewDaemonOptions.ReviewedRepoSubmodules</c>, whose contract
+    /// is documented as "listed exactly as it appears in the URL" (<c>Microsoft%20Orleans</c>). Encoding one
+    /// of those again would turn <c>%20</c> into <c>%2520</c> and quietly drop a configured submodule off the
+    /// allow-list.
+    /// <para>
+    /// The org/project prefix IS encoded even here, and the split is not an inconsistency: those come from
+    /// the repo IDENTITY (operator config in human form, the same values the REST callers use), while the
+    /// leaf comes from a setting whose documented form is the URL's. Both halves therefore end up spelled the
+    /// way the <c>.gitmodules</c> URL being matched spells them.
+    /// </para>
+    /// </summary>
+    public static string RepoPathForUrlSegment(
+        string provider, string orgOrOwner, string? project, string urlFormRepoName) =>
+        IsAzureDevOps(provider)
+            ? $"/{Segment(orgOrOwner)}/{Segment(project)}/_git/{urlFormRepoName}"
+            : $"/{Segment(orgOrOwner)}/{urlFormRepoName}";
+
+    /// <summary>
+    /// The HTTPS clone URL for an identity: <see cref="HostFor"/> + <see cref="RepoPathFor"/>, so
+    /// <c>Parse(CloneUrlFor(x)).RepoPath == RepoPathFor(x)</c> holds by construction rather than by two
+    /// interpolations being kept in step by hand (the GitHub <c>.git</c> suffix is stripped by
+    /// <c>NormalizeRepoPath</c>). Handed to <c>git clone</c> as an argv element — it never becomes a
+    /// <see cref="Uri"/> in this process, so the escaping the HTTP callers get for free from
+    /// <see cref="Uri.AbsoluteUri"/> has nothing to apply to here.
+    /// </summary>
+    public static string CloneUrlFor(string provider, string orgOrOwner, string? project, string repoName) =>
+        IsAzureDevOps(provider)
+            ? $"https://{AdoHost}{RepoPathFor(provider, orgOrOwner, project, repoName)}"
+            : $"https://{GitHubHost}{RepoPathFor(provider, orgOrOwner, project, repoName)}.git";
+
+    /// <summary>Percent-encodes one path segment; a null/absent segment encodes to the empty string.</summary>
+    private static string Segment(string? value) => Uri.EscapeDataString(value ?? string.Empty);
+
     public static GitRemoteUrl Parse(string raw)
     {
         ArgumentNullException.ThrowIfNull(raw);

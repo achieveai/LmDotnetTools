@@ -318,8 +318,35 @@ internal sealed class OperationPolicy
         }
 
         var prefix = normalizedRepo + ".git/";
-        return normalizedPath.StartsWith(prefix, StringComparison.Ordinal);
+        return normalizedPath.StartsWith(prefix, StringComparison.Ordinal)
+            && SuffixIsAPlainGitEndpoint(normalizedPath[prefix.Length..]);
     }
+
+    /// <summary>
+    /// Screens what follows the matched <c>{repo}.git/</c> prefix. The literal <c>..</c> test above only
+    /// sees the bytes THIS process holds, and this process deliberately never decodes — but the upstream
+    /// server does, so <c>%2e%2e</c> written into an attacker's <c>.gitmodules</c> sails past a byte-exact
+    /// prefix match and then escapes the allow-listed repo once dev.azure.com/github.com decodes it, with
+    /// the daemon's credential attached (<see cref="ShouldInjectCredential"/> mirrors
+    /// <see cref="Decide"/>). Decoding here to compare would reintroduce exactly the hazard the no-decode
+    /// stance exists to avoid, so the escape is REFUSED instead.
+    /// <para>
+    /// Refusing every <c>%</c> — not a blocklist of <c>%2e</c>/<c>%2f</c>/<c>%5c</c> and their
+    /// double-encodings — is what makes this safe-closed, and it costs nothing because the suffix is a
+    /// CLOSED set: <c>ClassifyGitService</c> already requires the path (query stripped) to end in
+    /// <c>info/refs</c>, <c>git-upload-pack</c>, or <c>git-receive-pack</c>, and both producers spell
+    /// exactly those — <c>SubmoduleInitializer.DecideFetch</c> appends the literal
+    /// <c>.git/info/refs?service=git-upload-pack</c>, and <c>OperationPolicyHandler</c> passes
+    /// <c>Uri.PathAndQuery</c>, which .NET has already decoded and dot-segment-compressed. No legitimate
+    /// suffix contains a percent-escape, a backslash, or an empty segment. Percent-encoded NAMES (a spaced
+    /// Azure DevOps org/project/repo, <c>Microsoft%20Orleans</c>) live entirely in the PREFIX, which is
+    /// compared byte-exactly against the operator-built rule and is untouched by this screen.
+    /// </para>
+    /// </summary>
+    private static bool SuffixIsAPlainGitEndpoint(string suffix) =>
+        !suffix.Contains('%', StringComparison.Ordinal)
+        && !suffix.Contains('\\', StringComparison.Ordinal)
+        && !suffix.Contains("//", StringComparison.Ordinal);
 
     private static string StripQuery(string path)
     {
