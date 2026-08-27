@@ -60,15 +60,19 @@ internal enum ResourceRelationship
 /// </summary>
 /// <remarks>
 /// <para>
-/// Every allow and every deny is written to <see cref="IAuditSink"/>: a deny-only trail cannot
-/// answer "was this ever attempted successfully?".
+/// Every ATTEMPT decision is written to <see cref="IAuditSink"/>, allow and deny alike: a deny-only
+/// trail cannot answer "was this ever attempted successfully?". A CAPABILITY probe
+/// (<see cref="IResourceAccessPolicy.EvaluateCapabilityAsync"/>) is not audited - it shapes a UI
+/// affordance rather than gating an operation, and one audit record per listed row would bury the
+/// real refusals (#487).
 /// </para>
 /// <para>
-/// DEVIATION from the spec's "performs no I/O of its own": the shipped
-/// <see cref="IResourceAccessPolicy.EvaluateAsync"/> signature has no parameter through which a
-/// caller could hand in the grant, so the grant branch of step 3 has to be read here. Everything
-/// else the algorithm needs still arrives in the <see cref="ResourceDescriptor"/>, so the policy
-/// remains directly unit-testable against an in-memory grant store.
+/// DEVIATION from the spec's "performs no I/O of its own": the attempt seam
+/// <see cref="IResourceAccessPolicy.EvaluateAsync"/> reads the grant branch of step 3 from the
+/// store here, because its signature has no parameter through which a caller could hand it in. The
+/// capability seam does take the grant as a parameter and performs no I/O at all. Everything else
+/// the algorithm needs arrives in the <see cref="ResourceDescriptor"/>, so the policy remains
+/// directly unit-testable against an in-memory grant store.
 /// </para>
 /// </remarks>
 public sealed class ResourceAccessPolicy : IResourceAccessPolicy
@@ -144,18 +148,59 @@ public sealed class ResourceAccessPolicy : IResourceAccessPolicy
         && Array.IndexOf(actions, action) >= 0;
 
     /// <inheritdoc />
-    public async ValueTask<AccessDecision> EvaluateAsync(
+    public ValueTask<AccessDecision> EvaluateAsync(
         Principal principal,
         ResourceDescriptor resource,
         AccessAction action,
-        CancellationToken ct = default)
+        CancellationToken ct = default) =>
+        EvaluateInternalAsync(
+            principal,
+            resource,
+            action,
+            grantSupplied: false,
+            suppliedGrant: null,
+            writeAudit: true,
+            ct);
+
+    /// <inheritdoc />
+    public ValueTask<AccessDecision> EvaluateCapabilityAsync(
+        Principal principal,
+        ResourceDescriptor resource,
+        AccessAction action,
+        GrantRole? suppliedGrant,
+        CancellationToken ct = default) =>
+        // A probe, not an attempt (#487): the grant arrives from the caller so no store round trip
+        // is made, and the decision is NOT audited - a display-time capability check is not an
+        // access event, and auditing it would bury real refusals under one deny per listed row.
+        EvaluateInternalAsync(
+            principal,
+            resource,
+            action,
+            grantSupplied: true,
+            suppliedGrant,
+            writeAudit: false,
+            ct);
+
+    /// <summary>
+    /// The decision of spec 7.4, shared by the attempt and capability seams. The two differ only in
+    /// where the grantee grant comes from (<paramref name="grantSupplied"/>) and whether the outcome
+    /// is audited (<paramref name="writeAudit"/>); the rights table they read is identical.
+    /// </summary>
+    private async ValueTask<AccessDecision> EvaluateInternalAsync(
+        Principal principal,
+        ResourceDescriptor resource,
+        AccessAction action,
+        bool grantSupplied,
+        GrantRole? suppliedGrant,
+        bool writeAudit,
+        CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(principal);
         ArgumentNullException.ThrowIfNull(resource);
 
-        // Step -1. Before step 0, deliberately: whether a typo throws must not depend on
-        // Identity:Enforce, or a bad pair would return AllowDisabled in the configuration every
-        // pre-rollout test runs under - dead exactly where it is meant to fire.
+        // Step -1. Before step 0, deliberately, and before any audit: whether a typo throws must not
+        // depend on Identity:Enforce, or a bad pair would return AllowDisabled in the configuration
+        // every pre-rollout test runs under - dead exactly where it is meant to fire.
         if (!IsSupported(resource.Ref.Type, action))
         {
             throw new ArgumentOutOfRangeException(
@@ -164,30 +209,50 @@ public sealed class ResourceAccessPolicy : IResourceAccessPolicy
                 $"Action is not defined for resource type '{resource.Ref.Type}' (spec 7.2).");
         }
 
+        var decision = await ComputeAsync(
+                principal,
+                resource,
+                action,
+                grantSupplied,
+                suppliedGrant,
+                ct)
+            .ConfigureAwait(false);
+
+        return writeAudit ? Audit(principal, resource, action, decision) : decision;
+    }
+
+    /// <summary>
+    /// Steps 0 through 4 of spec 7.4, producing the decision without auditing it. Kept separate from
+    /// the audit so both seams reach the SAME decision and only the attempt seam records it.
+    /// </summary>
+    private async ValueTask<AccessDecision> ComputeAsync(
+        Principal principal,
+        ResourceDescriptor resource,
+        AccessAction action,
+        bool grantSupplied,
+        GrantRole? suppliedGrant,
+        CancellationToken ct)
+    {
         // Step 0.
         if (!_enforcement.IsEnforced)
         {
-            return Audit(principal, resource, action, AccessDecision.AllowDisabled);
+            return AccessDecision.AllowDisabled;
         }
 
         // Step 1. Before the tenant check: a system-defined resource is readable by every member of
         // every tenant and writable by no one, tenant admins included.
         if (resource.IsSystemDefined)
         {
-            return Audit(
-                principal,
-                resource,
-                action,
-                action is AccessAction.Read or AccessAction.Use
-                    ? AccessDecision.AllowSystem
-                    : AccessDecision.Deny("system_defined_immutable"));
+            return action is AccessAction.Read or AccessAction.Use
+                ? AccessDecision.AllowSystem
+                : AccessDecision.Deny("system_defined_immutable");
         }
 
         // Step 2. The outer boundary. Admins do not bypass it - a tenant admin is an admin of
         // exactly one tenant.
         if (!string.Equals(resource.TenantId, principal.TenantId, StringComparison.Ordinal))
         {
-            return Audit(principal, resource, action, AccessDecision.Deny("cross_tenant"));
+            return AccessDecision.Deny("cross_tenant");
         }
 
         var user = principal.EffectiveUserId;
@@ -201,17 +266,18 @@ public sealed class ResourceAccessPolicy : IResourceAccessPolicy
             var appOwns = resource.OwnerAppId is not null
                 && string.Equals(resource.OwnerAppId, principal.AppId, StringComparison.Ordinal);
 
-            return Audit(
+            return appOwns ? RightsForAppOwner(action) : AccessDecision.Deny("app_only_no_owner");
+        }
+
+        return await ResolveForUserAsync(
                 principal,
                 resource,
                 action,
-                appOwns ? RightsForAppOwner(action) : AccessDecision.Deny("app_only_no_owner"));
-        }
-
-        var decision = await ResolveForUserAsync(principal, resource, action, user, ct)
+                user,
+                grantSupplied,
+                suppliedGrant,
+                ct)
             .ConfigureAwait(false);
-
-        return Audit(principal, resource, action, decision);
     }
 
     /// <summary>
@@ -225,6 +291,8 @@ public sealed class ResourceAccessPolicy : IResourceAccessPolicy
         ResourceDescriptor resource,
         AccessAction action,
         string user,
+        bool grantSupplied,
+        GrantRole? suppliedGrant,
         CancellationToken ct)
     {
         var relationships = new List<(ResourceRelationship Relationship, GrantRole? Grant)>(4);
@@ -237,9 +305,14 @@ public sealed class ResourceAccessPolicy : IResourceAccessPolicy
             relationships.Add((ResourceRelationship.Owner, null));
         }
 
-        var grant = await _grants
-            .FindGrantAsync(principal.TenantId, resource.Ref, user, _timeProvider.GetUtcNow(), ct)
-            .ConfigureAwait(false);
+        // A capability probe supplies the grant (resolved once for a whole page); an attempt looks
+        // it up here. Same value either way - the grantee branch of step 3 - but the probe makes no
+        // store round trip.
+        var grant = grantSupplied
+            ? suppliedGrant
+            : await _grants
+                .FindGrantAsync(principal.TenantId, resource.Ref, user, _timeProvider.GetUtcNow(), ct)
+                .ConfigureAwait(false);
 
         if (grant is { } role)
         {

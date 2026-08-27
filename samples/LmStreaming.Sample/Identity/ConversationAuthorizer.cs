@@ -310,6 +310,73 @@ public sealed class ConversationAuthorizer
     }
 
     /// <summary>
+    /// Whether the current principal may SHARE one already-loaded conversation row, computed for a
+    /// LISTING without writing an attempt-grade audit record and without a per-row grant lookup
+    /// (#487). The grant is taken from the batch the listing scope already resolved, not re-queried
+    /// per row.
+    /// </summary>
+    /// <remarks>
+    /// The share capability is grant-INDEPENDENT under the rights table of spec 7.4.1: only an owner
+    /// of an unpublished conversation, or an app owner, may share, and every grantee is refused
+    /// (<c>grantee_may_not_reshare</c>) - so the grant's PRESENCE, never its role, is the most that
+    /// could matter, and even that never turns a deny into an allow. Presence is passed as
+    /// <see cref="GrantRole.Viewer"/> only to satisfy the seam's contract; the answer is identical
+    /// with any role or with none, which is exactly why the per-row store lookup can be dropped.
+    /// </remarks>
+    /// <param name="metadata">The stored row, already materialized by the listing.</param>
+    /// <param name="grantedThreadIds">
+    /// Thread ids this principal holds an unexpired grant on, resolved once for the page (spec 7.5),
+    /// or null when enforcement is off.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
+    public async Task<bool> MayShareForListingAsync(
+        ThreadMetadata metadata,
+        IReadOnlySet<string>? grantedThreadIds,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(metadata);
+
+        // Step 0: enforcement off allows every action, so the share control stays visible through
+        // the pre-enforcement window docs/deployment/AUTH_ENFORCE.md exists to make survivable. Read
+        // BEFORE the principal so an unauthenticated pre-rollout request is answered the same way.
+        if (!_enforcement.IsEnforced)
+        {
+            return true;
+        }
+
+        if (_principalAccessor.Current is not { } principal)
+        {
+            return false;
+        }
+
+        // An unstamped or untenanted row belongs to no tenant, so no principal may share it - the
+        // same refusal AuthorizeAsync gives it, minus the 404 mapping a listing has no use for.
+        if (metadata.TenantId is null)
+        {
+            return false;
+        }
+
+        var descriptor = new ResourceDescriptor
+        {
+            Ref = ConversationRef(metadata.ThreadId),
+            TenantId = metadata.TenantId,
+            OwnerUserId = metadata.OwnerUserId,
+            OwnerAppId = metadata.OwnerAppId,
+            Visibility = metadata.Visibility ?? Visibility.Private,
+        };
+
+        var suppliedGrant = grantedThreadIds?.Contains(metadata.ThreadId) == true
+            ? GrantRole.Viewer
+            : (GrantRole?)null;
+
+        var decision = await _policy
+            .EvaluateCapabilityAsync(principal, descriptor, AccessAction.Share, suppliedGrant, ct)
+            .ConfigureAwait(false);
+
+        return decision.Allowed;
+    }
+
+    /// <summary>
     /// Stamps ownership onto a newly created conversation, so the row is claimed at creation rather
     /// than by a later repair.
     /// </summary>
