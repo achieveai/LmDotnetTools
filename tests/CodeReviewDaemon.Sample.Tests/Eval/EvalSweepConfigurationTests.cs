@@ -73,6 +73,40 @@ public class EvalSweepConfigurationTests
             .WithMessage("*EvalCorpusSweepIntervalMinutes*");
     }
 
+    /// <summary>
+    /// A finite interval can still be un-runnable. `TimeSpan.FromMinutes` throws `OverflowException`
+    /// above `TimeSpan.MaxValue.TotalMinutes` (~1.54e10), so a finiteness-only guard let such a value
+    /// through to exactly the failure the NaN case above exists to prevent: an exception naming an
+    /// argument no operator ever passed, from a stack holding no configuration key. Refused by name
+    /// on the same line instead.
+    /// </summary>
+    [Theory]
+    [InlineData(1e12)]
+    [InlineData(1.6e10)]
+    public void A_finite_interval_too_large_to_be_a_timespan_is_refused_by_name(double minutes)
+    {
+        var resolve = () => EvalSweepConfiguration.Resolve(Options(minutes));
+
+        resolve
+            .Should()
+            .Throw<InvalidOperationException>()
+            .WithMessage("*EvalCorpusSweepIntervalMinutes*");
+    }
+
+    /// <summary>
+    /// The boundary itself is a cadence, absurd but representable, so it is NOT refused — the guard
+    /// draws its line where `TimeSpan` does, not one short of it. Without this, a guard that refused
+    /// everything large would pass the test above while quietly moving the boundary.
+    /// </summary>
+    [Fact]
+    public void The_largest_representable_interval_is_still_accepted()
+    {
+        EvalSweepConfiguration
+            .Resolve(Options(TimeSpan.MaxValue.TotalMinutes))
+            .Should()
+            .NotBeNull();
+    }
+
     [Fact]
     public void A_non_positive_window_beside_a_configured_interval_is_refused_by_name()
     {

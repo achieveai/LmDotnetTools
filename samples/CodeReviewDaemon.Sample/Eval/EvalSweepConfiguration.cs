@@ -43,13 +43,22 @@ internal static class EvalSweepConfiguration
         // false, so it walks past both a "< 0" guard and an "== 0" test and reaches
         // TimeSpan.FromMinutes, which throws about an argument no operator ever passed, from a stack
         // holding no configuration key. The infinities do the same one step later.
-        if (!double.IsFinite(minutes) || minutes < 0)
+        //
+        // The upper bound is on this line for EXACTLY that reason and no other: finiteness is not
+        // representability. TimeSpan.FromMinutes overflows above TimeSpan.MaxValue.TotalMinutes
+        // (~1.54e10), so a finite-but-enormous value reached the same nameless OverflowException the
+        // NaN case exists to prevent. The comparison is strict, so the largest representable cadence
+        // is still a cadence — absurd, but the operator asked for it, and a guard that refuses what
+        // TimeSpan would have accepted is a second bound nobody wrote down.
+        if (!double.IsFinite(minutes) || minutes < 0 || minutes > TimeSpan.MaxValue.TotalMinutes)
         {
             throw new InvalidOperationException(
                 $"{CodeReviewDaemonOptions.SectionName}:{nameof(CodeReviewDaemonOptions.EvalCorpusSweepIntervalMinutes)} "
                 + $"is {minutes.ToString(System.Globalization.CultureInfo.InvariantCulture)}, which is not a cadence. "
                 + "Zero — the default — switches the sweep off; anything else must be a positive, finite number of "
-                + "minutes. It is refused rather than read as off, because a sweep nobody asked to disable would "
+                + "minutes no larger than "
+                + $"{TimeSpan.MaxValue.TotalMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)}. "
+                + "It is refused rather than read as off, because a sweep nobody asked to disable would "
                 + "then never run and never say so.");
         }
 

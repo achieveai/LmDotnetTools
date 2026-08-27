@@ -175,7 +175,7 @@ public sealed class EvalCorpusSweepTests : IDisposable
             // actually hands the sweep — judge rows only (#453) — rather than over a listing no
             // deployment uses.
             readArtifacts ?? EvalCorpusSweep.GradeArtifactReader(_store),
-            new DaemonCorpusReader(_store, modelId => modelId?.Split('/')[0]),
+            new DaemonCorpusReader(_store, ModelFamilies.Of),
             new EvalCorpusWatermark(_store),
             limit,
             logger

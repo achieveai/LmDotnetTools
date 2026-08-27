@@ -225,7 +225,13 @@ public sealed class DaemonCorpusReaderTests : IDisposable
         AddContext(runId, "a diff");
         AddReview(runId, "a review");
 
-        var snapshot = await SnapshotAsync(Reader(modelId => modelId?.Split('/')[0]));
+        // A literal family keyed off the id, NOT a parsing rule: this pins that whatever the injected
+        // resolver answers reaches the candidate, which is the reader's job. Re-deriving a family here
+        // would test the resolver instead — that lives in ModelFamilyTests — and would leave a second
+        // copy of a family rule in the tree, which is the defect #456 closed.
+        var snapshot = await SnapshotAsync(
+            Reader(modelId => modelId == "openai/gpt-5" ? "openai" : null)
+        );
 
         Assert.Single(snapshot.Items).GeneratorFamily.Should().Be("openai");
     }
