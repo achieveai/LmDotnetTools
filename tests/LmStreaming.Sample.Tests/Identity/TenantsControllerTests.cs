@@ -21,6 +21,14 @@ internal sealed class RecordingTenantStore : ITenantStore
 
     public TenantProvisionOutcome NextOutcome { get; set; } = TenantProvisionOutcome.Created;
 
+    /// <summary>
+    /// Consulted before every <see cref="ProvisionAsync"/>; a non-null return is thrown instead of
+    /// recording. Models the store failure - a transient SQLite lock, a permission error on the
+    /// database file - that a caller running at startup has to survive. Per-record rather than a
+    /// flag so a test can fail ONE entry and still assert the others were attempted.
+    /// </summary>
+    public Func<TenantRecord, Exception?>? ProvisionFailure { get; set; }
+
     public Task<TenantRecord?> FindByEntraTenantIdAsync(string entraTenantId, CancellationToken ct = default) =>
         Task.FromResult(Provisioned.Find(t => t.EntraTenantId == entraTenantId));
 
@@ -32,6 +40,11 @@ internal sealed class RecordingTenantStore : ITenantStore
         string firstAdminUpn,
         CancellationToken ct = default)
     {
+        if (ProvisionFailure?.Invoke(tenant) is { } failure)
+        {
+            throw failure;
+        }
+
         if (NextOutcome == TenantProvisionOutcome.Created)
         {
             Provisioned.Add(tenant);
