@@ -87,9 +87,12 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
         if (hasTypeDiscriminator)
         {
             // Use the new method to resolve the type from discriminator
+            // A dedicated JsonException subtype: an unrecognised $type means "written by a binary
+            // that knows a type this one does not", which a per-record degrader must be able to
+            // distinguish from malformed bytes. See UnknownMessageTypeDiscriminatorException.
             targetType =
                 GetTypeFromDiscriminator(typeDiscriminator!)
-                ?? throw new JsonException($"Unknown type discriminator: {typeDiscriminator!}");
+                ?? throw new UnknownMessageTypeDiscriminatorException(typeDiscriminator!);
         }
         else
         {

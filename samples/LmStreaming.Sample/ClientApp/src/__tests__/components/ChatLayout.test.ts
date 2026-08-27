@@ -8,18 +8,21 @@ import {
   UnsupportedPluginsError,
   WorkspaceRevisionConflictError,
 } from '@/api/workspacesApi';
+import type { ConversationSummary } from '@/types/conversations';
 
-interface ConversationSummary {
-  threadId: string;
-  title?: string;
-  preview?: string;
-  lastUpdated?: number;
-  provider?: string | null;
-  workspace?: string | null;
-  mode?: string | null;
-  visibility?: 'private' | 'shared' | 'tenant-published';
-  canShare?: boolean;
-}
+// Build a fixture from the REAL wire type rather than a hand-rolled shadow (#488). The shadow this
+// replaced optional-ized every field and silently drifted from the server DTO — `visibility` (#445)
+// and `canShare` (#482) were added on the wire while the tests kept asserting against the old shape.
+// Because the return value is annotated as the real `ConversationSummary`, adding a required field to
+// that type fails this file under `npm run type-check:test` (tsconfig.vitest.json includes the suite;
+// CI runs it), so a fixture can no longer diverge from the contract unnoticed. Overrides carry the
+// per-case fields; `title`/`lastUpdated` (required on the wire, irrelevant to these tests) default.
+const makeConversation = (overrides: Partial<ConversationSummary> = {}): ConversationSummary => ({
+  threadId: 'thread-1',
+  title: '',
+  lastUpdated: 0,
+  ...overrides,
+});
 
 const sharedMocks = vi.hoisted(() => ({
   chatLoading: false,
@@ -313,7 +316,7 @@ describe('ChatLayout mode switching', () => {
     sharedMocks.currentThreadId = 'thread-1';
     // Default to a "started" thread (present in the sidebar) for the existing
     // mode-switch tests. The regression tests below override this per-case.
-    sharedMocks.conversations = [{ threadId: 'thread-1' }];
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
     sharedMocks.selectMode.mockReset();
     sharedMocks.switchMode.mockReset();
     sharedMocks.disconnectWebSocket.mockReset();
@@ -433,7 +436,7 @@ describe('ChatLayout handleSelectMode start-gating regression', () => {
     // currentThreadId is set AND present in the sidebar (first message sent)
     // -> started -> call backend switchMode.
     sharedMocks.currentThreadId = 'thread-1';
-    sharedMocks.conversations = [{ threadId: 'thread-1' }];
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
 
     const wrapper = mountWithModeSelector();
     await flushPromises();
@@ -491,7 +494,7 @@ describe('ChatLayout handleSelectProvider start-gating', () => {
 
   it('switches the provider on the backend once the thread has started, and updates the summary', async () => {
     sharedMocks.currentThreadId = 'thread-1';
-    sharedMocks.conversations = [{ threadId: 'thread-1', provider: 'test' } as ConversationSummary];
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1', provider: 'test' })];
 
     const wrapper = mountWithProviderSelector();
     await flushPromises();
@@ -509,7 +512,7 @@ describe('ChatLayout handleSelectProvider start-gating', () => {
 
   it('does nothing while a run is streaming (selector disabled)', async () => {
     sharedMocks.currentThreadId = 'thread-1';
-    sharedMocks.conversations = [{ threadId: 'thread-1', provider: 'test' } as ConversationSummary];
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1', provider: 'test' })];
     sharedMocks.chatLoading = true; // streaming
 
     const wrapper = mountWithProviderSelector();
@@ -553,8 +556,8 @@ describe('ChatLayout restores bound provider/mode/workspace on conversation sele
     // Current thread differs from the one we select, so handleSelectConversation does not early-return.
     sharedMocks.currentThreadId = 'thread-1';
     sharedMocks.conversations = [
-      { threadId: 'thread-1' },
-      { threadId: 'thread-2', provider: 'openai', workspace: 'ws-1', mode: 'math-helper' },
+      makeConversation({ threadId: 'thread-1' }),
+      makeConversation({ threadId: 'thread-2', provider: 'openai', workspace: 'ws-1', mode: 'math-helper' }),
     ];
     sharedMocks.selectMode.mockReset();
     sharedMocks.selectProvider.mockReset();
@@ -576,7 +579,7 @@ describe('ChatLayout restores bound provider/mode/workspace on conversation sele
   });
 
   it('does not touch the selectors for a legacy conversation with no bindings', async () => {
-    sharedMocks.conversations = [{ threadId: 'thread-1' }, { threadId: 'thread-2' }];
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' }), makeConversation({ threadId: 'thread-2' })];
 
     const wrapper = mountWithSidebar();
     await flushPromises();
@@ -625,7 +628,7 @@ describe('ChatLayout ?threadId= deep link', () => {
 
   it('selects the deep-linked conversation when it exists, in preference to the most recent one', async () => {
     sharedMocks.currentThreadId = 'thread-1';
-    sharedMocks.conversations = [{ threadId: 'thread-1' }, { threadId: 'thread-2' }];
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' }), makeConversation({ threadId: 'thread-2' })];
     setQuery('threadId=thread-2');
 
     const wrapper = mountLayout();
@@ -637,7 +640,7 @@ describe('ChatLayout ?threadId= deep link', () => {
 
   it('shows a not-found state for a deep-linked thread absent from the conversation list', async () => {
     sharedMocks.currentThreadId = null;
-    sharedMocks.conversations = [{ threadId: 'thread-1' }];
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
     setQuery('threadId=thread-missing');
 
     const wrapper = mountLayout();
@@ -667,7 +670,7 @@ describe('ChatLayout ?threadId= deep link', () => {
 
   it('falls back to selecting the most recent conversation when no ?threadId is present', async () => {
     sharedMocks.currentThreadId = null;
-    sharedMocks.conversations = [{ threadId: 'thread-1' }, { threadId: 'thread-2' }];
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' }), makeConversation({ threadId: 'thread-2' })];
     setQuery('');
 
     const wrapper = mountLayout();
@@ -719,7 +722,7 @@ describe('ChatLayout sub-agent panel start-gating', () => {
 
   it('passes the thread id to the sub-agent panel once the conversation has a sidebar entry', async () => {
     sharedMocks.currentThreadId = 'thread-1';
-    sharedMocks.conversations = [{ threadId: 'thread-1' }];
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
 
     mountLayout();
     await flushPromises();
@@ -759,7 +762,7 @@ describe('ChatLayout client-tool question gating (#246)', () => {
     sharedMocks.isSending = false;
     sharedMocks.modesLoading = false;
     sharedMocks.currentThreadId = 'thread-1';
-    sharedMocks.conversations = [{ threadId: 'thread-1' }];
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
     sharedMocks.hasPendingClientQuestion = false;
   });
 
@@ -808,7 +811,7 @@ describe('ChatLayout provides SUBMIT_CLIENT_TOOL_RESULT to descendants (#246)', 
     sharedMocks.isSending = false;
     sharedMocks.modesLoading = false;
     sharedMocks.currentThreadId = 'thread-1';
-    sharedMocks.conversations = [{ threadId: 'thread-1' }];
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
     sharedMocks.submitClientToolResult.mockClear();
 
     mount(ChatLayout, {
@@ -848,7 +851,7 @@ describe('ChatLayout provides GO_TO_AGENT_TAB to descendants (#246)', () => {
     sharedMocks.isSending = false;
     sharedMocks.modesLoading = false;
     sharedMocks.currentThreadId = 'thread-1';
-    sharedMocks.conversations = [{ threadId: 'thread-1' }];
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
 
     const wrapper = mount(ChatLayout, {
       global: {
@@ -896,7 +899,7 @@ describe('ChatLayout binds SubAgentTranscript to the focused-child submit (#246 
     sharedMocks.isSending = false;
     sharedMocks.modesLoading = false;
     sharedMocks.currentThreadId = 'thread-1';
-    sharedMocks.conversations = [{ threadId: 'thread-1' }];
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
     sharedMocks.submitClientToolResult.mockClear();
     sharedMocks.submitToFocusedChild.mockClear();
 
@@ -981,7 +984,7 @@ describe('ChatLayout surfaces workspace plugin-selection failures inline', () =>
     sharedMocks.isSending = false;
     sharedMocks.modesLoading = false;
     sharedMocks.currentThreadId = 'thread-1';
-    sharedMocks.conversations = [{ threadId: 'thread-1' }];
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
     sharedMocks.createWorkspace.mockReset();
     sharedMocks.updateWorkspace.mockReset();
     sharedMocks.showFormError.mockReset();
@@ -1163,7 +1166,7 @@ describe('ChatLayout keeps the workspace edit form alive across a 409 (F6)', () 
     sharedMocks.currentThreadId = 'thread-1';
     // No `workspace` on the summary: the selector must render as an editable dropdown, not a
     // locked badge (a locked selector would hide the form for an unrelated reason).
-    sharedMocks.conversations = [{ threadId: 'thread-1' }];
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
     sharedMocks.useRealWorkspaces = true;
     listCalls = 0;
     putBodies = [];
@@ -1708,7 +1711,7 @@ describe('ChatLayout share control visibility (#375)', () => {
     sharedMocks.isSending = false;
     sharedMocks.modesLoading = false;
     sharedMocks.currentThreadId = 'thread-1';
-    sharedMocks.conversations = [{ threadId: 'thread-1', visibility: 'shared' }];
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1', visibility: 'shared' })];
     sharedMocks.loadConversations.mockClear();
   });
 
@@ -1728,7 +1731,7 @@ describe('ChatLayout share control visibility (#375)', () => {
   // over the same way. Without this the modal would be back to offering a mutation and finding out
   // by being refused — the flag would exist on the wire and reach nobody.
   it('hands the share control whether this viewer may share the open conversation', async () => {
-    sharedMocks.conversations = [{ threadId: 'thread-1', visibility: 'shared', canShare: false }];
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1', visibility: 'shared', canShare: false })];
 
     const wrapper = mountWithShareModal();
     await flushPromises();

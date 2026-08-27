@@ -942,6 +942,887 @@ public class MultiTurnAgentBaseTests
         await agent.DisposeAsync();
     }
 
+    [Fact]
+    public async Task RecoverAsync_SkipsACorruptRecord_AndRestoresHealthySiblings()
+    {
+        // #489: one undeserializable persisted record must not abort recovery of the healthy records
+        // around it. RecoverAsync degrades per-record — it skips the corrupt row (logging its id) and
+        // restores every sibling. Because SubAgentManager.RestartRunAsync recovers through this SAME
+        // method, a single bad row can no longer abort a sub-agent restart either (the two restore
+        // sites now agree). Red-first: before the fix the whole conversion aborts on the first bad
+        // row, so RecoverAsync throws JsonException and NO sibling is restored.
+        var store = new InMemoryConversationStore();
+        var threadId = "test-thread-corrupt-record";
+        const string runId = "prior-run";
+
+        // A corrupt row deliberately BETWEEN two healthy ones: a whole-list abort (the pre-fix
+        // behavior) would lose the sibling after it, so restoring both proves per-record resilience.
+        var healthyBefore =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new TextMessage
+                {
+                    Text = "before corrupt",
+                    Role = Role.User,
+                    GenerationId = "g1",
+                    RunId = runId,
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 1,
+            };
+        var corrupt = healthyBefore with
+        {
+            Id = "corrupt-record-1",
+            Timestamp = 2,
+            MessageJson = "{ this is not valid message json",
+        };
+        var healthyAfter =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new TextMessage
+                {
+                    Text = "after corrupt",
+                    Role = Role.Assistant,
+                    GenerationId = "g2",
+                    RunId = runId,
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 3,
+            };
+
+        await store.AppendMessagesAsync(threadId, [healthyBefore, corrupt, healthyAfter]);
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+
+        var recovered = await agent.RecoverAsync();
+
+        recovered.Should().BeTrue();
+        var texts = agent.SnapshotHistoryForTest().OfType<TextMessage>().Select(m => m.Text).ToList();
+        texts.Should().Contain("before corrupt").And.Contain("after corrupt");
+        // Exactly the two healthy siblings — the corrupt row contributes nothing (not a placeholder).
+        agent.SnapshotHistoryForTest().Count.Should().Be(2);
+
+        await agent.DisposeAsync();
+    }
+
+    [Theory]
+    // corruptTheCall: which half of the pair is the damaged row.
+    // pluralCallShape: false = the SINGULAR ToolCallMessage production actually persists
+    // (MessageTransformationMiddleware splits plural into one-per-call upstream of the turn body);
+    // true = the plural ToolsCallMessage, which still reaches the store via the middleware's unsplit
+    // passthrough and via the sibling Claude/Codex/Copilot loops. A sweep keyed on only one of the
+    // two shapes passes half these cases and no-ops against the other half's stores.
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    public async Task RecoverAsync_DropsBothHalvesOfAToolCallPair_WhenEitherHalfIsCorrupt(
+        bool corruptTheCall,
+        bool pluralCallShape)
+    {
+        // A tool call and its result are TWO separate persisted rows (MessagePersistenceConverter is
+        // strictly 1:1). Skipping one row per #489 therefore ORPHANS its partner, and nothing
+        // downstream repairs that: RestoreHistory is a bare AddRange, GetMessagesWithSystemPrompt
+        // returns the history unfiltered, and MessageTransformationMiddleware passes an unpaired half
+        // through verbatim. Providers reject both shapes (Anthropic: "tool_use ids were found without
+        // tool_result blocks", "tool_call_id is not found"), and because the same row fails to
+        // deserialize on EVERY recovery the thread would stay wedged across restarts. So recovery
+        // enforces the same pairing invariant the write path maintains: neither half survives alone.
+        // The healthy TextMessage still comes back — the per-record win of #489 is not regressed.
+        var store = new InMemoryConversationStore();
+        var threadId =
+            $"test-thread-orphan-{(corruptTheCall ? "call" : "result")}-{(pluralCallShape ? "plural" : "singular")}";
+        const string runId = "prior-run";
+        const string toolCallId = "call-1";
+
+        var healthyText =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new TextMessage { Text = "healthy text", Role = Role.User, RunId = runId },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 1,
+            };
+        IMessage callMessage = pluralCallShape
+            ? new ToolsCallMessage
+            {
+                Role = Role.Assistant,
+                RunId = runId,
+                ToolCalls =
+                [
+                    new ToolCall
+                    {
+                        ToolCallId = toolCallId,
+                        FunctionName = "do_thing",
+                        FunctionArgs = "{}",
+                    },
+                ],
+            }
+            : new ToolCallMessage
+            {
+                Role = Role.Assistant,
+                RunId = runId,
+                ToolCallId = toolCallId,
+                FunctionName = "do_thing",
+                FunctionArgs = "{}",
+            };
+        var callRow =
+            MessagePersistenceConverter.ToPersistedMessage(callMessage, threadId, runId) with
+            {
+                Timestamp = 2,
+            };
+        var resultRow =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new ToolCallResultMessage
+                {
+                    ToolCallId = toolCallId,
+                    ToolName = "do_thing",
+                    Result = "ok",
+                    RunId = runId,
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 3,
+            };
+
+        // Only MessageJson is damaged — MessageType/Id survive, exactly as a bit-rotted row would.
+        const string CorruptJson = "{ this is not valid message json";
+        if (corruptTheCall)
+        {
+            callRow = callRow with { MessageJson = CorruptJson };
+        }
+        else
+        {
+            resultRow = resultRow with { MessageJson = CorruptJson };
+        }
+
+        await store.AppendMessagesAsync(threadId, [healthyText, callRow, resultRow]);
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+
+        var recovered = await agent.RecoverAsync();
+
+        recovered.Should().BeTrue();
+        var history = agent.SnapshotHistoryForTest();
+
+        // NEITHER half may survive — never exactly one.
+        history.OfType<ToolCallMessage>().Should().BeEmpty(
+            "a tool call whose result was skipped must not reach the provider");
+        history.OfType<ToolsCallMessage>().Should().BeEmpty(
+            "a tool call whose result was skipped must not reach the provider");
+        history.OfType<ToolCallResultMessage>().Should().BeEmpty(
+            "a tool result whose call was skipped must not reach the provider");
+
+        // ...and the unrelated healthy row is still restored (#489's per-record win is intact).
+        history.OfType<TextMessage>().Select(m => m.Text).Should().ContainSingle()
+            .Which.Should().Be("healthy text");
+        history.Count.Should().Be(1);
+
+        await agent.DisposeAsync();
+    }
+
+    [Theory]
+    [InlineData(true)] // the RESULT row was never written — a dangling tool_use
+    [InlineData(false)] // the CALL row was never written — a dangling tool_result
+    public async Task RecoverAsync_DropsAnUnpairedToolMessage_WhenItsPartnerRowIsSimplyAbsent(
+        bool resultRowAbsent)
+    {
+        // ORIGIN B, with no corruption anywhere. PersistMessageAsync appends one row at a time and
+        // swallows an append failure (`catch (Exception ex) { Logger.LogWarning(ex, "Failed to persist
+        // message"); }`), so a lost append leaves a permanently half-written tool exchange in the
+        // store — a shape that pre-dates the per-record skip entirely. The sweep is blind to WHY a
+        // partner is missing, so the same mechanism repairs this route too; a sweep gated on "a record
+        // was skipped" would leave this, the older and likelier route, unrepaired.
+        var store = new InMemoryConversationStore();
+        var threadId = $"test-thread-absent-{(resultRowAbsent ? "result" : "call")}";
+        const string runId = "prior-run";
+        const string toolCallId = "append-was-lost";
+
+        var text =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new TextMessage { Text = "healthy text", Role = Role.User, RunId = runId },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 1,
+            };
+        IMessage survivingHalf = resultRowAbsent
+            ? new ToolCallMessage
+            {
+                Role = Role.Assistant,
+                RunId = runId,
+                ToolCallId = toolCallId,
+                FunctionName = "do_thing",
+                FunctionArgs = "{}",
+            }
+            : new ToolCallResultMessage
+            {
+                ToolCallId = toolCallId,
+                ToolName = "do_thing",
+                Result = "ok",
+                RunId = runId,
+            };
+        var survivingRow =
+            MessagePersistenceConverter.ToPersistedMessage(survivingHalf, threadId, runId) with
+            {
+                Timestamp = 2,
+            };
+
+        // The partner row is never appended at all — every row in this store deserializes cleanly.
+        await store.AppendMessagesAsync(threadId, [text, survivingRow]);
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+
+        var recovered = await agent.RecoverAsync();
+
+        recovered.Should().BeTrue();
+        var history = agent.SnapshotHistoryForTest();
+        history.OfType<ToolCallMessage>().Should().BeEmpty();
+        history.OfType<ToolCallResultMessage>().Should().BeEmpty();
+        history.OfType<TextMessage>().Select(m => m.Text).Should().ContainSingle()
+            .Which.Should().Be("healthy text");
+
+        await agent.DisposeAsync();
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")] // whitespace-only: what AnthropicRequest.cs:593 calls a legitimately id-less call
+    public async Task RecoverAsync_KeepsASingularToolCall_ThatHasNoUsableIdToPairOn(string? unusableId)
+    {
+        // SAFETY rule, the counterweight to every deleting test above. A message with no usable tool
+        // call id cannot be matched either way, so the sweep must pass it through rather than invent a
+        // verdict — deleting on a guess is exactly the silent history loss this sweep exists to avoid.
+        // The whitespace case is not hypothetical: AnthropicRequest.IsExpectedMissingToolCallId uses
+        // string.IsNullOrWhiteSpace to declare a provider-server tool call legitimately id-less, so a
+        // sweep using IsNullOrEmpty would hunt for a partner Anthropic's own rules never write, and
+        // delete a call the provider was happy to receive.
+        var store = new InMemoryConversationStore();
+        var threadId = $"test-thread-unusable-id-{unusableId?.Trim().Length ?? -1}-{unusableId is null}";
+        const string runId = "prior-run";
+
+        var text =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new TextMessage { Text = "healthy text", Role = Role.User, RunId = runId },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 1,
+            };
+        // Deliberately ALONE: no result row anywhere. If the sweep treated this id as usable it would
+        // look for a partner, find none, and drop the message.
+        var idLessCall =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new ToolCallMessage
+                {
+                    Role = Role.Assistant,
+                    RunId = runId,
+                    ToolCallId = unusableId,
+                    FunctionName = "web_search",
+                    FunctionArgs = "{}",
+                    ExecutionTarget = ExecutionTarget.ProviderServer,
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 2,
+            };
+
+        await store.AppendMessagesAsync(threadId, [text, idLessCall]);
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+
+        await agent.RecoverAsync();
+
+        agent.SnapshotHistoryForTest().OfType<ToolCallMessage>().Should().ContainSingle(
+            "a call with no usable id takes no part in pairing and must never be deleted");
+        agent.SnapshotHistoryForTest().Should().HaveCount(2);
+
+        await agent.DisposeAsync();
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task RecoverAsync_KeepsAPluralToolCall_ThatHasNoUsableIdToPairOn(string? unusableId)
+    {
+        // Same safety rule on the OTHER extractor arm. The plural shape filters its ids through a
+        // different code path than the singular one, so a guard removed there fails silently unless
+        // this case exists.
+        var store = new InMemoryConversationStore();
+        var threadId = $"test-thread-plural-unusable-{unusableId?.Trim().Length ?? -1}-{unusableId is null}";
+        const string runId = "prior-run";
+
+        var text =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new TextMessage { Text = "healthy text", Role = Role.User, RunId = runId },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 1,
+            };
+        var idLessCall =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new ToolsCallMessage
+                {
+                    Role = Role.Assistant,
+                    RunId = runId,
+                    ToolCalls =
+                    [
+                        new ToolCall
+                        {
+                            ToolCallId = unusableId,
+                            FunctionName = "web_search",
+                            FunctionArgs = "{}",
+                            ExecutionTarget = ExecutionTarget.ProviderServer,
+                        },
+                    ],
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 2,
+            };
+
+        await store.AppendMessagesAsync(threadId, [text, idLessCall]);
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+
+        await agent.RecoverAsync();
+
+        agent.SnapshotHistoryForTest().OfType<ToolsCallMessage>().Should().ContainSingle(
+            "a call with no usable id takes no part in pairing and must never be deleted");
+        agent.SnapshotHistoryForTest().Should().HaveCount(2);
+
+        await agent.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task RecoverAsync_KeepsEveryResult_WhenOneCallIsAnsweredTwice()
+    {
+        // SAFETY rule: pairing asks whether a partner EXISTS, not how many. A refactor to 1:1
+        // matching — consuming an id once it has been matched — would silently drop the second answer,
+        // and nothing else in the suite would notice. Two answers to one call is reachable in a real
+        // store because the two result shapes take different persisted ids: the singular one gets the
+        // deterministic tcr:{threadId}:{toolCallId}, the plural one a random Guid, so they coexist as
+        // separate rows rather than one replacing the other.
+        var store = new InMemoryConversationStore();
+        var threadId = "test-thread-answered-twice";
+        const string runId = "prior-run";
+        const string toolCallId = "call-answered-twice";
+
+        var text =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new TextMessage { Text = "healthy text", Role = Role.User, RunId = runId },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 1,
+            };
+        var callRow =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new ToolCallMessage
+                {
+                    Role = Role.Assistant,
+                    RunId = runId,
+                    ToolCallId = toolCallId,
+                    FunctionName = "do_thing",
+                    FunctionArgs = "{}",
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 2,
+            };
+        var singularResult =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new ToolCallResultMessage
+                {
+                    ToolCallId = toolCallId,
+                    ToolName = "do_thing",
+                    Result = "ok",
+                    RunId = runId,
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 3,
+            };
+        var pluralResult =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new ToolsCallResultMessage
+                {
+                    RunId = runId,
+                    ToolCallResults = [new ToolCallResult(toolCallId, "ok again")],
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 4,
+            };
+
+        singularResult.Id.Should().NotBe(pluralResult.Id, "otherwise the store holds only one row");
+
+        await store.AppendMessagesAsync(threadId, [text, callRow, singularResult, pluralResult]);
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+
+        await agent.RecoverAsync();
+
+        var history = agent.SnapshotHistoryForTest();
+        history.OfType<ToolCallMessage>().Should().ContainSingle();
+        history.OfType<ToolCallResultMessage>().Should().ContainSingle(
+            "the first answer is still an answer");
+        history.OfType<ToolsCallResultMessage>().Should().ContainSingle(
+            "a second answer to the same call must not be consumed away");
+        history.Should().HaveCount(4);
+
+        await agent.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task RecoverAsync_CascadesTheDrop_WhenLosingOneCallOrphansAnAnsweredSibling()
+    {
+        // One message may carry SEVERAL calls, so a single pass is not enough. Here call B's answer is
+        // missing, which condemns the whole call message — and that in turn orphans call A's result,
+        // which was perfectly well paired until the message holding A was dropped. Only a sweep that
+        // iterates to a fixed point removes A's result too; a one-pass sweep leaves a dangling
+        // tool_result behind and the provider rejects the replay exactly as before.
+        var store = new InMemoryConversationStore();
+        var threadId = "test-thread-cascading-drop";
+        const string runId = "prior-run";
+
+        var text =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new TextMessage { Text = "healthy text", Role = Role.User, RunId = runId },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 1,
+            };
+        var twoCallRow =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new ToolsCallMessage
+                {
+                    Role = Role.Assistant,
+                    RunId = runId,
+                    ToolCalls =
+                    [
+                        new ToolCall
+                        {
+                            ToolCallId = "call-a",
+                            FunctionName = "do_a",
+                            FunctionArgs = "{}",
+                        },
+                        new ToolCall
+                        {
+                            ToolCallId = "call-b",
+                            FunctionName = "do_b",
+                            FunctionArgs = "{}",
+                        },
+                    ],
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 2,
+            };
+        var resultForA =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new ToolCallResultMessage
+                {
+                    ToolCallId = "call-a",
+                    ToolName = "do_a",
+                    Result = "ok",
+                    RunId = runId,
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 3,
+            };
+
+        // call-b's result row is never written; call-a's is healthy and readable.
+        await store.AppendMessagesAsync(threadId, [text, twoCallRow, resultForA]);
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+
+        await agent.RecoverAsync();
+
+        var history = agent.SnapshotHistoryForTest();
+        history.OfType<ToolsCallMessage>().Should().BeEmpty("call-b was never answered");
+        history.OfType<ToolCallResultMessage>().Should().BeEmpty(
+            "call-a's result is orphaned by the removal of the message that requested it");
+        history.Should().ContainSingle();
+
+        await agent.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task RecoverAsync_TreatsAPluralResultMessage_AsAnswering_ItsToolCalls()
+    {
+        // A plural ToolsCallResultMessage answers its calls just as the singular one does. Reading
+        // only the singular shape would leave those calls looking unanswered and delete them the
+        // moment any unrelated row was skipped.
+        var store = new InMemoryConversationStore();
+        var threadId = "test-thread-plural-result";
+        const string runId = "prior-run";
+        const string toolCallId = "call-plural";
+
+        var corrupt =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new TextMessage { Text = "irrelevant", Role = Role.User, RunId = runId },
+                threadId,
+                runId
+            ) with
+            {
+                Id = "corrupt-unrelated",
+                Timestamp = 1,
+                MessageJson = "{ not json",
+            };
+        var callRow =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new ToolCallMessage
+                {
+                    Role = Role.Assistant,
+                    RunId = runId,
+                    ToolCallId = toolCallId,
+                    FunctionName = "do_thing",
+                    FunctionArgs = "{}",
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 2,
+            };
+        var pluralResultRow =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new ToolsCallResultMessage
+                {
+                    RunId = runId,
+                    ToolCallResults = [new ToolCallResult(toolCallId, "ok")],
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 3,
+            };
+
+        await store.AppendMessagesAsync(threadId, [corrupt, callRow, pluralResultRow]);
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+
+        await agent.RecoverAsync();
+
+        // The sweep DID run (a row was skipped) and still kept the pair intact.
+        var history = agent.SnapshotHistoryForTest();
+        history.OfType<ToolCallMessage>().Should().ContainSingle(
+            "its answer is present, just in the plural message shape");
+        history.OfType<ToolsCallResultMessage>().Should().ContainSingle();
+
+        await agent.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task RecoverAsync_ReturnsFalse_WhenEveryPersistedRecordIsCorrupt()
+    {
+        // "Nothing was restored" must have ONE answer. The zero-row branch already returns false, so
+        // an all-corrupt load — the identical observable outcome — must not return true.
+        var store = new InMemoryConversationStore();
+        var threadId = "test-thread-all-corrupt";
+        const string runId = "prior-run";
+
+        var template = MessagePersistenceConverter.ToPersistedMessage(
+            new TextMessage { Text = "irrelevant", Role = Role.User, RunId = runId },
+            threadId,
+            runId);
+        var corruptA = template with
+        {
+            Id = "corrupt-a",
+            Timestamp = 1,
+            MessageJson = "{ not json",
+        };
+        var corruptB = template with
+        {
+            Id = "corrupt-b",
+            Timestamp = 2,
+            MessageJson = "also not json",
+        };
+
+        await store.AppendMessagesAsync(threadId, [corruptA, corruptB]);
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+
+        var recovered = await agent.RecoverAsync();
+
+        recovered.Should().BeFalse("zero messages were restored, which is what false means here");
+        agent.SnapshotHistoryForTest().Should().BeEmpty();
+
+        await agent.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task RecoverAsync_ReportsAttemptedAndSkippedCounts_AtWarning_WhenRecordsAreDropped()
+    {
+        // An operator scanning at Information must not read "Recovered 1 messages" and miss that the
+        // other rows were lost. The summary states what was attempted and what was dropped, and is
+        // raised to Warning whenever anything was dropped — including rows dropped by the pairing
+        // sweep, not just rows that failed to deserialize.
+        var logger = new CapturingLogger();
+        var store = new InMemoryConversationStore();
+        var threadId = "test-thread-recovery-counts";
+        const string runId = "prior-run";
+        const string toolCallId = "call-9";
+
+        var healthyText =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new TextMessage { Text = "healthy text", Role = Role.User, RunId = runId },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 1,
+            };
+        var callRow =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new ToolCallMessage
+                {
+                    Role = Role.Assistant,
+                    RunId = runId,
+                    ToolCallId = toolCallId,
+                    FunctionName = "do_thing",
+                    FunctionArgs = "{}",
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 2,
+            };
+        var resultRow =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new ToolCallResultMessage
+                {
+                    ToolCallId = toolCallId,
+                    ToolName = "do_thing",
+                    Result = "ok",
+                    RunId = runId,
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 3,
+                MessageJson = "{ this is not valid message json",
+            };
+
+        // 3 attempted: 1 unreadable (the result), 1 dropped for pairing (the call), 1 restored.
+        await store.AppendMessagesAsync(threadId, [healthyText, callRow, resultRow]);
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store, logger: logger);
+
+        await agent.RecoverAsync();
+
+        var summary = logger.Entries.Should()
+            .ContainSingle(e => e.Message.Contains("Recovered 1 of 3 persisted records"))
+            .Which;
+        summary.Level.Should().Be(
+            LogLevel.Warning,
+            "records were dropped, so the summary must not sit at Information");
+        summary.Message.Should().Contain("1 unreadable").And.Contain("1 unpaired");
+
+        await agent.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task RecoverAsync_DistinguishesAnUnknownTypeDiscriminatorFromACorruptRecord()
+    {
+        // A $type written by a NEWER binary is not bit rot: during a rollback window every such row
+        // is dropped, and an operator must be able to tell that apart from a damaged record. The
+        // outcome is unchanged (the row is still skipped, siblings still restored) — only the log
+        // distinguishes the two.
+        var logger = new CapturingLogger();
+        var store = new InMemoryConversationStore();
+        var threadId = "test-thread-unknown-type";
+        const string runId = "prior-run";
+
+        var healthy =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new TextMessage { Text = "healthy text", Role = Role.User, RunId = runId },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 1,
+            };
+        var fromNewerBinary = healthy with
+        {
+            Id = "from-newer-binary",
+            Timestamp = 2,
+            MessageJson = """{"$type":"some_future_message","text":"hi","role":"user"}""",
+        };
+
+        await store.AppendMessagesAsync(threadId, [healthy, fromNewerBinary]);
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store, logger: logger);
+
+        var recovered = await agent.RecoverAsync();
+
+        recovered.Should().BeTrue();
+        agent.SnapshotHistoryForTest().Should().ContainSingle();
+
+        logger.Entries.Should().Contain(
+            e => e.Message.Contains("unknown message type")
+                && e.Message.Contains("some_future_message")
+                && e.Message.Contains("from-newer-binary"),
+            "a schema the running binary does not know must not read as a corrupt record");
+        logger.Entries.Should().NotContain(
+            e => e.Message.Contains("Skipping corrupt persisted record"),
+            "the unknown-type row must not also be reported as corruption");
+
+        await agent.DisposeAsync();
+    }
+
+    private sealed record LogEntry(LogLevel Level, string Message);
+
+    private sealed class CapturingLogger : ILogger
+    {
+        public List<LogEntry> Entries { get; } = [];
+
+        public IDisposable BeginScope<TState>(TState state)
+            where TState : notnull => NullScope.Instance;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            Entries.Add(new LogEntry(logLevel, formatter(state, exception)));
+        }
+
+        private sealed class NullScope : IDisposable
+        {
+            public static readonly NullScope Instance = new();
+
+            public void Dispose() { }
+        }
+    }
+
     #endregion
 
     #region Metadata Preservation Tests

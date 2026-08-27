@@ -2252,6 +2252,60 @@ public class SubAgentManagerTests : IAsyncLifetime
             TimeSpan.FromSeconds(10));
     }
 
+    [Fact]
+    public async Task ARestartRecoveringACorruptRecord_CompletesInsteadOfAbortingTheRestart()
+    {
+        // #489: a single corrupt persisted record must not abort a sub-agent restart. The restart
+        // recovers history through MultiTurnAgentBase.RecoverAsync, which now skips an undeserializable
+        // row and restores its healthy siblings — so the restart completes rather than throwing the
+        // deserialization fault out through RestartRunAsync's teardown-and-rethrow. Red-first: before
+        // the per-record guard the first bad row throws JsonException out of SendMessageAsync.
+        SetupSubAgentResponse([new TextMessage { Text = "done", Role = Role.Assistant }]);
+
+        var store = new CorruptRecordConversationStore();
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["test-agent"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "You are a test agent.",
+                    AgentFactory = () => _subAgentMock.Object,
+                    // ONE store instance across rebuilds so the injection switch stays observable.
+                    ConversationStoreFactory = _ => store,
+                },
+            },
+            MaxConcurrentSubAgents = 5,
+        };
+        _manager = new SubAgentManager(
+            parentAgent: _parentMock.Object,
+            parentContracts: [],
+            parentHandlers: new Dictionary<string, ToolHandler>(),
+            options: options,
+            source: new MutableSubAgentTemplateSource(options.Templates));
+
+        var spawnJson = await _manager.SpawnAsync("test-agent", "first task", runInBackground: true);
+        using var spawnDoc = JsonDocument.Parse(spawnJson);
+        var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
+        _ = await _manager.ObserveCompletionAsync(agentId, CancellationToken.None);
+
+        // Arm the corrupt row for the restart's history recovery. Pre-fix this throws out of the
+        // restart; post-fix the row is skipped and the restart runs to completion.
+        store.InjectCorruptRecord = true;
+        var resumeJson = await _manager.SendMessageAsync(agentId, "second task", runInBackground: true);
+        using var resumeDoc = JsonDocument.Parse(resumeJson);
+        resumeDoc.RootElement.GetProperty("status").GetString().Should().Be("resumed");
+
+        await Wait.UntilAsync(
+            () =>
+            {
+                using var doc = JsonDocument.Parse(_manager!.Peek(agentId));
+                return doc.RootElement.GetProperty("status").GetString() == "completed";
+            },
+            "the sub-agent reported completed after recovering past the corrupt record",
+            TimeSpan.FromSeconds(10));
+    }
+
     #region Helpers
 
     /// <summary>
@@ -2468,6 +2522,77 @@ public class SubAgentManagerTests : IAsyncLifetime
         public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
             string threadId,
             CancellationToken ct = default) => _inner.LoadMessagesAsync(threadId, ct);
+
+        public Task ReplaceMessageAsync(
+            string threadId,
+            PersistedMessage replacement,
+            CancellationToken ct = default) => _inner.ReplaceMessageAsync(threadId, replacement, ct);
+
+        public Task SaveMetadataAsync(
+            string threadId,
+            ThreadMetadata metadata,
+            CancellationToken ct = default) => _inner.SaveMetadataAsync(threadId, metadata, ct);
+
+        public Task UpdateMetadataAsync(
+            string threadId,
+            Func<ThreadMetadata?, ThreadMetadata> update,
+            CancellationToken ct = default) => _inner.UpdateMetadataAsync(threadId, update, ct);
+
+        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
+            _inner.DeleteThreadAsync(threadId, ct);
+
+        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+            int limit = 50,
+            int offset = 0,
+            CancellationToken ct = default) => _inner.ListThreadsAsync(limit, offset, ct);
+    }
+
+    /// <summary>
+    /// An in-memory store that, when armed, prepends one undeserializable record to the history it
+    /// returns — standing in for a single corrupt persisted row among healthy siblings (#489). It
+    /// forwards everything else to a real in-memory store, so the sub-agent's own runs persist and
+    /// behave normally either side of the injected corruption.
+    /// </summary>
+    private sealed class CorruptRecordConversationStore : IConversationStore
+    {
+        private readonly InMemoryConversationStore _inner = new();
+
+        /// <summary>While true, <see cref="LoadMessagesAsync"/> returns one corrupt row ahead of the
+        /// healthy ones, reproducing a store whose first record fails to deserialize.</summary>
+        public bool InjectCorruptRecord { get; set; }
+
+        public async Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
+            string threadId,
+            CancellationToken ct = default)
+        {
+            var healthy = await _inner.LoadMessagesAsync(threadId, ct);
+            if (!InjectCorruptRecord)
+            {
+                return healthy;
+            }
+
+            // Placed BEFORE the healthy rows so the pre-fix whole-list conversion aborts on it and
+            // never reaches the siblings — exactly the failure the per-record guard must survive.
+            var corrupt = new PersistedMessage
+            {
+                Id = "corrupt-record-1",
+                ThreadId = threadId,
+                RunId = "corrupt-run",
+                Timestamp = 0,
+                MessageType = "TextMessage",
+                Role = "User",
+                MessageJson = "{ this is not valid message json",
+            };
+            return [corrupt, .. healthy];
+        }
+
+        public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
+            _inner.LoadMetadataAsync(threadId, ct);
+
+        public Task AppendMessagesAsync(
+            string threadId,
+            IReadOnlyList<PersistedMessage> messages,
+            CancellationToken ct = default) => _inner.AppendMessagesAsync(threadId, messages, ct);
 
         public Task ReplaceMessageAsync(
             string threadId,
