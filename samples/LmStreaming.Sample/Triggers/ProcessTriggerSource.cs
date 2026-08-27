@@ -160,26 +160,68 @@ public sealed class ProcessTriggerSource : ITriggerSource
             ITriggerEventSink sink)
         {
             WaitId = waitId;
-            _watch = RunAsync(handle, expectCode, regex, observer, sink, _cts.Token);
+
+            // The exit observation starts HERE — synchronously, before ArmAsync returns — and not
+            // inside RunAsync. RunAsync opens with `await Task.Yield()`, so anything it does after
+            // that yield runs on a continuation that may not be scheduled until well after the
+            // caller has resumed. The normal caller ordering is "arm the wait, then do the thing
+            // that exits", which puts the exit squarely inside that window.
+            //
+            // Today that window is harmless only because the observer contract is LEVEL-triggered:
+            // WaitForExitAsync reports an already-recorded exit to whoever asks, whenever they ask,
+            // so a late subscriber still sees it. That is an invariant of the OBSERVER, not of this
+            // source. An edge-triggered implementation — one that subscribes to an exit event at
+            // call time — would drop an exit raised before it subscribed, and the loss is permanent
+            // rather than late: no timeout recovers it, and the wait blocks indefinitely on a
+            // watcher that looks perfectly healthy. This is the same arm-window shape that was a
+            // live defect in FileTailTriggerSource (see the baseline-capture comment there), where
+            // the baseline made it reachable through the in-tree implementation.
+            //
+            // Subscribing before the yield makes ArmAsync's own return the "observing" signal, with
+            // no window behind it, and costs nothing: the fire stays asynchronous because RunAsync
+            // still yields before awaiting this task.
+            _watch = RunAsync(ObserveExit(observer, handle, _cts.Token), handle, expectCode, regex, sink, _cts.Token);
         }
 
         public string WaitId { get; }
 
+        /// <summary>
+        /// Starts the exit observation, converting a SYNCHRONOUS throw from the observer into a
+        /// faulted task. Without this, moving the call out of the async <see cref="RunAsync"/> and
+        /// into the constructor would newly let such a throw escape <c>ArmAsync</c> — a behavior
+        /// change beyond the ordering fix. Routed through the task, it still surfaces at the await
+        /// inside <see cref="RunAsync"/> exactly as before.
+        /// </summary>
+        private static Task<ProcessExit> ObserveExit(
+            IProcessExitObserver observer, string handle, CancellationToken ct)
+        {
+            try
+            {
+                return observer.WaitForExitAsync(handle, ct);
+            }
+            catch (Exception ex)
+            {
+                return Task.FromException<ProcessExit>(ex);
+            }
+        }
+
         private static async Task RunAsync(
+            Task<ProcessExit> exitTask,
             string handle,
             int? expectCode,
             Regex? regex,
-            IProcessExitObserver observer,
             ITriggerEventSink sink,
             CancellationToken ct)
         {
             // Yield first so the fire is always asynchronous — never synchronous within ArmAsync.
+            // This is purely about when the fire is delivered; the observation it awaits was already
+            // started by the constructor, above.
             await Task.Yield();
 
             ProcessExit exit;
             try
             {
-                exit = await observer.WaitForExitAsync(handle, ct);
+                exit = await exitTask;
             }
             catch (OperationCanceledException)
             {

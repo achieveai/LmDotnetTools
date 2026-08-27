@@ -60,9 +60,14 @@ public class ProcessTriggerSourceTests
     {
         private readonly ConcurrentDictionary<string, TaskCompletionSource<ProcessExit>> _pending = new();
         private readonly ConcurrentDictionary<string, TaskCompletionSource<bool>> _observing = new();
+        private int _observeCount;
+
+        /// <summary>How many times <see cref="WaitForExitAsync"/> has been called, across handles.</summary>
+        public int ObserveCount => Volatile.Read(ref _observeCount);
 
         public Task<ProcessExit> WaitForExitAsync(string handle, CancellationToken ct)
         {
+            Interlocked.Increment(ref _observeCount);
             var tcs = _pending.GetOrAdd(
                 handle,
                 _ => new TaskCompletionSource<ProcessExit>(TaskCreationOptions.RunContinuationsAsynchronously));
@@ -87,6 +92,84 @@ public class ProcessTriggerSourceTests
             _observing
                 .GetOrAdd(handle, _ => new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously))
                 .Task;
+    }
+
+    /// <summary>
+    /// A <see cref="SynchronizationContext"/> that CAPTURES posted continuations instead of running
+    /// them. Installing it makes <c>await Task.Yield()</c> park indefinitely, so a test can inspect
+    /// exactly what an arm did before its yield resumed — with no thread-pool race in the assertion.
+    /// <see cref="Drain"/> releases the captured continuations onto the thread pool afterwards so
+    /// the armed trigger goes on to behave normally.
+    /// </summary>
+    private sealed class ManualPumpSyncContext : SynchronizationContext
+    {
+        private readonly ConcurrentQueue<(SendOrPostCallback Callback, object? State)> _posted = new();
+
+        public override void Post(SendOrPostCallback d, object? state) => _posted.Enqueue((d, state));
+
+        public override void Send(SendOrPostCallback d, object? state) => d(state);
+
+        public void Drain()
+        {
+            while (_posted.TryDequeue(out var item))
+            {
+                ThreadPool.QueueUserWorkItem(_ => item.Callback(item.State));
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Arm_StartsObservingExit_BeforeItYields()
+    {
+        // Regression guard for the arm-window shape PR #462 fixed in FileTailTriggerSource. The
+        // watch loop opens with `await Task.Yield()`; anything it does AFTER that yield happens on a
+        // continuation that may not run until well after ArmAsync's caller has resumed. The normal
+        // caller ordering is "arm the wait, then do the thing that exits" — so if the observation
+        // were only registered after the yield, an exit landing in that window would be seen by an
+        // observer that had not subscribed yet.
+        //
+        // Today's FakeProcessObserver (and the intended real one) is LEVEL-triggered: it records the
+        // exit and hands it to whoever asks later, so a late subscription still sees it and nothing
+        // is lost. That is the only reason the old ordering was safe, and it is an invariant of the
+        // OBSERVER, not of this source — an edge-triggered observer (subscribe-to-an-event) would
+        // drop the exit silently and the wait would block forever on a watcher that looks healthy.
+        // This test pins the ordering itself so no future observer can reintroduce that race:
+        // WaitForExitAsync must be called synchronously, inside ArmAsync, before the yield.
+        var observer = new FakeProcessObserver();
+        var src = new ProcessTriggerSource(observer);
+        var fired = new TaskCompletionSource<TriggerFireEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sink = new CompletingSink(fired);
+
+        var pump = new ManualPumpSyncContext();
+        var previous = SynchronizationContext.Current;
+        IArmedTrigger handle;
+        SynchronizationContext.SetSynchronizationContext(pump);
+        try
+        {
+            // ArmAsync returns an already-completed ValueTask, so this await does not itself post to
+            // the pump; the only thing parked there is the watch loop's own Task.Yield().
+            handle = await src.ArmAsync(
+                ArmReq("""{"handle":"h1","expectExitCode":0}"""), sink, CancellationToken.None);
+
+            observer.ObserveCount.Should().Be(
+                1,
+                "the exit observation must be registered synchronously within ArmAsync, not on the "
+                    + "post-yield continuation, so no exit can land in the arm window unobserved");
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(previous);
+        }
+
+        // Non-vacuity: with the ordering pinned, the trigger still fires end to end.
+        await using (handle)
+        {
+            pump.Drain();
+            observer.SignalExit("h1", exitCode: 0, stdout: "ok");
+
+            var evt = await fired.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            evt.Payload.Should().Contain("\"exitCode\":0");
+        }
     }
 
     [Fact]

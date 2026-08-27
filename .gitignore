@@ -47,6 +47,12 @@ node_modules/
 # Vite build output
 **/wwwroot/dist/
 
+# Vite's transient config bundles. Vite transpiles a TypeScript config (vite.config.ts,
+# vitest.config.ts) to an ESM sidecar NEXT TO the config file before loading it, and a crashed or
+# killed run leaves the sidecar behind. Five of them were committed under the sample's ClientApp
+# because nothing here matched. Unanchored so it matches beside any config, at any depth.
+*.timestamp-*.mjs
+
 # WebSocket recordings
 **/recordings/
 .logs/
