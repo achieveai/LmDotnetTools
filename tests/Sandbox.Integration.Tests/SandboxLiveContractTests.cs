@@ -327,8 +327,13 @@ public sealed class SandboxLiveContractTests
                     break;
                 }
 
-                // The only other tolerable answer is "no such record yet" — the submit is still in flight.
-                captured.Kind.Should().Be(SandboxErrorKind.NotFound);
+                // Two other answers are tolerable, and only inside THIS loop: "no such record yet" (the
+                // submit is still in flight), and a transient admission-gate refusal — the direct API
+                // answers 503 sandbox_busy while a session is quiescing or the concurrency limiter is
+                // full, which is "ask again", not an answer about the operation's state. Every other
+                // call in this test still fails loudly on Unavailable; widening it here would only turn
+                // a real capacity fault into a silent ten-second wait, which the null check below catches.
+                captured.Kind.Should().BeOneOf(SandboxErrorKind.NotFound, SandboxErrorKind.Unavailable);
                 await Task.Delay(TimeSpan.FromMilliseconds(100));
             }
 

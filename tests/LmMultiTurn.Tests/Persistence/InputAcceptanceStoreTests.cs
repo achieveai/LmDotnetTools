@@ -719,7 +719,7 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
     /// Cancellation is the observable that separates the two: a loop that yields sees the token at its next
     /// delay and stops; a loop that spins cannot see it at all and runs until the budget throws. The store is
     /// held in that loop first by a record name it can never win — the arm above this one, which already
-    /// yields — and the tree is then deleted to flip it into the arm under test, so the interleave is
+    /// yields — and the tree is then taken away to flip it into the arm under test, so the interleave is
     /// arranged rather than raced.
     /// </para>
     /// <para>
@@ -727,6 +727,15 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
     /// name held by a directory is refused there as an access failure. Elsewhere it can be refused as a
     /// collision instead, which parks the call in the reader's own yield — still cancelled promptly, so the
     /// test stands, but pinning the spin is a Windows run.
+    /// </para>
+    /// <para>
+    /// The tree is taken away by an atomic RENAME, and #477 is why. A recursive delete removes the blocking
+    /// directory BEFORE the parent that holds it, and in that gap the record name is free under a parent that
+    /// still exists — so the exclusive create legally wins, the call returns a successful admission, and this
+    /// test's own teardown is what made cancellation stop being the only way the call could settle. The
+    /// assertion below over-promised rather than the loop misbehaving: widening that gap by 30 ms reproduces
+    /// the reported "no exception was thrown" on every single run. A rename has no such gap — the record's
+    /// parent chain is either whole or gone — so the call can only ever settle by seeing the token.
     /// </para>
     /// </summary>
     [Fact]
@@ -753,7 +762,13 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
 
         await Task.Delay(100);
         reserve.IsCompleted.Should().BeFalse("the call must still be retrying, or nothing is being tested");
-        Directory.Delete(Path.Combine(_root, Backing, "thread-1"), recursive: true);
+
+        // One rename, never a recursive delete: see the remarks above. The blocked call holds no handle on
+        // anything under the thread directory — its create is refused outright and it never opens the record
+        // for reading in this arm — so the rename cannot be contended by the very call it is arranging for.
+        Directory.Move(
+            Path.Combine(_root, Backing, "thread-1"),
+            Path.Combine(_root, Backing + "-detached"));
         await Task.Delay(100);
 
         cancel.Cancel();
