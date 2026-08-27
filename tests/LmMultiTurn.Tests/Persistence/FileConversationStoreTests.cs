@@ -44,10 +44,8 @@ public class FileConversationStoreTests : IDisposable
         }
         finally
         {
-            if (Directory.Exists(tempDir))
-            {
-                Directory.Delete(tempDir, recursive: true);
-            }
+            // #477: detach-then-delete rather than recursive-delete in place — see DetachedStoreTeardown.
+            DetachedStoreTeardown.Purge(tempDir);
         }
     }
 

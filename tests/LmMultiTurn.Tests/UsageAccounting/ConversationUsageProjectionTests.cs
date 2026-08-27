@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using FluentAssertions;
+using LmMultiTurn.Tests.Persistence;
 using Microsoft.Data.Sqlite;
 using Xunit;
 
@@ -67,10 +68,8 @@ public class ConversationUsageProjectionTests
         }
         finally
         {
-            if (Directory.Exists(dir))
-            {
-                Directory.Delete(dir, recursive: true);
-            }
+            // #477: detach-then-delete rather than recursive-delete in place — see DetachedStoreTeardown.
+            DetachedStoreTeardown.Purge(dir);
         }
     }
 

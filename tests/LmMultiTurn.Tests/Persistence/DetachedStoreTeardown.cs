@@ -14,18 +14,49 @@ namespace LmMultiTurn.Tests.Persistence;
 /// <para>
 /// Every file-store suite that uses this helper fully awaits its store calls, so none is in flight at
 /// teardown TODAY and the window is latent rather than live. The atomic rename keeps it that way: it
-/// moves the whole root to a sibling <c>-detached</c> name before deleting, and a moved root's parent
-/// chain is either whole or gone — never half — so a future in-flight creator fails fast with
-/// <see cref="DirectoryNotFoundException"/> instead of succeeding into a half-deleted tree. Mirrors the
-/// atomic-rename mechanism recorded in InputAcceptanceStoreTests.
+/// moves the whole root to a sibling <c>-detached-{guid}</c> name before deleting, and a moved root's
+/// parent chain is either whole or gone — never half — so a future in-flight creator fails fast with
+/// <see cref="DirectoryNotFoundException"/> instead of succeeding into a half-deleted tree. The same
+/// atomic-rename mechanism is used inside <c>InputAcceptanceStoreTests</c>' vanishing-directory test to
+/// arrange that fail-fast deliberately.
+/// </para>
+/// <para>
+/// <b>The root is NEVER deleted in place.</b> An earlier revision fell back to a recursive delete of the
+/// still-attached root whenever the rename failed, which voided the invariant in exactly the case it
+/// exists for: the roots are GUID-unique, so the destination can never already exist, and a held handle
+/// is therefore the ONLY reachable rename failure — i.e. a writer still working in the tree, the very
+/// scenario the detach protects against. <see cref="Purge"/> now retries the detach and then THROWS,
+/// naming the root, so the suite leaving a store operation in flight is findable instead of silently
+/// getting the unsafe delete. Moving the root somewhere else is not an escape: on Windows any
+/// <see cref="Directory.Move(string, string)"/> fails while a descendant handle is open.
 /// </para>
 /// </summary>
 internal static class DetachedStoreTeardown
 {
+    /// <summary>How many times the detach is attempted before the lock is reported as a failure.</summary>
+    private const int DetachAttempts = 10;
+
     /// <summary>
-    /// Renames <paramref name="root"/> to a sibling <c>-detached</c> name (fail-fast for any in-flight
-    /// creator), then recursively deletes the detached copy. Best-effort: a still-locked temp tree left
-    /// behind must never fail an otherwise green run.
+    /// Backoff step, multiplied by the attempt number: ~1.1 s in total across
+    /// <see cref="DetachAttempts"/>. Enough to ride out a virus scanner or search indexer momentarily
+    /// holding a freshly written temp file — the transient that is worth absorbing — without turning a
+    /// genuinely leaked store handle into a long stall.
+    /// </summary>
+    private const int DetachRetryDelayMs = 25;
+
+    /// <summary>
+    /// Renames <paramref name="root"/> to a sibling <c>-detached-{guid}</c> name (fail-fast for any
+    /// in-flight creator), then recursively deletes the detached copy.
+    /// <para>
+    /// Returns quietly if the root is already gone. Throws <see cref="IOException"/> if the root cannot be
+    /// detached after <see cref="DetachAttempts"/> tries, because the only reachable cause is a writer
+    /// still holding the tree and deleting it in place would reopen the #477 window.
+    /// </para>
+    /// <para>
+    /// The delete of the DETACHED copy is best-effort, and that swallow is safe for a reason the detach
+    /// does not share: the tree no longer occupies the store root, so nothing can create into it and a
+    /// leftover locked temp directory is inert. It must never fail an otherwise green run.
+    /// </para>
     /// </summary>
     public static void Purge(string root)
     {
@@ -34,26 +65,48 @@ internal static class DetachedStoreTeardown
             return;
         }
 
-        // Atomically detach BEFORE any delete so an exclusive create in flight sees a vanished parent
-        // chain and refuses, rather than winning into a leaf that recursive delete freed early.
-        var detached = root + "-detached";
-        try
+        // A fresh suffix per call removes the name-collision failure by construction, which is what lets
+        // the catch below attribute any remaining failure to a held handle and act on that.
+        var detached = $"{root}-detached-{Guid.NewGuid():N}";
+
+        for (var attempt = 1; ; attempt++)
         {
-            Directory.Move(root, detached);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            // Target already exists, root vanished, or a transient lock — delete in place instead.
-            detached = root;
+            try
+            {
+                // Atomically detach BEFORE any delete so an exclusive create in flight sees a vanished
+                // parent chain and refuses, rather than winning into a leaf a recursive delete freed early.
+                Directory.Move(root, detached);
+                break;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                // The root went away between the check above and here. Nothing is attached to protect.
+                return;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                if (attempt >= DetachAttempts)
+                {
+                    throw new IOException(
+                        $"Teardown could not detach the store root '{root}' after {DetachAttempts} attempts: "
+                            + "something is still holding the tree. Deleting it in place would reopen the "
+                            + "#477 legal-success-window, so teardown refuses instead. Find the test leaving "
+                            + "a store operation in flight, or a handle undisposed, under this root.",
+                        ex);
+                }
+
+                Thread.Sleep(DetachRetryDelayMs * attempt);
+            }
         }
 
         try
         {
             Directory.Delete(detached, recursive: true);
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // A still-locked temp file must not fail an otherwise passing test run.
+            // Safe precisely because the tree is DETACHED: the store root name is already free, so no
+            // creator can reach what is left here. A still-locked temp tree must not fail a green run.
         }
     }
 }

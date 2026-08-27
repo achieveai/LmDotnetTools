@@ -1,0 +1,119 @@
+using FluentAssertions;
+using Xunit;
+
+namespace LmMultiTurn.Tests.Persistence;
+
+/// <summary>
+/// <see cref="DetachedStoreTeardown"/> exists to keep a teardown from ever recursive-deleting a store root
+/// that a writer might still be creating into. These pin that it actually does that — including in the one
+/// case where it is hardest, and where the original implementation did the opposite.
+/// </summary>
+public sealed class DetachedStoreTeardownTests : IDisposable
+{
+    private readonly string _root = Path.Combine(
+        Path.GetTempPath(),
+        $"DetachedStoreTeardownTests_{Guid.NewGuid():N}");
+
+    /// <summary>
+    /// The detach is what makes teardown safe, and a HELD HANDLE is the only reachable way it can fail: the
+    /// roots are GUID-unique so the destination can never already exist, which leaves a writer keeping the
+    /// tree busy — precisely the scenario the helper exists to protect against. Falling back to a recursive
+    /// delete of the still-ATTACHED root there would void the invariant exactly when it matters: a recursive
+    /// delete frees a record's leaf before its parent, and in that gap an in-flight exclusive
+    /// <c>FileMode.CreateNew</c> legally wins into a half-deleted tree (the #477 class).
+    /// <para>
+    /// So the contract is: refuse, loudly, naming the root. The sibling record below is the observable — it
+    /// is untouched by the lock and would be the FIRST casualty of an in-place recursive delete, so its
+    /// survival is what separates "refused" from "deleted anyway, quietly".
+    /// </para>
+    /// </summary>
+    [WindowsOnlyFact(
+        "only Windows refuses to rename a directory whose descendant file is open; POSIX rename succeeds")]
+    public void Purge_WhenTheRootCannotBeDetached_RefusesInsteadOfDeletingTheAttachedRootInPlace()
+    {
+        var survivor = Path.Combine(_root, "record-survivor");
+        _ = Directory.CreateDirectory(survivor);
+        var survivorFile = Path.Combine(survivor, "record.json");
+        File.WriteAllText(survivorFile, "{}");
+
+        var busy = Path.Combine(_root, "record-busy");
+        _ = Directory.CreateDirectory(busy);
+        var busyFile = Path.Combine(busy, "record.json");
+        File.WriteAllText(busyFile, "{}");
+
+        // FileShare.None keeps the whole tree un-renameable on Windows for as long as this handle lives.
+        using var handle = new FileStream(
+            busyFile,
+            FileMode.Open,
+            FileAccess.ReadWrite,
+            FileShare.None);
+
+        var thrown = Record.Exception(() => DetachedStoreTeardown.Purge(_root));
+
+        // Asserted BEFORE the exception: this is the defect itself. A fallback that recursive-deletes the
+        // attached root frees the unlocked sibling first and only then trips over the lock, so a missing
+        // survivor says "deleted around the writer" even when nothing was thrown.
+        File.Exists(survivorFile).Should().BeTrue(
+            "an in-place recursive delete frees sibling records first, so this file is the canary for one");
+        Directory.Exists(_root).Should().BeTrue(
+            "the attached root must be left exactly as found when it could not be detached");
+
+        var refusal = thrown.Should().BeOfType<IOException>(
+            "a teardown that cannot detach the root must surface the writer holding it, not delete around it")
+            .Which;
+        _ = refusal.Message.Should().Contain(
+            _root,
+            "the offending suite is only findable if the failure names the root it could not detach");
+    }
+
+    /// <summary>
+    /// The ordinary path: nothing holds the tree, so the root is detached and the detached copy removed. The
+    /// second assertion is the one with teeth — a helper that renamed and then failed to delete would leave a
+    /// growing pile of <c>-detached</c> siblings in the temp directory and still look like it worked.
+    /// </summary>
+    [Fact]
+    public void Purge_OnAQuiescentRoot_RemovesItAndLeavesNoDetachedResidue()
+    {
+        _ = Directory.CreateDirectory(Path.Combine(_root, "record"));
+        File.WriteAllText(Path.Combine(_root, "record", "record.json"), "{}");
+
+        DetachedStoreTeardown.Purge(_root);
+
+        Directory.Exists(_root).Should().BeFalse();
+        Directory.EnumerateDirectories(
+                Path.GetDirectoryName(_root)!,
+                Path.GetFileName(_root) + "-detached*")
+            .Should().BeEmpty("the detached copy is deleted, not merely renamed out of the way");
+    }
+
+    /// <summary>A root that was never created — or that a previous purge already took — is not a failure.</summary>
+    [Fact]
+    public void Purge_OnAMissingRoot_IsANoOp()
+    {
+        Directory.Exists(_root).Should().BeFalse("precondition: nothing created this root");
+
+        var purge = () => DetachedStoreTeardown.Purge(_root);
+
+        _ = purge.Should().NotThrow();
+    }
+
+    public void Dispose()
+    {
+        // Deliberately NOT DetachedStoreTeardown.Purge: this suite's whole job is to decide whether that
+        // helper behaves, so its teardown must not depend on the thing under test.
+        foreach (var directory in Directory.EnumerateDirectories(
+            Path.GetDirectoryName(_root)!,
+            Path.GetFileName(_root) + "*"))
+        {
+            try
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // No store writer exists here — only this suite's own handles, already disposed by now.
+                // A temp directory the OS has not finished releasing must not fail a green run.
+            }
+        }
+    }
+}
