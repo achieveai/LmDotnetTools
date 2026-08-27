@@ -138,7 +138,8 @@ public static class WorkflowSession
             definition,
             threadId,
             conversationStore,
-            () => runtime.IsComplete
+            () => runtime.IsComplete,
+            logger: logger
         );
         runtime.AttachCollaboration(registration?.Record);
 
@@ -260,7 +261,8 @@ public static class WorkflowSession
             threadId,
             conversationStore,
             () => runtime.IsComplete,
-            snapshot.Collaboration
+            snapshot.Collaboration,
+            logger
         );
         runtime.AttachCollaboration(registration?.Record);
 

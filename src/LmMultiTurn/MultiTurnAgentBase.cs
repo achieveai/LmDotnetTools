@@ -923,70 +923,26 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         // whole batch in one shot (FromPersistedMessages) threw on the first bad row and lost every
         // record, and — because SubAgentManager.RestartRunAsync recovers through this same method with
         // no failure handling of its own (its enclosing catch is teardown-and-rethrow) — a single
-        // corrupt record aborted the entire restart. Skip the bad row, log its id, keep the rest, so
-        // both restore sites (here and the manager) survive a corrupt store identically.
-        var converted = new List<IMessage>(persistedMessages.Count);
-        foreach (var persisted in persistedMessages)
-        {
-            IMessage message;
-            try
+        // corrupt record aborted the entire restart. The same call then drops any tool call/result the
+        // skip (or a lost append) left without its partner (#495).
+        //
+        // Both halves live in MessagePersistenceConverter.FromPersistedMessagesResilient, which is also
+        // what WorkflowControllerEndpoint.GetTranscriptAsync reads through (#498), so the restore sites
+        // cannot drift apart. See that method's remarks for why the skip and the pairing sweep are one
+        // operation and why the sweep runs unconditionally.
+        //
+        // The skip count is accumulated HERE rather than read back from the converter because it is one
+        // term of the partition asserted below: the callback fires exactly once per row the converter
+        // could not read, so unreadableCount is that count by construction.
+        var unreadableCount = 0;
+        var messages = MessagePersistenceConverter.FromPersistedMessagesResilient(
+            persistedMessages,
+            onSkipped: (persisted, ex) =>
             {
-                message = MessagePersistenceConverter.FromPersistedMessage(persisted);
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                // Structural symmetry with the sibling guard in RunAsync's recovery: cancellation is
-                // never swallowed as corruption. INERT today — FromPersistedMessage is fully
-                // synchronous and takes no CancellationToken, and IMessageJsonConverter has no
-                // async/cancellable surface — but the convention stays local and true if one ever
-                // gains that surface, rather than being rediscovered as a silent-drop bug then.
-                throw;
-            }
-            catch (UnknownMessageTypeDiscriminatorException ex)
-            {
-                // NOT corruption: well-formed bytes carrying a $type this binary does not know, i.e.
-                // written by a NEWER binary. During a rollback window this can drop a large slice of
-                // history, so it gets its own line an operator can grep for. Outcome is deliberately
-                // identical to the corrupt case — skip the row, keep the siblings.
-                Logger.LogWarning(
-                    ex,
-                    "Skipping persisted record {RecordId} for thread {ThreadId}: unknown message type "
-                        + "{TypeDiscriminator}. The record was written by a newer binary than this one "
-                        + "(schema mismatch, not corruption)",
-                    persisted.Id,
-                    ThreadId,
-                    ex.TypeDiscriminator);
-                continue;
-            }
-            catch (Exception ex)
-            {
-                Logger.LogWarning(
-                    ex,
-                    "Skipping corrupt persisted record {RecordId} for thread {ThreadId} during recovery",
-                    persisted.Id,
-                    ThreadId);
-                continue;
-            }
-
-            converted.Add(message);
-        }
-
-        // A tool call and its result are SEPARATE persisted rows, and a restored history that holds
-        // one without the other is rejected by every provider — nothing downstream repairs it
-        // (RestoreHistory is a bare AddRange, GetMessagesWithSystemPrompt returns history unfiltered,
-        // and MessageTransformationMiddleware passes an unpaired half through verbatim). Two
-        // independent routes produce that shape, and both are deterministic, so the thread stays
-        // wedged across process restarts rather than recovering on the next try:
-        //   * WRITE side (pre-existing): PersistMessageAsync appends one row at a time and SWALLOWS an
-        //     append failure (see its catch), so a lost tool-result append leaves a dangling tool_use
-        //     in the store for ever.
-        //   * READ side (introduced with the per-record skip above): the row that fails to deserialize
-        //     is the partner of a row that does not.
-        // The sweep is deliberately blind to which route it was — it asks only whether a partner is
-        // present in the restored set — so ONE mechanism closes both. It runs unconditionally for that
-        // reason: gating it on "a record was skipped" would leave the write-side orphan unrepaired,
-        // which is the older and likelier of the two.
-        var messages = DropUnpairedToolMessages(converted);
+                unreadableCount++;
+                LogSkippedRecord(persisted, ex);
+            },
+            cancellationToken: ct);
 
         // Restore history
         RestoreHistory(messages);
@@ -1013,8 +969,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         // thing an operator does. The three counts partition the attempted total exactly
         // (restored + unreadable + unpaired == attempted), so no drop can hide between them, and the
         // line is raised to Warning whenever anything was dropped at all.
-        var unreadableCount = persistedMessages.Count - converted.Count;
-        var unpairedCount = converted.Count - messages.Count;
+        var unpairedCount = persistedMessages.Count - unreadableCount - messages.Count;
         Logger.Log(
             unreadableCount + unpairedCount > 0 ? LogLevel.Warning : LogLevel.Information,
             "Recovered {MessageCount} of {AttemptedCount} persisted records for thread {ThreadId} "
@@ -1034,135 +989,37 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     }
 
     /// <summary>
-    /// Returns <paramref name="messages"/> with every tool-call/tool-result message that has lost its
-    /// partner removed, so a history assembled from a partially-readable store still satisfies the
-    /// pairing invariant every provider enforces.
+    /// Reports one persisted row that could not be read back, on the line its category deserves.
     /// </summary>
     /// <remarks>
-    /// One message may carry SEVERAL tool call ids, so dropping one result can invalidate a message
-    /// that also holds calls whose results ARE present — which in turn orphans those results. The
-    /// sweep therefore iterates to a fixed point rather than making a single pass. Ids are the only
-    /// key used: a message with no id on either side takes no part in pairing and is always kept,
-    /// because it cannot be matched either way and inventing a verdict would delete history on a
-    /// guess. Duplicate results for one call are fine — pairing asks whether a partner EXISTS, not
-    /// how many.
-    /// <para>
-    /// DEPENDENCY, stated because it lives in another assembly and nothing else links the two:
-    /// <c>ToolsCallAggregateMessage</c> is deliberately NOT handled below, and that is only safe
-    /// because <c>MessageTransformationMiddleware</c> (LmCore, MessageTransformationMiddleware.cs:411)
-    /// throws <see cref="NotSupportedException"/> rather than let an aggregate through message-order
-    /// assignment, so one can never reach persistence. An aggregate carries its call and its result by
-    /// COMPOSITION: it matches neither arm of <see cref="ToolCallIdsOf"/> nor
-    /// <see cref="ToolResultIdsOf"/>, would contribute zero ids, and would therefore look like a
-    /// message that takes no part in pairing while the separate row answering it got dropped as
-    /// unpaired. If that guard is ever relaxed, this sweep needs an aggregate arm on BOTH extractors
-    /// before the aggregate can reach a store.
-    /// </para>
+    /// The two categories get separate lines because they mean different things to an operator, even
+    /// though the OUTCOME is deliberately identical (skip the row, keep the siblings): an
+    /// <see cref="UnknownMessageTypeDiscriminatorException"/> is well-formed data carrying a $type this
+    /// binary does not know — written by a NEWER binary — so during a rollback window it can drop a
+    /// large slice of history for a reason that is not corruption at all, and an operator needs to be
+    /// able to grep the two apart.
     /// </remarks>
-    private static List<IMessage> DropUnpairedToolMessages(IReadOnlyList<IMessage> messages)
+    private void LogSkippedRecord(PersistedMessage persisted, Exception ex)
     {
-        var keep = new bool[messages.Count];
-        Array.Fill(keep, true);
-
-        bool changed;
-        do
+        if (ex is UnknownMessageTypeDiscriminatorException unknownType)
         {
-            changed = false;
-
-            var resultIds = new HashSet<string>(StringComparer.Ordinal);
-            var callIds = new HashSet<string>(StringComparer.Ordinal);
-            for (var i = 0; i < messages.Count; i++)
-            {
-                if (keep[i])
-                {
-                    resultIds.UnionWith(ToolResultIdsOf(messages[i]));
-                    callIds.UnionWith(ToolCallIdsOf(messages[i]));
-                }
-            }
-
-            for (var i = 0; i < messages.Count; i++)
-            {
-                if (!keep[i])
-                {
-                    continue;
-                }
-
-                var isUnpaired =
-                    ToolResultIdsOf(messages[i]).Any(id => !callIds.Contains(id))
-                    || ToolCallIdsOf(messages[i]).Any(id => !resultIds.Contains(id));
-
-                if (isUnpaired)
-                {
-                    keep[i] = false;
-                    changed = true;
-                }
-            }
-        }
-        while (changed);
-
-        var kept = new List<IMessage>(messages.Count);
-        for (var i = 0; i < messages.Count; i++)
-        {
-            if (keep[i])
-            {
-                kept.Add(messages[i]);
-            }
+            Logger.LogWarning(
+                ex,
+                "Skipping persisted record {RecordId} for thread {ThreadId}: unknown message type "
+                    + "{TypeDiscriminator}. The record was written by a newer binary than this one "
+                    + "(schema mismatch, not corruption)",
+                persisted.Id,
+                ThreadId,
+                unknownType.TypeDiscriminator);
+            return;
         }
 
-        return kept;
+        Logger.LogWarning(
+            ex,
+            "Skipping corrupt persisted record {RecordId} for thread {ThreadId} during recovery",
+            persisted.Id,
+            ThreadId);
     }
-
-    /// <summary>
-    /// The tool call ids a restored message REQUESTS. Both shapes are handled deliberately: the
-    /// singular <see cref="ToolCallMessage"/> is what production persists (
-    /// <c>MessageTransformationMiddleware</c> splits a plural message into one per call upstream of
-    /// the loop's turn body), while a plural <see cref="ICanGetToolCalls"/> can still reach the store
-    /// through the middleware's unsplit passthrough and through the sibling Claude/Codex/Copilot
-    /// loops, which persist their translated streams directly.
-    /// </summary>
-    private static IEnumerable<string> ToolCallIdsOf(IMessage message)
-    {
-        return message switch
-        {
-            // Checked before ICanGetToolCalls-style plural shapes: ToolCallMessage IS-A ToolCall and
-            // carries its id directly rather than through a collection.
-            ToolCallMessage single => WithId(single.ToolCallId),
-            ICanGetToolCalls many => Usable((many.GetToolCalls() ?? []).Select(tc => tc.ToolCallId)),
-            _ => [],
-        };
-    }
-
-    /// <summary>The tool call ids a restored message ANSWERS.</summary>
-    private static IEnumerable<string> ToolResultIdsOf(IMessage message)
-    {
-        return message switch
-        {
-            ToolCallResultMessage single => WithId(single.ToolCallId),
-            ToolsCallResultMessage many => Usable(many.ToolCallResults.Select(r => r.ToolCallId)),
-            _ => [],
-        };
-    }
-
-    /// <summary>
-    /// A single id, or nothing when there is no USABLE id to pair on.
-    /// </summary>
-    /// <remarks>
-    /// <c>IsNullOrWhiteSpace</c>, not <c>IsNullOrEmpty</c>, and the difference is load-bearing:
-    /// <c>AnthropicRequest.IsExpectedMissingToolCallId</c> (AnthropicRequest.cs:593) uses
-    /// <c>string.IsNullOrWhiteSpace(toolCallId)</c> to decide that a provider-server tool call is
-    /// LEGITIMATELY id-less and must not be treated as an error. If this sweep called a
-    /// whitespace-only id "present" while Anthropic calls it "absent", the sweep would look for a
-    /// partner that by Anthropic's own rules is never written, and delete a message the provider was
-    /// perfectly happy to receive. The two predicates have to agree, and they now do.
-    /// Keeping is always the safe direction here: an unpairable message is passed through untouched
-    /// rather than deleted on a guess.
-    /// </remarks>
-    private static IEnumerable<string> WithId(string? id) =>
-        string.IsNullOrWhiteSpace(id) ? [] : [id];
-
-    /// <summary>The usable ids among <paramref name="ids"/>. See <see cref="WithId"/> on the predicate.</summary>
-    private static IEnumerable<string> Usable(IEnumerable<string?> ids) =>
-        ids.Where(id => !string.IsNullOrWhiteSpace(id)).Select(id => id!);
 
     /// <summary>
     /// Marks conversation-history recovery as already satisfied so <see cref="RunAsync"/> will NOT
