@@ -80,6 +80,20 @@ public record SubAgentOptions
     public IReadOnlyCollection<string>? NonInheritedToolNames { get; init; }
 
     /// <summary>
+    /// The sub-agent tool names this loop may expose, or null (default) for the whole surface its
+    /// collaboration shape emits. A non-null set is an allow-list applied on top of that shape.
+    /// </summary>
+    /// <remarks>
+    /// This narrows the PARENT's own delegation surface, which is what a host offering a per-tool
+    /// choice (e.g. a chat mode whose editor lists <c>Agent</c>/<c>SendMessage</c>/<c>CheckAgent</c>
+    /// separately) needs in order to grant exactly what was chosen. It is distinct from
+    /// <see cref="NonInheritedToolNames"/>, which controls what CHILDREN inherit and leaves the
+    /// parent untouched. Filtering can only remove: a name listed here that the shape does not emit
+    /// stays absent, so an allow-list can never widen the surface.
+    /// </remarks>
+    public IReadOnlySet<string>? ExposedToolNames { get; init; }
+
+    /// <summary>
     /// Extra tools, sourced from a non-WorkflowAgent ancestor, to merge into the snapshot handed to
     /// this loop's sub-agents — over and above the tools inherited from this loop's own registry.
     /// Null (default) = no external tools; every ordinary sub-agent path leaves this unset, so it has

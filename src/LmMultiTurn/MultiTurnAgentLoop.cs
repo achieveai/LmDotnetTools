@@ -539,7 +539,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
             SubAgentTools = new SubAgentToolProvider(
                 SubAgentManager,
-                source);
+                source,
+                subAgentOptions.ExposedToolNames);
 
             _ = functionRegistry.AddProvider(SubAgentTools);
         }

@@ -109,7 +109,7 @@ function handleBackdropClick(event: MouseEvent): void {
 
 <template>
   <div class="modal-backdrop" @click="handleBackdropClick">
-    <div class="modal-container">
+    <div class="modal-container" data-testid="mode-management-modal">
       <div class="modal-header">
         <h2 class="modal-title">
           {{ currentView === 'list' ? 'Manage Modes' : '' }}
@@ -128,7 +128,12 @@ function handleBackdropClick(event: MouseEvent): void {
               <h3 class="section-title">System Modes</h3>
               <p class="section-description">Built-in modes that cannot be modified</p>
               <ul class="mode-list">
-                <li v-for="mode in systemModes" :key="mode.id" class="mode-item">
+                <li
+                  v-for="mode in systemModes"
+                  :key="mode.id"
+                  class="mode-item"
+                  :data-testid="`mode-item-${mode.id}`"
+                >
                   <div class="mode-info">
                     <span class="mode-name">{{ mode.name }}</span>
                     <span v-if="mode.description" class="mode-description">
@@ -139,6 +144,7 @@ function handleBackdropClick(event: MouseEvent): void {
                   <div class="mode-actions">
                     <button
                       class="action-btn"
+                      :data-testid="`mode-copy-${mode.id}`"
                       @click="handleCopy(mode)"
                       title="Create a copy"
                     >
@@ -154,7 +160,12 @@ function handleBackdropClick(event: MouseEvent): void {
               <h3 class="section-title">Your Modes</h3>
               <p class="section-description">Custom modes you've created</p>
               <ul v-if="userModes.length > 0" class="mode-list">
-                <li v-for="mode in userModes" :key="mode.id" class="mode-item">
+                <li
+                  v-for="mode in userModes"
+                  :key="mode.id"
+                  class="mode-item"
+                  :data-testid="`mode-item-${mode.id}`"
+                >
                   <div class="mode-info">
                     <span class="mode-name">{{ mode.name }}</span>
                     <span v-if="mode.description" class="mode-description">
@@ -165,6 +176,7 @@ function handleBackdropClick(event: MouseEvent): void {
                   <div class="mode-actions">
                     <button
                       class="action-btn"
+                      :data-testid="`mode-edit-${mode.id}`"
                       @click="handleEdit(mode)"
                       title="Edit mode"
                     >
@@ -172,6 +184,7 @@ function handleBackdropClick(event: MouseEvent): void {
                     </button>
                     <button
                       class="action-btn"
+                      :data-testid="`mode-copy-${mode.id}`"
                       @click="handleCopy(mode)"
                       title="Create a copy"
                     >
@@ -179,6 +192,7 @@ function handleBackdropClick(event: MouseEvent): void {
                     </button>
                     <button
                       class="action-btn danger"
+                      :data-testid="`mode-delete-${mode.id}`"
                       @click="handleDelete(mode)"
                       title="Delete mode"
                     >
@@ -194,7 +208,7 @@ function handleBackdropClick(event: MouseEvent): void {
           </div>
 
           <div class="modal-footer">
-            <button class="btn btn-primary" @click="handleCreateNew">
+            <button class="btn btn-primary" data-testid="mode-create-new" @click="handleCreateNew">
               Create New Mode
             </button>
           </div>
@@ -226,6 +240,7 @@ function handleBackdropClick(event: MouseEvent): void {
               v-model="copyNewName"
               type="text"
               class="form-input"
+              data-testid="mode-copy-name"
               placeholder="Enter name for the copy"
             />
           </div>
@@ -235,6 +250,7 @@ function handleBackdropClick(event: MouseEvent): void {
             </button>
             <button
               class="btn btn-primary"
+              data-testid="mode-copy-confirm"
               :disabled="!copyNewName.trim()"
               @click="handleConfirmCopy"
             >

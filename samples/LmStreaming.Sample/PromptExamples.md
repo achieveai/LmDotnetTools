@@ -428,6 +428,23 @@ Expected tool lists per mode:
 - Math Helper: calculate
 - Weather Assistant: get_weather
 
+### Mode capability selection (cloned modes)
+
+A mode's sandbox / sub-agent / workflow tools come from its `enabledCapabilityTools` selection, not
+from its id, so a **copy** of Workspace Agent gets exactly what the original selected — and a copy
+narrowed in the Modes editor gets exactly what the user left ticked.
+
+`tools_list` is the check that matters here, because it reports what the MODEL was actually handed
+rather than what the editor claims. Run it in a conversation bound to the mode under test:
+<|instruction_start|>{"instruction_chain":[{"id":"tools-list","id_message":"Listing available tools","messages":[{"tools_list":{}}]}]}<|instruction_end|>
+
+Expected for a copy of **Workspace Agent** narrowed to `sandbox:Read`:
+- present: `Read`, `Agent`, `CheckAgents`, `GetAgents`, `StartWorkflowAgent`, `web_search`
+- absent: `Bash`, `PowerShell`, `Write`, `Edit`, `Glob`, `Grep`
+
+The whole flow (clone → narrow → save → reopen → run) is scripted in
+[`playwright-scripts/mode-capability-tools.mjs`](playwright-scripts/mode-capability-tools.mjs).
+
 ---
 
 ## Tool Description & Parameter Verification
