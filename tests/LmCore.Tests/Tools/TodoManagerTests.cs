@@ -87,6 +87,43 @@ public class TodoManagerTests
     }
 
     [Fact]
+    public async Task Handlers_AcceptQuotedNumericIds()
+    {
+        var manager = new TodoManager();
+        _ = manager.AddTask("Ship the parser", parentId: null);
+
+        // Models routinely emit numeric arguments as strings.
+        var sub = await InvokeAsync(manager, "add-task", """{"title":"Write the lexer","parent_id":"1"}""");
+        Assert.False(sub.IsError);
+        Assert.Equal([2], manager.Tasks[0].SubTasks.Select(t => t.Id));
+
+        var updated = await InvokeAsync(manager, "update-task", """{"task_id":"2","status":"completed"}""");
+        Assert.False(updated.IsError);
+        Assert.Equal(TodoTaskStatus.Completed, manager.Tasks[0].SubTasks[0].Status);
+    }
+
+    [Fact]
+    public void Provider_MarksDescriptorsStateful()
+    {
+        var manager = new TodoManager();
+
+        // The task list is instance state, so descriptors must not be reused across conversations.
+        Assert.All(manager.GetFunctions(), f => Assert.True(f.IsStateful));
+    }
+
+    [Fact]
+    public async Task ListTasks_ToleratesAbsentArguments()
+    {
+        var manager = new TodoManager();
+        _ = manager.AddTask("Ship the parser", parentId: null);
+
+        // list-tasks takes no parameters, so a provider that sends no argument payload is normal.
+        var listed = await InvokeAsync(manager, "list-tasks", "");
+        Assert.False(listed.IsError);
+        Assert.Equal(manager.GetMarkdown(), listed.Text);
+    }
+
+    [Fact]
     public async Task Handlers_ReturnErrorResultsInsteadOfThrowing()
     {
         var manager = new TodoManager();
