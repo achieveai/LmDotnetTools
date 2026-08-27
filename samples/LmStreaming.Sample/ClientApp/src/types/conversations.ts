@@ -40,6 +40,20 @@ export interface ConversationSummary {
    * wire supports. Render nothing instead.
    */
   visibility?: ConversationVisibility;
+  /**
+   * Whether the VIEWER who fetched this listing may change who the conversation is shared with —
+   * the server's own answer, from the authorizer call the share routes are gated on (#482).
+   *
+   * Viewer-scoped, so it is only ever true of the request that fetched it: two people listing the
+   * same conversation get different values, and this must not be cached or handed to a second
+   * reader. {@link visibility} is the opposite, a stored property of the conversation, and cannot
+   * substitute — an owner and a grantee of one shared conversation both read `shared`.
+   *
+   * Optional because a host predating the field sends nothing, and silence is not a refusal: the
+   * share control keeps offering the mutation and lets the server's answer decide. The server always
+   * writes the field when it has one, so an explicit `false` is a real "no".
+   */
+  canShare?: boolean;
 }
 
 /**

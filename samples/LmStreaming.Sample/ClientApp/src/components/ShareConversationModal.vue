@@ -2,13 +2,18 @@
 /**
  * The share control for one conversation: the roster, plus adding and revoking a grant.
  *
- * **Why the mutation controls are offered before we know they are allowed.** No client-visible DTO
- * carries an owner-vs-grantee flag, so there is nothing to compute a permission from up front.
- * (`visibility` says who the conversation is visible TO, not who this caller is, so it cannot stand
- * in for one — an owner and a grantee see the same `shared`.) Reading the roster needs only `Read`, which a
- * grantee has; changing it needs `Share`, which only the owner has. The only honest sequence is
- * therefore: offer, attempt, and render the server's refusal — then withdraw the control, so a
- * grantee is not left with a button that will fail every time they press it.
+ * **How the mutation controls are decided.** Reading the roster needs only `Read`, which a grantee
+ * has; changing it needs `Share`, which it mostly takes being the owner to have. The conversation
+ * listing carries the server's own answer to that second question as `canShare` (#482), decided by
+ * the same authorizer call the share routes are gated on, and the host passes it in — so a viewer
+ * who will be refused is not offered the control in the first place. (`visibility` never could
+ * answer it: it says who the conversation is visible TO, not who this caller is, and an owner and a
+ * grantee of one shared conversation both read `shared`.)
+ *
+ * The offer-attempt-withdraw path below is KEPT, and is what runs when `canShare` is undefined — a
+ * host predating the field says nothing, and silence is not a refusal. It is also the only thing
+ * that decides anything: this flag is a hint about one viewer, so a `canShare` that said yes and a
+ * server that says no still ends with the server's refusal on screen and the control withdrawn.
  *
  * `unknown_thread` is deliberately NOT reported as an error. The server answers a refused read and
  * a never-minted id with the same 404 body, so a message that read "you do not have permission"
@@ -20,16 +25,38 @@ import type { ConversationShare, ShareRole } from '@/types/shares';
 import type { ConversationVisibility } from '@/types/conversations';
 import { listShares, addShare, removeShare, ConversationApiError } from '@/api/sharesApi';
 
-const props = defineProps<{
-  threadId: string;
-  /**
-   * Who the conversation is visible to, as the conversation listing reported it. Passed in rather
-   * than read here because none of the three share routes carries it, and it must not be inferred
-   * from the roster: visibility is stored server-side, and a tenant-published conversation has no
-   * grants at all. Undefined when the host does not report it — then nothing is claimed.
-   */
-  visibility?: ConversationVisibility;
-}>();
+const props = withDefaults(
+  defineProps<{
+    threadId: string;
+    /**
+     * Who the conversation is visible to, as the conversation listing reported it. Passed in rather
+     * than read here because none of the three share routes carries it, and it must not be inferred
+     * from the roster: visibility is stored server-side, and a tenant-published conversation has no
+     * grants at all. Undefined when the host does not report it — then nothing is claimed.
+     */
+    visibility?: ConversationVisibility;
+    /**
+     * Whether THIS viewer may change who the conversation is shared with, as the conversation
+     * listing reported it. Undefined when the host does not report it — then nothing is assumed and
+     * the control is offered, because a host that never sent the field has not said no. Only an
+     * explicit `false` withdraws it.
+     *
+     * A prop rather than a latched ref, unlike {@link readOnly}: it is a fact about the conversation
+     * currently on screen, so it follows a thread switch on its own and the watcher below has
+     * nothing to clear.
+     */
+    canShare?: boolean;
+  }>(),
+  {
+    // NOT decoration, and not a style choice. Vue casts an ABSENT Boolean-typed prop to `false`
+    // unless the prop declares a default, so without this line a host that says nothing would be
+    // read as a host that said no - withdrawing the share control from every owner on every
+    // deployment that predates the field. Declaring the default is what keeps `undefined` reaching
+    // `canOfferMutation` as "not stated". `visibility` needs no such line: it is a string union,
+    // which Vue does not cast.
+    canShare: undefined,
+  }
+);
 
 const emit = defineEmits<{
   close: [];
@@ -114,7 +141,27 @@ const visibilityLabel = computed(() =>
   props.visibility === undefined ? null : VISIBILITY_LABELS[props.visibility]
 );
 
-const canOfferMutation = computed(() => !unavailable.value && !readOnly.value);
+/**
+ * Three ways to lose the mutation controls, and they are not redundant: `unavailable` is that
+ * thread's 404, `readOnly` is a refusal this caller has already been handed, and `canShare === false`
+ * is the server saying so up front. The last one is compared against `false` rather than read as
+ * falsy — undefined means "this host did not say", which is the offer-then-find-out case.
+ */
+const canOfferMutation = computed(
+  () => !unavailable.value && !readOnly.value && props.canShare !== false
+);
+
+/**
+ * Shown when the controls were withdrawn up front, so their absence is stated rather than left to be
+ * noticed. Suppressed once there is a refusal on screen, which says the same thing with a reason.
+ *
+ * Phrased as what this viewer CAN do. The server sends a boolean, not a reason code, and the reasons
+ * behind it differ ("shared with you", "you are an admin", "this conversation is published and its
+ * own owner may not share it") - so naming one would be a guess that is wrong for the others.
+ */
+const readOnlyNote = computed(
+  () => props.canShare === false && !unavailable.value && refusal.value === null
+);
 const addDisabled = computed(
   () => busy.value || sharingOff.value || subjectId.value.trim().length === 0
 );
@@ -310,6 +357,10 @@ watch(
           </li>
         </ul>
 
+        <p v-if="readOnlyNote" class="share-read-only" data-testid="share-read-only">
+          You can see who this conversation is shared with, but not change it.
+        </p>
+
         <div v-if="canOfferMutation" class="share-add-form" data-testid="share-add-form">
           <input
             v-model="subjectId"
@@ -370,7 +421,8 @@ watch(
 }
 
 .share-loading,
-.share-empty {
+.share-empty,
+.share-read-only {
   margin: 0;
   color: #666;
   font-size: 14px;

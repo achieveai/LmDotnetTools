@@ -49,6 +49,33 @@ public record ConversationSummary
     public required string Visibility { get; init; }
 
     /// <summary>
+    /// Whether THIS viewer may change who the conversation is shared with — the answer the share
+    /// routes will give, decided by <c>ConversationAuthorizer</c> rather than by anything here.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Viewer-scoped, like <c>SubAgentSummary.IsReadable</c>: two people listing the same
+    /// conversation get different values, so this must never be cached or forwarded to a second
+    /// reader. <see cref="Visibility"/> is the opposite — a stored property of the row — and cannot
+    /// stand in for it: the owner and a grantee of one shared conversation both read
+    /// <c>"shared"</c>, which is exactly why #482 exists.
+    /// </para>
+    /// <para>
+    /// Deliberately NOT <c>[JsonIgnore(WhenWritingDefault)]</c>, which is how <c>IsReadable</c>
+    /// carries a viewer flag. A field omitted when false would make "this viewer may not share"
+    /// indistinguishable from "this server predates the field", and the client has to tell those
+    /// apart: it withdraws the control on an explicit <c>false</c> and keeps the offer-then-refuse
+    /// path on an absent one. Always writing it is what makes the absent case mean one thing.
+    /// </para>
+    /// <para>
+    /// A HINT, not a gate. The server refuses a share it does not permit whatever this says
+    /// (<c>ConversationsController.AddShare</c>/<c>RemoveShare</c>); this only stops the client
+    /// offering a button that was always going to fail.
+    /// </para>
+    /// </remarks>
+    public required bool CanShare { get; init; }
+
+    /// <summary>
     /// Renders a stored visibility for the wire. Hand-mapped the way the sharing routes hand-map
     /// <c>GrantRole</c> to <c>viewer</c>/<c>editor</c>: the enum carries no
     /// <see cref="JsonStringEnumConverter"/>, so putting it on the DTO as-is would serialize

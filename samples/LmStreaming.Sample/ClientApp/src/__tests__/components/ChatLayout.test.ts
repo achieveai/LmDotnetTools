@@ -18,6 +18,7 @@ interface ConversationSummary {
   workspace?: string | null;
   mode?: string | null;
   visibility?: 'private' | 'shared' | 'tenant-published';
+  canShare?: boolean;
 }
 
 const sharedMocks = vi.hoisted(() => ({
@@ -1721,6 +1722,22 @@ describe('ChatLayout share control visibility (#375)', () => {
     const modal = wrapper.findComponent({ name: 'ShareConversationModal' });
     expect(modal.exists()).toBe(true);
     expect(modal.props('visibility')).toBe('shared');
+  });
+
+  // #482. `canShare` reaches the client on the same listing as `visibility`, so ChatLayout hands it
+  // over the same way. Without this the modal would be back to offering a mutation and finding out
+  // by being refused — the flag would exist on the wire and reach nobody.
+  it('hands the share control whether this viewer may share the open conversation', async () => {
+    sharedMocks.conversations = [{ threadId: 'thread-1', visibility: 'shared', canShare: false }];
+
+    const wrapper = mountWithShareModal();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="share-button"]').trigger('click');
+    await flushPromises();
+
+    const modal = wrapper.findComponent({ name: 'ShareConversationModal' });
+    expect(modal.props('canShare')).toBe(false);
   });
 
   it('re-lists conversations when the share control reports a change', async () => {
