@@ -89,4 +89,17 @@ internal static class ReadmeUsageSample
             return await client.ExecuteAsync(sessionId, new SandboxCommand(argv, operationId: operationId));
         }
     }
+
+    /// <summary>
+    /// The README's "Artifact retention and cleanup" block, compiled: run a command, consume its output,
+    /// then reclaim the stdout/stderr artifacts that command left in the workspace.
+    /// </summary>
+    public static async Task ReclaimCommandArtifactsAsync(SandboxClient client, string sessionId)
+    {
+        var result = await client.ExecuteAsync(sessionId, new SandboxCommand(["git", "status"]));
+        Console.WriteLine(result.StandardOutput);
+
+        // The output has been consumed; reclaim the stdout/stderr files it left behind.
+        await client.DeleteOperationAsync(sessionId, result.OperationId);
+    }
 }
