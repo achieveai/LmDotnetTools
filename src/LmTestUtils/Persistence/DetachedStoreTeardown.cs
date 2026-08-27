@@ -76,8 +76,14 @@ namespace AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 /// run task it started itself, and the background work it used to discard with <c>_ =</c> — previously
 /// the run task sat in a field no disposal path awaited, and the binding persist had no holder at all, so
 /// a store write could outlive the pool. That is what makes disposing the host the teardown's
-/// synchronisation point rather than a hopeful one — and equally what makes disposal-after-purge a
-/// guaranteed conflict rather than a racy one. Also live is <c>BrowserWebAppFactory</c> (whose own
+/// synchronisation point rather than a hopeful one. What it does NOT make it is deterministic, and that
+/// is worth stating because the ordering is easy to get wrong and nothing catches it: the
+/// <c>FileShare.None</c> handles below are taken per operation, not held for the store's lifetime, so
+/// purging before disposal only fails when a write is genuinely in flight at that instant. Inverting the
+/// order in these tests today produces no failure and no leaked root — it was measured, not assumed — so
+/// the ordering here is correct BY CONSTRUCTION and is pinned by no assertion anywhere. Treat it as a
+/// rule to follow rather than one the suite will enforce for you. Also live is
+/// <c>BrowserWebAppFactory</c> (whose own
 /// remarks document the race and answer it with a retrying delete, an answer explicitly scoped to "the
 /// writer is finishing, not restarting" — which is why its wrapper still retries and swallows around
 /// <see cref="Purge"/> rather than letting <see cref="Purge"/>'s own throw reach <c>Dispose</c>
