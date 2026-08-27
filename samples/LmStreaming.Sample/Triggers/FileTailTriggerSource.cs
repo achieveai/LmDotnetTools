@@ -304,17 +304,60 @@ public sealed class FileTailTriggerSource : ITriggerSource
         public FileTailArmedTrigger(string waitId, string path, Regex? regex, ITriggerEventSink sink)
         {
             WaitId = waitId;
-            _tailTask = RunAsync(path, regex, sink, _cts.Token);
+
+            // The tail baseline is captured HERE — synchronously, before ArmAsync returns — and not
+            // inside RunAsync. RunAsync opens with `await Task.Yield()`, so anything read after that
+            // yield is read on a thread-pool continuation that may not run until well after the
+            // caller has resumed. A caller that arms a file_tail wait and then does the thing that
+            // writes the log line (the normal ordering: arm, then act) would have those bytes
+            // measured into the starting offset and silently classified as pre-existing history.
+            // Precisely: the baseline settles at exactly the post-append length, so those particular
+            // bytes are lost permanently — no timeout recovers them, because it is a lost signal
+            // rather than a late one, and the truncation-reset in the poll loop cannot help either
+            // (it only heals a baseline that is too LARGE, len < offset). The watcher itself stays
+            // alive: a LATER append grows the file past that baseline and does fire normally. So the
+            // damage is scoped but severe — it lands exactly on the one-shot "arm a wait, then do
+            // the thing that logs" case, where the line written in the arm window is the only line
+            // that will ever matter and the wait blocks indefinitely on a watcher that looks healthy.
+            // Capturing before the yield makes ArmAsync's own return the "watcher is live" signal,
+            // with no window behind it.
+            //
+            // The guard here is deliberately NOT identical to the in-loop one, on both axes:
+            //   - It also catches UnauthorizedAccessException. The loop reaches its length read only
+            //     after File.Exists has already succeeded once, whereas this runs cold on a
+            //     caller-supplied path, so an ACL denial is reachable here and not there.
+            //   - It resets to 0 where the loop PRESERVES the offset. That inversion is the point:
+            //     the loop is protecting an offset it has already earned, so discarding it would
+            //     re-deliver history. Here there is no earned offset yet, and 0 is the correct
+            //     baseline for the case actually being guarded — a TOCTOU delete between File.Exists
+            //     and the length read means the file the caller armed on is gone, so whatever
+            //     appears at that path next should be read from its start, not skipped.
+            // Either way this must not throw: an exception in the constructor would fault _tailTask
+            // (or escape ArmAsync), and nobody observes it.
+            long startOffset;
+            try
+            {
+                startOffset = File.Exists(path) ? new FileInfo(path).Length : 0;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                startOffset = 0;
+            }
+
+            _tailTask = RunAsync(path, startOffset, regex, sink, _cts.Token);
         }
 
         public string WaitId { get; }
 
-        private static async Task RunAsync(string path, Regex? regex, ITriggerEventSink sink, CancellationToken ct)
+        private static async Task RunAsync(
+            string path, long startOffset, Regex? regex, ITriggerEventSink sink, CancellationToken ct)
         {
             // Yield first so the fire is always asynchronous — never synchronous within ArmAsync.
+            // This is purely about when the fire is delivered; the baseline it is measured against
+            // was already fixed by the constructor, above.
             await Task.Yield();
 
-            long offset = File.Exists(path) ? new FileInfo(path).Length : 0;
+            long offset = startOffset;
 
             while (!ct.IsCancellationRequested)
             {
