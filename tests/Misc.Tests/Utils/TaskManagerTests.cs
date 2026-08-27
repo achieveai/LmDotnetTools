@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.Misc.Utils;
 using FluentAssertions;
 using Xunit;
@@ -1026,7 +1027,18 @@ public class TaskManagerTests
         // Assert - removing only from RootTasks would report success and change nothing.
         result.Should().Contain("Deleted task 1.1.1 and all subtasks");
         _taskManager.ListTasks().Should().NotContain("Level 3");
-        _taskManager.GetTask("1.1.1").Should().Contain("not found");
+
+        // Positive control. Under-deletion is only half the failure mode: detaching the root
+        // ancestor instead of the target satisfies every negative assertion above, because the
+        // success message is composed from taskId and Title before the removal happens. The
+        // ancestors must survive.
+        _taskManager.ListTasks().Should().Contain("Level 1").And.Contain("Level 2");
+        _taskManager.GetTask("1.1").Should().Contain("Task 1.1: Level 2");
+
+        // Exactly which absence this is matters: "not found" is emitted by three different
+        // guards on this path (invalid format, root missing, node missing along the path), so
+        // a substring match cannot tell "the leaf is gone" from "the tree is gone".
+        _taskManager.GetTask("1.1.1").Should().Be("Error: Task '1.1.1' not found.");
     }
 
     [Fact]
@@ -1090,6 +1102,10 @@ public class TaskManagerTests
         // Assert
         result.Should().Contain($"status to '{expected}'");
     }
+
+    #endregion
+
+    #region Concurrency Tests
 
     /// <summary>
     ///     Pins the lock coverage of the four read paths that walk <em>nested</em> SubTasks
@@ -1183,9 +1199,140 @@ public class TaskManagerTests
         failures.Should().BeEmpty();
     }
 
+    /// <summary>
+    ///     Pins the lock on both JSON serializers. They walk the same tree as the readers
+    ///     above but fail differently, so an exception assertion cannot see them: a torn read
+    ///     here produces a well-formed document describing a state the manager was never in.
+    ///     <para>
+    ///         Two orderings create the window. <c>AddTask</c> raises
+    ///         <c>parentTask.NextSubTaskId</c> before appending to <c>SubTasks</c>, and
+    ///         <c>List&lt;T&gt;.Add</c> publishes the new <c>Count</c> before it stores the
+    ///         element. So an unlocked serializer can emit a counter that runs ahead of the
+    ///         list it counts, or a <c>null</c> where a task should be. Both are checked, on
+    ///         every node, against invariants that hold for any consistent snapshot of an
+    ///         append-only tree.
+    ///     </para>
+    ///     <para>
+    ///         Runs against both serializers: <c>JsonSerializeTasksToJsonElements</c> had no
+    ///         coverage of any kind.
+    ///     </para>
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task JsonSerializers_ConcurrentWithNestedAdds_ShouldEmitAConsistentSnapshot(bool viaJsonElement)
+    {
+        // Arrange - the churn goes under root 1, which ManagerState serializes before every
+        // other root and before nextId, so the whole document is written across the window.
+        const int RootCount = 400;
+        const int NestedSeedCount = 200;
+        const int ReaderIterations = 100;
+        const int WriterCap = 20000;
+
+        for (var i = 0; i < RootCount; i++)
+        {
+            _ = _taskManager.AddTask($"Seed {i}");
+        }
+
+        for (var i = 0; i < NestedSeedCount; i++)
+        {
+            _ = _taskManager.AddTask($"Nested {i}", "1");
+        }
+
+        var violations = new ConcurrentBag<string>();
+        using var startingGun = new ManualResetEventSlim(false);
+        var stop = 0;
+
+        // Act
+        var writer = Task.Run(() =>
+        {
+            startingGun.Wait();
+            var i = 0;
+            while (Volatile.Read(ref stop) == 0 && i < WriterCap)
+            {
+                _ = _taskManager.AddTask($"Churn {i++}", "1");
+            }
+        });
+
+        var readers = Enumerable
+            .Range(0, 4)
+            .Select(readerIndex =>
+                Task.Run(() =>
+                {
+                    startingGun.Wait();
+                    for (var i = 0; i < ReaderIterations; i++)
+                    {
+                        try
+                        {
+                            var json = viaJsonElement
+                                ? _taskManager.JsonSerializeTasksToJsonElements().GetRawText()
+                                : _taskManager.JsonSerializeTasks();
+
+                            using var document = JsonDocument.Parse(json);
+                            CollectSnapshotViolations(document.RootElement, violations);
+                        }
+                        catch (Exception ex)
+                        {
+                            violations.Add($"{ex.GetType().Name}: {ex.Message}");
+                        }
+                    }
+                })
+            )
+            .ToArray();
+
+        startingGun.Set();
+        await Task.WhenAll(readers);
+        Volatile.Write(ref stop, 1);
+        await writer;
+
+        // Assert
+        violations.Should().BeEmpty();
+    }
+
     #endregion
 
     #region Helper Methods
+
+    /// <summary>
+    ///     Invariants that hold for any consistent snapshot of an append-only tree, and only
+    ///     for a consistent one: the id counters lead their lists by exactly one, and no slot
+    ///     is empty.
+    /// </summary>
+    private static void CollectSnapshotViolations(JsonElement state, ConcurrentBag<string> violations)
+    {
+        var roots = state.GetProperty("rootTasks");
+        var nextId = state.GetProperty("nextId").GetInt32();
+        if (nextId != roots.GetArrayLength() + 1)
+        {
+            violations.Add($"nextId {nextId} against {roots.GetArrayLength()} root task(s)");
+        }
+
+        foreach (var root in roots.EnumerateArray())
+        {
+            CollectNodeViolations(root, violations);
+        }
+    }
+
+    private static void CollectNodeViolations(JsonElement node, ConcurrentBag<string> violations)
+    {
+        if (node.ValueKind != JsonValueKind.Object)
+        {
+            violations.Add($"a task serialized as {node.ValueKind}");
+            return;
+        }
+
+        var subTasks = node.GetProperty("subTasks");
+        var nextSubTaskId = node.GetProperty("nextSubTaskId").GetInt32();
+        if (nextSubTaskId != subTasks.GetArrayLength() + 1)
+        {
+            violations.Add($"nextSubTaskId {nextSubTaskId} against {subTasks.GetArrayLength()} subtask(s)");
+        }
+
+        foreach (var subTask in subTasks.EnumerateArray())
+        {
+            CollectNodeViolations(subTask, violations);
+        }
+    }
 
     private static int ExtractTaskId(string result)
     {
