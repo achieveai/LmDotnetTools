@@ -345,7 +345,27 @@ internal sealed record JudgeVerdict(int? Score, string Rationale, string Variant
 /// <param name="Rationale">The judge's reasoning, or the raw reply when it could not be scored.</param>
 /// <param name="VariantId">Which review variant was graded.</param>
 /// <param name="JudgeModelId">The model that issued the grade. Null in a v1 row.</param>
-/// <param name="GeneratorModelId">The model that wrote what was graded. Null in a v1 row.</param>
+/// <param name="GeneratorModelId">
+/// The model that wrote what was graded. Null in a v1 row.
+/// <para>
+/// Both ids here are <b>provisioning identities</b> — the judge stage passes each through
+/// <c>IReviewAgentLoopFactory.ResolveEffectiveModelId</c> before recording it, and on the S2S path
+/// that discards the per-call id and answers the selector <c>lmstreaming:&lt;providerId&gt;</c>. That
+/// is what <see cref="JudgeArtifactPayload.SelfGraded"/> needs, because it is an ordinal comparison
+/// of these two strings and nothing else: two conversations provisioned under one selector run one
+/// model, which is exactly the question that flag asks.
+/// </para>
+/// <para>
+/// It is deliberately NOT the value <see cref="Eval.DaemonCorpusReader"/> stamps on a candidate. That
+/// answers a different question — which model wrote this text — and so prefers the escalated id
+/// recorded on the <c>review-provisional</c> checkpoint. Two fields, two questions. Do not
+/// "reconcile" them by making this one read the other: on the S2S path the judge id would stay
+/// <c>lmstreaming:&lt;providerId&gt;</c> while this one became a bare model slug, the two would never
+/// compare equal, and <see cref="JudgeArtifactPayload.SelfGraded"/> would report an independence the
+/// transport never delivered — the same hazard the judge stage already guards against by resolving
+/// both sides through the factory.
+/// </para>
+/// </param>
 /// <param name="SelfGraded">
 /// Whether those two are the same model — the self-preference axis of §3.2, stated rather than left
 /// to be derived. Null when either side is unrecorded, which is unknown and never "no".

@@ -236,6 +236,154 @@ public sealed class DaemonCorpusReaderTests : IDisposable
         Assert.Single(snapshot.Items).GeneratorFamily.Should().Be("openai");
     }
 
+    /// <summary>
+    /// A <c>review-provisional</c> checkpoint carrying <paramref name="modelId"/> in its lifecycle
+    /// identity — the shape the executor writes, with <c>modelOverride ?? run.ModelId</c> in that
+    /// slot. Only the model varies here; the rest of the identity is inert for this reader.
+    /// </summary>
+    private void AddLifecycleCheckpoint(long runId, string? modelId) =>
+        AddArtifact(
+            runId,
+            DaemonReviewStageExecutor.ProvisionalReviewArtifactKind,
+            new ReviewArtifactPayload(
+                string.Empty,
+                "run-1",
+                "primary",
+                Lifecycle: new ReviewLifecycleIdentity(
+                    "s2s",
+                    "thread-1",
+                    "ws-1",
+                    modelId,
+                    ToolAssisted: true,
+                    ContextGeneration: 1
+                )
+            )
+        );
+
+    [Fact]
+    public async Task An_escalated_run_is_attributed_to_the_model_that_actually_ran()
+    {
+        // review_run.model_id is written once, on INSERT: no UPDATE in ReviewStore touches it. So a
+        // run that escalated to OverflowEscalationModelId mid-review still carries the model it was
+        // SEEDED with, and crediting that model attributes the review to a generator that did not
+        // write it. The model that actually ran is already recorded — the executor writes
+        // `modelOverride ?? run.ModelId` into the lifecycle identity on the review-provisional
+        // checkpoint, which sits in the very artifact list this reader already fetches.
+        var runId = CreateRun("118", modelId: "gpt-5.6-luna");
+        AddContext(runId, "a diff");
+        AddReview(runId, "a review");
+        AddLifecycleCheckpoint(runId, "gpt-5.6-terra");
+
+        // An injected literal resolver, matching this file's rule: the reader's job is that whatever
+        // id it stamps is the id the resolver is asked about. Re-deriving a family here would test
+        // ModelFamilies instead and leave a second family rule in the tree (#456).
+        var snapshot = await SnapshotAsync(
+            Reader(modelId => modelId == "gpt-5.6-terra" ? "escalated-family" : "seeded-family")
+        );
+
+        var candidate = Assert.Single(snapshot.Items);
+        candidate.ModelId.Should().Be("gpt-5.6-terra");
+
+        // The family follows the corrected id, or the fix would stop at the label and leave the
+        // generator-family exclusion still keyed on the seeded model.
+        candidate.GeneratorFamily.Should().Be("escalated-family");
+    }
+
+    [Fact]
+    public async Task A_run_with_no_lifecycle_checkpoint_keeps_its_seeded_model()
+    {
+        // The fallback, pinned separately from the preference: a run that never escalated records no
+        // lifecycle checkpoint at all, and preferring a missing one must not erase the only model id
+        // such a run has.
+        var runId = CreateRun("118", modelId: "gpt-5.6-luna");
+        AddContext(runId, "a diff");
+        AddReview(runId, "a review");
+
+        var snapshot = await SnapshotAsync(
+            Reader(modelId => modelId == "gpt-5.6-luna" ? "seeded-family" : null)
+        );
+
+        var candidate = Assert.Single(snapshot.Items);
+        candidate.ModelId.Should().Be("gpt-5.6-luna");
+        candidate.GeneratorFamily.Should().Be("seeded-family");
+    }
+
+    [Fact]
+    public async Task A_lifecycle_checkpoint_that_names_no_model_does_not_erase_the_seeded_one()
+    {
+        // ReviewLifecycleIdentity.ModelId is nullable, and a run whose model was never configured
+        // writes a checkpoint with nothing in that slot. Adding a checkpoint must never LOSE
+        // attribution that was already correct, so a null there falls through to the run's own id.
+        var runId = CreateRun("118", modelId: "gpt-5.6-luna");
+        AddContext(runId, "a diff");
+        AddReview(runId, "a review");
+        AddLifecycleCheckpoint(runId, modelId: null);
+
+        Assert.Single((await SnapshotAsync(Reader())).Items)
+            .ModelId.Should()
+            .Be("gpt-5.6-luna");
+    }
+
+    [Fact]
+    public async Task A_lifecycle_checkpoint_whose_model_is_blank_does_not_erase_the_seeded_one()
+    {
+        // Blank is NOT "present". A whitespace-only id reading as a recorded model is the failure
+        // this reader would show as an attribution — a candidate whose ModelId is "   " — while the
+        // run's real id sat one field away. Distinguished from null on purpose: the two arrive by
+        // different routes (an unconfigured model vs. a config value that is all spaces) and must
+        // reach the same answer.
+        var runId = CreateRun("118", modelId: "gpt-5.6-luna");
+        AddContext(runId, "a diff");
+        AddReview(runId, "a review");
+        AddLifecycleCheckpoint(runId, "   ");
+
+        Assert.Single((await SnapshotAsync(Reader())).Items)
+            .ModelId.Should()
+            .Be("gpt-5.6-luna");
+    }
+
+    [Fact]
+    public async Task The_latest_lifecycle_checkpoint_wins_because_each_escalation_rung_writes_one()
+    {
+        // The escalation ladder runs up to three attempts and each writes its own checkpoint, so the
+        // rung that produced the review is the LAST one recorded. Reading the first would credit the
+        // attempt that overflowed — the one whose output was thrown away.
+        var runId = CreateRun("118", modelId: "gpt-5.6-luna");
+        AddContext(runId, "a diff");
+        AddReview(runId, "a review");
+        AddLifecycleCheckpoint(runId, "gpt-5.6-luna");
+        AddLifecycleCheckpoint(runId, "gpt-5.6-terra");
+
+        Assert.Single((await SnapshotAsync(Reader())).Items)
+            .ModelId.Should()
+            .Be("gpt-5.6-terra");
+    }
+
+    [Fact]
+    public async Task The_b_arm_keeps_its_own_model_and_is_not_reattributed_by_the_escalation()
+    {
+        // The lifecycle checkpoint describes the PRIMARY arm's conversation: VariantReviewer runs no
+        // escalation ladder and writes no checkpoint, recording its own model on its own
+        // b-variant-review artifact instead. The B arm must not inherit the primary's escalation.
+        var runId = CreateRun("118", modelId: "gpt-5.6-luna");
+        AddContext(runId, "the shared diff");
+        AddReview(runId, "the A review");
+        AddArtifact(
+            runId,
+            VariantReviewer.VariantReviewArtifactKind,
+            new VariantReviewArtifactPayload("b", "claude-haiku-4.5", "the B review", "run-2")
+        );
+        AddLifecycleCheckpoint(runId, "gpt-5.6-terra");
+
+        var snapshot = await SnapshotAsync(Reader());
+
+        snapshot
+            .Items.Single(c => c.VariantId == "primary")
+            .ModelId.Should()
+            .Be("gpt-5.6-terra");
+        snapshot.Items.Single(c => c.VariantId == "b").ModelId.Should().Be("claude-haiku-4.5");
+    }
+
     [Fact]
     public async Task No_candidate_carries_a_reference_because_the_store_holds_no_accepted_output()
     {

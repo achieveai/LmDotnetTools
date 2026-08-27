@@ -158,7 +158,7 @@ internal sealed class DaemonCorpusReader : ICorpusReader
                         context.Diff,
                         variantId: Blank(review.VariantId) ?? Blank(run.VariantId)
                             ?? PrimaryVariantFallback,
-                        modelId: run.ModelId,
+                        modelId: EffectiveGeneratorModelId(artifacts, run),
                         content: review.ReviewText
                     )
                 );
@@ -306,6 +306,51 @@ internal sealed class DaemonCorpusReader : ICorpusReader
         }
 
         return payload;
+    }
+
+    /// <summary>
+    /// The model that actually produced the primary arm's review, which is not always the model the
+    /// run was seeded with.
+    /// <para>
+    /// <c>review_run.model_id</c> is written once, on INSERT, and no <c>UPDATE</c> in
+    /// <see cref="ReviewStore"/> touches it — so a run that escalated to
+    /// <c>OverflowEscalationModelId</c> part-way through still carries the model it STARTED with.
+    /// Crediting that model attributes the review to a generator that did not write it, and every
+    /// aggregate keyed on model or family inherits the error silently, because a wrong id is
+    /// indistinguishable from a right one at this layer.
+    /// </para>
+    /// <para>
+    /// The executor already records what ran: it writes <c>modelOverride ?? run.ModelId</c> into the
+    /// lifecycle identity on the <c>review-provisional</c> checkpoint, which sits in the very
+    /// artifact list this reader has already fetched. Preferring it needs no new column. Latest wins,
+    /// as everywhere else here: the escalation ladder writes one checkpoint per attempt, so the last
+    /// one recorded belongs to the rung whose output was kept.
+    /// </para>
+    /// <para>
+    /// It FALLS BACK rather than overrides. A run with no checkpoint, or one whose
+    /// <see cref="ReviewLifecycleIdentity.ModelId"/> is null or blank, keeps the run's own id —
+    /// adding a checkpoint must never LOSE attribution that was already correct. Blank is not
+    /// "present": a whitespace-only id taken as a recorded model would surface as a candidate
+    /// attributed to <c>"   "</c> while the real id sat one field away.
+    /// </para>
+    /// <para>
+    /// Scoped to the primary arm on purpose. The checkpoint describes that arm's conversation, and
+    /// only that arm has an escalation ladder to escalate along; <see cref="VariantReviewer"/> runs
+    /// one collect-only turn, writes no checkpoint, and records its own model on its own
+    /// <c>b-variant-review</c> artifact, which is where the B candidate above reads it from.
+    /// </para>
+    /// </summary>
+    private string? EffectiveGeneratorModelId(
+        IReadOnlyList<ReviewArtifact> artifacts,
+        ReviewRun run
+    )
+    {
+        var provisional = Latest<ReviewArtifactPayload>(
+            artifacts,
+            DaemonReviewStageExecutor.ProvisionalReviewArtifactKind
+        );
+
+        return Blank(provisional?.Lifecycle?.ModelId) ?? run.ModelId;
     }
 
     private static string? Blank(string? value) =>

@@ -34,10 +34,34 @@ namespace CodeReviewDaemon.Sample.Eval;
 /// </para>
 /// <para>
 /// <b>The honest limit.</b> An id that is not shaped <c>[router/]vendor/model</c> is answered
-/// positionally too, so a two-segment <c>router/model</c> id would yield the router. Nothing in the
-/// daemon writes that shape — its own ids are <c>vendor/model</c>, and a routed id carries the router
-/// in front — and closing it would need per-request provider metadata the daemon does not carry.
-/// Stated here rather than papered over with a vendor list nobody maintains.
+/// positionally too, so a two-segment <c>router/model</c> id would yield the router. Closing that
+/// would need per-request provider metadata the daemon does not carry. Stated here rather than
+/// papered over with a vendor list nobody maintains.
+/// </para>
+/// <para>
+/// <b>What this resolves to under the shipped configuration.</b> No model id the daemon ships is even
+/// two segments. Every default in <c>CodeReviewDaemonOptions</c> is a bare slug —
+/// <c>claude-sonnet-5</c>, <c>gpt-5.6-terra</c>, <c>claude-haiku-4.5</c> — as is every id in the
+/// <c>achieveai</c>, <c>mcqdb</c> and <c>s2s</c> profiles (<c>gpt-5.6-luna</c>, <c>gpt-5.6-sol</c>,
+/// <c>gpt-5.6-terra</c>, <c>claude-opus-4.8</c>); <c>VariantModelId</c>'s doc records why, namely that
+/// the Copilot backend rejects OpenRouter-style slugs with <c>model_not_supported</c>. The judge side
+/// is not a path at all: all three profiles set <c>UseS2SReviewAgent</c>, and
+/// <c>S2SReviewAgentLoopFactory.ResolveEffectiveModelId</c> answers
+/// <c>lmstreaming:&lt;providerId&gt;</c> — colon-delimited, deliberately a selector rather than a
+/// model id. Slash-shaped ids therefore appear in this file's examples and in tests, and nowhere the
+/// daemon ships.
+/// </para>
+/// <para>
+/// So <see cref="Of"/> today returns null for the judge AND the generator on every shipped profile:
+/// <c>JudgeAgent.JudgeFamilyOf</c> falls back to <see cref="Unresolved"/>, the candidate carries a
+/// null generator family, and §7.1(2)'s exclusion never fires — <c>JudgePanel</c> skips the exclusion
+/// step on a null family and <c>EvalRunner</c> segments the row out as
+/// <c>ScoreExclusion.UnknownGeneratorFamily</c>. That is this rule answering honestly rather than
+/// failing: nothing is misclassified because nothing is classified. Self-preference is still on the
+/// record, from <c>JudgeArtifactPayload.SelfGraded</c>, which compares the two effective ids directly
+/// and consults no family. The rule is inert under this configuration and starts costing something
+/// the moment a slash-shaped id is configured — which is when the two-segment hazard above stops
+/// being hypothetical.
 /// </para>
 /// </summary>
 internal static class ModelFamilies
