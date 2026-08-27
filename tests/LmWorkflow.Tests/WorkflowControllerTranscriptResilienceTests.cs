@@ -1,8 +1,10 @@
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using AchieveAi.LmDotnetTools.LmWorkflow.Collaboration;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace AchieveAi.LmDotnetTools.LmWorkflow.Tests;
@@ -121,6 +123,72 @@ public class WorkflowControllerTranscriptResilienceTests
         AssertNoOrphanSurvives(transcript);
     }
 
+    [Fact]
+    public async Task GetTranscriptAsync_ReportsTheUnreadableAndUnpairedCounts_WhenRowsAreDropped()
+    {
+        // The reader's own doc promises a drop is reported. The per-row callback covers only HALF of that:
+        // the pairing sweep has no callback at all, and its likelier origin — a lost append, with no
+        // corruption anywhere — fires onSkipped ZERO times, so the commoner drop route was entirely silent.
+        // The summary is what closes that, and it is asserted on the COUNTS, not merely on the line
+        // existing.
+        //
+        // The three terms are deliberately DISTINCT (2 unreadable, 1 unpaired, 1 restored of 4 attempted)
+        // so that transposing them, or being off by one in either, fails here instead of reading as a pass.
+        var threadId = "wf-transcript-drop-counts";
+        var store = new InMemoryConversationStore();
+        var logger = new ListLogger();
+
+        var healthy = Row(new TextMessage { Text = HealthyText, Role = Role.User, RunId = RunId }, threadId, 1);
+        // Unreadable #1: a damaged row with no tool pairing involved at all.
+        var corruptText = healthy with { Id = "corrupt-record-1", Timestamp = 2, MessageJson = CorruptJson };
+        // Unreadable #2 is the result; the perfectly readable call it answers is then the UNPAIRED one, so
+        // the two terms are produced by genuinely different mechanisms rather than counted twice.
+        var callRow = Row(CallMessage(), threadId, 3);
+        var corruptResult = Row(ResultMessage(), threadId, 4) with { MessageJson = CorruptJson };
+
+        await store.AppendMessagesAsync(threadId, [healthy, corruptText, callRow, corruptResult]);
+
+        var transcript = await EndpointFor(threadId, store, logger).GetTranscriptAsync();
+
+        // Positive control: the summary is only meaningful if the read itself behaved as claimed.
+        transcript.OfType<TextMessage>().Select(m => m.Text)
+            .Should().ContainSingle().Which.Should().Be(HealthyText);
+        transcript.Should().HaveCount(1);
+
+        var summary = logger.Entries.Should()
+            .ContainSingle(e => e.Message.Contains("persisted records for the workflow controller transcript"))
+            .Which;
+        summary.Level.Should().Be(
+            LogLevel.Warning,
+            "records were dropped, so the summary must not sit at Information");
+        summary.Message.Should().Contain("Read 1 of 4 persisted records");
+        summary.Message.Should().Contain("2 unreadable").And.Contain("1 unpaired");
+    }
+
+    [Fact]
+    public async Task GetTranscriptAsync_ReportsNothing_WhenEveryRowIsReadableAndPaired()
+    {
+        // Non-vacuity control for the test above: the summary has to be DRIVEN by the drops. A version that
+        // logged on every read would satisfy the count assertions and still tell an operator nothing, and a
+        // healthy transcript is the overwhelmingly normal case.
+        var threadId = "wf-transcript-clean-read";
+        var store = new InMemoryConversationStore();
+        var logger = new ListLogger();
+
+        await store.AppendMessagesAsync(
+            threadId,
+            [
+                Row(new TextMessage { Text = HealthyText, Role = Role.User, RunId = RunId }, threadId, 1),
+                Row(CallMessage(), threadId, 2),
+                Row(ResultMessage(), threadId, 3),
+            ]);
+
+        var transcript = await EndpointFor(threadId, store, logger).GetTranscriptAsync();
+
+        transcript.Should().HaveCount(3, "nothing was corrupt and the tool exchange is complete");
+        logger.Entries.Should().BeEmpty("nothing was dropped, so there is nothing to report");
+    }
+
     /// <summary>
     ///     Pins the required outcome shared by all four pairing cases: NEITHER half of the exchange survives,
     ///     and the unrelated healthy row still does. The second half is the non-vacuity control — "no tool
@@ -139,8 +207,10 @@ public class WorkflowControllerTranscriptResilienceTests
         transcript.Should().HaveCount(1);
     }
 
-    private static WorkflowControllerEndpoint EndpointFor(string threadId, IConversationStore store) =>
-        new(() => AgentCollaborationStatuses.Completed, threadId, store);
+    private static WorkflowControllerEndpoint EndpointFor(
+        string threadId,
+        IConversationStore store,
+        ILogger? logger = null) => new(() => AgentCollaborationStatuses.Completed, threadId, store, logger);
 
     private static PersistedMessage Row(IMessage message, string threadId, long timestamp) =>
         MessagePersistenceConverter.ToPersistedMessage(message, threadId, RunId) with { Timestamp = timestamp };

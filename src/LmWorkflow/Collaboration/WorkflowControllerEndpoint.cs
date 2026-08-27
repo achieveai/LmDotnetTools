@@ -49,9 +49,12 @@ internal sealed class WorkflowControllerEndpoint : IAgentWriteEndpoint, IAgentRe
     ///     empty rather than failing — the run is simply not persisted, so there is nothing to read.
     /// </param>
     /// <param name="logger">
-    ///     Records rows the transcript read had to drop. Optional only because the endpoint is constructed
-    ///     on a path that does not always have a logger; when it is absent the drops are silent, which is
-    ///     why the launcher threads its own logger in.
+    ///     Records what the transcript read had to drop: one line per unreadable row, plus a summary
+    ///     naming the unreadable and unpaired counts whenever the returned list is shorter than the rows
+    ///     loaded. The summary is what covers the unpaired half — the pairing sweep has no per-row
+    ///     callback. Optional only because the endpoint is constructed on a path that does not always
+    ///     have a logger; when it is absent the drops are silent, which is why the launcher threads its
+    ///     own logger in.
     /// </param>
     internal WorkflowControllerEndpoint(
         Func<string> status,
@@ -127,15 +130,46 @@ internal sealed class WorkflowControllerEndpoint : IAgentWriteEndpoint, IAgentRe
         // optional here: the skip itself orphans partners (call and result are separate rows), a lost
         // append orphans them with no corruption at all, and a reader that returned the orphan would
         // hand its consumer a shape every provider rejects with a 400.
-        return MessagePersistenceConverter.FromPersistedMessagesResilient(
+        //
+        // The skip count is accumulated HERE rather than read back from the converter because it is one
+        // term of the partition reported below: the callback fires exactly once per row the converter
+        // could not read, so unreadableCount is that count by construction.
+        var unreadableCount = 0;
+        var transcript = MessagePersistenceConverter.FromPersistedMessagesResilient(
             persisted,
             onSkipped: (row, ex) =>
+            {
+                unreadableCount++;
                 _logger?.LogWarning(
                     ex,
                     "Skipping unreadable persisted record {RecordId} while reading the workflow "
                         + "controller transcript for thread {ThreadId}",
                     row.Id,
-                    _threadId),
+                    _threadId);
+            },
             cancellationToken: cancellationToken);
+
+        // Report the DROPS, not only the survivors, and mirror the partition RecoverAsync already
+        // reports (MultiTurnAgentBase.cs): restored + unreadable + unpaired == attempted, so nothing can
+        // hide between the terms. The unpaired term is the one that would otherwise be invisible — the
+        // pairing sweep has no per-row callback, and its likelier origin (a lost append, no corruption
+        // anywhere) fires onSkipped zero times, so without this line the commoner of the two drop
+        // routes is completely silent. Emitted only when something was actually dropped: a clean read
+        // is the overwhelmingly normal case and does not deserve a line on every transcript fetch.
+        var unpairedCount = persisted.Count - unreadableCount - transcript.Count;
+        if (unreadableCount + unpairedCount > 0)
+        {
+            _logger?.LogWarning(
+                "Read {MessageCount} of {AttemptedCount} persisted records for the workflow controller "
+                    + "transcript on thread {ThreadId} ({UnreadableCount} unreadable, {UnpairedCount} "
+                    + "unpaired tool messages dropped)",
+                transcript.Count,
+                persisted.Count,
+                _threadId,
+                unreadableCount,
+                unpairedCount);
+        }
+
+        return transcript;
     }
 }
