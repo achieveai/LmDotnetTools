@@ -83,6 +83,16 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// stuck writer reaches it, and reaching it is logged at Error - a drain that gave up is a store
     /// write that may still land after the pool reported itself disposed, which is precisely the
     /// condition the wait exists to prevent, so it must never pass quietly.
+    /// <para>
+    /// It bounds THESE TWO WAITS ONLY, and is not a bound on disposal. Entry disposal runs several
+    /// other legs, and several of those are unbounded: <c>Agent.DisposeAsync()</c> takes no timeout
+    /// from here, and while the <c>StopAsync</c> inside it is itself bounded (30 s by default, as is
+    /// the 5 s one the entry passes directly), the terminalization, usage flush, subclass
+    /// <c>OnDisposeAsync</c> and channel teardown that follow it are not — nor are the owned-resource
+    /// disposals afterwards. So an agent that hangs one of those hangs the pool regardless of this
+    /// value. Giving disposal an actual end-to-end bound is a change to how these waits are
+    /// structured, not to this constant.
+    /// </para>
     /// </remarks>
     private static readonly TimeSpan DrainTimeout = TimeSpan.FromSeconds(30);
 
@@ -283,7 +293,22 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
                 // Ignore stop errors during disposal
             }
 
-            await Agent.DisposeAsync();
+            try
+            {
+                await Agent.DisposeAsync();
+            }
+            catch (Exception ex)
+            {
+                // Isolated for the same reason as the stop above, and it is NOT decorative: every step
+                // below is a durability step. Since #506 published the run task before startup runs, a
+                // fault in the one unguarded startup step (OnBeforeRunAsync) leaves that task faulted,
+                // StopAsync rethrows anything that is not a timeout or a cancellation, and it rethrows
+                // out of the agent's own DisposeCoreAsync - past its terminal run terminalization and
+                // its terminal usage flush. An unguarded await here would let that same throw ALSO skip
+                // the run-task drain, the owned resources, and the CTS below, which is precisely the
+                // wait this issue exists to add.
+                Logger.LogWarning(ex, "Agent disposal failed for thread {ThreadId}", ThreadId);
+            }
 
             // This pool STARTED the run task (Task.Run in CreateAgentEntry) and is the only thing
             // holding it, so it is the only thing that can wait for it (#506). StopAsync/DisposeAsync
@@ -297,9 +322,11 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             //
             //  - Cancelled. Task.Run was handed Cts.Token, so a token already cancelled when the
             //    delegate would have been scheduled leaves the task CANCELLED without ever running
-            //    the delegate - and therefore without reaching the delegate's own catch blocks. That
-            //    is the ordinary case here, since the first thing this method does is cancel Cts.
-            //    Nothing ran, so nothing is draining and there is nothing to report.
+            //    the delegate - and therefore without reaching the delegate's own catch blocks. It
+            //    takes disposal racing the delegate's FIRST scheduling to produce, not the cancel at
+            //    the top of this method: once the delegate has begun running, the token no longer
+            //    decides the proxy task's final state. Narrow either way, and nothing to report - if
+            //    the delegate never ran, nothing is draining.
             //  - Faulted. The delegate catches OperationCanceledException and Exception itself, so
             //    the started case does not fault; the catch is kept anyway rather than resting the
             //    pool's teardown on an invariant held in another method.

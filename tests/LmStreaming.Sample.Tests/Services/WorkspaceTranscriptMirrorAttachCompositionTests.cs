@@ -110,26 +110,34 @@ public sealed class WorkspaceTranscriptMirrorAttachCompositionTests
         var root = Path.Combine(
             Path.GetTempPath(), "lmstreaming-mirror-attach-composition-test", Guid.NewGuid().ToString("N"));
         _ = Directory.CreateDirectory(root);
-        await using var host = new MirrorAttachWebAppFactory(Path.Combine(root, "conversations"));
+        // An explicit `await using` BLOCK, not a method-scoped `await using var`: the host must be
+        // disposed before the purge below, and method scope would dispose it at the method's closing
+        // brace, i.e. AFTER. This test drives pool.GetOrCreateAgent, so the host is a live
+        // conversation-store writer holding FileShare.None handles under `root`; purging first makes
+        // Purge retry the rename for ~1.1 s and then throw. The block is the shape that needs no
+        // assumption about whether this factory subclass is idempotent on a second disposal.
+        await using (var host = new MirrorAttachWebAppFactory(Path.Combine(root, "conversations")))
+        {
+            var registry = host.Services.GetRequiredService<ProviderRegistry>();
+            registry.IsAvailable(providerId).Should().BeTrue(
+                "the faked CLI probe and the host's own in-process mock provider host must make "
+                    + "{0} selectable, otherwise this test would silently stop covering that branch",
+                providerId);
 
-        var registry = host.Services.GetRequiredService<ProviderRegistry>();
-        registry.IsAvailable(providerId).Should().BeTrue(
-            "the faked CLI probe and the host's own in-process mock provider host must make "
-                + "{0} selectable, otherwise this test would silently stop covering that branch",
-            providerId);
+            var mirror = host.Services.GetRequiredService<WorkspaceTranscriptMirror>();
+            var pool = host.Services.GetRequiredService<MultiTurnAgentPool>();
 
-        var mirror = host.Services.GetRequiredService<WorkspaceTranscriptMirror>();
-        var pool = host.Services.GetRequiredService<MultiTurnAgentPool>();
+            var threadId = $"mirror-attach-{providerId}-{Guid.NewGuid():N}";
+            var agent = pool.GetOrCreateAgent(threadId, Mode, providerId, requestResponseDumpFileName: null);
 
-        var threadId = $"mirror-attach-{providerId}-{Guid.NewGuid():N}";
-        var agent = pool.GetOrCreateAgent(threadId, Mode, providerId, requestResponseDumpFileName: null);
+            agent.Should().NotBeNull("the provider branch under test must actually build an agent");
+            mirror.IsMirroring(threadId).Should().BeTrue(
+                "every agent the pool factory returns must be registered with the transcript mirror; "
+                    + "{0} builds and returns from its own branch, so an attach that lives inside one "
+                    + "other branch never runs for it and the conversation is mirrored nowhere",
+                providerId);
+        }
 
-        agent.Should().NotBeNull("the provider branch under test must actually build an agent");
-        mirror.IsMirroring(threadId).Should().BeTrue(
-            "every agent the pool factory returns must be registered with the transcript mirror; "
-                + "{0} builds and returns from its own branch, so an attach that lives inside one "
-                + "other branch never runs for it and the conversation is mirrored nowhere",
-            providerId);
         // #477: detach-then-delete rather than recursive-delete in place - see DetachedStoreTeardown.
         // Deliberately NOT in a finally: Purge throws when it cannot detach, and a throw from a finally
         // REPLACES the assertion failure that is unwinding through it. A leaked temp directory is a far

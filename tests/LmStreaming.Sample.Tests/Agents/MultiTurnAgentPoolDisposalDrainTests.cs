@@ -25,6 +25,14 @@ namespace LmStreaming.Sample.Tests.Agents;
 /// quietly when its deadline passes would make every assertion below vacuous — the test would report
 /// green for "the write never started" exactly as loudly as for "the write finished in time".
 /// </para>
+/// <para>
+/// <b>What <c>DisposeAsync_DrainsAnAgentStillInItsPreLoopStartupWindow</c> does NOT prove.</b> It is
+/// satisfied by EITHER half of the #506 change alone — publishing <c>_runTask</c> before startup (which
+/// makes the agent's own <c>StopAsync</c> wait for the startup write) or the pool's run-task drain below
+/// (which waits for it regardless). Green there is therefore not evidence for either half, and it must
+/// not be cited as such; <c>DisposeAsync_DrainsTheRunTaskEvenWhenTheAgentsOwnStopDoesNot</c> is the one
+/// that isolates the pool's drain, because its agent's stop provably does not do the waiting.
+/// </para>
 /// </remarks>
 [Collection("EnvironmentVariables")]
 public class MultiTurnAgentPoolDisposalDrainTests
@@ -176,6 +184,96 @@ public class MultiTurnAgentPoolDisposalDrainTests
         _ = (Volatile.Read(ref written) != 0).Should().BeTrue(
             "the run task's store write must have landed before disposal returned"
         );
+    }
+
+    [Fact]
+    public async Task DisposeAsync_StillDrainsTheRunTask_WhenTheAgentsOwnDisposeThrows()
+    {
+        var store = new InMemoryConversationStore();
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var written = 0;
+
+        var agent = new FakeMultiTurnAgent("thread-throwing-dispose")
+        {
+            // The whole point of the fixture. A throw here lands between the guarded StopAsync and the
+            // drain, so an unguarded await would skip the drain, the owned resources, and the CTS.
+            ThrowOnDispose = true,
+            RunBehavior = async runCt =>
+            {
+                _ = runCt;
+                _ = entered.TrySetResult();
+
+                // Uncancellable, for the same reason as the sibling tests: what disposal must survive
+                // is a writer already past its own cancellation check.
+                await gate.Task;
+
+                await store.UpdateMetadataAsync(
+                    "thread-throwing-dispose",
+                    existing => existing
+                        ?? new ThreadMetadata
+                        {
+                            ThreadId = "thread-throwing-dispose",
+                            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        },
+                    CancellationToken.None
+                );
+
+                _ = Interlocked.Exchange(ref written, 1);
+            },
+        };
+
+        var owned = new RecordingAsyncDisposable();
+
+        var pool = new MultiTurnAgentPool(
+            _ => new MultiTurnAgentPool.AgentCreationResult(agent, [owned]),
+            providerRegistry: null,
+            conversationStore: null,
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
+
+        _ = pool.GetOrCreateAgent("thread-throwing-dispose", Mode);
+
+        await entered.Task.WaitAsync(Generous);
+
+        var dispose = pool.DisposeAsync().AsTask();
+
+        // The pool's own DisposeAsync catches per-entry failures and logs them, so the regression this
+        // test guards is SILENT at the caller: nothing throws either way. Only the effects separate
+        // them, which is why every assertion below is about what did or did not happen, never about
+        // an exception.
+        var raced = await Task.WhenAny(dispose, Task.Delay(BlockedObservation));
+        _ = raced.Should().NotBeSameAs(
+            dispose,
+            "a throw from the agent's own DisposeAsync must not carry disposal past the run-task drain"
+        );
+
+        gate.TrySetResult();
+
+        await dispose.WaitAsync(Generous);
+
+        _ = (Volatile.Read(ref written) != 0).Should().BeTrue(
+            "the run task's store write must have landed before disposal returned, even though the "
+                + "agent's own DisposeAsync threw on the way to the drain"
+        );
+        _ = owned.Disposed.Should().BeTrue(
+            "owned resources are torn down AFTER the agent, so a throw from the agent's dispose must "
+                + "not be what leaks them"
+        );
+    }
+
+    /// <summary>Records whether it was disposed. Stands in for a pooled agent's owned MCP clients.</summary>
+    private sealed class RecordingAsyncDisposable : IAsyncDisposable
+    {
+        private int _disposed;
+
+        public bool Disposed => Volatile.Read(ref _disposed) != 0;
+
+        public ValueTask DisposeAsync()
+        {
+            _ = Interlocked.Exchange(ref _disposed, 1);
+            return ValueTask.CompletedTask;
+        }
     }
 
     /// <summary>

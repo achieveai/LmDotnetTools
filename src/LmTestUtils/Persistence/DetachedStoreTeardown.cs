@@ -63,12 +63,21 @@ namespace AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 /// its default delete delegate now calls <see cref="Purge"/>, while its own bounded retry and
 /// swallow-and-log-on-final-attempt wrapper (pinned by <c>BrowserWebAppFactoryTempCleanupTests</c>) is
 /// unchanged, because that wrapper runs in <c>Dispose</c> after a test's assertions already passed and
-/// must not turn a green run red. Two of the swept roots are LIVE writers rather than latent ones:
-/// <c>NotifyWaitDurableRestoreTests</c> (<c>MultiTurnAgentPool</c> keeps the agent run task in a field no
-/// disposal path awaits, and <c>StopAsync</c> both no-ops during pre-loop recovery and only logs on
-/// timeout — so the loop, and every store write inside it, can still be running at teardown; separately
-/// the pool discards <c>PersistThreadBindingsIfNeededAsync</c> with <c>_ =</c>, and that task writes the
-/// conversation store with nothing draining it at disposal), and <c>BrowserWebAppFactory</c> (whose own
+/// must not turn a green run red. Some of the swept roots are LIVE writers rather than latent ones, and
+/// every live one must have its host DISPOSED before <see cref="Purge"/> runs — not merely at the
+/// enclosing method's closing brace, which is after it. The live ones INCLUDE the pool-backed hosts in
+/// <c>NotifyWaitDurableRestoreTests</c>, <c>WorkspaceThreadRegistrationCompositionTests</c>, and
+/// <c>WorkspaceTranscriptMirrorAttachCompositionTests</c>: each calls <c>pool.GetOrCreateAgent</c>, which
+/// is the call that both starts the agent's run task and fires the binding persist, so none of them is
+/// latent. Deliberately not a closed count — this list was never derived by enumerating every
+/// <c>GetOrCreateAgent</c> caller under a purged root, and the criterion, not the list, is what a new
+/// test should be checked against. (<c>SubAgentScanCoverageCacheCompositionTests</c> resolves no pool and
+/// is correctly absent.) Since #506 <c>MultiTurnAgentPool.DisposeAsync</c> DOES await both writers: the
+/// run task it started itself, and the background work it used to discard with <c>_ =</c> — previously
+/// the run task sat in a field no disposal path awaited, and the binding persist had no holder at all, so
+/// a store write could outlive the pool. That is what makes disposing the host the teardown's
+/// synchronisation point rather than a hopeful one — and equally what makes disposal-after-purge a
+/// guaranteed conflict rather than a racy one. Also live is <c>BrowserWebAppFactory</c> (whose own
 /// remarks document the race and answer it with a retrying delete, an answer explicitly scoped to "the
 /// writer is finishing, not restarting" — which is why its wrapper still retries and swallows around
 /// <see cref="Purge"/> rather than letting <see cref="Purge"/>'s own throw reach <c>Dispose</c>

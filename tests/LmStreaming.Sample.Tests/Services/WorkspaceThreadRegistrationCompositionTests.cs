@@ -62,89 +62,97 @@ public sealed class WorkspaceThreadRegistrationCompositionTests
         _ = Directory.CreateDirectory(root);
         var gateway = new FakeSandboxGateway();
         var probe = new ThreadAwareActivityProbe();
-        await using var host = new WorkspaceCompositionWebAppFactory(root, gateway, probe);
+        // An explicit `await using` BLOCK, not a method-scoped `await using var`: the host must be
+        // disposed before the purge below, and method scope would dispose it at the method's closing
+        // brace, i.e. AFTER. This test drives pool.GetOrCreateAgent, so the host is a live
+        // conversation-store writer holding FileShare.None handles under `root`; purging first makes
+        // Purge retry the rename for ~1.1 s and then throw. The block is the shape that needs no
+        // assumption about whether this factory subclass is idempotent on a second disposal.
+        await using (var host = new WorkspaceCompositionWebAppFactory(root, gateway, probe))
+        {
+            // A real workspace with a real marketplace — the default workspace cannot be updated, and
+            // the migration validates the selection against the (stubbed) catalog before it does
+            // anything else, so the selection below has to be genuinely legal here.
+            var store = host.Services.GetRequiredService<IWorkspaceStore>();
+            var workspace = await store.CreateAsync(new WorkspaceCreate { Name = "Proj", Marketplaces = [Marketplace] });
 
-        // A real workspace with a real marketplace — the default workspace cannot be updated, and
-        // the migration validates the selection against the (stubbed) catalog before it does
-        // anything else, so the selection below has to be genuinely legal here.
-        var store = host.Services.GetRequiredService<IWorkspaceStore>();
-        var workspace = await store.CreateAsync(new WorkspaceCreate { Name = "Proj", Marketplaces = [Marketplace] });
-
-        // An ORDINARY workspace conversation: no subAgentOptions, no S2S credential — the plain
-        // interactive path a browser takes. This is the call whose side effects are under test.
-        var pool = host.Services.GetRequiredService<MultiTurnAgentPool>();
-        var threadId = $"ws-thread-{Guid.NewGuid():N}";
-        var agent = pool.GetOrCreateAgent(
-            threadId,
-            WorkspaceMode,
-            requestedProviderId: "test",
-            requestResponseDumpFileName: null,
-            requestedWorkspaceId: workspace.Id
-        );
-        agent.Should().NotBeNull("the workspace branch of the pool factory must build an agent");
-
-        var registry = host.Services.GetRequiredService<SandboxSessionRegistry>();
-        var sessionId = gateway
-            .CreatedSessionIds.Should()
-            .ContainSingle("the conversation must have provisioned exactly one sandbox session")
-            .Subject;
-
-        // The claim under test, read straight off the production index.
-        registry
-            .GetThreads(sessionId)
-            .Should()
-            .Contain(
+            // An ORDINARY workspace conversation: no subAgentOptions, no S2S credential — the plain
+            // interactive path a browser takes. This is the call whose side effects are under test.
+            var pool = host.Services.GetRequiredService<MultiTurnAgentPool>();
+            var threadId = $"ws-thread-{Guid.NewGuid():N}";
+            var agent = pool.GetOrCreateAgent(
                 threadId,
-                "an ordinary workspace conversation must be indexed against its session; without it "
-                    + "the session looks thread-less and therefore permanently idle"
+                WorkspaceMode,
+                requestedProviderId: "test",
+                requestResponseDumpFileName: null,
+                requestedWorkspaceId: workspace.Id
             );
+            agent.Should().NotBeNull("the workspace branch of the pool factory must build an agent");
 
-        // The run goes hot AFTER the agent exists, exactly as it does when a turn starts.
-        probe.BusyThreadId = threadId;
+            var registry = host.Services.GetRequiredService<SandboxSessionRegistry>();
+            var sessionId = gateway
+                .CreatedSessionIds.Should()
+                .ContainSingle("the conversation must have provisioned exactly one sandbox session")
+                .Subject;
 
-        var migration = host.Services.GetRequiredService<IWorkspacePluginSelectionService>();
-        var act = () =>
-            migration.ApplyPluginSelectionUpdateAsync(
-                workspace.Id,
-                new WorkspaceUpdate
-                {
-                    Marketplaces = [Marketplace],
-                    PluginSelection = new Optional<IReadOnlyList<PluginRef>?>([SelectedPlugin]),
-                    PluginsRevision = 0,
-                }
-            );
+            // The claim under test, read straight off the production index.
+            registry
+                .GetThreads(sessionId)
+                .Should()
+                .Contain(
+                    threadId,
+                    "an ordinary workspace conversation must be indexed against its session; without it "
+                        + "the session looks thread-less and therefore permanently idle"
+                );
 
-        _ = await act.Should()
-            .ThrowExactlyAsync<SandboxSessionRestartTimeoutException>(
-                "the busy thread is reachable from the session, so the migration must give up rather "
-                    + "than replace a session mid-turn"
-            );
+            // The run goes hot AFTER the agent exists, exactly as it does when a turn starts.
+            probe.BusyThreadId = threadId;
 
-        // Non-vacuity guard. If the thread were missing from the index the wait loop would never
-        // reach the probe at all, and every assertion below would still hold for the wrong reason:
-        // no candidate, no delete and no persistence are equally true of a migration that timed out
-        // and of one that never started. This is the assertion that separates them.
-        probe.ObservedThreads.Should()
-            .Contain(
-                threadId,
-                "the idle wait must have consulted the probe about THIS thread — that is the only "
-                    + "evidence the registration actually reached WaitForIdleAsync"
-            );
+            var migration = host.Services.GetRequiredService<IWorkspacePluginSelectionService>();
+            var act = () =>
+                migration.ApplyPluginSelectionUpdateAsync(
+                    workspace.Id,
+                    new WorkspaceUpdate
+                    {
+                        Marketplaces = [Marketplace],
+                        PluginSelection = new Optional<IReadOnlyList<PluginRef>?>([SelectedPlugin]),
+                        PluginsRevision = 0,
+                    }
+                );
 
-        // One create total is the conversation's own session: a migration that timed out must not
-        // have built a replacement candidate...
-        gateway.CreateAttempts.Should().Be(1, "a timed-out migration must create no candidate at all");
-        // ...must not have retired anything...
-        gateway.DeletedSessionIds.Should().BeEmpty("nothing may be torn down when the wait times out");
-        registry
-            .TryGetSessionById(sessionId, out _)
-            .Should()
-            .BeTrue("the conversation's session must still be serving");
+            _ = await act.Should()
+                .ThrowExactlyAsync<SandboxSessionRestartTimeoutException>(
+                    "the busy thread is reachable from the session, so the migration must give up rather "
+                        + "than replace a session mid-turn"
+                );
 
-        // ...and must not have consumed the revision or persisted the selection.
-        var stored = await store.GetAsync(workspace.Id);
-        stored!.PluginSelection.Should().BeNull("a timed-out migration must not persist the selection");
-        stored.PluginsRevision.Should().Be(0, "a timed-out migration must not consume the revision");
+            // Non-vacuity guard. If the thread were missing from the index the wait loop would never
+            // reach the probe at all, and every assertion below would still hold for the wrong reason:
+            // no candidate, no delete and no persistence are equally true of a migration that timed out
+            // and of one that never started. This is the assertion that separates them.
+            probe.ObservedThreads.Should()
+                .Contain(
+                    threadId,
+                    "the idle wait must have consulted the probe about THIS thread — that is the only "
+                        + "evidence the registration actually reached WaitForIdleAsync"
+                );
+
+            // One create total is the conversation's own session: a migration that timed out must not
+            // have built a replacement candidate...
+            gateway.CreateAttempts.Should().Be(1, "a timed-out migration must create no candidate at all");
+            // ...must not have retired anything...
+            gateway.DeletedSessionIds.Should().BeEmpty("nothing may be torn down when the wait times out");
+            registry
+                .TryGetSessionById(sessionId, out _)
+                .Should()
+                .BeTrue("the conversation's session must still be serving");
+
+            // ...and must not have consumed the revision or persisted the selection.
+            var stored = await store.GetAsync(workspace.Id);
+            stored!.PluginSelection.Should().BeNull("a timed-out migration must not persist the selection");
+            stored.PluginsRevision.Should().Be(0, "a timed-out migration must not consume the revision");
+        }
+
         // #477: detach-then-delete rather than recursive-delete in place - see DetachedStoreTeardown.
         // Deliberately NOT in a finally: Purge throws when it cannot detach, and a throw from a finally
         // REPLACES the assertion failure that is unwinding through it. A leaked temp directory is a far
