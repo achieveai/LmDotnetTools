@@ -227,6 +227,50 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
         await act.Should().ThrowAsync<ArgumentException>();
     }
 
+    /// <summary>
+    /// The deterministic instance of the arm-window race (#161, PR #158 F8): a background sub-agent
+    /// is spawned with <c>NotifyParentOnCompletion = true</c>, so if it reaches
+    /// <c>HandleRunCompletionAsync</c> before a trigger arms, the automatic relay ALREADY delivered
+    /// the result to the parent. Arming afterwards used to succeed — the completion latch is
+    /// resolved, so <c>ObserveCompletionAsync</c> returns immediately and the trigger fired too,
+    /// putting the same result in front of the model twice. Arming must be rejected instead.
+    /// </summary>
+    [Fact]
+    public async Task ArmAsync_AfterTheRelayAlreadyFired_IsRejected_SoTheResultIsNotDeliveredTwice()
+    {
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (manager, agentId) = await SpawnGatedSubAgentAsync(result: "sub-done", gate);
+
+        // Let the run complete FIRST — no trigger armed, so the manager's automatic relay fires and
+        // the parent already has the result.
+        gate.SetResult();
+        await _parentRelayed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var src = new SubAgentCompletionTriggerSource(() => manager);
+        var fired = new TaskCompletionSource<TriggerFireEvent>();
+
+        var act = () => src
+            .ArmAsync(ArmReq($$"""{"agentId":"{{agentId}}"}"""), SinkThatCompletes(fired), CancellationToken.None)
+            .AsTask();
+
+        // Rejected specifically because the relay already happened — NOT because the agent id went
+        // unknown. Asserting the reason keeps this from passing for the wrong reason if the manager
+        // ever starts evicting completed sub-agents.
+        (await act.Should().ThrowAsync<ArgumentException>())
+            .WithMessage("*already*relayed*");
+
+        // Nothing fired, and the parent saw the result exactly once.
+        fired.Task.IsCompleted.Should().BeFalse("a rejected arm must not deliver a second copy");
+        _parentMock.Verify(
+            p => p.SendAsync(
+                It.IsAny<List<IMessage>>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once(),
+            "the automatic relay delivered the result once; nothing may deliver it again");
+    }
+
     [Fact]
     public async Task ArmAsync_Throws_WhenManagerAccessorReturnsNull()
     {

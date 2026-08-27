@@ -2235,10 +2235,15 @@ public sealed class SubAgentManager : IAsyncDisposable
     }
 
     /// <summary>
-    /// Sets whether a specific sub-agent's completion is automatically relayed to the parent. A
-    /// trigger source waiting on this sub-agent flips it to <c>false</c> at arm time (so the result
-    /// arrives once, via the trigger envelope, not twice) and MUST restore it to <c>true</c> if the
-    /// wait is cancelled before completion.
+    /// Sets whether a specific sub-agent's completion is automatically relayed to the parent.
+    /// <para>
+    /// RACY against a completion landing concurrently: the check-then-act an observer needs is two
+    /// steps here, and losing that race delivers the result twice (relay + trigger). An observer
+    /// suppressing the relay so it can deliver the result itself must use
+    /// <see cref="TrySuppressCompletionRelay"/> / <see cref="RestoreCompletionRelay"/> instead,
+    /// which decide atomically against <c>HandleRunCompletionAsync</c>. This setter remains for
+    /// callers that own the sub-agent's lifetime outright (spawn-time configuration).
+    /// </para>
     /// </summary>
     public void SetNotifyParentOnCompletion(string agentId, bool value)
     {
@@ -2248,6 +2253,39 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
 
         state.NotifyParentOnCompletion = value;
+    }
+
+    /// <summary>
+    /// Suppresses a sub-agent's automatic completion relay on behalf of an observer that will
+    /// deliver the result itself, atomically with respect to the completion that may be landing
+    /// right now. Returns <c>false</c> when the relay has ALREADY been dispatched: the parent has
+    /// the result, so the observer must not arm (a second delivery would duplicate it).
+    /// </summary>
+    /// <exception cref="ArgumentException">The agent id is unknown.</exception>
+    public bool TrySuppressCompletionRelay(string agentId)
+    {
+        if (!_agents.TryGetValue(agentId, out var state))
+        {
+            throw new ArgumentException($"Unknown agent ID '{agentId}'.", nameof(agentId));
+        }
+
+        return state.TrySuppressCompletionRelay();
+    }
+
+    /// <summary>
+    /// Restores a sub-agent's automatic completion relay after an observer gives up before the
+    /// completion landed, so a cancelled/timed-out wait never strands the eventual result. A no-op
+    /// once the relay has been dispatched.
+    /// </summary>
+    /// <exception cref="ArgumentException">The agent id is unknown.</exception>
+    public void RestoreCompletionRelay(string agentId)
+    {
+        if (!_agents.TryGetValue(agentId, out var state))
+        {
+            throw new ArgumentException($"Unknown agent ID '{agentId}'.", nameof(agentId));
+        }
+
+        state.RestoreCompletionRelay();
     }
 
     /// <summary>
@@ -3559,7 +3597,10 @@ public sealed class SubAgentManager : IAsyncDisposable
                 new SubAgentExecutionException(
                     state.AgentId, state.TemplateName, rcm.ErrorMessage));
 
-            if (state.NotifyParentOnCompletion)
+            // Claim-and-record, not a bare read: an observer arming concurrently must either win
+            // (we relay nothing, it delivers) or lose (we relay, its arm is rejected). See
+            // SubAgentState.TryClaimCompletionRelay.
+            if (state.TryClaimCompletionRelay())
             {
                 await SendToParentAsync(state, errorText);
             }
@@ -3584,7 +3625,8 @@ public sealed class SubAgentManager : IAsyncDisposable
 
             _ = state.TryCompleteWithResult(result);
 
-            if (state.NotifyParentOnCompletion)
+            // Claim-and-record, not a bare read — see the error branch above.
+            if (state.TryClaimCompletionRelay())
             {
                 await SendToParentAsync(state, resultText);
             }

@@ -297,6 +297,75 @@ internal class SubAgentState
     private volatile bool _notifyParentOnCompletion;
     public bool NotifyParentOnCompletion { get => _notifyParentOnCompletion; set => _notifyParentOnCompletion = value; }
 
+    /// <summary>
+    /// Serializes the terminal-completion relay decision against an observer trying to suppress it.
+    /// Reading <see cref="NotifyParentOnCompletion"/> and acting on it are two steps, and a bare
+    /// volatile read cannot make them one: a completion landing between an observer's check and its
+    /// write relays the result AND leaves <see cref="Completion"/> resolved, so the observer fires
+    /// too and the same result reaches the parent twice. No await ever runs under this lock and it
+    /// never nests with <c>_lifecycleLock</c>, so it cannot deadlock.
+    /// </summary>
+    private readonly object _completionRelayLock = new();
+
+    /// <summary>True once the TERMINAL completion relay has actually been dispatched to the parent.
+    /// Not set by the non-terminal "awaiting answer" relay, which delivers no result.</summary>
+    private bool _completionRelayDispatched;
+
+    /// <summary>
+    /// Atomically decides whether this sub-agent's terminal completion relays to the parent, and
+    /// records the decision. Called exactly once per terminal completion, immediately before the
+    /// relay would be sent. Returns false when an observer has already claimed delivery.
+    /// </summary>
+    public bool TryClaimCompletionRelay()
+    {
+        lock (_completionRelayLock)
+        {
+            if (!_notifyParentOnCompletion)
+            {
+                return false;
+            }
+
+            _completionRelayDispatched = true;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Atomically suppresses the automatic completion relay on behalf of an observer that will
+    /// deliver the result itself (a <c>subagent</c> trigger wait). Returns <c>false</c> when the
+    /// relay has ALREADY been dispatched — the parent has the result, and the observer must not
+    /// deliver a second copy.
+    /// </summary>
+    public bool TrySuppressCompletionRelay()
+    {
+        lock (_completionRelayLock)
+        {
+            if (_completionRelayDispatched)
+            {
+                return false;
+            }
+
+            _notifyParentOnCompletion = false;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Restores the automatic completion relay when an observer gives up before the completion
+    /// landed, so a cancelled/timed-out wait never strands the eventual result. A no-op once the
+    /// relay has been dispatched.
+    /// </summary>
+    public void RestoreCompletionRelay()
+    {
+        lock (_completionRelayLock)
+        {
+            if (!_completionRelayDispatched)
+            {
+                _notifyParentOnCompletion = true;
+            }
+        }
+    }
+
     public Task? RunTask { get; set; }
     public Task? MonitorTask { get; set; }
     public CancellationTokenSource Cts { get; set; } = new();

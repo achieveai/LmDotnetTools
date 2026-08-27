@@ -49,8 +49,18 @@ public sealed class SubAgentCompletionTriggerSource : ITriggerSource
             ?? throw new ArgumentException("subagent waits require a sub-agent-enabled conversation.");
 
         var agentId = ParseAgentId(request.ArgsJson);
-        // Throws ArgumentException (arm-time rejection) if the id is unknown.
-        manager.SetNotifyParentOnCompletion(agentId, false);
+
+        // Throws ArgumentException (arm-time rejection) if the id is unknown. Returns false when the
+        // sub-agent already completed AND its automatic relay already delivered the result — arming
+        // then would put the same result in front of the model a second time, because the completion
+        // latch is resolved and ObserveCompletionAsync would return immediately. Reject loudly
+        // instead of firing a duplicate or parking silently.
+        if (!manager.TrySuppressCompletionRelay(agentId))
+        {
+            throw new ArgumentException(
+                $"sub-agent '{agentId}' has already completed and its result was already relayed to "
+                + "this conversation; there is nothing left to wait for.");
+        }
 
         var handle = new SubAgentArmedTrigger(request.WaitId, agentId, manager, eventSink);
         return ValueTask.FromResult<IArmedTrigger>(handle);
@@ -175,7 +185,9 @@ public sealed class SubAgentCompletionTriggerSource : ITriggerSource
             {
                 try
                 {
-                    _manager.SetNotifyParentOnCompletion(_agentId, true);
+                    // No-op if the relay has meanwhile been dispatched, so a dispose racing the
+                    // completion cannot re-arm a relay that already went out.
+                    _manager.RestoreCompletionRelay(_agentId);
                 }
                 catch (ArgumentException)
                 {
