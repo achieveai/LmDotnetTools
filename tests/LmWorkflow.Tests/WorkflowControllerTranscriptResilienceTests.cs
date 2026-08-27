@@ -47,6 +47,7 @@ public class WorkflowControllerTranscriptResilienceTests
         // merely "stops at the first problem".
         var threadId = "wf-transcript-corrupt-row";
         var store = new InMemoryConversationStore();
+        var logger = new ListLogger();
 
         var before = Row(new TextMessage { Text = "before corrupt", Role = Role.User, RunId = RunId }, threadId, 1);
         var corrupt = before with { Id = "corrupt-record-1", Timestamp = 2, MessageJson = CorruptJson };
@@ -54,12 +55,16 @@ public class WorkflowControllerTranscriptResilienceTests
 
         await store.AppendMessagesAsync(threadId, [before, corrupt, after]);
 
-        var transcript = await EndpointFor(threadId, store).GetTranscriptAsync();
+        var transcript = await EndpointFor(threadId, store, logger).GetTranscriptAsync();
 
         transcript.OfType<TextMessage>().Select(m => m.Text)
             .Should().Equal(["before corrupt", "after corrupt"]);
         // Exactly the two healthy siblings — the corrupt row contributes nothing, not even a placeholder.
         transcript.Should().HaveCount(2);
+
+        // Also the (N unreadable, 0 unpaired) HALF of the summary guard — see AssertDropSummary. Nothing
+        // here is a tool message, so the pairing sweep drops nothing and the unpaired term is exactly zero.
+        AssertDropSummary(logger, restored: 2, attempted: 3, unreadable: 1, unpaired: 0);
     }
 
     [Theory]
@@ -111,6 +116,7 @@ public class WorkflowControllerTranscriptResilienceTests
         // the older and likelier route, unrepaired.
         var threadId = $"wf-transcript-absent-{(resultRowAbsent ? "result" : "call")}";
         var store = new InMemoryConversationStore();
+        var logger = new ListLogger();
 
         var text = Row(new TextMessage { Text = HealthyText, Role = Role.User, RunId = RunId }, threadId, 1);
         var survivingHalf = Row(resultRowAbsent ? CallMessage() : ResultMessage(), threadId, 2);
@@ -118,9 +124,14 @@ public class WorkflowControllerTranscriptResilienceTests
         // The partner row is simply never appended.
         await store.AppendMessagesAsync(threadId, [text, survivingHalf]);
 
-        var transcript = await EndpointFor(threadId, store).GetTranscriptAsync();
+        var transcript = await EndpointFor(threadId, store, logger).GetTranscriptAsync();
 
         AssertNoOrphanSurvives(transcript);
+
+        // And this origin is the (0 unreadable, N unpaired) HALF of the summary guard — see
+        // AssertDropSummary. Nothing is corrupt, so onSkipped fires ZERO times and the summary is the only
+        // thing that reports the drop at all; a summary gated on the unreadable term alone says nothing here.
+        AssertDropSummary(logger, restored: 1, attempted: 2, unreadable: 0, unpaired: 1);
     }
 
     [Fact]
@@ -155,14 +166,7 @@ public class WorkflowControllerTranscriptResilienceTests
             .Should().ContainSingle().Which.Should().Be(HealthyText);
         transcript.Should().HaveCount(1);
 
-        var summary = logger.Entries.Should()
-            .ContainSingle(e => e.Message.Contains("persisted records for the workflow controller transcript"))
-            .Which;
-        summary.Level.Should().Be(
-            LogLevel.Warning,
-            "records were dropped, so the summary must not sit at Information");
-        summary.Message.Should().Contain("Read 1 of 4 persisted records");
-        summary.Message.Should().Contain("2 unreadable").And.Contain("1 unpaired");
+        AssertDropSummary(logger, restored: 1, attempted: 4, unreadable: 2, unpaired: 1);
     }
 
     [Fact]
@@ -187,6 +191,35 @@ public class WorkflowControllerTranscriptResilienceTests
 
         transcript.Should().HaveCount(3, "nothing was corrupt and the tool exchange is complete");
         logger.Entries.Should().BeEmpty("nothing was dropped, so there is nothing to report");
+    }
+
+    /// <summary>
+    ///     Pins the drop summary to one exact partition — restored + unreadable + unpaired == attempted — at
+    ///     Warning.
+    /// </summary>
+    /// <remarks>
+    ///     Its guard is a DISJUNCTION (<c>unreadableCount + unpairedCount &gt; 0</c>), so a case where BOTH
+    ///     terms are non-zero cannot decide it: narrowing the guard to either term alone still logs, and
+    ///     still reads as a pass. Both one-sided cases are therefore asserted as well — a corrupt row with no
+    ///     tool message anywhere gives (N, 0), and an absent partner with nothing corrupt gives (0, N) — so
+    ///     dropping either term of the guard turns one of them RED. The (0, N) direction is the load-bearing
+    ///     one: that origin fires <c>onSkipped</c> zero times, so the summary is its only report.
+    /// </remarks>
+    private static void AssertDropSummary(
+        ListLogger logger,
+        int restored,
+        int attempted,
+        int unreadable,
+        int unpaired)
+    {
+        var summary = logger.Entries.Should()
+            .ContainSingle(e => e.Message.Contains("persisted records for the workflow controller transcript"))
+            .Which;
+        summary.Level.Should().Be(
+            LogLevel.Warning,
+            "records were dropped, so the summary must not sit at Information");
+        summary.Message.Should().Contain($"Read {restored} of {attempted} persisted records");
+        summary.Message.Should().Contain($"{unreadable} unreadable").And.Contain($"{unpaired} unpaired");
     }
 
     /// <summary>
