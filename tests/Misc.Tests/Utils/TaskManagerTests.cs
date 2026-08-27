@@ -1,6 +1,9 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.Misc.Utils;
 using FluentAssertions;
 using Xunit;
@@ -25,13 +28,13 @@ public class TaskManagerTests
     public void AddTask_WithValidTitle_ShouldAddMainTask()
     {
         // Act
-        var result = _taskManager.AddTask("Test task");
+        var result = _taskManager.AddTask("Test task").Text;
 
         // Assert
         result.Should().StartWith("Added task 1:");
         result.Should().Contain("Test task");
 
-        var tasks = _taskManager.ListTasks();
+        var tasks = _taskManager.ListTasks().Text;
         tasks.Should().Contain("Test task");
     }
 
@@ -39,9 +42,9 @@ public class TaskManagerTests
     public void AddTask_WithEmptyTitle_ShouldReturnError()
     {
         // Act
-        var result1 = _taskManager.AddTask("");
-        var result2 = _taskManager.AddTask("   ");
-        var result3 = _taskManager.AddTask(null!);
+        var result1 = _taskManager.AddTask("").Text;
+        var result2 = _taskManager.AddTask("   ").Text;
+        var result3 = _taskManager.AddTask(null!).Text;
 
         // Assert
         result1.Should().Be("Error: Title cannot be empty.");
@@ -53,11 +56,11 @@ public class TaskManagerTests
     public void AddTask_WithValidParentId_ShouldAddSubtask()
     {
         // Arrange
-        var parentResult = _taskManager.AddTask("Parent task");
+        var parentResult = _taskManager.AddTask("Parent task").Text;
         var parentId = ExtractTaskId(parentResult);
 
         // Act
-        var result = _taskManager.AddTask("Subtask", parentId);
+        var result = _taskManager.AddTask("Subtask", parentId).Text;
 
         // Assert
         result.Should().Contain($"Added task {parentId}.1");
@@ -68,7 +71,7 @@ public class TaskManagerTests
     public void AddTask_WithInvalidParentId_ShouldReturnError()
     {
         // Act
-        var result = _taskManager.AddTask("Subtask", 999);
+        var result = _taskManager.AddTask("Subtask", 999).Text;
 
         // Assert
         result.Should().Be("Error: Task '999' not found.");
@@ -78,13 +81,13 @@ public class TaskManagerTests
     public void AddTask_ToSubtask_ShouldAddNestedTask()
     {
         // Arrange
-        var parentResult = _taskManager.AddTask("Parent task");
+        var parentResult = _taskManager.AddTask("Parent task").Text;
         var parentId = ExtractTaskId(parentResult);
-        var subtaskResult = _taskManager.AddTask("Subtask", parentId);
+        var subtaskResult = _taskManager.AddTask("Subtask", parentId).Text;
         var subtaskId = ExtractTaskId(subtaskResult);
 
         // Act
-        var result = _taskManager.AddTask("Sub-subtask", $"{parentId}.{subtaskId}");
+        var result = _taskManager.AddTask("Sub-subtask", $"{parentId}.{subtaskId}").Text;
 
         // Assert
         result.Should().Contain($"Added task {parentId}.{subtaskId}.1");
@@ -116,14 +119,14 @@ public class TaskManagerTests
         };
 
         // Act
-        var result = _taskManager.BulkInitialize(tasks);
+        var result = _taskManager.BulkInitialize(tasks).Text;
 
         // Assert
         result.Should().Contain("Added 2 task(s)");
         result.Should().Contain("Task 1");
         result.Should().Contain("Task 2");
 
-        var taskList = _taskManager.ListTasks();
+        var taskList = _taskManager.ListTasks().Text;
         taskList.Should().Contain("Task 1");
         taskList.Should().Contain("Task 2");
         taskList.Should().Contain("Subtask 1.1");
@@ -139,13 +142,13 @@ public class TaskManagerTests
         var tasks = new List<TaskManager.BulkTaskItem> { new() { Task = "New task" } };
 
         // Act
-        var result = _taskManager.BulkInitialize(tasks, clearExisting: true);
+        var result = _taskManager.BulkInitialize(tasks, clearExisting: true).Text;
 
         // Assert
         result.Should().Contain("Cleared existing tasks");
         result.Should().Contain("Added 1 task(s)");
 
-        var taskList = _taskManager.ListTasks();
+        var taskList = _taskManager.ListTasks().Text;
         taskList.Should().NotContain("Existing task");
         taskList.Should().Contain("New task");
     }
@@ -163,7 +166,7 @@ public class TaskManagerTests
         };
 
         // Act
-        var result = _taskManager.BulkInitialize(tasks);
+        var result = _taskManager.BulkInitialize(tasks).Text;
 
         // Assert
         result.Should().Contain("Added 1 task(s)");
@@ -185,10 +188,10 @@ public class TaskManagerTests
         };
 
         // Act
-        var result = _taskManager.BulkInitialize(tasks);
+        var result = _taskManager.BulkInitialize(tasks).Text;
 
         // Assert
-        var taskList = _taskManager.ListTasks();
+        var taskList = _taskManager.ListTasks().Text;
         taskList.Should().Contain("Main task");
         taskList.Should().Contain("Valid subtask");
         taskList.Split('\n').Count(line => line.Contains("Valid subtask")).Should().Be(1);
@@ -198,8 +201,8 @@ public class TaskManagerTests
     public void BulkInitialize_WithNullOrEmptyList_ShouldReturnError()
     {
         // Act
-        var result1 = _taskManager.BulkInitialize(null!);
-        var result2 = _taskManager.BulkInitialize([]);
+        var result1 = _taskManager.BulkInitialize(null!).Text;
+        var result2 = _taskManager.BulkInitialize([]).Text;
 
         // Assert
         result1.Should().Be("Error: No tasks provided for initialization.");
@@ -214,18 +217,18 @@ public class TaskManagerTests
     public void UpdateTask_MainTask_ShouldUpdateStatus()
     {
         // Arrange
-        var addResult = _taskManager.AddTask("Test task");
+        var addResult = _taskManager.AddTask("Test task").Text;
         var taskId = ExtractTaskId(addResult);
 
         // Act
-        var result1 = _taskManager.UpdateTask(taskId, status: "in progress");
-        var result2 = _taskManager.UpdateTask(taskId, status: "completed");
+        var result1 = _taskManager.UpdateTask(taskId, status: "in progress").Text;
+        var result2 = _taskManager.UpdateTask(taskId, status: "completed").Text;
 
         // Assert
         result1.Should().Contain($"Updated task {taskId} status to 'in progress'");
         result2.Should().Contain($"Updated task {taskId} status to 'completed'");
 
-        var taskDetails = _taskManager.GetTask(taskId);
+        var taskDetails = _taskManager.GetTask(taskId).Text;
         taskDetails.Should().Contain("Status: completed");
     }
 
@@ -233,18 +236,18 @@ public class TaskManagerTests
     public void UpdateTask_Subtask_ShouldUpdateStatus()
     {
         // Arrange
-        var parentResult = _taskManager.AddTask("Parent task");
+        var parentResult = _taskManager.AddTask("Parent task").Text;
         var parentId = ExtractTaskId(parentResult);
-        var subtaskResult = _taskManager.AddTask("Subtask", parentId);
+        var subtaskResult = _taskManager.AddTask("Subtask", parentId).Text;
         var subtaskId = ExtractTaskId(subtaskResult);
 
         // Act
-        var result = _taskManager.UpdateTask(parentId, subtaskId, "completed");
+        var result = _taskManager.UpdateTask(parentId, subtaskId, "completed").Text;
 
         // Assert
         result.Should().Contain($"Updated task {parentId}.{subtaskId} status to 'completed'");
 
-        var taskDetails = _taskManager.GetTask(parentId, subtaskId);
+        var taskDetails = _taskManager.GetTask(parentId, subtaskId).Text;
         taskDetails.Should().Contain("Status: completed");
     }
 
@@ -252,11 +255,11 @@ public class TaskManagerTests
     public void UpdateTask_WithInvalidStatus_ShouldReturnError()
     {
         // Arrange
-        var addResult = _taskManager.AddTask("Test task");
+        var addResult = _taskManager.AddTask("Test task").Text;
         var taskId = ExtractTaskId(addResult);
 
         // Act
-        var result = _taskManager.UpdateTask(taskId, status: "invalid");
+        var result = _taskManager.UpdateTask(taskId, status: "invalid").Text;
 
         // Assert
         result.Should().Be("Error: Invalid status. Use: not started, in progress, completed, removed.");
@@ -282,11 +285,11 @@ public class TaskManagerTests
 
         foreach (var (input, expected) in tasks)
         {
-            var addResult = _taskManager.AddTask($"Task for {input}");
+            var addResult = _taskManager.AddTask($"Task for {input}").Text;
             var taskId = ExtractTaskId(addResult);
 
             // Act
-            var result = _taskManager.UpdateTask(taskId, status: input);
+            var result = _taskManager.UpdateTask(taskId, status: input).Text;
 
             // Assert
             result.Should().Contain($"status to '{expected}'");
@@ -301,19 +304,19 @@ public class TaskManagerTests
     public void DeleteTask_MainTask_ShouldRemoveTaskAndSubtasks()
     {
         // Arrange
-        var parentResult = _taskManager.AddTask("Parent task");
+        var parentResult = _taskManager.AddTask("Parent task").Text;
         var parentId = ExtractTaskId(parentResult);
         _taskManager.AddTask("Subtask 1", parentId);
         _taskManager.AddTask("Subtask 2", parentId);
 
         // Act
-        var result = _taskManager.DeleteTask(parentId);
+        var result = _taskManager.DeleteTask(parentId).Text;
 
         // Assert
         result.Should().Contain($"Deleted task {parentId} and all subtasks");
         result.Should().Contain("Parent task");
 
-        var getResult = _taskManager.GetTask(parentId);
+        var getResult = _taskManager.GetTask(parentId).Text;
         getResult.Should().Contain("Error: Task");
         getResult.Should().Contain("not found");
     }
@@ -322,21 +325,21 @@ public class TaskManagerTests
     public void DeleteTask_Subtask_ShouldRemoveOnlySubtask()
     {
         // Arrange
-        var parentResult = _taskManager.AddTask("Parent task");
+        var parentResult = _taskManager.AddTask("Parent task").Text;
         var parentId = ExtractTaskId(parentResult);
-        var subtask1Result = _taskManager.AddTask("Subtask 1", parentId);
+        var subtask1Result = _taskManager.AddTask("Subtask 1", parentId).Text;
         var subtask1Id = ExtractTaskId(subtask1Result);
-        var subtask2Result = _taskManager.AddTask("Subtask 2", parentId);
+        var subtask2Result = _taskManager.AddTask("Subtask 2", parentId).Text;
         var subtask2Id = ExtractTaskId(subtask2Result);
 
         // Act
-        var result = _taskManager.DeleteTask(parentId, subtask1Id);
+        var result = _taskManager.DeleteTask(parentId, subtask1Id).Text;
 
         // Assert
         result.Should().Contain($"Deleted subtask {subtask1Id} from task {parentId}");
         result.Should().Contain("Subtask 1");
 
-        var parentDetails = _taskManager.GetTask(parentId);
+        var parentDetails = _taskManager.GetTask(parentId).Text;
         parentDetails.Should().NotContain("Subtask 1");
         parentDetails.Should().Contain("Subtask 2");
     }
@@ -345,7 +348,7 @@ public class TaskManagerTests
     public void DeleteTask_NonExistentTask_ShouldReturnError()
     {
         // Act
-        var result = _taskManager.DeleteTask(999);
+        var result = _taskManager.DeleteTask(999).Text;
 
         // Assert
         result.Should().Be("Error: Task 999 not found.");
@@ -359,13 +362,13 @@ public class TaskManagerTests
     public void GetTask_MainTask_ShouldReturnDetails()
     {
         // Arrange
-        var addResult = _taskManager.AddTask("Test task");
+        var addResult = _taskManager.AddTask("Test task").Text;
         var taskId = ExtractTaskId(addResult);
         _taskManager.ManageNotes(taskId, noteText: "Test note", action: "add");
         _taskManager.AddTask("Subtask", taskId);
 
         // Act
-        var result = _taskManager.GetTask(taskId);
+        var result = _taskManager.GetTask(taskId).Text;
 
         // Assert
         result.Should().Contain($"Task {taskId}: Test task");
@@ -380,13 +383,13 @@ public class TaskManagerTests
     public void GetTask_Subtask_ShouldReturnDetails()
     {
         // Arrange
-        var parentResult = _taskManager.AddTask("Parent task");
+        var parentResult = _taskManager.AddTask("Parent task").Text;
         var parentId = ExtractTaskId(parentResult);
-        var subtaskResult = _taskManager.AddTask("Subtask", parentId);
+        var subtaskResult = _taskManager.AddTask("Subtask", parentId).Text;
         var subtaskId = ExtractTaskId(subtaskResult);
 
         // Act
-        var result = _taskManager.GetTask(parentId, subtaskId);
+        var result = _taskManager.GetTask(parentId, subtaskId).Text;
 
         // Assert
         result.Should().Contain($"Subtask {subtaskId} of task {parentId}: Subtask");
@@ -401,16 +404,16 @@ public class TaskManagerTests
     public void ManageNotes_AddNote_ShouldAddToTask()
     {
         // Arrange
-        var addResult = _taskManager.AddTask("Test task");
+        var addResult = _taskManager.AddTask("Test task").Text;
         var taskId = ExtractTaskId(addResult);
 
         // Act
-        var result = _taskManager.ManageNotes(taskId, noteText: "Test note", action: "add");
+        var result = _taskManager.ManageNotes(taskId, noteText: "Test note", action: "add").Text;
 
         // Assert
         result.Should().Contain($"Added note to task {taskId}");
 
-        var notes = _taskManager.ListNotes(taskId);
+        var notes = _taskManager.ListNotes(taskId).Text;
         notes.Should().Contain("Test note");
     }
 
@@ -418,17 +421,17 @@ public class TaskManagerTests
     public void ManageNotes_EditNote_ShouldUpdateNote()
     {
         // Arrange
-        var addResult = _taskManager.AddTask("Test task");
+        var addResult = _taskManager.AddTask("Test task").Text;
         var taskId = ExtractTaskId(addResult);
         _taskManager.ManageNotes(taskId, noteText: "Original note", action: "add");
 
         // Act
-        var result = _taskManager.ManageNotes(taskId, noteText: "Updated note", noteIndex: 1, action: "edit");
+        var result = _taskManager.ManageNotes(taskId, noteText: "Updated note", noteIndex: 1, action: "edit").Text;
 
         // Assert
         result.Should().Contain($"Edited note 1 on task {taskId}");
 
-        var notes = _taskManager.ListNotes(taskId);
+        var notes = _taskManager.ListNotes(taskId).Text;
         notes.Should().NotContain("Original note");
         notes.Should().Contain("Updated note");
     }
@@ -437,18 +440,18 @@ public class TaskManagerTests
     public void ManageNotes_DeleteNote_ShouldRemoveNote()
     {
         // Arrange
-        var addResult = _taskManager.AddTask("Test task");
+        var addResult = _taskManager.AddTask("Test task").Text;
         var taskId = ExtractTaskId(addResult);
         _taskManager.ManageNotes(taskId, noteText: "Note 1", action: "add");
         _taskManager.ManageNotes(taskId, noteText: "Note 2", action: "add");
 
         // Act
-        var result = _taskManager.ManageNotes(taskId, noteIndex: 1, action: "delete");
+        var result = _taskManager.ManageNotes(taskId, noteIndex: 1, action: "delete").Text;
 
         // Assert
         result.Should().Contain($"Deleted note 1 from task {taskId}");
 
-        var notes = _taskManager.ListNotes(taskId);
+        var notes = _taskManager.ListNotes(taskId).Text;
         notes.Should().NotContain("Note 1");
         notes.Should().Contain("Note 2");
     }
@@ -457,11 +460,11 @@ public class TaskManagerTests
     public void ManageNotes_InvalidAction_ShouldReturnError()
     {
         // Arrange
-        var addResult = _taskManager.AddTask("Test task");
+        var addResult = _taskManager.AddTask("Test task").Text;
         var taskId = ExtractTaskId(addResult);
 
         // Act
-        var result = _taskManager.ManageNotes(taskId, action: "invalid");
+        var result = _taskManager.ManageNotes(taskId, action: "invalid").Text;
 
         // Assert
         result.Should().Be("Error: Invalid action. Use: add, edit, delete.");
@@ -471,13 +474,13 @@ public class TaskManagerTests
     public void ManageNotes_EditWithInvalidIndex_ShouldReturnError()
     {
         // Arrange
-        var addResult = _taskManager.AddTask("Test task");
+        var addResult = _taskManager.AddTask("Test task").Text;
         var taskId = ExtractTaskId(addResult);
         _taskManager.ManageNotes(taskId, noteText: "Note 1", action: "add");
 
         // Act
-        var result1 = _taskManager.ManageNotes(taskId, noteText: "Updated", noteIndex: 0, action: "edit");
-        var result2 = _taskManager.ManageNotes(taskId, noteText: "Updated", noteIndex: 2, action: "edit");
+        var result1 = _taskManager.ManageNotes(taskId, noteText: "Updated", noteIndex: 0, action: "edit").Text;
+        var result2 = _taskManager.ManageNotes(taskId, noteText: "Updated", noteIndex: 2, action: "edit").Text;
 
         // Assert
         result1.Should().Contain("Error: Note index 0 out of range");
@@ -494,7 +497,7 @@ public class TaskManagerTests
     public void ListTasks_WithNoTasks_ShouldStillEmitHeader()
     {
         // Act
-        var result = _taskManager.ListTasks();
+        var result = _taskManager.ListTasks().Text;
 
         // Assert - a bare "No tasks found." leaves the model no clue which tool answered.
         result.Should().StartWith("# 📋 Task List");
@@ -508,7 +511,7 @@ public class TaskManagerTests
         _taskManager.AddTask("Task 1");
 
         // Act
-        var result = _taskManager.ListTasks(status: "completed");
+        var result = _taskManager.ListTasks(status: "completed").Text;
 
         // Assert
         result.Should().StartWith("# 📋 Task List");
@@ -519,20 +522,20 @@ public class TaskManagerTests
     public void ListTasks_WithStatusFilter_ShouldFilterTasks()
     {
         // Arrange
-        var task1Result = _taskManager.AddTask("Task 1");
+        var task1Result = _taskManager.AddTask("Task 1").Text;
         var task1Id = ExtractTaskId(task1Result);
-        var task2Result = _taskManager.AddTask("Task 2");
+        var task2Result = _taskManager.AddTask("Task 2").Text;
         var task2Id = ExtractTaskId(task2Result);
-        var task3Result = _taskManager.AddTask("Task 3");
+        var task3Result = _taskManager.AddTask("Task 3").Text;
         var task3Id = ExtractTaskId(task3Result);
 
         _taskManager.UpdateTask(task1Id, status: "in progress");
         _taskManager.UpdateTask(task2Id, status: "completed");
 
         // Act
-        var inProgressTasks = _taskManager.ListTasks(status: "in progress");
-        var completedTasks = _taskManager.ListTasks(status: "completed");
-        var notStartedTasks = _taskManager.ListTasks(status: "not started");
+        var inProgressTasks = _taskManager.ListTasks(status: "in progress").Text;
+        var completedTasks = _taskManager.ListTasks(status: "completed").Text;
+        var notStartedTasks = _taskManager.ListTasks(status: "not started").Text;
 
         // Assert
         inProgressTasks.Should().Contain("Task 1");
@@ -550,14 +553,14 @@ public class TaskManagerTests
     public void ListTasks_WithMainOnly_ShouldExcludeSubtasks()
     {
         // Arrange
-        var parentResult = _taskManager.AddTask("Parent task");
+        var parentResult = _taskManager.AddTask("Parent task").Text;
         var parentId = ExtractTaskId(parentResult);
         _taskManager.AddTask("Subtask 1", parentId);
         _taskManager.AddTask("Subtask 2", parentId);
 
         // Act
-        var allTasks = _taskManager.ListTasks();
-        var mainOnly = _taskManager.ListTasks(mainOnly: true);
+        var allTasks = _taskManager.ListTasks().Text;
+        var mainOnly = _taskManager.ListTasks(mainOnly: true).Text;
 
         // Assert
         allTasks.Should().Contain("Parent task");
@@ -582,7 +585,7 @@ public class TaskManagerTests
         _taskManager.AddTask("Test database");
 
         // Act
-        var result = _taskManager.SearchTasks(searchTerm: "API");
+        var result = _taskManager.SearchTasks(searchTerm: "API").Text;
 
         // Assert
         result.Should().Contain("Found 2 task(s) matching 'API'");
@@ -595,9 +598,9 @@ public class TaskManagerTests
     public void SearchTasks_WithCountType_ShouldReturnCounts()
     {
         // Arrange
-        var task1Result = _taskManager.AddTask("Task 1");
+        var task1Result = _taskManager.AddTask("Task 1").Text;
         var task1Id = ExtractTaskId(task1Result);
-        var task2Result = _taskManager.AddTask("Task 2");
+        var task2Result = _taskManager.AddTask("Task 2").Text;
         var task2Id = ExtractTaskId(task2Result);
         _taskManager.AddTask("Subtask", task1Id);
 
@@ -605,10 +608,10 @@ public class TaskManagerTests
         _taskManager.UpdateTask(task2Id, status: "removed");
 
         // Act
-        var totalCount = _taskManager.SearchTasks(countType: "total");
-        var completedCount = _taskManager.SearchTasks(countType: "completed");
-        var pendingCount = _taskManager.SearchTasks(countType: "pending");
-        var removedCount = _taskManager.SearchTasks(countType: "removed");
+        var totalCount = _taskManager.SearchTasks(countType: "total").Text;
+        var completedCount = _taskManager.SearchTasks(countType: "completed").Text;
+        var pendingCount = _taskManager.SearchTasks(countType: "pending").Text;
+        var removedCount = _taskManager.SearchTasks(countType: "removed").Text;
 
         // Assert
         totalCount.Should().Be("Total tasks: 3");
@@ -624,9 +627,9 @@ public class TaskManagerTests
         _taskManager.AddTask("API Design");
 
         // Act
-        var result1 = _taskManager.SearchTasks(searchTerm: "api");
-        var result2 = _taskManager.SearchTasks(searchTerm: "API");
-        var result3 = _taskManager.SearchTasks(searchTerm: "ApI");
+        var result1 = _taskManager.SearchTasks(searchTerm: "api").Text;
+        var result2 = _taskManager.SearchTasks(searchTerm: "API").Text;
+        var result3 = _taskManager.SearchTasks(searchTerm: "ApI").Text;
 
         // Assert
         result1.Should().Contain("API Design");
@@ -649,7 +652,7 @@ public class TaskManagerTests
         for (int i = 0; i < taskCount; i++)
         {
             var taskNum = i;
-            tasks.Add(Task.Run(() => _taskManager.AddTask($"Task {taskNum}")));
+            tasks.Add(Task.Run(() => _taskManager.AddTask($"Task {taskNum}").Text));
         }
 
         var results = await Task.WhenAll(tasks);
@@ -691,7 +694,7 @@ public class TaskManagerTests
                             SubTasks = [$"Sub {opNum}.2"],
                         },
                     };
-                    return _taskManager.BulkInitialize(bulkTasks);
+                    return _taskManager.BulkInitialize(bulkTasks).Text;
                 })
             );
         }
@@ -702,7 +705,7 @@ public class TaskManagerTests
         results.Should().HaveCount(concurrentOps);
         results.Should().OnlyContain(r => r.Contains("Added 2 task(s)"));
 
-        var allTasks = _taskManager.ListTasks();
+        var allTasks = _taskManager.ListTasks().Text;
         for (int i = 0; i < concurrentOps; i++)
         {
             allTasks.Should().Contain($"Bulk {i} Task 1");
@@ -714,7 +717,7 @@ public class TaskManagerTests
     public async Task UpdateTask_Concurrent_ShouldBeThreadSafe()
     {
         // Arrange
-        var addResult = _taskManager.AddTask("Test task");
+        var addResult = _taskManager.AddTask("Test task").Text;
         var taskId = ExtractTaskId(addResult);
         var updateCount = 50;
         var tasks = new List<Task<string>>();
@@ -729,7 +732,7 @@ public class TaskManagerTests
                     1 => "in progress",
                     _ => "completed",
                 };
-            tasks.Add(Task.Run(() => _taskManager.UpdateTask(taskId, status: status)));
+            tasks.Add(Task.Run(() => _taskManager.UpdateTask(taskId, status: status).Text));
         }
 
         var results = await Task.WhenAll(tasks);
@@ -739,7 +742,7 @@ public class TaskManagerTests
         results.Should().OnlyContain(r => r.Contains("Updated task"));
 
         // Final state should be one of the valid statuses
-        var finalTask = _taskManager.GetTask(taskId);
+        var finalTask = _taskManager.GetTask(taskId).Text;
         finalTask.Should().ContainAny("not started", "in progress", "completed");
     }
 
@@ -747,7 +750,7 @@ public class TaskManagerTests
     public async Task ManageNotes_Concurrent_ShouldBeThreadSafe()
     {
         // Arrange
-        var addResult = _taskManager.AddTask("Test task");
+        var addResult = _taskManager.AddTask("Test task").Text;
         var taskId = ExtractTaskId(addResult);
         var noteCount = 50;
         var tasks = new List<Task<string>>();
@@ -756,7 +759,7 @@ public class TaskManagerTests
         for (int i = 0; i < noteCount; i++)
         {
             var noteNum = i;
-            tasks.Add(Task.Run(() => _taskManager.ManageNotes(taskId, noteText: $"Note {noteNum}", action: "add")));
+            tasks.Add(Task.Run(() => _taskManager.ManageNotes(taskId, noteText: $"Note {noteNum}", action: "add").Text));
         }
 
         var results = await Task.WhenAll(tasks);
@@ -765,7 +768,7 @@ public class TaskManagerTests
         results.Should().HaveCount(noteCount);
         results.Should().OnlyContain(r => r.Contains("Added note"));
 
-        var notes = _taskManager.ListNotes(taskId);
+        var notes = _taskManager.ListNotes(taskId).Text;
         var noteLines = notes
             .Split('\n')
             .Where(l =>
@@ -795,17 +798,17 @@ public class TaskManagerTests
                     switch (opNum % 5)
                     {
                         case 0:
-                            results.Add(await Task.Run(() => _taskManager.AddTask($"Task {opNum}")));
+                            results.Add(await Task.Run(() => _taskManager.AddTask($"Task {opNum}").Text));
                             break;
                         case 1:
-                            results.Add(await Task.Run(() => _taskManager.ListTasks()));
+                            results.Add(await Task.Run(() => _taskManager.ListTasks().Text));
                             break;
                         case 2:
-                            results.Add(await Task.Run(() => _taskManager.SearchTasks(countType: "total")));
+                            results.Add(await Task.Run(() => _taskManager.SearchTasks(countType: "total").Text));
                             break;
                         case 3:
                             var bulkTasks = new List<TaskManager.BulkTaskItem> { new() { Task = $"Bulk {opNum}" } };
-                            results.Add(await Task.Run(() => _taskManager.BulkInitialize(bulkTasks)));
+                            results.Add(await Task.Run(() => _taskManager.BulkInitialize(bulkTasks).Text));
                             break;
                         case 4:
                             results.Add(await Task.Run(() => _taskManager.GetMarkdown()));
@@ -846,7 +849,7 @@ public class TaskManagerTests
         _output.WriteLine($"Added {taskCount} tasks in {stopwatch.ElapsedMilliseconds}ms");
         stopwatch.ElapsedMilliseconds.Should().BeLessThan(5000); // Should be fast
 
-        var count = _taskManager.SearchTasks(countType: "total");
+        var count = _taskManager.SearchTasks(countType: "total").Text;
         count.Should().Be($"Total tasks: {taskCount}");
     }
 
@@ -854,13 +857,13 @@ public class TaskManagerTests
     public void TaskManager_DeepSubtaskHierarchy_ShouldAllowNestedTasks()
     {
         // Arrange
-        var parentResult = _taskManager.AddTask("Level 1");
+        var parentResult = _taskManager.AddTask("Level 1").Text;
         var parentId = ExtractTaskId(parentResult);
-        var subtaskResult = _taskManager.AddTask("Level 2", parentId);
+        var subtaskResult = _taskManager.AddTask("Level 2", parentId).Text;
         var subtaskId = ExtractTaskId(subtaskResult);
 
         // Act
-        var result = _taskManager.AddTask("Level 3", $"{parentId}.{subtaskId}");
+        var result = _taskManager.AddTask("Level 3", $"{parentId}.{subtaskId}").Text;
 
         // Assert
         result.Should().Contain($"Added task {parentId}.{subtaskId}.1");
@@ -885,12 +888,12 @@ public class TaskManagerTests
         // Act & Assert
         foreach (var title in specialTitles)
         {
-            var result = _taskManager.AddTask(title);
+            var result = _taskManager.AddTask(title).Text;
             result.Should().Contain("Added task");
             result.Should().Contain(title.Trim());
         }
 
-        var allTasks = _taskManager.ListTasks();
+        var allTasks = _taskManager.ListTasks().Text;
         foreach (var title in specialTitles)
         {
             allTasks.Should().Contain(title.Trim());
@@ -905,15 +908,15 @@ public class TaskManagerTests
         var longNote = new string('B', 5000);
 
         // Act
-        var addResult = _taskManager.AddTask(longTitle);
+        var addResult = _taskManager.AddTask(longTitle).Text;
         var taskId = ExtractTaskId(addResult);
-        var noteResult = _taskManager.ManageNotes(taskId, noteText: longNote, action: "add");
+        var noteResult = _taskManager.ManageNotes(taskId, noteText: longNote, action: "add").Text;
 
         // Assert
         addResult.Should().Contain("Added task");
         noteResult.Should().Contain("Added note");
 
-        var taskDetails = _taskManager.GetTask(taskId);
+        var taskDetails = _taskManager.GetTask(taskId).Text;
         taskDetails.Should().Contain(longTitle);
         taskDetails.Should().Contain(longNote);
     }
@@ -940,7 +943,7 @@ public class TaskManagerTests
         _taskManager.UpdateTask("1.2", "removed");
 
         // Act
-        var result = _taskManager.ListTasks();
+        var result = _taskManager.ListTasks().Text;
 
         // Assert - LF throughout, so this doubles as the guard against
         // Environment.NewLine leaking CRLF into tool output on Windows.
@@ -971,7 +974,7 @@ public class TaskManagerTests
 
         // Act
         var markdown = _taskManager.GetMarkdown();
-        var listTasks = _taskManager.ListTasks();
+        var listTasks = _taskManager.ListTasks().Text;
 
         // Assert
         markdown.Should().Be(listTasks);
@@ -990,11 +993,11 @@ public class TaskManagerTests
         _taskManager.AddTask("Level 3", "1.1");
 
         // Act
-        var result = _taskManager.AddNote("1.1.1", noteText: "Deep note");
+        var result = _taskManager.AddNote("1.1.1", noteText: "Deep note").Text;
 
         // Assert
         result.Should().Be("Added note to task 1.1.1.");
-        _taskManager.ListNotes("1.1.1").Should().Contain("Deep note");
+        _taskManager.ListNotes("1.1.1").Text.Should().Contain("Deep note");
     }
 
     [Fact]
@@ -1006,7 +1009,7 @@ public class TaskManagerTests
         _taskManager.AddTask("Level 3", "1.1");
 
         // Act
-        var result = _taskManager.GetTask("1.1.1");
+        var result = _taskManager.GetTask("1.1.1").Text;
 
         // Assert
         result.Should().Contain("Task 1.1.1: Level 3");
@@ -1022,21 +1025,21 @@ public class TaskManagerTests
         _taskManager.AddTask("Level 3", "1.1");
 
         // Act
-        var result = _taskManager.DeleteTask("1.1.1");
+        var result = _taskManager.DeleteTask("1.1.1").Text;
 
         // Assert - removing only from RootTasks would report success and change nothing.
         result.Should().Contain("Deleted task 1.1.1 and all subtasks");
-        _taskManager.ListTasks().Should().NotContain("Level 3");
+        _taskManager.ListTasks().Text.Should().NotContain("Level 3");
 
         // Positive control. Under-deletion is only half the failure mode: detaching the root
         // ancestor instead of the target satisfies every negative assertion above. The
         // ancestors must survive.
-        _taskManager.ListTasks().Should().Contain("Level 1").And.Contain("Level 2");
-        _taskManager.GetTask("1.1").Should().Contain("Task 1.1: Level 2");
+        _taskManager.ListTasks().Text.Should().Contain("Level 1").And.Contain("Level 2");
+        _taskManager.GetTask("1.1").Text.Should().Contain("Task 1.1: Level 2");
 
         // Exactly which absence this is matters: a substring match cannot tell "the leaf is
         // gone" from "the tree is gone".
-        _taskManager.GetTask("1.1.1").Should().Be("Error: Task '1.1.1' not found.");
+        _taskManager.GetTask("1.1.1").Text.Should().Be("Error: Task '1.1.1' not found.");
     }
 
     [Fact]
@@ -1049,15 +1052,15 @@ public class TaskManagerTests
         _taskManager.AddNote("1.1.1", noteText: "Original");
 
         // Act
-        var edited = _taskManager.EditNote("1.1.1", noteIndex: 1, noteText: "Revised");
-        var listed = _taskManager.ListNotes("1.1.1");
-        var deleted = _taskManager.DeleteNote("1.1.1", noteIndex: 1);
+        var edited = _taskManager.EditNote("1.1.1", noteIndex: 1, noteText: "Revised").Text;
+        var listed = _taskManager.ListNotes("1.1.1").Text;
+        var deleted = _taskManager.DeleteNote("1.1.1", noteIndex: 1).Text;
 
         // Assert
         edited.Should().Be("Updated note #1 on task 1.1.1.");
         listed.Should().Contain("Revised");
         deleted.Should().Contain("Deleted note #1 from task 1.1.1");
-        _taskManager.ListNotes("1.1.1").Should().Be("task 1.1.1 has no notes.");
+        _taskManager.ListNotes("1.1.1").Text.Should().Be("task 1.1.1 has no notes.");
     }
 
     #endregion
@@ -1068,18 +1071,18 @@ public class TaskManagerTests
     public void AddTask_WithBlankParentId_ShouldReturnErrorRatherThanCreateRootTask()
     {
         // Act - a supplied-but-blank parentId is a malformed call, not "no parent".
-        var result = _taskManager.AddTask("Orphan", "   ");
+        var result = _taskManager.AddTask("Orphan", "   ").Text;
 
         // Assert
         result.Should().Be("Error: Parent task ID cannot be blank. Omit parentId to add a main task.");
-        _taskManager.ListTasks().Should().NotContain("Orphan");
+        _taskManager.ListTasks().Text.Should().NotContain("Orphan");
     }
 
     [Fact]
     public void AddTask_WithOmittedParentId_ShouldStillCreateRootTask()
     {
         // Act
-        var result = _taskManager.AddTask("Main");
+        var result = _taskManager.AddTask("Main").Text;
 
         // Assert
         result.Should().Be("Added task 1: Main");
@@ -1095,7 +1098,7 @@ public class TaskManagerTests
         _taskManager.AddTask("Test task");
 
         // Act
-        var result = _taskManager.UpdateTask("1", status: input);
+        var result = _taskManager.UpdateTask("1", status: input).Text;
 
         // Assert
         result.Should().Contain($"status to '{expected}'");
@@ -1148,12 +1151,12 @@ public class TaskManagerTests
 
         for (var i = 0; i < RootCount; i++)
         {
-            _ = _taskManager.AddTask($"Seed {i}");
+            _ = _taskManager.AddTask($"Seed {i}").Text;
         }
 
         for (var i = 0; i < NestedSeedCount; i++)
         {
-            _ = _taskManager.AddTask($"Nested {i}", "1");
+            _ = _taskManager.AddTask($"Nested {i}", "1").Text;
         }
 
         var failures = new ConcurrentBag<Exception>();
@@ -1167,7 +1170,7 @@ public class TaskManagerTests
             var i = 0;
             while (Volatile.Read(ref stop) == 0 && i < WriterCap)
             {
-                _ = _taskManager.AddTask($"Churn {i++}", "1");
+                _ = _taskManager.AddTask($"Churn {i++}", "1").Text;
             }
         });
 
@@ -1181,10 +1184,10 @@ public class TaskManagerTests
                     {
                         try
                         {
-                            _ = _taskManager.ListTasks();
-                            _ = _taskManager.SearchTasks("Nested");
-                            _ = _taskManager.SearchTasks(countType: "total");
-                            _ = _taskManager.GetTask("1");
+                            _ = _taskManager.ListTasks().Text;
+                            _ = _taskManager.SearchTasks("Nested").Text;
+                            _ = _taskManager.SearchTasks(countType: "total").Text;
+                            _ = _taskManager.GetTask("1").Text;
                         }
                         catch (Exception ex)
                         {
@@ -1248,12 +1251,12 @@ public class TaskManagerTests
             var manager = new TaskManager();
             for (var i = 0; i < RootCount; i++)
             {
-                _ = manager.AddTask($"Seed {i}");
+                _ = manager.AddTask($"Seed {i}").Text;
             }
 
             for (var i = 0; i < NestedSeedCount; i++)
             {
-                _ = manager.AddTask($"Nested {i}", "1");
+                _ = manager.AddTask($"Nested {i}", "1").Text;
             }
 
             using var startingGun = new ManualResetEventSlim(false);
@@ -1265,7 +1268,7 @@ public class TaskManagerTests
                 var i = 0;
                 while (Volatile.Read(ref stop) == 0 && i < WriterCapPerRound)
                 {
-                    _ = manager.AddTask($"Churn {i++}", "1");
+                    _ = manager.AddTask($"Churn {i++}", "1").Text;
                 }
             });
 
@@ -1293,6 +1296,216 @@ public class TaskManagerTests
 
         // Assert
         violations.Should().BeEmpty();
+    }
+
+    #endregion
+
+    #region Error Signalling Tests
+
+    /// <summary>
+    ///     The claim this whole change exists to make: a domain failure must not arrive at the
+    ///     model wearing the same "succeeded" flag as a real answer. The assertion is made on the
+    ///     handler's payload rather than on <see cref="TaskManager" /> directly, because the flag
+    ///     the model sees is set by the reflective handler, not by the method.
+    /// </summary>
+    [Fact]
+    public async Task ToolHandler_ForAMissingTask_ReportsAFailureNotASuccessfulString()
+    {
+        var getTask = new TypeFunctionProvider(new TaskManager())
+            .GetFunctions()
+            .First(f => f.Contract.Name == "get-task");
+
+        var result = await getTask.Handler(
+            """{"taskId":"999"}""",
+            new ToolCallContext(),
+            CancellationToken.None
+        );
+
+        var resolved = Assert.IsType<ToolHandlerResult.Resolved>(result);
+        resolved.Payload.IsError.Should().BeTrue();
+        resolved.Payload.ErrorCode.Should().Be("task_not_found");
+        // The wire shape is unchanged: still the same bare JSON string it always was.
+        JsonSerializer.Deserialize<string>(resolved.Payload.Text).Should().Be("Error: Task '999' not found.");
+    }
+
+    /// <summary>
+    ///     The other half of the claim. Marking failures is only informative if successes stay
+    ///     unmarked, so a passing call must still carry no error code.
+    /// </summary>
+    [Fact]
+    public async Task ToolHandler_ForASuccessfulCall_StaysASuccess()
+    {
+        var addTask = new TypeFunctionProvider(new TaskManager())
+            .GetFunctions()
+            .First(f => f.Contract.Name == "add-task");
+
+        var result = await addTask.Handler(
+            """{"title":"Test task"}""",
+            new ToolCallContext(),
+            CancellationToken.None
+        );
+
+        var resolved = Assert.IsType<ToolHandlerResult.Resolved>(result);
+        resolved.Payload.IsError.Should().BeFalse();
+        resolved.Payload.ErrorCode.Should().BeNull();
+        JsonSerializer.Deserialize<string>(resolved.Payload.Text).Should().Be("Added task 1: Test task");
+    }
+
+    /// <summary>
+    ///     Every tool, not just the one the end-to-end test drives. A tool left on a bare string
+    ///     keeps delivering its failures as successes, and nothing else here would notice.
+    /// </summary>
+    [Theory]
+    [InlineData("add-task", "invalid_args")]
+    [InlineData("bulk-initialize", "invalid_args")]
+    [InlineData("update-task", "invalid_status")]
+    [InlineData("delete-task", "task_not_found")]
+    [InlineData("get-task", "task_not_found")]
+    [InlineData("add-note", "task_not_found")]
+    [InlineData("edit-note", "note_index_out_of_range")]
+    [InlineData("delete-note", "note_index_out_of_range")]
+    [InlineData("list-notes", "task_not_found")]
+    [InlineData("list-tasks", "invalid_status")]
+    [InlineData("search-tasks", "invalid_args")]
+    public void EveryTool_ReportsItsDomainFailureWithACode(string tool, string expectedErrorCode)
+    {
+        var manager = SeededManager();
+
+        var result = InvokeFailing(manager, tool);
+
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be(expectedErrorCode);
+        result.Text.Should().StartWith("Error: ");
+    }
+
+    /// <summary>
+    ///     Non-vacuity control for the theory above. Marking failures says nothing unless the
+    ///     same tools leave their successes unmarked — an implementation that flagged everything
+    ///     would satisfy the failure cases on its own.
+    /// </summary>
+    [Theory]
+    [InlineData("add-task")]
+    [InlineData("bulk-initialize")]
+    [InlineData("update-task")]
+    [InlineData("delete-task")]
+    [InlineData("get-task")]
+    [InlineData("add-note")]
+    [InlineData("edit-note")]
+    [InlineData("delete-note")]
+    [InlineData("list-notes")]
+    [InlineData("list-tasks")]
+    [InlineData("search-tasks")]
+    public void EveryTool_LeavesItsSuccessUnmarked(string tool)
+    {
+        var manager = SeededManager();
+
+        var result = InvokeSucceeding(manager, tool);
+
+        result.IsError.Should().BeFalse();
+        result.ErrorCode.Should().BeNull();
+    }
+
+    /// <summary>
+    ///     The two finders sit under every tool above, and they are the only place a malformed
+    ///     id is told apart from an id that simply names nothing.
+    /// </summary>
+    [Theory]
+    [InlineData("abc", "invalid_task_id")]
+    [InlineData("1.x", "invalid_task_id")]
+    [InlineData("999", "task_not_found")]
+    [InlineData("1.9", "task_not_found")]
+    public void TheFinders_DistinguishAMalformedIdFromAMissingOne(string taskId, string expectedErrorCode)
+    {
+        var manager = SeededManager();
+
+        var result = manager.GetTask(taskId);
+
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be(expectedErrorCode);
+    }
+
+    /// <summary>
+    ///     <c>ManageNotes</c> rewords what the note tools return. Rewording the text through a
+    ///     plain string would drop the code and hand the model a reworded failure marked success.
+    /// </summary>
+    [Fact]
+    public void ManageNotes_RewordingAFailure_KeepsItAFailure()
+    {
+        var manager = SeededManager();
+
+        var result = manager.ManageNotes("1", noteIndex: 9, noteText: "x", action: "edit");
+
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("note_index_out_of_range");
+    }
+
+    [Fact]
+    public void ManageNotes_WithAnUnknownAction_ReportsAFailure()
+    {
+        var result = SeededManager().ManageNotes("1", action: "sideways");
+
+        result.IsError.Should().BeTrue();
+        result.ErrorCode.Should().Be("invalid_action");
+    }
+
+    /// <summary>
+    ///     Only <c>Text</c> reaches the wire, so the contract rendered into the system prompt has
+    ///     to keep naming <see cref="string" />. Naming the wrapper would describe a shape the
+    ///     model never receives.
+    /// </summary>
+    [Fact]
+    public void EveryTool_AdvertisesTheStringItPutsOnTheWire()
+    {
+        var functions = new TypeFunctionProvider(new TaskManager()).GetFunctions().ToList();
+
+        functions.Should().HaveCount(11);
+        functions.Should().OnlyContain(f => f.Contract.ReturnType == typeof(string));
+    }
+
+    private static TaskManager SeededManager()
+    {
+        var manager = new TaskManager();
+        _ = manager.AddTask("Seed task");
+        _ = manager.AddNote("1", noteText: "Seed note");
+        return manager;
+    }
+
+    private static FunctionResult InvokeFailing(TaskManager manager, string tool)
+    {
+        return tool switch
+        {
+            "add-task" => manager.AddTask(string.Empty),
+            "bulk-initialize" => manager.BulkInitialize([]),
+            "update-task" => manager.UpdateTask("1", "sideways"),
+            "delete-task" => manager.DeleteTask("999"),
+            "get-task" => manager.GetTask("999"),
+            "add-note" => manager.AddNote("999", noteText: "text"),
+            "edit-note" => manager.EditNote("1", noteIndex: 9, noteText: "text"),
+            "delete-note" => manager.DeleteNote("1", noteIndex: 9),
+            "list-notes" => manager.ListNotes("999"),
+            "list-tasks" => manager.ListTasks("sideways"),
+            "search-tasks" => manager.SearchTasks(),
+            _ => throw new ArgumentOutOfRangeException(nameof(tool), tool, "unknown tool"),
+        };
+    }
+
+    private static FunctionResult InvokeSucceeding(TaskManager manager, string tool)
+    {
+        return tool switch
+        {
+            "add-task" => manager.AddTask("Another task"),
+            "bulk-initialize" => manager.BulkInitialize([new TaskManager.BulkTaskItem { Task = "Bulk task" }]),
+            "update-task" => manager.UpdateTask("1", "completed"),
+            "delete-task" => manager.DeleteTask("1"),
+            "get-task" => manager.GetTask("1"),
+            "add-note" => manager.AddNote("1", noteText: "text"),
+            "edit-note" => manager.EditNote("1", noteIndex: 1, noteText: "text"),
+            "delete-note" => manager.DeleteNote("1", noteIndex: 1),
+            "list-notes" => manager.ListNotes("1"),
+            "list-tasks" => manager.ListTasks(),
+            "search-tasks" => manager.SearchTasks("Seed"),
+            _ => throw new ArgumentOutOfRangeException(nameof(tool), tool, "unknown tool"),
+        };
     }
 
     #endregion
