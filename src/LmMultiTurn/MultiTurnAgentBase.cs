@@ -5,6 +5,7 @@ using System.Threading.Channels;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmLifecycle;
 using AchieveAi.LmDotnetTools.LmLifecycle.Payloads;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Delivery;
@@ -875,7 +876,11 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// Call this before starting the agent to restore previous conversation.
     /// </summary>
     /// <param name="ct">Cancellation token</param>
-    /// <returns>True if state was recovered, false if no stored state exists</returns>
+    /// <returns>
+    /// True if conversation history was actually restored; false if nothing was — no stored state
+    /// exists, the thread has zero message rows, or every stored row was unrestorable. All three are
+    /// the same observable outcome (an empty history), so they answer the same way.
+    /// </returns>
     public virtual async Task<bool> RecoverAsync(CancellationToken ct = default)
     {
         if (Store == null)
@@ -920,13 +925,38 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         // no failure handling of its own (its enclosing catch is teardown-and-rethrow) — a single
         // corrupt record aborted the entire restart. Skip the bad row, log its id, keep the rest, so
         // both restore sites (here and the manager) survive a corrupt store identically.
-        var messages = new List<IMessage>(persistedMessages.Count);
+        var converted = new List<IMessage>(persistedMessages.Count);
         foreach (var persisted in persistedMessages)
         {
-            IMessage converted;
+            IMessage message;
             try
             {
-                converted = MessagePersistenceConverter.FromPersistedMessage(persisted);
+                message = MessagePersistenceConverter.FromPersistedMessage(persisted);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // Structural symmetry with the sibling guard in RunAsync's recovery: cancellation is
+                // never swallowed as corruption. INERT today — FromPersistedMessage is fully
+                // synchronous and takes no CancellationToken, and IMessageJsonConverter has no
+                // async/cancellable surface — but the convention stays local and true if one ever
+                // gains that surface, rather than being rediscovered as a silent-drop bug then.
+                throw;
+            }
+            catch (UnknownMessageTypeDiscriminatorException ex)
+            {
+                // NOT corruption: well-formed bytes carrying a $type this binary does not know, i.e.
+                // written by a NEWER binary. During a rollback window this can drop a large slice of
+                // history, so it gets its own line an operator can grep for. Outcome is deliberately
+                // identical to the corrupt case — skip the row, keep the siblings.
+                Logger.LogWarning(
+                    ex,
+                    "Skipping persisted record {RecordId} for thread {ThreadId}: unknown message type "
+                        + "{TypeDiscriminator}. The record was written by a newer binary than this one "
+                        + "(schema mismatch, not corruption)",
+                    persisted.Id,
+                    ThreadId,
+                    ex.TypeDiscriminator);
+                continue;
             }
             catch (Exception ex)
             {
@@ -938,8 +968,21 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                 continue;
             }
 
-            messages.Add(converted);
+            converted.Add(message);
         }
+
+        // A tool call and its result are SEPARATE persisted rows, so skipping one row above orphans
+        // its partner — and nothing downstream repairs that (RestoreHistory is a bare AddRange,
+        // GetMessagesWithSystemPrompt returns history unfiltered, and MessageTransformationMiddleware
+        // passes an unpaired half through verbatim). Providers reject both shapes, and because the
+        // same row fails identically on every recovery the thread would stay wedged across restarts:
+        // #489's rare recoverable degradation would become a permanent unrecoverable one. So when
+        // anything WAS skipped, sweep the survivors back to the pairing invariant the write path
+        // maintains. Gated on a skip having happened so a healthy store restores byte-for-byte what
+        // it always did.
+        var messages = converted.Count < persistedMessages.Count
+            ? DropUnpairedToolMessages(converted)
+            : converted;
 
         // Restore history
         RestoreHistory(messages);
@@ -960,14 +1003,135 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         // branch above.
         await OnThreadRecoveredAsync(ct);
 
-        Logger.LogInformation(
-            "Recovered {MessageCount} messages for thread {ThreadId}. LatestRunId: {LatestRunId}",
+        // Report what was ATTEMPTED and what was LOST, not just what survived: "Recovered 1 messages"
+        // at Information is indistinguishable from a healthy single-message thread even when 10,000
+        // rows were dropped, and correlating that by hand against 10,000 preceding warnings is not a
+        // thing an operator does. The three counts partition the attempted total exactly
+        // (restored + unreadable + unpaired == attempted), so no drop can hide between them, and the
+        // line is raised to Warning whenever anything was dropped at all.
+        var unreadableCount = persistedMessages.Count - converted.Count;
+        var unpairedCount = converted.Count - messages.Count;
+        Logger.Log(
+            unreadableCount + unpairedCount > 0 ? LogLevel.Warning : LogLevel.Information,
+            "Recovered {MessageCount} of {AttemptedCount} persisted records for thread {ThreadId} "
+                + "({UnreadableCount} unreadable, {UnpairedCount} unpaired tool messages dropped). "
+                + "LatestRunId: {LatestRunId}",
             messages.Count,
+            persistedMessages.Count,
             ThreadId,
+            unreadableCount,
+            unpairedCount,
             metadata.LatestRunId);
 
-        return true;
+        // "Recovered" means messages were actually restored. The zero-row branch above already
+        // returns false for that same observable outcome, so an all-corrupt load — which restores
+        // nothing — must not answer true and contradict it (or the documented meaning above).
+        return messages.Count > 0;
     }
+
+    /// <summary>
+    /// Returns <paramref name="messages"/> with every tool-call/tool-result message that has lost its
+    /// partner removed, so a history assembled from a partially-readable store still satisfies the
+    /// pairing invariant every provider enforces.
+    /// </summary>
+    /// <remarks>
+    /// One message may carry SEVERAL tool call ids, so dropping one result can invalidate a message
+    /// that also holds calls whose results ARE present — which in turn orphans those results. The
+    /// sweep therefore iterates to a fixed point rather than making a single pass. Ids are the only
+    /// key used: a message with no id on either side takes no part in pairing and is always kept,
+    /// because it cannot be matched either way and inventing a verdict would delete history on a
+    /// guess. Duplicate results for one call are fine — pairing asks whether a partner EXISTS, not
+    /// how many.
+    /// </remarks>
+    private static List<IMessage> DropUnpairedToolMessages(IReadOnlyList<IMessage> messages)
+    {
+        var keep = new bool[messages.Count];
+        Array.Fill(keep, true);
+
+        bool changed;
+        do
+        {
+            changed = false;
+
+            var resultIds = new HashSet<string>(StringComparer.Ordinal);
+            var callIds = new HashSet<string>(StringComparer.Ordinal);
+            for (var i = 0; i < messages.Count; i++)
+            {
+                if (keep[i])
+                {
+                    resultIds.UnionWith(ToolResultIdsOf(messages[i]));
+                    callIds.UnionWith(ToolCallIdsOf(messages[i]));
+                }
+            }
+
+            for (var i = 0; i < messages.Count; i++)
+            {
+                if (!keep[i])
+                {
+                    continue;
+                }
+
+                var isUnpaired =
+                    ToolResultIdsOf(messages[i]).Any(id => !callIds.Contains(id))
+                    || ToolCallIdsOf(messages[i]).Any(id => !resultIds.Contains(id));
+
+                if (isUnpaired)
+                {
+                    keep[i] = false;
+                    changed = true;
+                }
+            }
+        }
+        while (changed);
+
+        var kept = new List<IMessage>(messages.Count);
+        for (var i = 0; i < messages.Count; i++)
+        {
+            if (keep[i])
+            {
+                kept.Add(messages[i]);
+            }
+        }
+
+        return kept;
+    }
+
+    /// <summary>
+    /// The tool call ids a restored message REQUESTS. Both shapes are handled deliberately: the
+    /// singular <see cref="ToolCallMessage"/> is what production persists (
+    /// <c>MessageTransformationMiddleware</c> splits a plural message into one per call upstream of
+    /// the loop's turn body), while a plural <see cref="ICanGetToolCalls"/> can still reach the store
+    /// through the middleware's unsplit passthrough and through the sibling Claude/Codex/Copilot
+    /// loops, which persist their translated streams directly.
+    /// </summary>
+    private static IEnumerable<string> ToolCallIdsOf(IMessage message)
+    {
+        return message switch
+        {
+            // Checked before ICanGetToolCalls-style plural shapes: ToolCallMessage IS-A ToolCall and
+            // carries its id directly rather than through a collection.
+            ToolCallMessage single => WithId(single.ToolCallId),
+            ICanGetToolCalls many => NonEmpty((many.GetToolCalls() ?? []).Select(tc => tc.ToolCallId)),
+            _ => [],
+        };
+    }
+
+    /// <summary>The tool call ids a restored message ANSWERS.</summary>
+    private static IEnumerable<string> ToolResultIdsOf(IMessage message)
+    {
+        return message switch
+        {
+            ToolCallResultMessage single => WithId(single.ToolCallId),
+            ToolsCallResultMessage many => NonEmpty(many.ToolCallResults.Select(r => r.ToolCallId)),
+            _ => [],
+        };
+    }
+
+    private static IEnumerable<string> WithId(string? id) =>
+        string.IsNullOrEmpty(id) ? [] : [id];
+
+    private static IEnumerable<string> NonEmpty(IEnumerable<string?> ids) =>
+        ids.Where(id => !string.IsNullOrEmpty(id)).Select(id => id!);
 
     /// <summary>
     /// Marks conversation-history recovery as already satisfied so <see cref="RunAsync"/> will NOT

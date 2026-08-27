@@ -1017,6 +1017,346 @@ public class MultiTurnAgentBaseTests
         await agent.DisposeAsync();
     }
 
+    [Theory]
+    // corruptTheCall: which half of the pair is the damaged row.
+    // pluralCallShape: false = the SINGULAR ToolCallMessage production actually persists
+    // (MessageTransformationMiddleware splits plural into one-per-call upstream of the turn body);
+    // true = the plural ToolsCallMessage, which still reaches the store via the middleware's unsplit
+    // passthrough and via the sibling Claude/Codex/Copilot loops. A sweep keyed on only one of the
+    // two shapes passes half these cases and no-ops against the other half's stores.
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    public async Task RecoverAsync_DropsBothHalvesOfAToolCallPair_WhenEitherHalfIsCorrupt(
+        bool corruptTheCall,
+        bool pluralCallShape)
+    {
+        // A tool call and its result are TWO separate persisted rows (MessagePersistenceConverter is
+        // strictly 1:1). Skipping one row per #489 therefore ORPHANS its partner, and nothing
+        // downstream repairs that: RestoreHistory is a bare AddRange, GetMessagesWithSystemPrompt
+        // returns the history unfiltered, and MessageTransformationMiddleware passes an unpaired half
+        // through verbatim. Providers reject both shapes (Anthropic: "tool_use ids were found without
+        // tool_result blocks", "tool_call_id is not found"), and because the same row fails to
+        // deserialize on EVERY recovery the thread would stay wedged across restarts. So recovery
+        // enforces the same pairing invariant the write path maintains: neither half survives alone.
+        // The healthy TextMessage still comes back — the per-record win of #489 is not regressed.
+        var store = new InMemoryConversationStore();
+        var threadId =
+            $"test-thread-orphan-{(corruptTheCall ? "call" : "result")}-{(pluralCallShape ? "plural" : "singular")}";
+        const string runId = "prior-run";
+        const string toolCallId = "call-1";
+
+        var healthyText =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new TextMessage { Text = "healthy text", Role = Role.User, RunId = runId },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 1,
+            };
+        IMessage callMessage = pluralCallShape
+            ? new ToolsCallMessage
+            {
+                Role = Role.Assistant,
+                RunId = runId,
+                ToolCalls =
+                [
+                    new ToolCall
+                    {
+                        ToolCallId = toolCallId,
+                        FunctionName = "do_thing",
+                        FunctionArgs = "{}",
+                    },
+                ],
+            }
+            : new ToolCallMessage
+            {
+                Role = Role.Assistant,
+                RunId = runId,
+                ToolCallId = toolCallId,
+                FunctionName = "do_thing",
+                FunctionArgs = "{}",
+            };
+        var callRow =
+            MessagePersistenceConverter.ToPersistedMessage(callMessage, threadId, runId) with
+            {
+                Timestamp = 2,
+            };
+        var resultRow =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new ToolCallResultMessage
+                {
+                    ToolCallId = toolCallId,
+                    ToolName = "do_thing",
+                    Result = "ok",
+                    RunId = runId,
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 3,
+            };
+
+        // Only MessageJson is damaged — MessageType/Id survive, exactly as a bit-rotted row would.
+        const string CorruptJson = "{ this is not valid message json";
+        if (corruptTheCall)
+        {
+            callRow = callRow with { MessageJson = CorruptJson };
+        }
+        else
+        {
+            resultRow = resultRow with { MessageJson = CorruptJson };
+        }
+
+        await store.AppendMessagesAsync(threadId, [healthyText, callRow, resultRow]);
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+
+        var recovered = await agent.RecoverAsync();
+
+        recovered.Should().BeTrue();
+        var history = agent.SnapshotHistoryForTest();
+
+        // NEITHER half may survive — never exactly one.
+        history.OfType<ToolCallMessage>().Should().BeEmpty(
+            "a tool call whose result was skipped must not reach the provider");
+        history.OfType<ToolsCallMessage>().Should().BeEmpty(
+            "a tool call whose result was skipped must not reach the provider");
+        history.OfType<ToolCallResultMessage>().Should().BeEmpty(
+            "a tool result whose call was skipped must not reach the provider");
+
+        // ...and the unrelated healthy row is still restored (#489's per-record win is intact).
+        history.OfType<TextMessage>().Select(m => m.Text).Should().ContainSingle()
+            .Which.Should().Be("healthy text");
+        history.Count.Should().Be(1);
+
+        await agent.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task RecoverAsync_ReturnsFalse_WhenEveryPersistedRecordIsCorrupt()
+    {
+        // "Nothing was restored" must have ONE answer. The zero-row branch already returns false, so
+        // an all-corrupt load — the identical observable outcome — must not return true.
+        var store = new InMemoryConversationStore();
+        var threadId = "test-thread-all-corrupt";
+        const string runId = "prior-run";
+
+        var template = MessagePersistenceConverter.ToPersistedMessage(
+            new TextMessage { Text = "irrelevant", Role = Role.User, RunId = runId },
+            threadId,
+            runId);
+        var corruptA = template with
+        {
+            Id = "corrupt-a",
+            Timestamp = 1,
+            MessageJson = "{ not json",
+        };
+        var corruptB = template with
+        {
+            Id = "corrupt-b",
+            Timestamp = 2,
+            MessageJson = "also not json",
+        };
+
+        await store.AppendMessagesAsync(threadId, [corruptA, corruptB]);
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+
+        var recovered = await agent.RecoverAsync();
+
+        recovered.Should().BeFalse("zero messages were restored, which is what false means here");
+        agent.SnapshotHistoryForTest().Should().BeEmpty();
+
+        await agent.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task RecoverAsync_ReportsAttemptedAndSkippedCounts_AtWarning_WhenRecordsAreDropped()
+    {
+        // An operator scanning at Information must not read "Recovered 1 messages" and miss that the
+        // other rows were lost. The summary states what was attempted and what was dropped, and is
+        // raised to Warning whenever anything was dropped — including rows dropped by the pairing
+        // sweep, not just rows that failed to deserialize.
+        var logger = new CapturingLogger();
+        var store = new InMemoryConversationStore();
+        var threadId = "test-thread-recovery-counts";
+        const string runId = "prior-run";
+        const string toolCallId = "call-9";
+
+        var healthyText =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new TextMessage { Text = "healthy text", Role = Role.User, RunId = runId },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 1,
+            };
+        var callRow =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new ToolCallMessage
+                {
+                    Role = Role.Assistant,
+                    RunId = runId,
+                    ToolCallId = toolCallId,
+                    FunctionName = "do_thing",
+                    FunctionArgs = "{}",
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 2,
+            };
+        var resultRow =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new ToolCallResultMessage
+                {
+                    ToolCallId = toolCallId,
+                    ToolName = "do_thing",
+                    Result = "ok",
+                    RunId = runId,
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 3,
+                MessageJson = "{ this is not valid message json",
+            };
+
+        // 3 attempted: 1 unreadable (the result), 1 dropped for pairing (the call), 1 restored.
+        await store.AppendMessagesAsync(threadId, [healthyText, callRow, resultRow]);
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store, logger: logger);
+
+        await agent.RecoverAsync();
+
+        var summary = logger.Entries.Should()
+            .ContainSingle(e => e.Message.Contains("Recovered 1 of 3 persisted records"))
+            .Which;
+        summary.Level.Should().Be(
+            LogLevel.Warning,
+            "records were dropped, so the summary must not sit at Information");
+        summary.Message.Should().Contain("1 unreadable").And.Contain("1 unpaired");
+
+        await agent.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task RecoverAsync_DistinguishesAnUnknownTypeDiscriminatorFromACorruptRecord()
+    {
+        // A $type written by a NEWER binary is not bit rot: during a rollback window every such row
+        // is dropped, and an operator must be able to tell that apart from a damaged record. The
+        // outcome is unchanged (the row is still skipped, siblings still restored) — only the log
+        // distinguishes the two.
+        var logger = new CapturingLogger();
+        var store = new InMemoryConversationStore();
+        var threadId = "test-thread-unknown-type";
+        const string runId = "prior-run";
+
+        var healthy =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new TextMessage { Text = "healthy text", Role = Role.User, RunId = runId },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 1,
+            };
+        var fromNewerBinary = healthy with
+        {
+            Id = "from-newer-binary",
+            Timestamp = 2,
+            MessageJson = """{"$type":"some_future_message","text":"hi","role":"user"}""",
+        };
+
+        await store.AppendMessagesAsync(threadId, [healthy, fromNewerBinary]);
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store, logger: logger);
+
+        var recovered = await agent.RecoverAsync();
+
+        recovered.Should().BeTrue();
+        agent.SnapshotHistoryForTest().Should().ContainSingle();
+
+        logger.Entries.Should().Contain(
+            e => e.Message.Contains("unknown message type")
+                && e.Message.Contains("some_future_message")
+                && e.Message.Contains("from-newer-binary"),
+            "a schema the running binary does not know must not read as a corrupt record");
+        logger.Entries.Should().NotContain(
+            e => e.Message.Contains("Skipping corrupt persisted record"),
+            "the unknown-type row must not also be reported as corruption");
+
+        await agent.DisposeAsync();
+    }
+
+    private sealed record LogEntry(LogLevel Level, string Message);
+
+    private sealed class CapturingLogger : ILogger
+    {
+        public List<LogEntry> Entries { get; } = [];
+
+        public IDisposable BeginScope<TState>(TState state)
+            where TState : notnull => NullScope.Instance;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            Entries.Add(new LogEntry(logLevel, formatter(state, exception)));
+        }
+
+        private sealed class NullScope : IDisposable
+        {
+            public static readonly NullScope Instance = new();
+
+            public void Dispose() { }
+        }
+    }
+
     #endregion
 
     #region Metadata Preservation Tests
