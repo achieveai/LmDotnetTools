@@ -155,6 +155,13 @@ public sealed class IdentityMiddlewareTests
         return document.RootElement.TryGetProperty("code", out var code) ? code.GetString() : null;
     }
 
+    /// <summary>Reads the <c>error</c> label out of a refusal body.</summary>
+    private static async Task<string?> ReadErrorAsync(HttpResponseMessage response)
+    {
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return document.RootElement.TryGetProperty("error", out var error) ? error.GetString() : null;
+    }
+
     [Fact]
     public async Task WithEnforcementOff_AnAnonymousApiRequest_RunsAsTheDevelopmentPrincipal()
     {
@@ -198,17 +205,88 @@ public sealed class IdentityMiddlewareTests
     [Theory]
     [InlineData("/api/identity/config")]
     [InlineData("/api/admin/tenants")]
-    [InlineData("/api/health")]
     public async Task WithEnforcementOn_TheAnonymousApiPaths_StayReachable(string path)
     {
         using var server = await StartAsync(enforce: true);
 
         // Identity config must be readable BEFORE sign-in or the client can never start one; the
-        // admin surface authenticates with the operator secret instead of a user token; health has
-        // no user at all.
+        // admin surface authenticates with the operator secret instead of a user token.
         var response = await server.CreateClient().GetAsync(new Uri(path, UriKind.Relative));
 
         _ = response.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Theory]
+    [InlineData("/api/health")]
+    [InlineData("/api/health/live")]
+    public async Task WithEnforcementOn_TheHealthPrefix_IsGuardedLikeAnyOtherApiRoute(string path)
+    {
+        // #350 item 1. "/api/health" sat in AnonymousApiPaths and no such route existed anywhere in
+        // the sample. An exemption for a route that does not exist grants nothing today and cannot
+        // be observed, so nothing would have reported it turning into a real hole: IsGuardedApiPath
+        // matches by StartsWithSegments, so the day someone maps /api/health/live it would ship
+        // anonymous, and the whole subtree with it. The second case makes that concrete.
+        //
+        // Asserted through the real pipeline rather than through IsGuardedApiPath directly, and on
+        // the refusal CODE as well as the status: the terminal endpoint in this host answers every
+        // path with 200, so a 200 here means the middleware let it past rather than that some route
+        // handled it.
+        using var server = await StartAsync(enforce: true);
+
+        var response = await server.CreateClient().GetAsync(new Uri(path, UriKind.Relative));
+
+        _ = response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        _ = (await ReadCodeAsync(response)).Should().Be("authentication_required");
+    }
+
+    [Fact]
+    public async Task ADirectoryOutage_IsNotDescribedToTheCallerAsAnAuthorizationDecision()
+    {
+        // #350 item 2. WriteRefusalAsync branched on "401 or not", so everything that was not a 401
+        // was labelled "forbidden" - including the 503 PrincipalFactory emits when the tenant
+        // directory is unreadable. A server-side outage was therefore described to the caller as a
+        // decision about their authorization, which is the one reading that tells a client to stop
+        // retrying the token it holds.
+        //
+        // The `code` is asserted alongside the label deliberately: `code` was already correct before
+        // the fix, so a test that checked only the status and the code would have passed against the
+        // defect.
+        var rejection = PrincipalResolution.Reject(
+            PrincipalResolution.IdentityUnavailable,
+            StatusCodes.Status503ServiceUnavailable);
+        using var server = await StartAsync(enforce: true, rejection);
+
+        var response = await server.CreateClient().GetAsync(new Uri("/api/conversations", UriKind.Relative));
+
+        _ = ((int)response.StatusCode).Should().Be(StatusCodes.Status503ServiceUnavailable);
+        _ = (await ReadCodeAsync(response)).Should().Be(PrincipalResolution.IdentityUnavailable);
+        _ = (await ReadErrorAsync(response)).Should().Be("unavailable");
+    }
+
+    [Theory]
+    [InlineData(StatusCodes.Status401Unauthorized, "unauthorized")]
+    [InlineData(StatusCodes.Status403Forbidden, "forbidden")]
+    public async Task ARefusalLabel_StillMatchesItsStatus_ForTheTwoAuthorizationOutcomes(
+        int statusCode,
+        string expectedLabel)
+    {
+        // The companion to the 503 case above. Deriving the label from the status must not be a
+        // blanket rename: 401 and 403 keep the labels the SPA and the S2S guard already answer with,
+        // so the fix narrows one wrong answer rather than changing the wire format for everyone.
+        //
+        // The `code` is asserted for the same reason it is asserted there, and it is the 401 row that
+        // needs it. Status plus label alone is satisfiable WITHOUT the arranged rejection ever being
+        // read: if the stash broke entirely, ResolveAsync would fall through to null and the
+        // `principal is null` branch answers 401/"unauthorized" - both assertions green, the arranged
+        // rejection untouched. Only the code tells the two apart.
+        var rejection = PrincipalResolution.Reject(PrincipalResolution.TenantNotProvisioned, statusCode);
+        using var server = await StartAsync(enforce: true, rejection);
+
+        var response = await server.CreateClient().GetAsync(new Uri("/api/conversations", UriKind.Relative));
+
+        _ = ((int)response.StatusCode).Should().Be(statusCode);
+        _ = (await ReadErrorAsync(response)).Should().Be(expectedLabel);
+        _ = (await ReadCodeAsync(response)).Should().Be(PrincipalResolution.TenantNotProvisioned);
     }
 
     [Theory]

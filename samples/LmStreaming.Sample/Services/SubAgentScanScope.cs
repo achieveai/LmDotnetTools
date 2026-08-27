@@ -8,7 +8,7 @@ namespace LmStreaming.Sample.Services;
 /// <remarks>
 ///     <para>
 ///         Both scans used to call the UNSCOPED
-///         <see cref="IConversationStore.ListThreadsAsync(int, int, CancellationToken)"/> overload, pulling
+///         <see cref="IConversationStore.ListThreadsAsync(int, int, ConversationListOptions, CancellationToken)"/> overload, pulling
 ///         every tenant's rows into memory and then discarding all but one conversation's descendants.
 ///         Neither disclosed anything - the projection that follows narrows to the requested root either
 ///         way - but both paid for the whole deployment to answer a question about one thread, and both

@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
+  conversationExists,
   getConversationStatus,
   provisionConversation,
   sendConversationMessage,
@@ -137,5 +138,50 @@ describe('conversationsApi.provisionConversation / sendConversationMessage', () 
 
     expect(error).toBeInstanceOf(ConversationApiError);
     expect((error as ConversationApiError).code).toBe('unknown_thread');
+  });
+});
+
+/**
+ * `conversationExists` reads the SAME two 404s the suite above pins, but inverts them: it is asking
+ * about the THREAD, and deliberately passes a run id that can never resolve. So `unknown_runId` —
+ * the failure case for a status poll — is the SUCCESS case here.
+ */
+describe('conversationsApi.conversationExists', () => {
+  let restore: (() => void) | undefined;
+  afterEach(() => restore?.());
+
+  it('reports a conversation as existing when only the run id was unknown', async () => {
+    const m = mockFetchOnce(404, { error: 'Unknown runId', code: 'unknown_runId' });
+    restore = m.restore;
+
+    await expect(conversationExists('thread-real')).resolves.toBe(true);
+  });
+
+  it('reports a conversation as absent when the thread itself is unknown', async () => {
+    const m = mockFetchOnce(404, { error: 'not found', code: 'unknown_thread' });
+    restore = m.restore;
+
+    await expect(conversationExists('thread-gone')).resolves.toBe(false);
+  });
+
+  it('reports absent for a thread the caller may not read', async () => {
+    // The host answers "no such conversation" and "not yours" identically, on purpose, so this is
+    // indistinguishable from the case above — and must stay that way. Both are not-found here.
+    const m = mockFetchOnce(404, { error: 'not found', code: 'unknown_thread' });
+    restore = m.restore;
+
+    await expect(conversationExists('thread-someone-elses')).resolves.toBe(false);
+  });
+
+  it('rethrows a transport failure rather than reporting the conversation missing', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => {
+      throw new TypeError('Failed to fetch');
+    }) as unknown as typeof fetch;
+    restore = () => (globalThis.fetch = original);
+
+    // Reporting `false` here would delete a real conversation from the user's view over a dropped
+    // connection - the not-found panel claims the conversation is gone, which it is not.
+    await expect(conversationExists('thread-real')).rejects.toThrow(/Failed to fetch/);
   });
 });

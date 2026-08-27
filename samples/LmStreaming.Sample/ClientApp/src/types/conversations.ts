@@ -63,3 +63,26 @@ export interface ConversationMetadataUpdate {
   title?: string;
   preview?: string;
 }
+
+/**
+ * Order the sidebar asks the backend for, and the order it keeps the list in locally.
+ *
+ * - `lastUsed` — most recently used first, and it *live re-sorts*: touching a conversation during
+ *   the session moves it back to the top.
+ * - `created` — newest-created first, a stable order that does not shuffle while the user works.
+ *
+ * Sent verbatim as the `sort` query parameter, so these values are the wire contract.
+ */
+export type ConversationSortMode = 'lastUsed' | 'created';
+
+/** The sort mode used when nothing has been chosen (or the stored choice is unreadable). */
+export const DEFAULT_CONVERSATION_SORT_MODE: ConversationSortMode = 'lastUsed';
+
+/** Every selectable sort mode, in the order the picker lists them, with its user-facing label. */
+export const CONVERSATION_SORT_MODES: ReadonlyArray<{
+  id: ConversationSortMode;
+  label: string;
+}> = [
+  { id: 'lastUsed', label: 'Last used' },
+  { id: 'created', label: 'Recently created' },
+];

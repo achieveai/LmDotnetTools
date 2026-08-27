@@ -2544,7 +2544,8 @@ public class SubAgentManagerTests : IAsyncLifetime
         public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
             int limit = 50,
             int offset = 0,
-            CancellationToken ct = default) => _inner.ListThreadsAsync(limit, offset, ct);
+            ConversationListOptions? options = null,
+            CancellationToken ct = default) => _inner.ListThreadsAsync(limit, offset, options, ct);
     }
 
     /// <summary>
@@ -2615,7 +2616,8 @@ public class SubAgentManagerTests : IAsyncLifetime
         public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
             int limit = 50,
             int offset = 0,
-            CancellationToken ct = default) => _inner.ListThreadsAsync(limit, offset, ct);
+            ConversationListOptions? options = null,
+            CancellationToken ct = default) => _inner.ListThreadsAsync(limit, offset, options, ct);
     }
 
     #endregion

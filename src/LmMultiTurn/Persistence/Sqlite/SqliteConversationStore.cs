@@ -335,21 +335,36 @@ public sealed class SqliteConversationStore
     public async Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
         int limit = 50,
         int offset = 0,
+        ConversationListOptions? options = null,
         CancellationToken ct = default)
     {
+        var listOptions = options ?? ConversationListOptions.Default;
+        RefuseUnsupportedSortOrder(listOptions);
+
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
         await using var connection = await _connectionFactory.GetConnectionAsync(ct)
             .ConfigureAwait(false);
 
         using var command = connection.CreateCommand();
-        command.CommandText = """
+
+        // The exclusion is a WHERE clause, not a post-pass over the returned rows: LIMIT/OFFSET is
+        // applied by this one statement to the fully filtered set, which is the whole point. See
+        // ConversationListOptions for the production failure that a post-pass produced.
+        var exclusionClause = BuildPrefixExclusionClause(command, listOptions, "thread_id");
+
+        command.CommandText = FormattableString.Invariant($"""
             SELECT thread_id, current_run_id, last_updated, metadata_json,
                    tenant_id, owner_user_id, owner_app_id, visibility
             FROM thread_metadata
-            ORDER BY last_updated DESC
+            WHERE {exclusionClause}
+            -- thread_id breaks ties so LIMIT/OFFSET pages a total order. Without it two rows
+            -- sharing a last_updated are ordered by whatever SQLite returns, which may differ
+            -- between the page-1 and page-2 statements: one row comes back twice and another
+            -- never comes back at all. Must match ConversationListOptions.Order.
+            ORDER BY last_updated DESC, thread_id DESC
             LIMIT $limit OFFSET $offset;
-            """;
+            """);
         _ = command.Parameters.AddWithValue("$limit", limit);
         _ = command.Parameters.AddWithValue("$offset", offset);
 
@@ -369,9 +384,13 @@ public sealed class SqliteConversationStore
         ConversationListScope scope,
         int limit = 50,
         int offset = 0,
+        ConversationListOptions? options = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(scope);
+
+        var listOptions = options ?? ConversationListOptions.Default;
+        RefuseUnsupportedSortOrder(listOptions);
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
@@ -395,6 +414,12 @@ public sealed class SqliteConversationStore
 
         using var command = connection.CreateCommand();
 
+        // The presentation exclusion is ANDed over the whole authorization disjunction, not folded
+        // into one of its branches - it narrows what this surface displays regardless of WHICH
+        // branch admitted the row. It is also a WHERE clause rather than a post-pass, so LIMIT/OFFSET
+        // still applies to the fully filtered set. See ConversationListOptions.
+        var exclusionClause = BuildPrefixExclusionClause(command, listOptions, "t.thread_id");
+
         // The `@userId IS NOT NULL` guards are the SQL spelling of spec 7.4 step 3: without them an
         // app-only principal would fall through into the grant branch with a NULL subject. They do
         // NOT protect against a null OWNER - SQL already handles that, because NULL = $userId
@@ -403,14 +428,17 @@ public sealed class SqliteConversationStore
             SELECT thread_id, current_run_id, last_updated, metadata_json,
                    tenant_id, owner_user_id, owner_app_id, visibility
             FROM thread_metadata t
-            WHERE ( t.tenant_id = $tenantId
-                    AND ( $isTenantAdmin = 1
-                          OR ($userId IS NOT NULL AND t.owner_user_id = $userId)
-                          OR ($userId IS NULL AND $appId IS NOT NULL AND t.owner_app_id = $appId)
-                          OR ($userId IS NOT NULL AND t.visibility = $tenantPublished)
-                          OR {grantClause} ) )
-               OR ( $includeUntenanted = 1 AND t.tenant_id IS NULL )
-            ORDER BY t.last_updated DESC
+            WHERE ( ( t.tenant_id = $tenantId
+                      AND ( $isTenantAdmin = 1
+                            OR ($userId IS NOT NULL AND t.owner_user_id = $userId)
+                            OR ($userId IS NULL AND $appId IS NOT NULL AND t.owner_app_id = $appId)
+                            OR ($userId IS NOT NULL AND t.visibility = $tenantPublished)
+                            OR {grantClause} ) )
+                    OR ( $includeUntenanted = 1 AND t.tenant_id IS NULL ) )
+              AND {exclusionClause}
+            -- Same total order as the unscoped overload above, and as
+            -- ConversationListOptions.Order: a scoped listing must not page differently.
+            ORDER BY t.last_updated DESC, t.thread_id DESC
             LIMIT $limit OFFSET $offset;
             """);
 
@@ -442,6 +470,105 @@ public sealed class SqliteConversationStore
         }
 
         return metadataList;
+    }
+
+    /// <summary>
+    /// Refuses a sort order this store cannot answer, loudly, at the call site.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>thread_metadata</c> has no <c>created_at</c> column - the record itself has no creation
+    /// field either, which is why <see cref="ConversationListOptions.CreationTimestampOf"/> derives
+    /// one from the thread id. That derivation is not reproducible in SQL without a fragile
+    /// <c>substr</c>/<c>CAST</c> expression that would have to re-implement, in a second language,
+    /// the "prefix, then a delimiter, then digits, else fall back to last_updated" rule - and would
+    /// then be free to diverge from it silently, on exactly the deployments large enough that nobody
+    /// checks the order by hand.
+    /// </para>
+    /// <para>
+    /// So this throws instead of approximating, following the precedent the scoped listing overload
+    /// already set with its throwing default implementation: a store that cannot answer a listing
+    /// must say so where it is called, rather than answer something plausible. Adding a real
+    /// <c>created_at</c> column, backfilled from the id, is the fix that makes this path work; until
+    /// then the exception names both the missing column and the helper any implementation must agree
+    /// with. This is not reachable from the conversation sidebar today - the sample registers
+    /// <see cref="FileConversationStore"/> - but it is documented rather than hidden, because a
+    /// deployment that swaps in SQLite would otherwise discover it as a silently different ordering.
+    /// </para>
+    /// </remarks>
+    /// <param name="options">The resolved (never null) listing options.</param>
+    /// <exception cref="NotSupportedException">
+    /// The requested sort order has no faithful SQL expression here.
+    /// </exception>
+    private static void RefuseUnsupportedSortOrder(ConversationListOptions options)
+    {
+        if (options.SortOrder == ConversationSortOrder.LastUsed)
+        {
+            return;
+        }
+
+        throw new NotSupportedException(
+            $"{nameof(SqliteConversationStore)} cannot order a listing by "
+                + $"{nameof(ConversationSortOrder)}.{options.SortOrder}: the thread_metadata table "
+                + "has no created_at column, and deriving one in SQL would be a second, silently "
+                + "divergent copy of "
+                + $"{nameof(ConversationListOptions)}.{nameof(ConversationListOptions.CreationTimestampOf)}. "
+                + "Add a backfilled created_at column before enabling this ordering on SQLite.");
+    }
+
+    /// <summary>
+    /// The SQL <c>WHERE</c> conjunct that removes every excluded thread-id prefix, with each prefix
+    /// bound as a parameter. Returns the literal <c>1 = 1</c> when nothing is excluded.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The comparison is <c>substr(id, 1, length($p)) &lt;&gt; $p</c> rather than
+    /// <c>id NOT LIKE $p || '%'</c> on purpose. <c>LIKE</c> would treat <c>%</c> and <c>_</c> inside
+    /// a caller-supplied prefix as wildcards, so a prefix containing either would silently exclude
+    /// more rows than it names, and the <c>ESCAPE</c> clause needed to prevent that means escaping
+    /// the prefix in C# - a step that is easy to omit and impossible to notice, because the query
+    /// still succeeds and just returns the wrong set. <c>substr</c> needs no escaping at all and is
+    /// a byte-for-byte prefix comparison, which is the same <see cref="StringComparison.Ordinal"/>
+    /// test <see cref="ConversationListOptions.Admits"/> performs in memory.
+    /// </para>
+    /// <para>
+    /// An empty prefix is skipped, matching <see cref="ConversationListOptions.Admits"/>: SQL would
+    /// read it as "exclude everything" and hand back an empty listing, which is the worst available
+    /// reading of a blank configuration entry.
+    /// </para>
+    /// </remarks>
+    /// <param name="command">The command the prefix parameters are bound to.</param>
+    /// <param name="options">The resolved (never null) listing options.</param>
+    /// <param name="threadIdColumn">
+    /// How the thread-id column is spelled in this statement (aliased or not).
+    /// </param>
+    private static string BuildPrefixExclusionClause(
+        SqliteCommand command,
+        ConversationListOptions options,
+        string threadIdColumn)
+    {
+        var conjuncts = new List<string>();
+        var index = 0;
+
+        foreach (var prefix in options.ExcludedThreadIdPrefixes)
+        {
+            if (string.IsNullOrEmpty(prefix))
+            {
+                continue;
+            }
+
+            var parameterName = FormattableString.Invariant($"$excludedPrefix{index}");
+            index++;
+
+            _ = command.Parameters.AddWithValue(parameterName, prefix);
+            conjuncts.Add(
+                FormattableString.Invariant(
+                    $"substr({threadIdColumn}, 1, length({parameterName})) <> {parameterName}"));
+        }
+
+        // "1 = 1" rather than an empty string so the caller can interpolate this unconditionally and
+        // the statement stays syntactically valid with nothing excluded.
+        return conjuncts.Count == 0 ? "1 = 1" : string.Join(" AND ", conjuncts);
     }
 
     /// <inheritdoc />

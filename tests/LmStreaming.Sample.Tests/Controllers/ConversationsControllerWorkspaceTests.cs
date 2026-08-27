@@ -64,7 +64,11 @@ public class ConversationsControllerWorkspaceTests
     {
         var store = new Mock<IConversationStore>();
         store
-            .Setup(s => s.ListThreadsAsync(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .Setup(s => s.ListThreadsAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<ConversationListOptions?>(),
+                It.IsAny<CancellationToken>()))
             .ReturnsAsync(threads);
 
         return new ConversationsController(

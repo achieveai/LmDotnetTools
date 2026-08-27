@@ -354,8 +354,8 @@ public class RunLedgerRecoveryTests
         public Task DeleteThreadAsync(string threadId, CancellationToken ct = default)
             => _inner.DeleteThreadAsync(threadId, ct);
 
-        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(int limit = 50, int offset = 0, CancellationToken ct = default)
-            => _inner.ListThreadsAsync(limit, offset, ct);
+        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(int limit = 50, int offset = 0, ConversationListOptions? options = null, CancellationToken ct = default)
+            => _inner.ListThreadsAsync(limit, offset, options, ct);
     }
 
     #endregion

@@ -54,10 +54,11 @@ internal sealed class CountingConversationStore(IConversationStore inner) : ICon
     public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
         int limit = 50,
         int offset = 0,
+        ConversationListOptions? options = null,
         CancellationToken ct = default)
     {
         Interlocked.Increment(ref _listThreadsCalls);
-        return inner.ListThreadsAsync(limit, offset, ct);
+        return inner.ListThreadsAsync(limit, offset, options, ct);
     }
 
     /// <summary>
@@ -72,14 +73,16 @@ internal sealed class CountingConversationStore(IConversationStore inner) : ICon
     /// <param name="scope">The principal's tenant, identity, role and resolved grants.</param>
     /// <param name="limit">Maximum number of threads to return.</param>
     /// <param name="offset">Number of threads to skip.</param>
+    /// <param name="options">Presentation shape of the listing; forwarded unchanged.</param>
     /// <param name="ct">Cancellation token.</param>
     public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
         ConversationListScope scope,
         int limit = 50,
         int offset = 0,
+        ConversationListOptions? options = null,
         CancellationToken ct = default)
     {
         Interlocked.Increment(ref _listThreadsCalls);
-        return inner.ListThreadsAsync(scope, limit, offset, ct);
+        return inner.ListThreadsAsync(scope, limit, offset, options, ct);
     }
 }

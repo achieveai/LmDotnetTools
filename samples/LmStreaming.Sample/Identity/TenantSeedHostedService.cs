@@ -71,7 +71,36 @@ public sealed class TenantSeedHostedService : IHostedService
 
         foreach (var seed in options.SeedTenants)
         {
-            await ApplyAsync(seed, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await ApplyAsync(seed, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Caught for the same reason a malformed entry is skipped rather than thrown
+                // (see ApplyAsync): this runs inside StartAsync, so anything that escapes aborts
+                // the host. The seed list is a development convenience, and a convenience feature
+                // that can prevent boot is a liability - a transient SQLite lock on the identity
+                // database is enough.
+                //
+                // Inside the loop, not around it. A catch around the foreach would also stop the
+                // host aborting, and would silently drop every entry after the failing one, which
+                // is the "why did my tenant never appear" mystery the skip path below exists to
+                // prevent.
+                //
+                // The filter excludes OperationCanceledException - and its subclasses, so
+                // TaskCanceledException too - by TYPE, unconditionally. It never asks whether
+                // anything was in fact cancelled. Shutdown is the case it is written for: this runs
+                // under the host's own startup token, and continuing to walk the list against a
+                // store that is going away turns an orderly shutdown into a run of failures. An OCE
+                // raised with nothing cancelled - an inner linked token, a WaitAsync or CancelAfter
+                // timeout inside store code - is excluded on the same rule and escapes StartAsync.
+                _logger.LogError(
+                    ex,
+                    "Failed to apply the Identity:SeedTenants entry for {TenantId}; startup "
+                        + "continues without it.",
+                    seed.TenantId);
+            }
         }
     }
 
