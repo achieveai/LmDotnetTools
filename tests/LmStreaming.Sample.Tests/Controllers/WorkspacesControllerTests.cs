@@ -107,6 +107,14 @@ public class WorkspacesControllerTests
 
         response.Workspaces.Should().Contain(w => w.Compatibility == "incompatible");
         response.Workspaces.Should().NotContain(w => w.Compatibility == "unavailable");
+
+        // Corroborating, NOT distinguishing, and the difference is worth writing down. `available` is
+        // derived from the FIRST workspace only, and that is always the seeded default, whose empty
+        // marketplace list is compatible against any readable catalog — so this assertion holds under
+        // any predicate that spares Compatible, including a mutant reading `is not Incompatible`.
+        // What actually pins the predicate is the unreachable-catalog test above, where the probe IS
+        // Unavailable. Reaching this branch with an incompatible probe is not constructible here at
+        // all: the seeded default cannot be given marketplaces to fail on.
         response.Gateway.Available.Should().BeTrue();
     }
 
