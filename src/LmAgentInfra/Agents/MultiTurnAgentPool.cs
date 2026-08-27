@@ -2415,10 +2415,13 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         await Task.WhenAll(disposeTasks);
         _agents.Clear();
 
-        // Drained AFTER the entries, because disposing an entry can itself start tracked work (the
-        // refused-agent teardown), and a snapshot taken earlier would miss it. Every tracked task
-        // handles its own failures, so this waits without rethrowing - the only thing it can report
-        // is that a writer outlasted the wait.
+        // The snapshot is taken here, after the entries, so it covers everything tracked up to this
+        // point. Both of today's tracked writers are started on the CREATION path, so entry disposal
+        // adds none of them and the order is not load-bearing today; taking the snapshot last is what
+        // keeps that true of a writer some later teardown path starts.
+        //
+        // Every tracked task handles its own failures, so this waits without rethrowing - the only
+        // thing it can report is that a writer outlasted the wait.
         var outstanding = _backgroundWork.Keys.ToArray();
         if (outstanding.Length > 0)
         {
