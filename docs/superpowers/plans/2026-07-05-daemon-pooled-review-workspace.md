@@ -1,6 +1,8 @@
 # Daemon Pooled Review Workspace (Layer 1) — Implementation Plan
 
-**Status:** Implemented — pooled slots in `b866c36b`, PR-lifecycle sweeper in `ce88e11a`. See `samples/CodeReviewDaemon.Sample/Workspace/ReviewSlot.cs`, `Agents/ScopedToolFilter.cs` and `Orchestration/PrLifecycleSweeper.cs`.
+**Status:** Implemented — pooled slots in `b866c36b`, PR-lifecycle sweeper in `ce88e11a`. See `samples/CodeReviewDaemon.Sample/Workspace/ReviewSlot.cs` and `Orchestration/PrLifecycleSweeper.cs`.
+
+> **Task 7 (`ScopedToolFilter`) was later removed** — deleted in PR #497 (issue #490) once the daemon went mandatory-S2S and nothing applied it. Task 7 and its references below are retained as the historical plan; `samples/CodeReviewDaemon.Sample/Agents/ScopedToolFilter.cs` no longer exists. Write-scoping is enforced by the commit gate (`stagePaths`) + `SlotHygiene`, not by a tool filter.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

@@ -59,4 +59,30 @@ public sealed class DaemonHttpPolicyWiringTests
             "a repo that is not on the allow-list must be denied at the HTTP seam");
         request.Headers.Authorization.Should().BeNull("a denied operation withholds the credential");
     }
+
+    /// <summary>
+    /// Issue #491's acceptance is "refuses startup", not "a validator exists". This pins the WIRING: the
+    /// malformed entry has to reach <c>PrPollTargetBuilder.ValidateEnabledRepos</c> through the real
+    /// <c>Program</c> graph and stop the host coming up. Deleting the call from <c>Program.cs</c> leaves the
+    /// validator's own unit tests green — only booting the host here turns that mutation red.
+    /// <para>
+    /// <c>owner//repo</c> is the distinguishing fixture: <c>Build</c>'s <c>RemoveEmptyEntries</c> split reads
+    /// it as the 2-segment <c>owner/repo</c> and polls a DIFFERENT repo, so without validation the daemon
+    /// starts happily and silently watches the wrong thing.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void The_host_refuses_to_start_when_an_enabled_repo_entry_is_malformed()
+    {
+        using var factory = new DaemonWebAppFactory();
+        using var configured = factory.WithWebHostBuilder(builder =>
+            builder.UseSetting("CodeReviewDaemon:EnabledRepos:0", "owner//repo"));
+
+        // Resolving anything from the graph forces the host to build, which runs Program's configuration phase.
+        var act = () => configured.Services.GetRequiredService<PolicyEnforcedHttpClientFactory>();
+
+        act.Should()
+            .Throw<InvalidOperationException>("startup must refuse a malformed EnabledRepos entry")
+            .WithMessage("*owner//repo*", "the refusal must name the offending entry");
+    }
 }

@@ -402,6 +402,14 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // switch the prerequisite check off.
         if (_options.UseS2SReviewAgent)
         {
+            // Returning null here is also the reason there is no daemon-side write-scope filter to keep in step:
+            // an in-process filter could not wrap the hosted agent's Write/Edit anyway. Note that the mount is
+            // NOT the substitute boundary — the design's R1 resolution records that a per-path read-only mount
+            // is unavailable, so repos/<Repo> stays writable. What bounds the reviewer is that such writes never
+            // persist: CommitPooledNotesAsync stages only stagePaths: [lease.NotesRelPath], no write credential
+            // enters the agent session, and the next lease's SlotHygiene.EnsureCleanAsync (clean-on-entry,
+            // unconditional) erases the rest of the slot. NOT the clean-on-exit strip below — that one is
+            // guarded off on S2S, which is the only path the daemon can boot into.
             await EnsureGatewaySkillSupportAsync(run, cancellationToken).ConfigureAwait(false);
             return null;
         }
@@ -427,22 +435,19 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 return null;
             }
 
-            // Scoped-writable reviewer (Layer 1): when this run leased a pooled slot and reviewer-writes are
-            // enabled, hand the agent scoped Write/Edit/Bash + the (container) notes/scratch roots the writes
-            // are bounded to. Absent a pooled lease the reviewer stays hard read-only exactly as before.
-            var (Enabled, WritableAllow, NotesDir, ScratchDir) = ResolvePooledWriteScope(run);
-
+            // ReadOnlyToolAllowList travels as DATA on this context; ReadOnlyToolFilter, which would apply it,
+            // has no production caller (see ReviewToolContext). Write-scoping is not carried here either, and
+            // not because a mount replaces it: writes outside the notes dir are simply ineffective — the commit
+            // gate stages only stagePaths: [lease.NotesRelPath], the write credential stays out of the agent
+            // session, and the next lease's clean-on-entry (SlotHygiene.EnsureCleanAsync) wipes the remainder
+            // of the slot.
             return new ReviewToolContext(
                 GatewayBaseUrl: _gatewayBaseUrl
                     ?? Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY")
                     ?? "http://127.0.0.1:3000",
                 SessionId: session.SessionId,
                 ReadOnlyToolAllowList: _options.ReadOnlyToolAllowList,
-                Credential: _credential,
-                EnableReviewerWrites: Enabled,
-                WritableToolAllowList: WritableAllow,
-                NotesDir: NotesDir,
-                ScratchDir: ScratchDir);
+                Credential: _credential);
         }
         catch (Exception ex) when (ex is not OperationCanceledException and not SkillSupportUnavailableException)
         {
@@ -1648,7 +1653,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             ["review_type"] = isRereview ? "re-review" : "initial",
             // Provider + identity pieces the agent uses to build inline-posting REST calls (step 5). GitHub uses
             // the pulls/reviews + review-comment-replies APIs; Azure DevOps uses the pullRequests/threads API.
-            ["is_ado"] = string.Equals(repo.Provider, "azure-devops", StringComparison.OrdinalIgnoreCase),
+            // Classify via the SHARED GitRemoteUrl.IsAzureDevOps (issue #492 item 1) so this seam accepts the
+            // same two provider spellings as everywhere else (azure-devops persisted, ado normalized) instead of
+            // hand-rolling a single-spelling check that would desync from the unified classifier.
+            ["is_ado"] = GitRemoteUrl.IsAzureDevOps(repo.Provider),
             // URL-ENCODED, because these five are interpolated into REST URLs the agent runs through `curl`
             // (see the posting contract in daemon-prompts.yaml) — a shell, not a URI builder. An ADO project
             // or repository name may contain a space; raw, curl rejects the argument (exit 3) and the review

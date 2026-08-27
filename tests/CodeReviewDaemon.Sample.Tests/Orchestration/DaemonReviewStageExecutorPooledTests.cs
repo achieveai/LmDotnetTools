@@ -161,7 +161,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
-    public async Task Reviewed_builds_a_scoped_write_tool_context_with_the_notes_and_scratch_roots()
+    public async Task Reviewed_builds_a_read_only_tool_context()
     {
         using var fixture = Fixture.Create();
         var run = fixture.SeedRun();
@@ -169,12 +169,13 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
+        // The context carries the read-only allow-list as data. Write-scoping is NOT carried here, and no mount
+        // takes its place: writes outside the notes dir are ineffective rather than blocked — the commit gate
+        // stages only the PR's notes dir and the next lease's clean-on-entry erases the rest — so this
+        // context no longer has any
+        // write-scope fields to assert (issue #490).
         var toolContext = fixture.Factory.ToolContexts.Where(t => t is not null).Should().ContainSingle().Subject!;
-        toolContext.EnableReviewerWrites.Should().BeTrue();
-        toolContext.WritableToolAllowList.Should().BeEquivalentTo(["Write", "Edit", "Bash"]);
         toolContext.ReadOnlyToolAllowList.Should().BeEquivalentTo(["Read", "Grep", "Glob", "Skill"]);
-        toolContext.NotesDir.Should().Be("/workspace/store/PRs/lmdotnettools-118");
-        toolContext.ScratchDir.Should().Be("/workspace/scratch");
     }
 
     [Fact]

@@ -119,4 +119,92 @@ public sealed class PrPollTargetBuilderTests : LoggingTestBase
 
         targets.Should().ContainSingle().Which.MaxPrAgeDays.Should().Be(0, "the filter is off unless an operator sets it");
     }
+
+    [Fact]
+    public void ValidateEnabledRepos_refuses_an_embedded_slash_entry_naming_it()
+    {
+        // "owner//repo" carries an embedded '/' that collapses to an empty middle segment. Build's
+        // RemoveEmptyEntries split would silently read it as the 2-segment "owner/repo" and poll a different
+        // repo than the operator wrote; validation must refuse startup and name the entry instead.
+        var options = new CodeReviewDaemonOptions { EnabledRepos = ["owner//repo"] };
+
+        var act = () => PrPollTargetBuilder.ValidateEnabledRepos(options);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*owner//repo*");
+    }
+
+    [Fact]
+    public void ValidateEnabledRepos_refuses_a_wrong_segment_count_naming_it()
+    {
+        var options = new CodeReviewDaemonOptions { EnabledRepos = ["a/b/c/d"] };
+
+        var act = () => PrPollTargetBuilder.ValidateEnabledRepos(options);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*a/b/c/d*");
+    }
+
+    [Fact]
+    public void ValidateEnabledRepos_refuses_a_url_delimiter_in_a_segment_naming_it()
+    {
+        var options = new CodeReviewDaemonOptions { EnabledRepos = ["owner/re?po"] };
+
+        var act = () => PrPollTargetBuilder.ValidateEnabledRepos(options);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*owner/re?po*");
+    }
+
+    /// <summary>
+    /// Issue #491 requires the refusal to identify the offending configured element. A blank entry has no
+    /// content to quote back, so the INDEX is the only thing that can point an operator at it — with three
+    /// entries configured, a message that merely said "contains an empty entry" would leave them checking all
+    /// three. The whitespace case additionally needs its raw value QUOTED: unquoted, "   " renders as a gap and
+    /// the operator cannot tell a blank entry from a truncated message.
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("\t")]
+    public void ValidateEnabledRepos_refuses_a_blank_entry_naming_its_index_and_raw_value(string blank)
+    {
+        var options = new CodeReviewDaemonOptions
+        {
+            EnabledRepos = ["achieveai/LmDotnetTools", "contoso/Platform/widgets", blank],
+        };
+
+        var act = () => PrPollTargetBuilder.ValidateEnabledRepos(options);
+
+        var message = act.Should().Throw<InvalidOperationException>().Which.Message;
+        message.Should().Contain("EnabledRepos[2]", "the operator needs the index of the offending element");
+        message.Should().Contain($"'{blank}'", "the raw value must be quoted so whitespace is visible");
+    }
+
+    [Fact]
+    public void ValidateEnabledRepos_names_the_index_of_a_blank_segment_inside_an_entry()
+    {
+        // "owner/ /repo": three segments, the middle one whitespace-only. Quoting is what makes it legible.
+        var options = new CodeReviewDaemonOptions { EnabledRepos = ["owner/ /repo"] };
+
+        var act = () => PrPollTargetBuilder.ValidateEnabledRepos(options);
+
+        var message = act.Should().Throw<InvalidOperationException>().Which.Message;
+        message.Should().Contain("EnabledRepos[0]");
+        message.Should().Contain("owner/ /repo", "the entry itself must be named");
+        message.Should().Contain("position 1", "the operator needs which segment failed");
+        message.Should().Contain("' '", "the blank segment's raw value must be quoted");
+    }
+
+    [Fact]
+    public void ValidateEnabledRepos_accepts_a_spaced_ado_org_and_project()
+    {
+        // Azure DevOps org/project/repo names may legitimately contain spaces; validation must NOT reject them
+        // (Build percent-encodes them). This is the false-positive guard for the character rule.
+        var options = new CodeReviewDaemonOptions
+        {
+            EnabledRepos = ["Fabrikam Fiber/Contoso Project/Widgets", "achieveai/LmDotnetTools"],
+        };
+
+        var act = () => PrPollTargetBuilder.ValidateEnabledRepos(options);
+
+        act.Should().NotThrow();
+    }
 }
