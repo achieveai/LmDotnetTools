@@ -490,13 +490,28 @@ public class TaskManagerTests
     #region ListTasks Tests
 
     [Fact]
-    public void ListTasks_WithNoTasks_ShouldReturnNoTasks()
+    public void ListTasks_WithNoTasks_ShouldStillEmitHeader()
     {
         // Act
         var result = _taskManager.ListTasks();
 
+        // Assert - a bare "No tasks found." leaves the model no clue which tool answered.
+        result.Should().StartWith("# 📋 Task List");
+        result.Should().EndWith("No tasks found.");
+    }
+
+    [Fact]
+    public void ListTasks_WithFilterMatchingNothing_ShouldStillEmitHeader()
+    {
+        // Arrange
+        _taskManager.AddTask("Task 1");
+
+        // Act
+        var result = _taskManager.ListTasks(status: "completed");
+
         // Assert
-        result.Should().Be("No tasks found.");
+        result.Should().StartWith("# 📋 Task List");
+        result.Should().EndWith("No tasks match the specified criteria.");
     }
 
     [Fact]
@@ -907,6 +922,46 @@ public class TaskManagerTests
     #region GetMarkdown Tests
 
     [Fact]
+    public void ListTasks_RendersTheDocumentedMarkdown()
+    {
+        // Arrange - one tree covering all four statuses, three levels of nesting,
+        // and numbered notes. This is the only full-string assertion on the rendered
+        // markdown, so it is what pins the format the spec documents.
+        _taskManager.AddTask("Design API");
+        _taskManager.AddTask("Define endpoints", "1");
+        _taskManager.AddTask("Validate JWT", "1.1");
+        _taskManager.AddTask("Draft schema", "1");
+        _taskManager.AddTask("Ship it");
+        _taskManager.AddNote("1", noteText: "Rate limit is 100/min");
+        _taskManager.AddNote("1", noteText: "Auth via JWT");
+        _taskManager.UpdateTask("1", "in progress");
+        _taskManager.UpdateTask("1.1", "completed");
+        _taskManager.UpdateTask("1.2", "removed");
+
+        // Act
+        var result = _taskManager.ListTasks();
+
+        // Assert - LF throughout, so this doubles as the guard against
+        // Environment.NewLine leaking CRLF into tool output on Windows.
+        var expected =
+            "# 📋 Task List\n"
+            + "\n"
+            + "**Status**: 1 in progress | 2 pending | 1 completed\n"
+            + "**Total**: 3 active tasks\n"
+            + "\n"
+            + "[-] 1. Design API\n"
+            + "  Notes:\n"
+            + "  1. Rate limit is 100/min\n"
+            + "  2. Auth via JWT\n"
+            + "  [x] 1.1. Define endpoints\n"
+            + "    [ ] 1.1.1. Validate JWT\n"
+            + "  [~] 1.2. Draft schema (removed)\n"
+            + "[ ] 2. Ship it";
+
+        result.Should().Be(expected);
+    }
+
+    [Fact]
     public void GetMarkdown_ShouldReturnSameAsListTasks()
     {
         // Arrange
@@ -919,6 +974,166 @@ public class TaskManagerTests
 
         // Assert
         markdown.Should().Be(listTasks);
+    }
+
+    #endregion
+
+    #region Deep Hierarchy Addressing Tests
+
+    [Fact]
+    public void AddNote_AtDepthThree_ShouldReachTheTask()
+    {
+        // Arrange - add-task creates arbitrary depth, so every level must be addressable.
+        _taskManager.AddTask("Level 1");
+        _taskManager.AddTask("Level 2", "1");
+        _taskManager.AddTask("Level 3", "1.1");
+
+        // Act
+        var result = _taskManager.AddNote("1.1.1", noteText: "Deep note");
+
+        // Assert
+        result.Should().Be("Added note to task 1.1.1.");
+        _taskManager.ListNotes("1.1.1").Should().Contain("Deep note");
+    }
+
+    [Fact]
+    public void GetTask_AtDepthThree_ShouldReturnDetails()
+    {
+        // Arrange
+        _taskManager.AddTask("Level 1");
+        _taskManager.AddTask("Level 2", "1");
+        _taskManager.AddTask("Level 3", "1.1");
+
+        // Act
+        var result = _taskManager.GetTask("1.1.1");
+
+        // Assert
+        result.Should().Contain("Task 1.1.1: Level 3");
+        result.Should().Contain("Status: not started");
+    }
+
+    [Fact]
+    public void DeleteTask_AtDepthThree_ShouldDetachFromItsParent()
+    {
+        // Arrange
+        _taskManager.AddTask("Level 1");
+        _taskManager.AddTask("Level 2", "1");
+        _taskManager.AddTask("Level 3", "1.1");
+
+        // Act
+        var result = _taskManager.DeleteTask("1.1.1");
+
+        // Assert - removing only from RootTasks would report success and change nothing.
+        result.Should().Contain("Deleted task 1.1.1 and all subtasks");
+        _taskManager.ListTasks().Should().NotContain("Level 3");
+        _taskManager.GetTask("1.1.1").Should().Contain("not found");
+    }
+
+    [Fact]
+    public void EditAndDeleteNote_AtDepthThree_ShouldReachTheTask()
+    {
+        // Arrange
+        _taskManager.AddTask("Level 1");
+        _taskManager.AddTask("Level 2", "1");
+        _taskManager.AddTask("Level 3", "1.1");
+        _taskManager.AddNote("1.1.1", noteText: "Original");
+
+        // Act
+        var edited = _taskManager.EditNote("1.1.1", noteIndex: 1, noteText: "Revised");
+        var listed = _taskManager.ListNotes("1.1.1");
+        var deleted = _taskManager.DeleteNote("1.1.1", noteIndex: 1);
+
+        // Assert
+        edited.Should().Be("Updated note #1 on task 1.1.1.");
+        listed.Should().Contain("Revised");
+        deleted.Should().Contain("Deleted note #1 from task 1.1.1");
+        _taskManager.ListNotes("1.1.1").Should().Be("task 1.1.1 has no notes.");
+    }
+
+    #endregion
+
+    #region Input Tolerance Tests
+
+    [Fact]
+    public void AddTask_WithBlankParentId_ShouldReturnErrorRatherThanCreateRootTask()
+    {
+        // Act - a supplied-but-blank parentId is a malformed call, not "no parent".
+        var result = _taskManager.AddTask("Orphan", "   ");
+
+        // Assert
+        result.Should().Be("Error: Parent task ID cannot be blank. Omit parentId to add a main task.");
+        _taskManager.ListTasks().Should().NotContain("Orphan");
+    }
+
+    [Fact]
+    public void AddTask_WithOmittedParentId_ShouldStillCreateRootTask()
+    {
+        // Act
+        var result = _taskManager.AddTask("Main");
+
+        // Assert
+        result.Should().Be("Added task 1: Main");
+    }
+
+    [Theory]
+    [InlineData("not-started", "not started")]
+    [InlineData("in-progress", "in progress")]
+    [InlineData("to-do", "not started")]
+    public void UpdateTask_WithHyphenatedStatus_ShouldAccept(string input, string expected)
+    {
+        // Arrange
+        _taskManager.AddTask("Test task");
+
+        // Act
+        var result = _taskManager.UpdateTask("1", status: input);
+
+        // Assert
+        result.Should().Contain($"status to '{expected}'");
+    }
+
+    [Fact]
+    public async Task ReadOperations_ConcurrentWithAdds_ShouldNotObserveTornRootList()
+    {
+        // Arrange - the readers walk _state.RootTasks while the writer appends to it.
+        // Unsynchronised, List<T>'s enumerator throws "Collection was modified".
+        _taskManager.AddTask("Seed");
+        var failures = new ConcurrentBag<Exception>();
+
+        // Act
+        var writer = Task.Run(() =>
+        {
+            for (var i = 0; i < 20000; i++)
+            {
+                _taskManager.AddTask($"Churn {i}");
+            }
+        });
+
+        var readers = Enumerable
+            .Range(0, 4)
+            .Select(readerIndex =>
+                Task.Run(() =>
+                {
+                    while (!writer.IsCompleted)
+                    {
+                        try
+                        {
+                            _ = _taskManager.GetTask("1");
+                            _ = _taskManager.ListNotes("1");
+                            _ = _taskManager.UpdateTask("1", "in progress");
+                        }
+                        catch (Exception ex)
+                        {
+                            failures.Add(ex);
+                        }
+                    }
+                })
+            )
+            .ToArray();
+
+        await Task.WhenAll(readers.Append(writer));
+
+        // Assert
+        failures.Should().BeEmpty();
     }
 
     #endregion
