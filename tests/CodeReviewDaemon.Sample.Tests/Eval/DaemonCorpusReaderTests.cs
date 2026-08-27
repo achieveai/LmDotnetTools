@@ -363,7 +363,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
     }
 
     [Fact]
-    public async Task The_latest_lifecycle_checkpoint_wins_over_an_earlier_rungs()
+    public async Task The_latest_lifecycle_checkpoint_wins_over_the_one_an_earlier_rung_wrote()
     {
         // The ladder runs its rungs in order and every checkpoint an attempt writes carries that
         // attempt's model, so the rung that produced the review is the LAST one recorded. Reading an
