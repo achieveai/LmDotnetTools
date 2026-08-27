@@ -2226,7 +2226,7 @@ reconsidering (OQ-3).
 | `samples/LmStreaming.Sample/Identity/PrincipalFactory.cs`, `IPrincipalAccessor.cs` | new |
 | `samples/LmStreaming.Sample/Controllers/ConversationsController.cs` | extend `InboundS2SAuthAttribute`; scope all 14 endpoints |
 | `samples/LmStreaming.Sample/Controllers/WorkspacesController.cs` | scope all 4 endpoints; `shares` routes per 8.4 |
-| `samples/LmStreaming.Sample/Controllers/ChatModesController.cs` | **add `[InboundS2SAuth]`**; scope endpoints; `publication` and `shares` routes |
+| `samples/LmStreaming.Sample/Controllers/ChatModesController.cs` | `[InboundS2SAuth]` already carried (#519); scope endpoints; `publication` and `shares` routes |
 | `samples/LmStreaming.Sample/Controllers/EmbedTokensController.cs` | new - `POST /api/embed/tokens` |
 | `samples/LmStreaming.Sample/Controllers/TenantsController.cs` | new - operator tenant provisioning (4.4) and `adopt-legacy` (8.5.3) |
 | `samples/LmStreaming.Sample/Controllers/DiagnosticsController.cs` | add `GET api/diagnostics/identity` (5.4) |
@@ -2539,7 +2539,8 @@ grantee may do neither; a tenant admin may `read` it and may not `write`, `delet
 
 ### Slice 4 - [#304] Per-user chat modes
 
-**Ships.** `[InboundS2SAuth]` **added to `ChatModesController`** - an existing hole (2.3).
+**Ships.** `[InboundS2SAuth]` on `ChatModesController` - the existing hole at 2.3 - was already
+closed ahead of this slice (#519).
 Ownership fields on `ChatMode`; `FileChatModeStore` legacy-tolerant load; `IChatModeStore`
 filtering; `Visibility.TenantPublished` and an admin-only publish/unpublish endpoint
 (`POST`/`DELETE /api/chat-modes/{modeId}/publication`); `POST`/`DELETE
