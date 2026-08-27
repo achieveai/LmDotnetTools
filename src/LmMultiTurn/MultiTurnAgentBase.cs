@@ -971,18 +971,22 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             converted.Add(message);
         }
 
-        // A tool call and its result are SEPARATE persisted rows, so skipping one row above orphans
-        // its partner — and nothing downstream repairs that (RestoreHistory is a bare AddRange,
-        // GetMessagesWithSystemPrompt returns history unfiltered, and MessageTransformationMiddleware
-        // passes an unpaired half through verbatim). Providers reject both shapes, and because the
-        // same row fails identically on every recovery the thread would stay wedged across restarts:
-        // #489's rare recoverable degradation would become a permanent unrecoverable one. So when
-        // anything WAS skipped, sweep the survivors back to the pairing invariant the write path
-        // maintains. Gated on a skip having happened so a healthy store restores byte-for-byte what
-        // it always did.
-        var messages = converted.Count < persistedMessages.Count
-            ? DropUnpairedToolMessages(converted)
-            : converted;
+        // A tool call and its result are SEPARATE persisted rows, and a restored history that holds
+        // one without the other is rejected by every provider — nothing downstream repairs it
+        // (RestoreHistory is a bare AddRange, GetMessagesWithSystemPrompt returns history unfiltered,
+        // and MessageTransformationMiddleware passes an unpaired half through verbatim). Two
+        // independent routes produce that shape, and both are deterministic, so the thread stays
+        // wedged across process restarts rather than recovering on the next try:
+        //   * WRITE side (pre-existing): PersistMessageAsync appends one row at a time and SWALLOWS an
+        //     append failure (see its catch), so a lost tool-result append leaves a dangling tool_use
+        //     in the store for ever.
+        //   * READ side (introduced with the per-record skip above): the row that fails to deserialize
+        //     is the partner of a row that does not.
+        // The sweep is deliberately blind to which route it was — it asks only whether a partner is
+        // present in the restored set — so ONE mechanism closes both. It runs unconditionally for that
+        // reason: gating it on "a record was skipped" would leave the write-side orphan unrepaired,
+        // which is the older and likelier of the two.
+        var messages = DropUnpairedToolMessages(converted);
 
         // Restore history
         RestoreHistory(messages);

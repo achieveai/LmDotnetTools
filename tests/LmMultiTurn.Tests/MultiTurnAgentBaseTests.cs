@@ -1144,6 +1144,154 @@ public class MultiTurnAgentBaseTests
         await agent.DisposeAsync();
     }
 
+    [Theory]
+    [InlineData(true)] // the RESULT row was never written — a dangling tool_use
+    [InlineData(false)] // the CALL row was never written — a dangling tool_result
+    public async Task RecoverAsync_DropsAnUnpairedToolMessage_WhenItsPartnerRowIsSimplyAbsent(
+        bool resultRowAbsent)
+    {
+        // ORIGIN B, with no corruption anywhere. PersistMessageAsync appends one row at a time and
+        // swallows an append failure (`catch (Exception ex) { Logger.LogWarning(ex, "Failed to persist
+        // message"); }`), so a lost append leaves a permanently half-written tool exchange in the
+        // store — a shape that pre-dates the per-record skip entirely. The sweep is blind to WHY a
+        // partner is missing, so the same mechanism repairs this route too; a sweep gated on "a record
+        // was skipped" would leave this, the older and likelier route, unrepaired.
+        var store = new InMemoryConversationStore();
+        var threadId = $"test-thread-absent-{(resultRowAbsent ? "result" : "call")}";
+        const string runId = "prior-run";
+        const string toolCallId = "append-was-lost";
+
+        var text =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new TextMessage { Text = "healthy text", Role = Role.User, RunId = runId },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 1,
+            };
+        IMessage survivingHalf = resultRowAbsent
+            ? new ToolCallMessage
+            {
+                Role = Role.Assistant,
+                RunId = runId,
+                ToolCallId = toolCallId,
+                FunctionName = "do_thing",
+                FunctionArgs = "{}",
+            }
+            : new ToolCallResultMessage
+            {
+                ToolCallId = toolCallId,
+                ToolName = "do_thing",
+                Result = "ok",
+                RunId = runId,
+            };
+        var survivingRow =
+            MessagePersistenceConverter.ToPersistedMessage(survivingHalf, threadId, runId) with
+            {
+                Timestamp = 2,
+            };
+
+        // The partner row is never appended at all — every row in this store deserializes cleanly.
+        await store.AppendMessagesAsync(threadId, [text, survivingRow]);
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+
+        var recovered = await agent.RecoverAsync();
+
+        recovered.Should().BeTrue();
+        var history = agent.SnapshotHistoryForTest();
+        history.OfType<ToolCallMessage>().Should().BeEmpty();
+        history.OfType<ToolCallResultMessage>().Should().BeEmpty();
+        history.OfType<TextMessage>().Select(m => m.Text).Should().ContainSingle()
+            .Which.Should().Be("healthy text");
+
+        await agent.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task RecoverAsync_TreatsAPluralResultMessage_AsAnswering_ItsToolCalls()
+    {
+        // A plural ToolsCallResultMessage answers its calls just as the singular one does. Reading
+        // only the singular shape would leave those calls looking unanswered and delete them the
+        // moment any unrelated row was skipped.
+        var store = new InMemoryConversationStore();
+        var threadId = "test-thread-plural-result";
+        const string runId = "prior-run";
+        const string toolCallId = "call-plural";
+
+        var corrupt =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new TextMessage { Text = "irrelevant", Role = Role.User, RunId = runId },
+                threadId,
+                runId
+            ) with
+            {
+                Id = "corrupt-unrelated",
+                Timestamp = 1,
+                MessageJson = "{ not json",
+            };
+        var callRow =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new ToolCallMessage
+                {
+                    Role = Role.Assistant,
+                    RunId = runId,
+                    ToolCallId = toolCallId,
+                    FunctionName = "do_thing",
+                    FunctionArgs = "{}",
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 2,
+            };
+        var pluralResultRow =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new ToolsCallResultMessage
+                {
+                    RunId = runId,
+                    ToolCallResults = [new ToolCallResult(toolCallId, "ok")],
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 3,
+            };
+
+        await store.AppendMessagesAsync(threadId, [corrupt, callRow, pluralResultRow]);
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+
+        await agent.RecoverAsync();
+
+        // The sweep DID run (a row was skipped) and still kept the pair intact.
+        var history = agent.SnapshotHistoryForTest();
+        history.OfType<ToolCallMessage>().Should().ContainSingle(
+            "its answer is present, just in the plural message shape");
+        history.OfType<ToolsCallResultMessage>().Should().ContainSingle();
+
+        await agent.DisposeAsync();
+    }
+
     [Fact]
     public async Task RecoverAsync_ReturnsFalse_WhenEveryPersistedRecordIsCorrupt()
     {
