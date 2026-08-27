@@ -161,7 +161,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
-    public async Task Reviewed_builds_a_scoped_write_tool_context_with_the_notes_and_scratch_roots()
+    public async Task Reviewed_builds_a_read_only_tool_context()
     {
         using var fixture = Fixture.Create();
         var run = fixture.SeedRun();
@@ -169,12 +169,11 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
+        // The context bounds the agent's tools to the read-only allow-list. Write-scoping is NOT carried here:
+        // where the reviewer may write is enforced by the review lease's sandbox mount, so this context no
+        // longer has any write-scope fields to assert (issue #490).
         var toolContext = fixture.Factory.ToolContexts.Where(t => t is not null).Should().ContainSingle().Subject!;
-        toolContext.EnableReviewerWrites.Should().BeTrue();
-        toolContext.WritableToolAllowList.Should().BeEquivalentTo(["Write", "Edit", "Bash"]);
         toolContext.ReadOnlyToolAllowList.Should().BeEquivalentTo(["Read", "Grep", "Glob", "Skill"]);
-        toolContext.NotesDir.Should().Be("/workspace/store/PRs/lmdotnettools-118");
-        toolContext.ScratchDir.Should().Be("/workspace/scratch");
     }
 
     [Fact]

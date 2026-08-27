@@ -5,13 +5,14 @@ namespace CodeReviewDaemon.Sample.Agents;
 
 /// <summary>
 /// Per-run context that turns a diff-only review loop into a tool-assisted one. Non-null only on the
-/// <c>EnableToolAssistedReview</c> path; when null the factory builds today's empty-registry loop.
+/// non-S2S <c>EnableToolAssistedReview</c> path; when null the factory builds today's empty-registry loop.
+/// The agent's tool set is bounded to the read-only allow-list via <see cref="ReadOnlyToolFilter"/>.
 /// <para>
-/// The pooled scoped-writable reviewer (Layer 1) additionally sets <see cref="EnableReviewerWrites"/>
-/// with a <see cref="WritableToolAllowList"/> and the <see cref="NotesDir"/>/<see cref="ScratchDir"/>
-/// roots the writes are scoped to. When those are present the factory builds the registry via
-/// <see cref="ScopedToolFilter"/> (read-only tools + scoped <c>Write</c>/<c>Edit</c>/<c>Bash</c>);
-/// otherwise it stays on the read-only <see cref="ReadOnlyToolFilter"/> path exactly as before.
+/// Write-scoping is NOT enforced here. On the mandatory-S2S path the review runs inside a conversation the
+/// LmStreaming review host owns, and the ONLY thing that bounds where the reviewer may write is the review
+/// lease's sandbox mount — the leased slot is the reviewer's writable surface, and nothing outside it is
+/// mounted writable. There is no in-process tool filter that grants or scopes writes; a reader looking for
+/// the write-scope enforcement point should look at the lease's sandbox mount, not at any tool allow-list.
 /// </para>
 /// <para>
 /// Sub-agent orchestration (templates, discovery, model selection) is ALWAYS handled by the LmStreaming
@@ -22,11 +23,7 @@ internal sealed record ReviewToolContext(
     string GatewayBaseUrl,
     string SessionId,
     IReadOnlyList<string> ReadOnlyToolAllowList,
-    SandboxCredential Credential,
-    bool EnableReviewerWrites = false,
-    IReadOnlyList<string>? WritableToolAllowList = null,
-    string? NotesDir = null,
-    string? ScratchDir = null);
+    SandboxCredential Credential);
 
 /// <summary>
 /// Copies ONLY the allow-listed tool contracts+handlers from a source registry into the loop's registry.

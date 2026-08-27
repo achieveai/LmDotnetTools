@@ -402,6 +402,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // switch the prerequisite check off.
         if (_options.UseS2SReviewAgent)
         {
+            // Returning null here is also the reason there is no daemon-side write-scope filter to keep in step:
+            // on S2S the reviewer's ONLY writable surface is the review lease's sandbox mount (the leased slot),
+            // not any tool allow-list this method could build. The write-scope enforcement point is that mount.
             await EnsureGatewaySkillSupportAsync(run, cancellationToken).ConfigureAwait(false);
             return null;
         }
@@ -427,22 +430,16 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 return null;
             }
 
-            // Scoped-writable reviewer (Layer 1): when this run leased a pooled slot and reviewer-writes are
-            // enabled, hand the agent scoped Write/Edit/Bash + the (container) notes/scratch roots the writes
-            // are bounded to. Absent a pooled lease the reviewer stays hard read-only exactly as before.
-            var (Enabled, WritableAllow, NotesDir, ScratchDir) = ResolvePooledWriteScope(run);
-
+            // The agent's tool set is bounded to the read-only allow-list. Write-scoping is not a tool-filter
+            // concern: where the reviewer may write is bounded by the review lease's sandbox mount, not by any
+            // allow-list carried on this context.
             return new ReviewToolContext(
                 GatewayBaseUrl: _gatewayBaseUrl
                     ?? Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY")
                     ?? "http://127.0.0.1:3000",
                 SessionId: session.SessionId,
                 ReadOnlyToolAllowList: _options.ReadOnlyToolAllowList,
-                Credential: _credential,
-                EnableReviewerWrites: Enabled,
-                WritableToolAllowList: WritableAllow,
-                NotesDir: NotesDir,
-                ScratchDir: ScratchDir);
+                Credential: _credential);
         }
         catch (Exception ex) when (ex is not OperationCanceledException and not SkillSupportUnavailableException)
         {
