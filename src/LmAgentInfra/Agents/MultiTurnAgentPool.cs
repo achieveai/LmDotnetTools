@@ -323,9 +323,9 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             //  - Cancelled. Task.Run was handed Cts.Token, so a token already cancelled when the
             //    delegate would have been scheduled leaves the task CANCELLED without ever running
             //    the delegate - and therefore without reaching the delegate's own catch blocks. It
-            //    takes disposal racing the delegate's FIRST scheduling to produce, not the cancel at
-            //    the top of this method: once the delegate has begun running, the token no longer
-            //    decides the proxy task's final state. Narrow either way, and nothing to report - if
+            //    takes disposal racing the delegate's FIRST scheduling to produce: once the delegate
+            //    has begun running, the token no longer decides the proxy task's final state. Narrow
+            //    either way, and nothing to report - if
             //    the delegate never ran, nothing is draining.
             //  - Faulted. The delegate catches OperationCanceledException and Exception itself, so
             //    the started case does not fault; the catch is kept anyway rather than resting the

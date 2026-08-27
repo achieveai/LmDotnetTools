@@ -65,8 +65,7 @@ public sealed class WorkspaceThreadRegistrationCompositionTests
         // An explicit `await using` BLOCK, not a method-scoped `await using var`: the host must be
         // disposed before the purge below, and method scope would dispose it at the method's closing
         // brace, i.e. AFTER. This test drives pool.GetOrCreateAgent, so the host is a live
-        // conversation-store writer holding FileShare.None handles under `root`; purging first makes
-        // Purge retry the rename for ~1.1 s and then throw. The block is the shape that needs no
+        // conversation-store writer holding FileShare.None handles under `root`. The block is the shape that needs no
         // assumption about whether this factory subclass is idempotent on a second disposal.
         await using (var host = new WorkspaceCompositionWebAppFactory(root, gateway, probe))
         {
