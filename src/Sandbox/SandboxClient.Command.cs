@@ -147,7 +147,10 @@ public sealed partial class SandboxClient
     /// The operation to remove — <see cref="SandboxCommandResult.OperationId"/> from the command's result,
     /// or <see cref="SandboxException.OperationId"/> from a failure that carried one.
     /// </param>
-    /// <param name="ct">Cancels the local wait only; a cancelled delete may still have been applied.</param>
+    /// <param name="ct">
+    /// Abandons the single in-flight request — there is no poll loop here to leave running; a cancelled
+    /// delete may still have been applied.
+    /// </param>
     /// <exception cref="SandboxException">
     /// The operation is still running (<see cref="SandboxErrorKind.Conflict"/>, <c>operation_running</c>),
     /// no such session/operation (<see cref="SandboxErrorKind.NotFound"/>), the credential was refused
