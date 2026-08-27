@@ -1218,6 +1218,95 @@ public class MultiTurnAgentBaseTests
     }
 
     [Fact]
+    public async Task RecoverAsync_CascadesTheDrop_WhenLosingOneCallOrphansAnAnsweredSibling()
+    {
+        // One message may carry SEVERAL calls, so a single pass is not enough. Here call B's answer is
+        // missing, which condemns the whole call message — and that in turn orphans call A's result,
+        // which was perfectly well paired until the message holding A was dropped. Only a sweep that
+        // iterates to a fixed point removes A's result too; a one-pass sweep leaves a dangling
+        // tool_result behind and the provider rejects the replay exactly as before.
+        var store = new InMemoryConversationStore();
+        var threadId = "test-thread-cascading-drop";
+        const string runId = "prior-run";
+
+        var text =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new TextMessage { Text = "healthy text", Role = Role.User, RunId = runId },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 1,
+            };
+        var twoCallRow =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new ToolsCallMessage
+                {
+                    Role = Role.Assistant,
+                    RunId = runId,
+                    ToolCalls =
+                    [
+                        new ToolCall
+                        {
+                            ToolCallId = "call-a",
+                            FunctionName = "do_a",
+                            FunctionArgs = "{}",
+                        },
+                        new ToolCall
+                        {
+                            ToolCallId = "call-b",
+                            FunctionName = "do_b",
+                            FunctionArgs = "{}",
+                        },
+                    ],
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 2,
+            };
+        var resultForA =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new ToolCallResultMessage
+                {
+                    ToolCallId = "call-a",
+                    ToolName = "do_a",
+                    Result = "ok",
+                    RunId = runId,
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 3,
+            };
+
+        // call-b's result row is never written; call-a's is healthy and readable.
+        await store.AppendMessagesAsync(threadId, [text, twoCallRow, resultForA]);
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+
+        await agent.RecoverAsync();
+
+        var history = agent.SnapshotHistoryForTest();
+        history.OfType<ToolsCallMessage>().Should().BeEmpty("call-b was never answered");
+        history.OfType<ToolCallResultMessage>().Should().BeEmpty(
+            "call-a's result is orphaned by the removal of the message that requested it");
+        history.Should().ContainSingle();
+
+        await agent.DisposeAsync();
+    }
+
+    [Fact]
     public async Task RecoverAsync_TreatsAPluralResultMessage_AsAnswering_ItsToolCalls()
     {
         // A plural ToolsCallResultMessage answers its calls just as the singular one does. Reading
