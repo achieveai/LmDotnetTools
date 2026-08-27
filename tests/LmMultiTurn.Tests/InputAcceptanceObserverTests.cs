@@ -393,8 +393,9 @@ public class InputAcceptanceObserverTests
         public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
             int limit = 50,
             int offset = 0,
+            ConversationListOptions? options = null,
             CancellationToken ct = default) =>
-            _inner.ListThreadsAsync(limit, offset, ct);
+            _inner.ListThreadsAsync(limit, offset, options, ct);
     }
 
     #endregion

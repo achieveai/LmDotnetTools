@@ -68,6 +68,12 @@ const sharedMocks = vi.hoisted(() => ({
   switchProvider: vi.fn(async () => {}),
   selectWorkspace: vi.fn(),
   addOrUpdateConversation: vi.fn(),
+  // Incremental sidebar paging + sort selection, wired through ChatLayout to ConversationSidebar.
+  loadMoreConversations: vi.fn(async () => {}),
+  setSortMode: vi.fn(async () => {}),
+  // The server-side existence probe the deep link falls back to when the id is not on page one.
+  // Defaults to false so an id absent from BOTH the list and the backend still reads as not-found.
+  conversationExists: vi.fn(async (_threadId: string) => false),
   resumeStreamIfActive: vi.fn(async () => {}),
   markStreamIdle: vi.fn(),
   markStreamLoading: vi.fn(),
@@ -104,7 +110,12 @@ vi.mock('@/composables/useConversations', async () => {
         sharedMocks.conversations.find((c) => c.threadId === sharedMocks.currentThreadId)
       ),
       isLoading: ref(false),
+      isLoadingMore: ref(false),
+      hasMoreConversations: ref(false),
+      sortMode: ref<'lastUsed' | 'created'>('lastUsed'),
       loadConversations: sharedMocks.loadConversations,
+      loadMoreConversations: sharedMocks.loadMoreConversations,
+      setSortMode: sharedMocks.setSortMode,
       createNewConversation: sharedMocks.createNewConversation,
       selectConversation: vi.fn(),
       removeConversation: vi.fn(async () => {}),
@@ -276,6 +287,7 @@ vi.mock('@/composables/useWorkspaces', async () => {
 
 vi.mock('@/api/conversationsApi', () => ({
   updateConversationMetadata: vi.fn(async () => {}),
+  conversationExists: (threadId: string) => sharedMocks.conversationExists(threadId),
 }));
 
 // The sub-agent panel is wired into ChatLayout but exercised by its own tests. Mock the composable so
@@ -595,8 +607,11 @@ describe('ChatLayout restores bound provider/mode/workspace on conversation sele
 
 // A ?threadId= deep link lets a caller (e.g. a headless REST integration handing a link back to
 // a human) navigate straight to one conversation. Priority over the "select most recent" default,
-// and a not-found state when the id isn't in the backend's conversation list (never provisioned,
-// or deleted) — see ChatLayout.vue's getDeepLinkThreadIdFromPageQuery/notFoundThreadId.
+// and a not-found state when the backend does not have it (never provisioned, deleted, or not
+// readable by this caller) — see ChatLayout.vue's getDeepLinkThreadIdFromPageQuery/notFoundThreadId.
+//
+// Absence from the loaded conversation list is NOT that signal: only page one is loaded, so an older
+// conversation is legitimately missing from it. The list is a fast path; the server decides.
 describe('ChatLayout ?threadId= deep link', () => {
   const setQuery = (query: string) => {
     window.history.pushState({}, '', query ? `/?${query}` : '/');
@@ -620,6 +635,8 @@ describe('ChatLayout ?threadId= deep link', () => {
     sharedMocks.modesLoading = false;
     sharedMocks.resumeStreamIfActive.mockReset();
     sharedMocks.resumeStreamIfActive.mockResolvedValue(undefined);
+    sharedMocks.conversationExists.mockReset();
+    sharedMocks.conversationExists.mockResolvedValue(false);
   });
 
   afterEach(() => {
@@ -638,7 +655,27 @@ describe('ChatLayout ?threadId= deep link', () => {
     expect(sharedMocks.resumeStreamIfActive).toHaveBeenCalledWith('thread-2');
   });
 
-  it('shows a not-found state for a deep-linked thread absent from the conversation list', async () => {
+  /**
+   * The reachability bug this whole change exists to fix, in its last remaining form. Every other
+   * older conversation became reachable by scrolling; a deep link had no scroll to do, so page-one
+   * membership was the only test it got and every older link reported not-found.
+   */
+  it('opens an older deep-linked conversation that is past the first loaded page', async () => {
+    sharedMocks.currentThreadId = null;
+    // Page one only. The target is real but older than everything loaded so far.
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
+    sharedMocks.conversationExists.mockResolvedValue(true);
+    setQuery('threadId=thread-older');
+
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    expect(sharedMocks.conversationExists).toHaveBeenCalledWith('thread-older');
+    expect(wrapper.find('[data-testid="conversation-not-found"]').exists()).toBe(false);
+    expect(sharedMocks.resumeStreamIfActive).toHaveBeenCalledWith('thread-older');
+  });
+
+  it('shows a not-found state for a deep-linked thread the backend does not have', async () => {
     sharedMocks.currentThreadId = null;
     sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
     setQuery('threadId=thread-missing');

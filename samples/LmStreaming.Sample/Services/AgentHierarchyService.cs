@@ -471,7 +471,7 @@ public sealed class AgentHierarchyService(
     /// </summary>
     /// <remarks>
     ///     <b>One call, deliberately — not a paging loop.</b>
-    ///     <see cref="IConversationStore.ListThreadsAsync(int, int, CancellationToken)"/> is contractually "ordered by last updated
+    ///     <see cref="IConversationStore.ListThreadsAsync(int, int, ConversationListOptions, CancellationToken)"/> is contractually "ordered by last updated
     ///     descending", so paging with a growing offset sorts on a column the live conversations being
     ///     scanned are mutating: a thread touched between two pages moves toward the front and pushes an
     ///     unread neighbour back across the offset boundary, where the next page skips it. The roster that
@@ -492,8 +492,8 @@ public sealed class AgentHierarchyService(
         // rather than guessing at a sentinel one.
         var scope = await SubAgentScanScope.ForRootAsync(store, threadId, ct);
         var threads = (scope is null
-            ? await store.ListThreadsAsync(SubAgentScanMaxThreads + 1, 0, ct)
-            : await store.ListThreadsAsync(scope, SubAgentScanMaxThreads + 1, 0, ct)) ?? [];
+            ? await store.ListThreadsAsync(SubAgentScanMaxThreads + 1, 0, ct: ct)
+            : await store.ListThreadsAsync(scope, SubAgentScanMaxThreads + 1, 0, ct: ct)) ?? [];
 
         var scanned = Math.Min(threads.Count, SubAgentScanMaxThreads);
         var found = new List<SubAgentSummary>();

@@ -271,8 +271,16 @@ public class ConversationsController(
                 });
         }
 
-        var threadId = $"thread-{Guid.NewGuid():N}";
         var now = DateTimeOffset.UtcNow;
+
+        // The epoch-millisecond segment is load-bearing, not decoration: it is the ONLY record of
+        // when a conversation was created. ThreadMetadata has no CreatedAt column, and LastUpdated
+        // is bumped on every completed run, so ConversationListOptions.CreationTimestampOf reads
+        // creation order back out of this id. Minting a bare "thread-{guid:N}" here - as this did
+        // when server-side provisioning landed - makes that parse fail and silently degrades the
+        // Created sort to LastUpdated for every conversation the app creates, which is the mutable
+        // key Created exists to avoid.
+        var threadId = $"thread-{now.ToUnixTimeMilliseconds()}-{Guid.NewGuid():N}";
 
         await store.UpdateMetadataAsync(
             threadId,
@@ -320,35 +328,99 @@ public class ConversationsController(
         return Ok(new ProvisionConversationResponse { ThreadId = threadId });
     }
 
+    /// <summary>
+    /// One page of the conversation sidebar.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Listing is a FILTER, not a loop (spec 7.5): BOTH narrowings are pushed into the store so the
+    /// page is trimmed by the query. This comment used to say that about the scope alone while the
+    /// very next statement filtered agent-owned threads out of the already-trimmed page, and that
+    /// was the bug. <c>LastUpdated</c> is bumped on every completed run and background sub-agent and
+    /// workflow runs are constant, so <c>subagent-*</c>/<c>workflow-*</c> rows crowd the front of a
+    /// last-updated ordering: on a live deployment of 302 threads, 256 of them agent-owned, a
+    /// top-50 page arrived holding 45 agent-owned rows and the sidebar rendered five real
+    /// conversations. Everything older was simply gone, and nothing anywhere said a page had been
+    /// trimmed.
+    /// </para>
+    /// <para>
+    /// The exclusion travels as <see cref="ConversationListOptions"/> rather than being folded into
+    /// the scope, because the two answer different questions - what this SURFACE is asking for
+    /// versus what this CALLER is allowed to see. That type documents the separation.
+    /// </para>
+    /// <para>
+    /// An unrecognised <paramref name="sort"/>, a negative <paramref name="offset"/> or an
+    /// out-of-range <paramref name="limit"/> is a 400, never a silent fall back to the default: a
+    /// silently ignored sort parameter is indistinguishable from a working one, so a client that
+    /// misspells it would see a plausible list forever and never learn its ordering was never
+    /// applied.
+    /// </para>
+    /// </remarks>
+    /// <param name="limit">Page size, 1..100. Defaults to the client's page size.</param>
+    /// <param name="offset">Rows to skip. Must not be negative.</param>
+    /// <param name="sort"><c>lastUsed</c> (default) or <c>created</c>, case-insensitive.</param>
+    /// <param name="ct">Cancellation token.</param>
     [HttpGet]
     public async Task<IActionResult> List(
-        int limit = 50,
+        int limit = 30,
         int offset = 0,
+        string? sort = null,
         CancellationToken ct = default)
     {
-        // Listing is a FILTER, not a loop (spec 7.5): the scope is pushed into the store so the
-        // page is trimmed by the query. Filtering the returned page instead would silently return
-        // short pages - and, worse, would make "page 2 is empty" mean nothing.
+        if (limit is < MinListLimit or > MaxListLimit)
+        {
+            return BadRequest(new
+            {
+                error = $"limit must be between {MinListLimit} and {MaxListLimit}.",
+                code = "invalid_limit",
+            });
+        }
+
+        if (offset < 0)
+        {
+            return BadRequest(new { error = "offset must not be negative.", code = "invalid_offset" });
+        }
+
+        if (!TryParseSortOrder(sort, out var sortOrder))
+        {
+            return BadRequest(new
+            {
+                error = $"Unknown sort '{sort}'. Expected 'lastUsed' or 'created'.",
+                code = "invalid_sort",
+            });
+        }
+
+        // Sub-agent and workflow-controller conversations use the sample's reserved agent-owned
+        // thread-id space and are surfaced only through the sub-agent panel (GET .../subagents +
+        // /ws/subagent). They must not leak into the primary conversation sidebar (nor be
+        // auto-selected on load) - and the STORE, not this method, is where that is decided, so the
+        // page comes back full of rows the sidebar can actually show.
+        var options = new ConversationListOptions
+        {
+            ExcludedThreadIdPrefixes = SubAgentSummary.AgentOwnedThreadIdPrefixes,
+            SortOrder = sortOrder,
+        };
+
         var scope = await authorizer.CreateListScopeAsync(ct);
         var threads = scope is null
-            ? await store.ListThreadsAsync(limit, offset, ct)
-            : await store.ListThreadsAsync(scope, limit, offset, ct);
-        var listed = threads
-            // Sub-agent and workflow-controller conversations use the sample's reserved agent-owned
-            // thread-id space and are surfaced only through the sub-agent panel (GET .../subagents +
-            // /ws/subagent). They must not leak into the primary conversation sidebar (nor be
-            // auto-selected on load).
-            .Where(t => !SubAgentSummary.IsAgentOwnedThreadId(t.ThreadId))
-            .ToArray();
+            ? await store.ListThreadsAsync(limit, offset, options, ct)
+            : await store.ListThreadsAsync(scope, limit, offset, options, ct);
+
+        // NOTE: there is deliberately no .Where(!IsAgentOwnedThreadId) here. That post-filter is
+        // what `options` above replaces, and reinstating it would not be redundant - it would be
+        // the bug again. A page is a contract about COUNT: dropping rows after the store has
+        // already applied limit/offset returns short pages, and because agent-owned rows crowd the
+        // front of a last-updated ordering it returned a nearly EMPTY one. Exclude in the store,
+        // where the whole candidate set is still in hand, or not at all.
 
         // Materialized here rather than projected lazily, as ListShares does at the end of its own
         // projection. ToWireVisibility throws on a visibility it has no name for, and a lazy
         // enumerable would defer that throw to response serialization - truncating a 200 mid-body
         // rather than failing as a clean 500. Nothing produces that today; this decides how it fails
         // if a fourth member is ever added without a wire name.
-        var result = new List<ConversationSummary>(listed.Length);
+        var result = new List<ConversationSummary>(threads.Count);
 
-        foreach (var t in listed)
+        foreach (var t in threads)
         {
             // #482/#487. A LOOP, unlike the scope above, and unavoidably so: the listing filter
             // answers "may this viewer SEE the row", one question for the whole page, while canShare
@@ -396,6 +468,51 @@ public class ConversationsController(
         }
 
         return Ok(result);
+    }
+
+    /// <summary>Smallest page the sidebar may ask for. Zero would be a page that can never fill.</summary>
+    private const int MinListLimit = 1;
+
+    /// <summary>
+    /// Largest page the sidebar may ask for. A bound, not a preference: without one a caller can
+    /// make every listing read the whole store, and the file store has no offset index to soften it.
+    /// </summary>
+    private const int MaxListLimit = 100;
+
+    /// <summary>
+    /// Resolves the <c>sort</c> query parameter, rejecting anything it does not recognise.
+    /// </summary>
+    /// <remarks>
+    /// Absent (or blank) means <see cref="ConversationSortOrder.LastUsed"/>, which is the ordering
+    /// every caller got before the parameter existed. Anything else that is not one of the two known
+    /// spellings returns false so the route can answer 400 - falling back to the default there would
+    /// serve a correct-looking list in the wrong order, with no way for the client to tell.
+    /// </remarks>
+    /// <param name="sort">The raw query value.</param>
+    /// <param name="sortOrder">
+    /// The resolved order; <see cref="ConversationSortOrder.LastUsed"/> when this returns false.
+    /// </param>
+    private static bool TryParseSortOrder(string? sort, out ConversationSortOrder sortOrder)
+    {
+        sortOrder = ConversationSortOrder.LastUsed;
+
+        if (string.IsNullOrWhiteSpace(sort))
+        {
+            return true;
+        }
+
+        if (string.Equals(sort, "lastUsed", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (string.Equals(sort, "created", StringComparison.OrdinalIgnoreCase))
+        {
+            sortOrder = ConversationSortOrder.Created;
+            return true;
+        }
+
+        return false;
     }
 
     private static readonly JsonSerializerOptions NormalizeOptions = new()

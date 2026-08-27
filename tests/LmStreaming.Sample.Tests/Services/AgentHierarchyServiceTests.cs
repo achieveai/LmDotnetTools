@@ -106,7 +106,7 @@ public sealed class AgentHierarchyServiceTests
     /// The twin of
     /// <c>ConversationDescendantScannerTests.ScanAsync_ListsEveryChild_WhenAThreadIsTouchedWhileTheScanIsRunning</c>,
     /// against the flat cold-path scan. A child touched while the scan runs must still be listed:
-    /// <see cref="IConversationStore.ListThreadsAsync(int, int, CancellationToken)"/> orders by a MUTABLE column, so an offset-paged
+    /// <see cref="IConversationStore.ListThreadsAsync(int, int, ConversationListOptions, CancellationToken)"/> orders by a MUTABLE column, so an offset-paged
     /// scan lets a thread slide forward past an offset it has already stepped over. Here the loss is
     /// permanent by construction — <see cref="SubAgentScanCoverageCache"/> records what the scan
     /// recovered and keeps it for the process lifetime, so the skipped child is never reconsidered.
@@ -843,6 +843,7 @@ public sealed class AgentHierarchyServiceTests
         public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
             int limit = 50,
             int offset = 0,
+            ConversationListOptions? options = null,
             CancellationToken ct = default)
         {
             Interlocked.Increment(ref _listThreadsCalls);
@@ -852,7 +853,7 @@ public sealed class AgentHierarchyServiceTests
                 throw new InvalidOperationException("Simulated transient scan failure.");
             }
 
-            return inner.ListThreadsAsync(limit, offset, ct);
+            return inner.ListThreadsAsync(limit, offset, options, ct);
         }
     }
 

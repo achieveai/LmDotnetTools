@@ -1,10 +1,14 @@
 <script setup lang="ts">
-import type { ConversationSummary } from '@/types/conversations';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
+import type { ConversationSortMode, ConversationSummary } from '@/types/conversations';
+import { CONVERSATION_SORT_MODES } from '@/types/conversations';
 
-defineProps<{
+const props = defineProps<{
   conversations: ConversationSummary[];
   currentThreadId: string | null;
   isLoading: boolean;
+  isLoadingMore: boolean;
+  sortMode: ConversationSortMode;
   isCollapsed: boolean;
 }>();
 
@@ -13,7 +17,79 @@ const emit = defineEmits<{
   selectConversation: [threadId: string];
   deleteConversation: [threadId: string];
   toggleCollapse: [];
+  loadMore: [];
+  changeSortMode: [mode: ConversationSortMode];
 }>();
+
+/**
+ * How close to the bottom of the scroll container counts as "near the bottom". Sized to fire while
+ * roughly one conversation row is still below the fold, so the next page is usually in hand before
+ * the user reaches the end.
+ */
+const LOAD_MORE_THRESHOLD_PX = 120;
+
+const scrollRef = ref<HTMLElement | null>(null);
+const sortMenuOpen = ref(false);
+const sortDropdownRef = ref<HTMLElement | null>(null);
+
+const sortModes = CONVERSATION_SORT_MODES;
+
+const currentSortLabel = computed(
+  () => sortModes.find((m) => m.id === props.sortMode)?.label ?? ''
+);
+
+/**
+ * Asks the parent for the next page whenever the list is scrolled near its end.
+ *
+ * Fires freely — the parent's loader is a no-op while a page is in flight and once the list is
+ * exhausted, so this handler deliberately keeps no state of its own.
+ */
+function handleScroll(): void {
+  const el = scrollRef.value;
+  if (!el) return;
+  if (el.scrollHeight - el.scrollTop - el.clientHeight <= LOAD_MORE_THRESHOLD_PX) {
+    emit('loadMore');
+  }
+}
+
+function toggleSortMenu(): void {
+  sortMenuOpen.value = !sortMenuOpen.value;
+}
+
+function closeSortMenu(): void {
+  sortMenuOpen.value = false;
+}
+
+function handleSelectSortMode(mode: ConversationSortMode): void {
+  closeSortMenu();
+  if (mode !== props.sortMode) {
+    emit('changeSortMode', mode);
+  }
+}
+
+// Close the sort menu when clicking outside it. The wrapper stays mounted even while the sidebar is
+// collapsed (it is dimmed, not removed) so this handler always has a live element to test against.
+function handleClickOutside(event: MouseEvent): void {
+  if (sortDropdownRef.value && !sortDropdownRef.value.contains(event.target as Node)) {
+    closeSortMenu();
+  }
+}
+
+function handleKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') {
+    closeSortMenu();
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('click', handleClickOutside);
+  document.addEventListener('keydown', handleKeydown);
+});
+
+onUnmounted(() => {
+  document.removeEventListener('click', handleClickOutside);
+  document.removeEventListener('keydown', handleKeydown);
+});
 
 function formatDate(timestamp: number): string {
   const date = new Date(timestamp);
@@ -63,10 +139,40 @@ function handleDelete(event: Event, threadId: string): void {
       </button>
     </div>
 
+    <div :class="['sidebar-sort', { hidden: isCollapsed }]" ref="sortDropdownRef">
+      <button
+        class="sort-btn"
+        :class="{ open: sortMenuOpen }"
+        data-testid="sort-mode-button"
+        :tabindex="isCollapsed ? -1 : 0"
+        @click="toggleSortMenu"
+      >
+        <span class="sort-label">Sort:</span>
+        <span class="sort-name">{{ currentSortLabel }}</span>
+        <span class="dropdown-arrow">{{ sortMenuOpen ? '▲' : '▼' }}</span>
+      </button>
+
+      <div v-if="sortMenuOpen" class="dropdown-menu">
+        <button
+          v-for="mode in sortModes"
+          :key="mode.id"
+          class="menu-item"
+          :class="{ active: mode.id === sortMode }"
+          :data-testid="`sort-mode-option-${mode.id}`"
+          @click="handleSelectSortMode(mode.id)"
+        >
+          <span class="item-name">{{ mode.label }}</span>
+          <span v-if="mode.id === sortMode" class="check-mark">✓</span>
+        </button>
+      </div>
+    </div>
+
     <div
       :class="['sidebar-content', { hidden: isCollapsed }]"
       :aria-hidden="isCollapsed"
       :inert="isCollapsed || undefined"
+      ref="scrollRef"
+      @scroll="handleScroll"
     >
       <div v-if="isLoading" class="loading">
         Loading conversations...
@@ -105,6 +211,16 @@ function handleDelete(event: Event, threadId: string): void {
           >
             X
           </button>
+        </li>
+
+        <!-- Only ever shown while a page is actually in flight: once the list is exhausted the
+             parent stops loading, and the bottom of the list is simply the bottom of the list. -->
+        <li
+          v-if="isLoadingMore"
+          class="loading-more"
+          data-testid="conversations-loading-more"
+        >
+          Loading more...
         </li>
       </ul>
     </div>
@@ -186,6 +302,118 @@ function handleDelete(event: Event, threadId: string): void {
   background: #0056b3;
 }
 
+.sidebar-sort {
+  position: relative;
+  padding: 8px 12px;
+  border-bottom: 1px solid #e0e0e0;
+  opacity: 1;
+  transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Dimmed rather than removed: a control that unmounts itself takes the click-outside handler's
+   reference with it. */
+.sidebar-sort.hidden {
+  opacity: 0;
+  pointer-events: none;
+  overflow: hidden;
+  visibility: hidden;
+}
+
+.sort-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 10px;
+  background: #f8f9fa;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.sort-btn:hover {
+  background: #e9ecef;
+}
+
+.sort-btn.open {
+  border-color: #007bff;
+  box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.15);
+}
+
+.sort-label {
+  color: #666;
+}
+
+.sort-name {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  color: #212529;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dropdown-arrow {
+  color: #adb5bd;
+  font-size: 9px;
+}
+
+.dropdown-menu {
+  position: absolute;
+  top: 100%;
+  left: 12px;
+  right: 12px;
+  margin-top: 2px;
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 100;
+  overflow: hidden;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 8px 10px;
+  background: none;
+  border: none;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.menu-item:hover {
+  background: #f8f9fa;
+}
+
+.menu-item.active {
+  background: #e7f1ff;
+  color: #007bff;
+}
+
+.item-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.check-mark {
+  color: #007bff;
+  font-weight: bold;
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+
 .sidebar-content {
   flex: 1;
   overflow-y: auto;
@@ -264,6 +492,13 @@ function handleDelete(event: Event, threadId: string): void {
   color: #adb5bd;
 }
 
+.loading-more {
+  padding: 12px 16px;
+  text-align: center;
+  font-size: 12px;
+  color: #adb5bd;
+}
+
 .delete-btn {
   opacity: 0;
   width: 20px;
@@ -305,7 +540,8 @@ function handleDelete(event: Event, threadId: string): void {
     border-right: none;
   }
 
-  .conversation-sidebar.collapsed .sidebar-header {
+  .conversation-sidebar.collapsed .sidebar-header,
+  .conversation-sidebar.collapsed .sidebar-sort {
     display: none;
   }
 }

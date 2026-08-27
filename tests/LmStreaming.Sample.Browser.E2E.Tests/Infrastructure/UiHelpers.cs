@@ -312,4 +312,111 @@ public static class UiHelpers
     {
         return page.GetByTestId("question-submit-error");
     }
+
+    // -------------------------------------------------------------------------------------------
+    // Conversation sidebar paging + sort. The sidebar pages by infinite scroll: `.sidebar-content`
+    // is the scroll container whose `scroll` handler asks for the next page, so a test that wants a
+    // further page must drive THAT element rather than the window.
+    // -------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// The sidebar's scrollable list container — the element whose <c>scroll</c> event asks for the
+    /// next conversation page. Located by class because it carries no testid of its own; the row
+    /// testids below are the stable surface.
+    /// </summary>
+    public static ILocator SidebarContent(this IPage page)
+    {
+        return page.Locator(".sidebar-content");
+    }
+
+    /// <summary>Sort-mode dropdown button in the sidebar.</summary>
+    public static ILocator SortModeButton(this IPage page)
+    {
+        return page.GetByTestId("sort-mode-button");
+    }
+
+    /// <summary>
+    /// A sort-mode option in the opened dropdown. Pass the wire sort id (<c>lastUsed</c> /
+    /// <c>created</c>) — the same value that travels as the <c>sort</c> query parameter.
+    /// </summary>
+    public static ILocator SortModeOption(this IPage page, string sortMode)
+    {
+        return page.GetByTestId($"sort-mode-option-{sortMode}");
+    }
+
+    /// <summary>
+    /// The "Loading more..." row. Rendered ONLY while a further page is in flight — once the list is
+    /// exhausted the loader stops firing, so its absence after a scroll is the observable form of
+    /// "there is nothing left to fetch".
+    /// </summary>
+    public static ILocator ConversationsLoadingMore(this IPage page)
+    {
+        return page.GetByTestId("conversations-loading-more");
+    }
+
+    /// <summary>Rendered sidebar thread ids, in display order (from <c>data-thread-id</c>).</summary>
+    public static Task<string[]> ConversationThreadIdsAsync(this IPage page)
+    {
+        return page.ConversationItems()
+            .EvaluateAllAsync<string[]>(
+                "nodes => nodes.map(n => n.getAttribute('data-thread-id') || '')"
+            );
+    }
+
+    /// <summary>Rendered sidebar titles, in display order.</summary>
+    public static Task<string[]> ConversationTitlesAsync(this IPage page)
+    {
+        return page.ConversationItems()
+            .EvaluateAllAsync<string[]>(
+                "nodes => nodes.map(n => (n.querySelector('.conversation-title')?.textContent || '').trim())"
+            );
+    }
+
+    /// <summary>
+    /// Scrolls the sidebar list to its end, which is what the infinite-scroll handler reads as
+    /// "ask for the next page".
+    /// </summary>
+    public static Task ScrollSidebarToEndAsync(this IPage page)
+    {
+        return page.SidebarContent().EvaluateAsync("el => { el.scrollTop = el.scrollHeight; }");
+    }
+
+    /// <summary>
+    /// Scrolls the sidebar to its end and waits until the list has grown to at least
+    /// <paramref name="expectedCount"/> rows. Returns the row count actually reached.
+    /// </summary>
+    public static async Task<int> LoadMoreConversationsAsync(
+        this IPage page,
+        int expectedCount,
+        float timeoutMs = 15_000
+    )
+    {
+        await page.ScrollSidebarToEndAsync();
+        return await page.ConversationItems().WaitForCountAtLeastAsync(expectedCount, timeoutMs);
+    }
+
+    /// <summary>
+    /// Waits until the sidebar holds EXACTLY <paramref name="expectedCount"/> rows. Exactness is the
+    /// point at a page boundary: "at least 30" cannot tell one page from two concatenated ones.
+    /// </summary>
+    public static Task WaitForConversationCountAsync(
+        this IPage page,
+        int expectedCount,
+        float timeoutMs = 15_000
+    )
+    {
+        return Assertions
+            .Expect(page.ConversationItems())
+            .ToHaveCountAsync(expectedCount, new LocatorAssertionsToHaveCountOptions { Timeout = timeoutMs });
+    }
+
+    /// <summary>
+    /// Chooses a sidebar sort mode through the real dropdown (open, then click the option) rather
+    /// than by poking the composable, so the assertion covers the wiring the user actually drives.
+    /// </summary>
+    public static async Task SelectSortModeAsync(this IPage page, string sortMode)
+    {
+        await page.SortModeButton().ClickAsync();
+        await page.SortModeOption(sortMode).ClickAsync();
+    }
 }

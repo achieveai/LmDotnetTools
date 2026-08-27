@@ -393,7 +393,7 @@ public class RunLedgerRoundTripTests
         public Task DeleteThreadAsync(string threadId, CancellationToken ct = default)
             => Task.CompletedTask;
 
-        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(int limit = 50, int offset = 0, CancellationToken ct = default)
+        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(int limit = 50, int offset = 0, ConversationListOptions? options = null, CancellationToken ct = default)
             => Task.FromResult<IReadOnlyList<ThreadMetadata>>([]);
     }
 

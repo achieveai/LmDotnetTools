@@ -1,4 +1,9 @@
-import type { ConversationSummary, ConversationMetadataUpdate } from '@/types/conversations';
+import type {
+  ConversationSummary,
+  ConversationMetadataUpdate,
+  ConversationSortMode,
+} from '@/types/conversations';
+import { DEFAULT_CONVERSATION_SORT_MODE } from '@/types/conversations';
 import { apiFetch } from '@/api/http';
 
 /**
@@ -19,13 +24,21 @@ export interface PersistedMessage {
 }
 
 /**
- * Fetches the list of conversations from the backend.
+ * Fetches one page of the conversation list from the backend.
+ *
+ * Returns a bare array — there is no envelope and no `hasMore` flag, so a caller paging through the
+ * list infers exhaustion from a short page (fewer than `limit` rows). `sort` selects the backend
+ * ordering; it must match the order the caller is already holding, since pages fetched under
+ * different sorts cannot be concatenated into one coherent list.
  */
 export async function listConversations(
-  limit = 50,
-  offset = 0
+  limit = 30,
+  offset = 0,
+  sort: ConversationSortMode = DEFAULT_CONVERSATION_SORT_MODE
 ): Promise<ConversationSummary[]> {
-  const response = await apiFetch(`/api/conversations?limit=${limit}&offset=${offset}`);
+  const response = await apiFetch(
+    `/api/conversations?limit=${limit}&offset=${offset}&sort=${encodeURIComponent(sort)}`
+  );
   if (!response.ok) {
     throw new Error(`Failed to fetch conversations: ${response.statusText}`);
   }
@@ -276,6 +289,41 @@ export async function sendConversationMessage(
  * distinct not-found cases callers must not conflate (an unrecognized id on a real conversation
  * is not the same as a stale/deleted conversation).
  */
+/**
+ * Whether a conversation exists and is readable by this caller — asked of the SERVER, so the answer
+ * does not depend on how much of the sidebar happens to be loaded.
+ *
+ * Membership in the loaded conversation list cannot answer this. The sidebar loads one page at a
+ * time, so an older conversation is legitimately absent from it; treating that absence as proof of
+ * non-existence reported every older deep link as not-found.
+ *
+ * There is no single-conversation GET to ask instead, so this uses `/status` with a run id that
+ * cannot exist. That route resolves the thread BEFORE the run, and deliberately keeps the two
+ * not-found cases apart:
+ *
+ * - `unknown_thread` — no such conversation, **or** one this caller may not read. The host answers
+ *   those two identically on purpose, so they cannot be told apart; both are "not found" here.
+ * - `unknown_runId` — the conversation is real and readable, and only the run id was bogus. Which
+ *   is exactly what we asked, so this is the TRUE case.
+ *
+ * A 200 would mean the sentinel somehow named a real run; the conversation is real either way.
+ */
+export async function conversationExists(threadId: string): Promise<boolean> {
+  // Not a valid run id in any format the resolver mints, so it can only ever miss.
+  const NeverAssignedRunId = 'existence-probe';
+  try {
+    await getConversationStatus(threadId, { runId: NeverAssignedRunId });
+    return true;
+  } catch (e) {
+    if (e instanceof ConversationApiError) {
+      return e.code === 'unknown_runId';
+    }
+    // A transport failure is not evidence of absence - surface it rather than silently
+    // reporting a real conversation as missing.
+    throw e;
+  }
+}
+
 export async function getConversationStatus(
   threadId: string,
   by: { runId: string } | { inputId: string }

@@ -346,11 +346,91 @@ public sealed class ConversationScopingTests
 
         var controller = CreateController(Signed(TenantA, Alice), pool);
 
-        var ok = Assert.IsType<OkObjectResult>(await controller.List(50, 0, CancellationToken.None));
+        var ok = Assert.IsType<OkObjectResult>(await controller.List(50, 0, ct: CancellationToken.None));
         var summaries = ((IEnumerable<ConversationSummary>)ok.Value!).ToArray();
 
         _ = summaries.Select(s => s.ThreadId).Should().BeEquivalentTo(["alice-thread"]);
     }
+
+    /// <summary>
+    /// Under enforcement, the caller still gets a FULL page of their own conversations when
+    /// agent-owned threads outnumber the page.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The listing route has two branches - the unscoped one, taken when enforcement is off, and the
+    /// scoped one taken here - and only the scoped one runs in a deployment that has identity turned
+    /// on. Fixing the unscoped branch alone would leave every real deployment exactly as broken as
+    /// before, so the same seed is played against this branch too: sixty agent-owned rows all newer
+    /// than the caller's own forty, and a page of thirty.
+    /// </para>
+    /// <para>
+    /// The two narrowings have to compose. The scope decides Alice sees Alice's rows and not Bob's;
+    /// the presentation options decide the sidebar sees conversations and not agent transcripts.
+    /// Bob's thread is seeded NEWEST of all so this cannot pass by simply ignoring the scope, and
+    /// the agent-owned rows are Alice's own so it cannot pass by having the scope reject them
+    /// incidentally.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Listing_ReturnsAFullPageOfTheCallersConversations_WhenAgentOwnedThreadsOutnumberThePage()
+    {
+        const int PageSize = 30;
+        const int AgentOwnedCount = 60;
+        const int AliceRealCount = 40;
+
+        await using var pool = CreatePool();
+
+        for (var i = 0; i < AliceRealCount; i++)
+        {
+            await SeedListingRowAsync($"thread-{1_000 + i}-alice{i:D2}", TenantA, Alice, 1_000 + i);
+        }
+
+        // Alice's own agent-owned threads: newer than everything she started, and more numerous
+        // than one page. The scope admits them; only the presentation filter removes them.
+        for (var i = 0; i < AgentOwnedCount; i++)
+        {
+            await SeedListingRowAsync($"subagent-alice{i:D2}", TenantA, Alice, 100_000 + i);
+        }
+
+        // Newest row in the tenant, and not hers - so a listing that dropped the scope shows it.
+        await SeedListingRowAsync("thread-9999-bob", TenantA, Bob, 999_999);
+
+        var controller = CreateController(Signed(TenantA, Alice), pool);
+
+        var ok = Assert.IsType<OkObjectResult>(
+            await controller.List(PageSize, 0, ct: CancellationToken.None));
+        var summaries = ((IEnumerable<ConversationSummary>)ok.Value!).ToArray();
+
+        _ = summaries.Should().HaveCount(PageSize);
+        _ = summaries.Should().OnlyContain(s => !SubAgentSummary.IsAgentOwnedThreadId(s.ThreadId));
+        _ = summaries.Select(s => s.ThreadId).Should().NotContain("thread-9999-bob");
+    }
+
+    /// <summary>
+    /// Seeds one listing row with a chosen <c>LastUpdated</c>, which <see cref="SeedAsync"/> pins to a
+    /// constant - fine for the refusal tests it serves, useless for an ordering one.
+    /// </summary>
+    /// <param name="threadId">The thread id, whose shape also carries its creation time.</param>
+    /// <param name="tenantId">Owning tenant.</param>
+    /// <param name="ownerUserId">Owning user.</param>
+    /// <param name="lastUpdated">The last-updated stamp the listing orders on.</param>
+    private Task SeedListingRowAsync(
+        string threadId,
+        string tenantId,
+        string ownerUserId,
+        long lastUpdated) =>
+        _store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LastUpdated = lastUpdated,
+                Properties = System.Collections.Immutable.ImmutableDictionary<string, object>.Empty,
+                TenantId = tenantId,
+                OwnerUserId = ownerUserId,
+            },
+            CancellationToken.None);
 
     /// <summary>
     /// An UNAUTHENTICATED caller under enforcement lists nothing.
@@ -371,7 +451,7 @@ public sealed class ConversationScopingTests
 
         var controller = CreateController(principal: null, pool);
 
-        var result = await controller.List(50, 0, CancellationToken.None);
+        var result = await controller.List(50, 0, ct: CancellationToken.None);
 
         if (result is OkObjectResult ok)
         {
@@ -1198,7 +1278,7 @@ public sealed class ConversationScopingTests
 
         var admin = CreateController(Signed(TenantA, "dir-a:admin", ResourceAccessPolicy.AdminRole), pool);
 
-        var ok = Assert.IsType<OkObjectResult>(await admin.List(50, 0, CancellationToken.None));
+        var ok = Assert.IsType<OkObjectResult>(await admin.List(50, 0, ct: CancellationToken.None));
         _ = ((IEnumerable<ConversationSummary>)ok.Value!).Should().HaveCount(3);
 
         _ = _audit.Authorizations
@@ -1225,7 +1305,7 @@ public sealed class ConversationScopingTests
         var counting = new CountingResourceGrantStore(_grants);
         var owner = CreateController(Signed(TenantA, Alice), pool, grantsOverride: counting);
 
-        var ok = Assert.IsType<OkObjectResult>(await owner.List(50, 0, CancellationToken.None));
+        var ok = Assert.IsType<OkObjectResult>(await owner.List(50, 0, ct: CancellationToken.None));
         _ = ((IEnumerable<ConversationSummary>)ok.Value!).Should().HaveCount(8);
 
         _ = counting.FindGrantCallCount.Should().Be(

@@ -177,6 +177,7 @@ public sealed class InMemoryConversationStore
     public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
         int limit = 50,
         int offset = 0,
+        ConversationListOptions? options = null,
         CancellationToken ct = default)
     {
         var allThreadIds = GetAllThreadIds();
@@ -207,8 +208,13 @@ public sealed class InMemoryConversationStore
             }
         }
 
-        var result = metadataList
-            .OrderByDescending(m => m.LastUpdated)
+        // Exclusion and ordering both run BEFORE Skip/Take. Filtering an already-trimmed page is
+        // the short-page bug: on a deployment where agent-owned threads dominate the last-updated
+        // ordering it emptied the conversation sidebar. See ConversationListOptions.
+        var listOptions = options ?? ConversationListOptions.Default;
+
+        var result = listOptions
+            .Order(metadataList.Where(listOptions.Admits))
             .Skip(offset)
             .Take(limit)
             .ToList();
@@ -221,15 +227,20 @@ public sealed class InMemoryConversationStore
         ConversationListScope scope,
         int limit = 50,
         int offset = 0,
+        ConversationListOptions? options = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(scope);
 
-        // Filter BEFORE the page is taken. Applying the scope to an already-trimmed page would
-        // return short pages whose length depends on who is asking.
-        var result = _metadata.Values
-            .Where(scope.Admits)
-            .OrderByDescending(m => m.LastUpdated)
+        // Filter BEFORE the page is taken - both predicates. Applying the scope to an already-
+        // trimmed page would return short pages whose length depends on who is asking; applying the
+        // presentation exclusion there returns short pages whose length depends on how much
+        // background agent traffic happened to run recently. They stay separate objects (see
+        // ConversationListOptions) and meet here as two conjuncts.
+        var listOptions = options ?? ConversationListOptions.Default;
+
+        var result = listOptions
+            .Order(_metadata.Values.Where(m => scope.Admits(m) && listOptions.Admits(m)))
             .Skip(offset)
             .Take(limit)
             .ToList();

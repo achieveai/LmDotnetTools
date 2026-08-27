@@ -108,13 +108,26 @@ public interface IConversationStore
     /// <summary>
     /// Lists all threads with their metadata, ordered by last updated descending.
     /// </summary>
+    /// <remarks>
+    /// <paramref name="options"/> is applied BEFORE <paramref name="limit"/> and
+    /// <paramref name="offset"/>, for the same reason the scope of the other overload is: a listing
+    /// is a filter, not a loop, and a page trimmed first and filtered second is short by however
+    /// many rows the filter removed. See <see cref="ConversationListOptions"/> for the production
+    /// failure that made this parameter necessary.
+    /// </remarks>
     /// <param name="limit">Maximum number of threads to return.</param>
     /// <param name="offset">Number of threads to skip (for pagination).</param>
+    /// <param name="options">
+    /// Presentation shape of the listing - excluded id prefixes and sort order. <c>null</c> means
+    /// no exclusion and last-used order: exactly what this overload returned before the parameter
+    /// existed.
+    /// </param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>List of thread metadata, or empty list if no threads exist.</returns>
     Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
         int limit = 50,
         int offset = 0,
+        ConversationListOptions? options = null,
         CancellationToken ct = default);
 
     /// <summary>
@@ -122,14 +135,21 @@ public interface IConversationStore
     /// </summary>
     /// <remarks>
     /// The predicate is pushed into the store rather than applied to the result of
-    /// <see cref="ListThreadsAsync(int, int, CancellationToken)"/>: filtering after a
-    /// <paramref name="limit"/> silently returns short pages, because the page was trimmed before
-    /// the filter ran. See P1 spec 7.5.
+    /// <see cref="ListThreadsAsync(int, int, ConversationListOptions, CancellationToken)"/>:
+    /// filtering after a <paramref name="limit"/> silently returns short pages, because the page
+    /// was trimmed before the filter ran. See P1 spec 7.5.
     /// <para>
     /// The scope covers READ only. It is not a substitute for calling
     /// <c>IResourceAccessPolicy</c> on write, delete or share - those vary by relationship and by
     /// publication state in ways no list query models. An endpoint that infers "it was in your
     /// list, so you may edit it" reintroduces exactly the collapse the rights table prevents.
+    /// </para>
+    /// <para>
+    /// <paramref name="options"/> is a SECOND, independent narrowing applied alongside the scope and
+    /// likewise before the page is taken. The two are kept apart deliberately: the scope decides
+    /// what the caller may see and comes from their identity, the options decide what this surface
+    /// is asking for and come from their query. <see cref="ConversationListOptions"/> explains at
+    /// length why folding them together would be wrong.
     /// </para>
     /// <para>
     /// The default implementation THROWS. A default that ignored the scope and delegated to the
@@ -143,11 +163,17 @@ public interface IConversationStore
     /// <param name="scope">The principal's tenant, identity, role and resolved grants.</param>
     /// <param name="limit">Maximum number of threads to return.</param>
     /// <param name="offset">Number of threads to skip.</param>
+    /// <param name="options">
+    /// Presentation shape of the listing - excluded id prefixes and sort order. <c>null</c> means
+    /// no exclusion and last-used order: exactly what this overload returned before the parameter
+    /// existed.
+    /// </param>
     /// <param name="ct">Cancellation token.</param>
     Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
         ConversationListScope scope,
         int limit = 50,
         int offset = 0,
+        ConversationListOptions? options = null,
         CancellationToken ct = default) =>
         throw new NotSupportedException(
             $"{GetType().Name} does not implement scoped conversation listing (P1 spec 7.5).");

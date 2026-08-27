@@ -106,7 +106,8 @@ public sealed class WorkspaceTranscriptMirrorTests
         public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
             int limit = 50,
             int offset = 0,
-            CancellationToken ct = default) => inner.ListThreadsAsync(limit, offset, ct);
+            ConversationListOptions? options = null,
+            CancellationToken ct = default) => inner.ListThreadsAsync(limit, offset, options, ct);
     }
 
     /// <summary>

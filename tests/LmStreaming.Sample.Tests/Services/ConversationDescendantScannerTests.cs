@@ -475,7 +475,7 @@ public sealed class ConversationDescendantScannerTests
 
     /// <summary>
     /// A conversation touched WHILE the scan is running must not be able to hide a sibling from the
-    /// roster. <see cref="IConversationStore.ListThreadsAsync(int, int, CancellationToken)"/> is contractually "ordered by last updated
+    /// roster. <see cref="IConversationStore.ListThreadsAsync(int, int, ConversationListOptions, CancellationToken)"/> is contractually "ordered by last updated
     /// descending", so an offset-paged scan sorts on a column the live system is mutating underneath it:
     /// a thread that moves toward the front pushes an unread neighbour backwards across the offset
     /// boundary, and the next page's offset steps straight over it. What makes it more than a lost read is
@@ -619,10 +619,11 @@ public sealed class ConversationDescendantScannerTests
         public async Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
             int limit = 50,
             int offset = 0,
+            ConversationListOptions? options = null,
             CancellationToken ct = default)
         {
             var first = Interlocked.Increment(ref _calls) == 1;
-            var page = await inner.ListThreadsAsync(limit, offset, ct);
+            var page = await inner.ListThreadsAsync(limit, offset, options, ct);
             if (first)
             {
                 _read.SetResult();

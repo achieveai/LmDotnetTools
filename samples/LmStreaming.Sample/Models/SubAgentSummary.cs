@@ -297,6 +297,27 @@ public sealed record SubAgentSummary
     private const string WorkflowThreadPrefix = "workflow-";
 
     /// <summary>
+    ///     Every reserved thread-id prefix an AGENT owns — the one spelling of that set, for callers
+    ///     that need the prefixes themselves rather than a yes/no answer about one id.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         The conversation sidebar needs the set, not the predicate: its exclusion is pushed into
+    ///         the store as a <c>ConversationListOptions.ExcludedThreadIdPrefixes</c> so the page is
+    ///         trimmed by the query rather than after it, and a C# delegate cannot cross into SQL. It
+    ///         is exposed here rather than restated at the controller so the store-side exclusion and
+    ///         <see cref="IsAgentOwnedThreadId"/> cannot drift: add a third agent-owned id space and
+    ///         both move together, because the predicate below is implemented in terms of THIS list.
+    ///     </para>
+    ///     <para>
+    ///         Ordinal comparison, matching <see cref="IsAgentOwnedThreadId"/> and the store's own
+    ///         prefix test. A thread id is an opaque token, never a culture-sensitive string.
+    ///     </para>
+    /// </remarks>
+    public static IReadOnlyList<string> AgentOwnedThreadIdPrefixes { get; } =
+        [SubAgentThreadPrefix, WorkflowThreadPrefix];
+
+    /// <summary>
     ///     True when <paramref name="threadId"/> is a thread an AGENT owns rather than a conversation a
     ///     human started — a sub-agent's or a workflow controller's transcript.
     /// </summary>
@@ -304,12 +325,15 @@ public sealed record SubAgentSummary
     ///     These threads are the sample's reserved id space, and they are governed differently from an
     ///     ordinary conversation: they never appear in the conversation sidebar, and who may read one is
     ///     the collaboration's decision (#244) rather than "whoever knows the id". Naming the convention
-    ///     once keeps the listing filter and the route guards from drifting apart.
+    ///     once keeps the listing filter and the route guards from drifting apart — which is why this
+    ///     is implemented over <see cref="AgentOwnedThreadIdPrefixes"/> rather than repeating the two
+    ///     prefixes: the sidebar's store-side exclusion and this route guard are then, by construction,
+    ///     asking about the same set.
     /// </remarks>
     public static bool IsAgentOwnedThreadId(string? threadId) =>
         threadId is not null
-        && (threadId.StartsWith(SubAgentThreadPrefix, StringComparison.Ordinal)
-            || threadId.StartsWith(WorkflowThreadPrefix, StringComparison.Ordinal));
+        && AgentOwnedThreadIdPrefixes.Any(
+            prefix => threadId.StartsWith(prefix, StringComparison.Ordinal));
 
     /// <summary>
     ///     The thread a hierarchy node's transcript lives under, following the ids the rest of the sample
