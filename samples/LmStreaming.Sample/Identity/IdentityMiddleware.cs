@@ -20,10 +20,10 @@ namespace LmStreaming.Sample.Identity;
 /// </para>
 /// <para>
 /// It runs for <c>/api</c> routes and for the WebSocket transports at <c>/ws</c> (#342). Static
-/// files, the SPA's own index and the health endpoint have no principal to establish and must
-/// stay reachable while signed out - in particular the rejection screen itself is served by the
-/// SPA, so locking the SPA behind the principal would hide the very page that explains the
-/// refusal.
+/// files and the SPA's own index have no principal to establish and must stay reachable while
+/// signed out - in particular the rejection screen itself is served by the SPA, so locking the SPA
+/// behind the principal would hide the very page that explains the refusal. (A health endpoint was
+/// named here too; the sample maps none - see <see cref="AnonymousApiPaths"/>.)
 /// </para>
 /// <para>
 /// The WebSocket transports are inside the boundary even though they sit outside the <c>/api</c>
