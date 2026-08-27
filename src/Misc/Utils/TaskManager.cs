@@ -89,12 +89,20 @@ Examples:
             return "Error: Title cannot be empty.";
         }
 
+        // An omitted parentId means "make this a main task". A supplied-but-blank one is a
+        // malformed call, and silently promoting it to a root task hides the mistake behind
+        // a success message.
+        if (parentId != null && string.IsNullOrWhiteSpace(parentId))
+        {
+            return "Error: Parent task ID cannot be blank. Omit parentId to add a main task.";
+        }
+
         lock (_sync)
         {
             PrivateTaskItem task;
 
             // Adding a root task
-            if (string.IsNullOrWhiteSpace(parentId))
+            if (parentId == null)
             {
                 var taskId = _state.NextId++;
                 task = new PrivateTaskItem
@@ -248,24 +256,24 @@ Examples:
 
             if (clearExisting)
             {
-                _ = result.AppendLine("Cleared existing tasks.");
+                AppendLine(result, "Cleared existing tasks.");
             }
 
             if (addedTasks.Count > 0)
             {
-                _ = result.AppendLine($"Added {addedTasks.Count} task(s):");
+                AppendLine(result, $"Added {addedTasks.Count} task(s):");
                 foreach (var task in addedTasks)
                 {
-                    _ = result.AppendLine($"  - {task}");
+                    AppendLine(result, $"  - {task}");
                 }
             }
 
             if (errors.Count > 0)
             {
-                _ = result.AppendLine("Errors:");
+                AppendLine(result, "Errors:");
                 foreach (var error in errors)
                 {
-                    _ = result.AppendLine($"  - {error}");
+                    AppendLine(result, $"  - {error}");
                 }
             }
 
@@ -308,22 +316,25 @@ Examples:
         [Description("New status: not started|in progress|completed|removed")] string status = "not started"
     )
     {
-        // Find target task using string ID
-        var (targetTask, error) = FindTaskByStringId(taskId);
-        if (targetTask == null)
+        lock (_sync)
         {
-            return error!;
+            // Find target task using string ID
+            var (targetTask, error) = FindTaskByStringId(taskId);
+            if (targetTask == null)
+            {
+                return error!;
+            }
+
+            // Update status
+            if (!TryParseStatus(status, out var newStatus))
+            {
+                return "Error: Invalid status. Use: not started, in progress, completed, removed.";
+            }
+
+            targetTask.Status = newStatus;
+
+            return $"Updated task {targetTask.DisplayId} status to '{NormalizeStatusText(newStatus)}'.";
         }
-
-        // Update status
-        if (!TryParseStatus(status, out var newStatus))
-        {
-            return "Error: Invalid status. Use: not started, in progress, completed, removed.";
-        }
-
-        targetTask.Status = newStatus;
-
-        return $"Updated task {targetTask.DisplayId} status to '{NormalizeStatusText(newStatus)}'.";
     }
 
     public string UpdateTask(int taskId, string status = "not started")
@@ -364,43 +375,51 @@ Examples:
 - Already done: {""taskId"": ""1.5""}  // Discovered existing implementation"
     )]
     public string DeleteTask(
-        [Description("Task ID")] int taskId,
+        [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
         [Description("Subtask ID to delete specific subtask")] int? subtaskId = null
     )
     {
-        var task = _state.RootTasks.FirstOrDefault(t => t.Id == taskId);
-        if (subtaskId.HasValue)
+        lock (_sync)
         {
-            // Delete subtask
-            if (task == null)
-            {
-                return $"Error: Parent task {taskId} not found.";
-            }
+            var (task, _) = FindTaskByStringId(taskId);
 
-            PrivateTaskItem? subtask = null;
-            lock (task.SubTasks)
+            if (subtaskId.HasValue)
             {
-                subtask = task.SubTasks.FirstOrDefault(st => st.Id == subtaskId.Value);
-                if (subtask == null)
+                // Delete subtask
+                if (task == null)
                 {
-                    return $"Error: Subtask {subtaskId.Value} not found under task {taskId}.";
+                    return $"Error: Parent task {taskId} not found.";
                 }
 
-                _ = task.SubTasks.Remove(subtask);
+                PrivateTaskItem? subtask;
+                lock (task.SubTasks)
+                {
+                    subtask = task.SubTasks.FirstOrDefault(st => st.Id == subtaskId.Value);
+                    if (subtask == null)
+                    {
+                        return $"Error: Subtask {subtaskId.Value} not found under task {taskId}.";
+                    }
+
+                    _ = task.SubTasks.Remove(subtask);
+                }
+
+                return $"Deleted subtask {subtaskId.Value} from task {taskId}: {subtask.Title}";
             }
 
-            return $"Deleted subtask {subtaskId.Value} from task {taskId}: {subtask.Title}";
-        }
+            // Delete main task and all subtasks
+            if (task == null)
+            {
+                return $"Error: Task {taskId} not found.";
+            }
 
-        // Delete main task and all subtasks
-        if (task == null)
-        {
-            return $"Error: Task {taskId} not found.";
+            _ = RemoveTaskAndSubtasks(task);
+            return $"Deleted task {taskId} and all subtasks: {task.Title}";
         }
+    }
 
-        _ = _state.RootTasks.Remove(task);
-        RemoveTaskAndSubtasks(task);
-        return $"Deleted task {taskId} and all subtasks: {task.Title}";
+    public string DeleteTask(int taskId, int? subtaskId = null)
+    {
+        return DeleteTask(taskId.ToString(), subtaskId);
     }
 
     [Function(
@@ -413,12 +432,20 @@ Examples:
 - Subtask: {""taskId"": 1, ""subtaskId"": 3}"
     )]
     public string GetTask(
-        [Description("Task ID")] int taskId,
+        [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
         [Description("Subtask ID for specific subtask")] int? subtaskId = null
     )
     {
-        var (task, taskRef, error) = FindTaskWithReference(taskId, subtaskId);
-        return task == null ? error! : FormatTaskDetails(task, taskRef);
+        lock (_sync)
+        {
+            var (task, taskRef, error) = FindTaskWithReference(taskId, subtaskId);
+            return task == null ? error! : FormatTaskDetails(task, taskRef);
+        }
+    }
+
+    public string GetTask(int taskId, int? subtaskId = null)
+    {
+        return GetTask(taskId.ToString(), subtaskId);
     }
 
     [Function(
@@ -444,7 +471,7 @@ Examples:
 - Insight: {""taskId"": ""2.1"", ""noteText"": ""Similar pattern worked in auth module - see commit abc123""}"
     )]
     public string AddNote(
-        [Description("Main task ID (1, 2, 3...)")] int taskId,
+        [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
         [Description("Subtask ID if adding note to subtask (optional)")] int? subtaskId = null,
         [Description("Note text to add")] string noteText = ""
     )
@@ -454,18 +481,26 @@ Examples:
             return "Error: Note text cannot be empty.";
         }
 
-        var (targetTask, taskRef, error) = FindTaskWithReference(taskId, subtaskId);
-        if (targetTask == null)
+        lock (_sync)
         {
-            return error!;
-        }
+            var (targetTask, taskRef, error) = FindTaskWithReference(taskId, subtaskId);
+            if (targetTask == null)
+            {
+                return error!;
+            }
 
-        lock (targetTask.Notes)
-        {
-            targetTask.Notes.Add(noteText.Trim());
-        }
+            lock (targetTask.Notes)
+            {
+                targetTask.Notes.Add(noteText.Trim());
+            }
 
-        return $"Added note to {taskRef}.";
+            return $"Added note to {taskRef}.";
+        }
+    }
+
+    public string AddNote(int taskId, int? subtaskId = null, string noteText = "")
+    {
+        return AddNote(taskId.ToString(), subtaskId, noteText);
     }
 
     [Function(
@@ -478,7 +513,7 @@ Examples:
 - Edit note #1 on subtask: {""taskId"": 1, ""subtaskId"": 3, ""noteIndex"": 1, ""noteText"": ""Changed approach""}"
     )]
     public string EditNote(
-        [Description("Main task ID (1, 2, 3...)")] int taskId,
+        [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
         [Description("Subtask ID if editing subtask note (optional)")] int? subtaskId = null,
         [Description("Note index to edit (1-based: 1 for first note, 2 for second, etc.)")] int noteIndex = 1,
         [Description("New text to replace the existing note")] string noteText = ""
@@ -489,23 +524,31 @@ Examples:
             return "Error: Note text cannot be empty.";
         }
 
-        var (targetTask, taskRef, error) = FindTaskWithReference(taskId, subtaskId);
-        if (targetTask == null)
+        lock (_sync)
         {
-            return error!;
-        }
-
-        lock (targetTask.Notes)
-        {
-            if (noteIndex < 1 || noteIndex > targetTask.Notes.Count)
+            var (targetTask, taskRef, error) = FindTaskWithReference(taskId, subtaskId);
+            if (targetTask == null)
             {
-                return $"Error: Note index {noteIndex} out of range. {taskRef} has {targetTask.Notes.Count} note(s).";
+                return error!;
             }
 
-            targetTask.Notes[noteIndex - 1] = noteText.Trim();
-        }
+            lock (targetTask.Notes)
+            {
+                if (noteIndex < 1 || noteIndex > targetTask.Notes.Count)
+                {
+                    return $"Error: Note index {noteIndex} out of range. {taskRef} has {targetTask.Notes.Count} note(s).";
+                }
 
-        return $"Updated note #{noteIndex} on {taskRef}.";
+                targetTask.Notes[noteIndex - 1] = noteText.Trim();
+            }
+
+            return $"Updated note #{noteIndex} on {taskRef}.";
+        }
+    }
+
+    public string EditNote(int taskId, int? subtaskId = null, int noteIndex = 1, string noteText = "")
+    {
+        return EditNote(taskId.ToString(), subtaskId, noteIndex, noteText);
     }
 
     [Function(
@@ -518,32 +561,40 @@ Examples:
 - Delete note #3 from subtask: {""taskId"": 1, ""subtaskId"": 2, ""noteIndex"": 3}"
     )]
     public string DeleteNote(
-        [Description("Main task ID (1, 2, 3...)")] int taskId,
+        [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
         [Description("Subtask ID if deleting subtask note (optional)")] int? subtaskId = null,
         [Description("Note index to delete (1-based: 1 for first note, 2 for second, etc.)")] int noteIndex = 1
     )
     {
-        var (targetTask, taskRef, error) = FindTaskWithReference(taskId, subtaskId);
-        if (targetTask == null)
+        lock (_sync)
         {
-            return error!;
-        }
-
-        lock (targetTask.Notes)
-        {
-            if (noteIndex < 1 || noteIndex > targetTask.Notes.Count)
+            var (targetTask, taskRef, error) = FindTaskWithReference(taskId, subtaskId);
+            if (targetTask == null)
             {
-                return $"Error: Note index {noteIndex} out of range. {taskRef} has {targetTask.Notes.Count} note(s).";
+                return error!;
             }
 
-            var deletedNote = targetTask.Notes[noteIndex - 1];
-            targetTask.Notes.RemoveAt(noteIndex - 1);
-            return $"Deleted note #{noteIndex} from {taskRef}: \"{deletedNote}\".";
+            lock (targetTask.Notes)
+            {
+                if (noteIndex < 1 || noteIndex > targetTask.Notes.Count)
+                {
+                    return $"Error: Note index {noteIndex} out of range. {taskRef} has {targetTask.Notes.Count} note(s).";
+                }
+
+                var deletedNote = targetTask.Notes[noteIndex - 1];
+                targetTask.Notes.RemoveAt(noteIndex - 1);
+                return $"Deleted note #{noteIndex} from {taskRef}: \"{deletedNote}\".";
+            }
         }
     }
 
+    public string DeleteNote(int taskId, int? subtaskId = null, int noteIndex = 1)
+    {
+        return DeleteNote(taskId.ToString(), subtaskId, noteIndex);
+    }
+
     public string ManageNotes(
-        int taskId,
+        string taskId,
         int? subtaskId = null,
         string noteText = "",
         int noteIndex = 1,
@@ -561,6 +612,17 @@ Examples:
         };
     }
 
+    public string ManageNotes(
+        int taskId,
+        int? subtaskId = null,
+        string noteText = "",
+        int noteIndex = 1,
+        string action = "add"
+    )
+    {
+        return ManageNotes(taskId.ToString(), subtaskId, noteText, noteIndex, action);
+    }
+
     [Function(
         "list-notes",
         @"List all notes to recall context for the next step.
@@ -570,36 +632,49 @@ Examples:
 - Subtask notes: {""taskId"": 1, ""subtaskId"": 3}"
     )]
     public string ListNotes(
-        [Description("Task ID")] int taskId,
+        [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
         [Description("Subtask ID for subtask notes")] int? subtaskId = null
     )
     {
-        // Find target task using helper method
-        var (targetTask, taskRef, error) = FindTaskWithReference(taskId, subtaskId);
-        if (targetTask == null)
-        {
-            return error!;
-        }
-
         List<string> notesCopy;
-        lock (targetTask.Notes)
+        string taskRef;
+        string title;
+        lock (_sync)
         {
-            if (targetTask.Notes.Count == 0)
+            // Find target task using helper method
+            var (targetTask, foundRef, error) = FindTaskWithReference(taskId, subtaskId);
+            if (targetTask == null)
             {
-                return $"{taskRef} has no notes.";
+                return error!;
             }
 
-            notesCopy = [.. targetTask.Notes];
+            taskRef = foundRef;
+            title = targetTask.Title;
+
+            lock (targetTask.Notes)
+            {
+                if (targetTask.Notes.Count == 0)
+                {
+                    return $"{taskRef} has no notes.";
+                }
+
+                notesCopy = [.. targetTask.Notes];
+            }
         }
 
         var sb = new StringBuilder();
-        _ = sb.AppendLine($"Notes for {taskRef}: {targetTask.Title}");
+        AppendLine(sb, $"Notes for {taskRef}: {title}");
         for (var i = 0; i < notesCopy.Count; i++)
         {
-            _ = sb.AppendLine($"{i + 1}. {notesCopy[i]}");
+            AppendLine(sb, $"{i + 1}. {notesCopy[i]}");
         }
 
         return sb.ToString().TrimEnd();
+    }
+
+    public string ListNotes(int taskId, int? subtaskId = null)
+    {
+        return ListNotes(taskId.ToString(), subtaskId);
     }
 
     [Function(
@@ -635,17 +710,6 @@ Examples:
         [Description("Show only main tasks (exclude subtasks)")] bool mainOnly = false
     )
     {
-        List<PrivateTaskItem> rootTasksCopy;
-        lock (_sync)
-        {
-            if (_state.RootTasks.Count == 0)
-            {
-                return "No tasks found.";
-            }
-
-            rootTasksCopy = [.. _state.RootTasks];
-        }
-
         TaskStatus? filterStatus = null;
         if (!string.IsNullOrEmpty(status))
         {
@@ -657,35 +721,50 @@ Examples:
             filterStatus = parsedStatus;
         }
 
-        var sb = new StringBuilder();
-
-        // Count tasks by status for summary
-        var allTasks = GetAllTasksFlat(rootTasksCopy);
-        var notStartedCount = allTasks.Count(t => t.Status == TaskStatus.NotStarted);
-        var inProgressCount = allTasks.Count(t => t.Status == TaskStatus.InProgress);
-        var completedCount = allTasks.Count(t => t.Status == TaskStatus.Completed);
-        var totalActive = notStartedCount + inProgressCount;
-
-        // Beautiful header with task summary
-        _ = sb.AppendLine("# 📋 Task List");
-        if (filterStatus == null && !mainOnly)
+        // Snapshotting the root list is not enough: everything below the roots is walked here,
+        // and AddTask appends to a nested SubTasks list holding only _sync. The lock therefore
+        // has to span the whole traversal, not just the copy.
+        lock (_sync)
         {
-            _ = sb.AppendLine();
-            _ = sb.AppendLine(
-                $"**Status**: {inProgressCount} in progress | {notStartedCount} pending | {completedCount} completed"
-            );
-            _ = sb.AppendLine($"**Total**: {totalActive} active tasks");
+            var sb = new StringBuilder();
+
+            // Count tasks by status for summary
+            var allTasks = GetAllTasksFlat(_state.RootTasks);
+            var notStartedCount = allTasks.Count(t => t.Status == TaskStatus.NotStarted);
+            var inProgressCount = allTasks.Count(t => t.Status == TaskStatus.InProgress);
+            var completedCount = allTasks.Count(t => t.Status == TaskStatus.Completed);
+            var totalActive = notStartedCount + inProgressCount;
+
+            // Beautiful header with task summary
+            AppendLine(sb, "# 📋 Task List");
+            if (filterStatus == null && !mainOnly)
+            {
+                AppendLine(sb);
+                AppendLine(
+                    sb,
+                    $"**Status**: {inProgressCount} in progress | {notStartedCount} pending | {completedCount} completed"
+                );
+                AppendLine(sb, $"**Total**: {totalActive} active tasks");
+            }
+
+            AppendLine(sb);
+
+            // Render the body separately so "nothing to show" is decided by what was actually
+            // written, not by sniffing the tail of the assembled string.
+            var body = new StringBuilder();
+            foreach (var task in _state.RootTasks)
+            {
+                AppendTaskMarkdown(body, task, 0, filterStatus, mainOnly);
+            }
+
+            // An empty list still gets the header — a bare "No tasks found." gives the model no
+            // clue which tool answered it.
+            _ = body.Length == 0
+                ? sb.Append(_state.RootTasks.Count == 0 ? "No tasks found." : "No tasks match the specified criteria.")
+                : sb.Append(body);
+
+            return sb.ToString().TrimEnd();
         }
-
-        _ = sb.AppendLine();
-
-        foreach (var task in rootTasksCopy)
-        {
-            AppendTaskMarkdown(sb, task, 0, filterStatus, mainOnly);
-        }
-
-        var result = sb.ToString().TrimEnd();
-        return result.EndsWith("Task List") ? "No tasks match the specified criteria." : result;
     }
 
     public IList<TaskItem> GetTasks()
@@ -722,33 +801,37 @@ Examples:
 
         var matches = new List<(PrivateTaskItem task, string path)>();
 
-        List<PrivateTaskItem> rootTasksCopy;
+        // SearchTaskRecursive descends into every nested SubTasks list, which AddTask appends
+        // to under _sync alone — so the lock has to be held for the descent, not just for a
+        // snapshot of the roots.
         lock (_sync)
         {
-            rootTasksCopy = [.. _state.RootTasks];
-        }
+            foreach (var task in _state.RootTasks)
+            {
+                SearchTaskRecursive(task, searchTerm.Trim(), task.Id.ToString(), matches);
+            }
 
-        foreach (var task in rootTasksCopy)
-        {
-            SearchTaskRecursive(task, searchTerm.Trim(), task.Id.ToString(), matches);
-        }
+            if (matches.Count == 0)
+            {
+                return $"No tasks found matching '{searchTerm}'.";
+            }
 
-        if (matches.Count == 0)
-        {
-            return $"No tasks found matching '{searchTerm}'.";
-        }
+            var sb = new StringBuilder();
+            AppendLine(sb, $"Found {matches.Count} task(s) matching '{searchTerm}':");
+            foreach (var (task, path) in matches)
+            {
+                var statusSymbol = GetStatusSymbol(task.Status);
+                AppendLine(sb, $"- {statusSymbol} {path}: {task.Title}");
+            }
 
-        var sb = new StringBuilder();
-        _ = sb.AppendLine($"Found {matches.Count} task(s) matching '{searchTerm}':");
-        foreach (var (task, path) in matches)
-        {
-            var statusSymbol = GetStatusSymbol(task.Status);
-            _ = sb.AppendLine($"- {statusSymbol} {path}: {task.Title}");
+            return sb.ToString().TrimEnd();
         }
-
-        return sb.ToString().TrimEnd();
     }
 
+    /// <summary>
+    ///     Renders the whole tree as markdown. It delegates to <see cref="ListTasks" />, and so
+    ///     inherits that method's lock coverage rather than walking the tree itself.
+    /// </summary>
     public string GetMarkdown()
     {
         return ListTasks();
@@ -757,82 +840,134 @@ Examples:
     // Helper methods
 
     /// <summary>
-    ///     Finds a task by ID and optional subtask ID, returning the task, a reference string, and any error.
-    ///     This consolidates the repeated task lookup pattern.
+    ///     Appends a line terminated by a literal LF. <see cref="StringBuilder.AppendLine()" />
+    ///     emits <see cref="Environment.NewLine" />, which would make this tool's rendered
+    ///     markdown differ between Windows and everything else.
     /// </summary>
-    private (PrivateTaskItem? task, string taskRef, string? error) FindTaskWithReference(int taskId, int? subtaskId)
+    private static void AppendLine(StringBuilder sb, string text)
     {
-        var task = _state.RootTasks.FirstOrDefault(t => t.Id == taskId);
+        _ = sb.Append(text).Append('\n');
+    }
 
-        if (task == null)
-        {
-            return (null, string.Empty, $"Error: Task {taskId} not found.");
-        }
+    private static void AppendLine(StringBuilder sb)
+    {
+        _ = sb.Append('\n');
+    }
 
-        if (subtaskId.HasValue)
+    /// <summary>
+    ///     Finds a task by (possibly dotted) ID and optional subtask ID, returning the task, a
+    ///     reference string, and any error. This consolidates the repeated task lookup pattern.
+    ///     The task ID accepts the same dotted paths <c>add-task</c> produces, so every task the
+    ///     hierarchy can hold is addressable — not just the first two levels.
+    /// </summary>
+    private (PrivateTaskItem? task, string taskRef, string? error) FindTaskWithReference(string taskId, int? subtaskId)
+    {
+        lock (_sync)
         {
-            PrivateTaskItem? subtask;
-            lock (task.SubTasks)
+            var (task, error) = FindTaskByStringId(taskId);
+
+            if (task == null)
             {
-                subtask = task.SubTasks.FirstOrDefault(st => st.Id == subtaskId.Value);
+                return (null, string.Empty, error ?? $"Error: Task {taskId} not found.");
             }
 
-            if (subtask == null)
+            if (subtaskId.HasValue)
             {
-                return (null, string.Empty, $"Error: Subtask {subtaskId.Value} not found under task {taskId}.");
+                PrivateTaskItem? subtask;
+                lock (task.SubTasks)
+                {
+                    subtask = task.SubTasks.FirstOrDefault(st => st.Id == subtaskId.Value);
+                }
+
+                if (subtask == null)
+                {
+                    return (null, string.Empty, $"Error: Subtask {subtaskId.Value} not found under task {taskId}.");
+                }
+
+                return (subtask, $"subtask {subtaskId.Value} of task {taskId}", null);
             }
 
-            return (subtask, $"subtask {subtaskId.Value} of task {taskId}", null);
+            return (task, $"task {taskId}", null);
         }
-
-        return (task, $"task {taskId}", null);
     }
 
     private (PrivateTaskItem? task, string? error) FindTaskByStringId(string taskId)
     {
-        // Parse hierarchical ID like "1", "1.2", "1.2.3"
-        var parts = taskId.Split('.');
-        if (parts.Length == 0 || !int.TryParse(parts[0], out var rootId))
+        lock (_sync)
         {
-            return (null, $"Error: Invalid task ID format '{taskId}'.");
-        }
-
-        // Find root task
-        var currentTask = _state.RootTasks.FirstOrDefault(t => t.Id == rootId);
-        if (currentTask == null)
-        {
-            return (null, $"Error: Task '{parts[0]}' not found.");
-        }
-
-        // Navigate through subtask hierarchy
-        for (var i = 1; i < parts.Length; i++)
-        {
-            if (!int.TryParse(parts[i], out var subId))
+            // Parse hierarchical ID like "1", "1.2", "1.2.3"
+            var parts = (taskId ?? string.Empty).Split('.');
+            if (parts.Length == 0 || !int.TryParse(parts[0], out var rootId))
             {
-                return (null, $"Error: Invalid subtask ID '{parts[i]}' in '{taskId}'.");
+                return (null, $"Error: Invalid task ID format '{taskId}'.");
             }
 
-            PrivateTaskItem? nextTask = null;
-            lock (currentTask.SubTasks)
+            // Find root task
+            var currentTask = _state.RootTasks.FirstOrDefault(t => t.Id == rootId);
+            if (currentTask == null)
             {
-                nextTask = currentTask.SubTasks.FirstOrDefault(st => st.Id == subId);
+                return (null, $"Error: Task '{parts[0]}' not found.");
             }
 
-            if (nextTask == null)
+            // Navigate through subtask hierarchy
+            for (var i = 1; i < parts.Length; i++)
             {
-                var path = string.Join(".", parts.Take(i + 1));
-                return (null, $"Error: Task '{path}' not found.");
+                if (!int.TryParse(parts[i], out var subId))
+                {
+                    return (null, $"Error: Invalid subtask ID '{parts[i]}' in '{taskId}'.");
+                }
+
+                PrivateTaskItem? nextTask = null;
+                lock (currentTask.SubTasks)
+                {
+                    nextTask = currentTask.SubTasks.FirstOrDefault(st => st.Id == subId);
+                }
+
+                if (nextTask == null)
+                {
+                    var path = string.Join(".", parts.Take(i + 1));
+                    return (null, $"Error: Task '{path}' not found.");
+                }
+
+                currentTask = nextTask;
             }
 
-            currentTask = nextTask;
+            return (currentTask, null);
         }
-
-        return (currentTask, null);
     }
 
-    private void RemoveTaskAndSubtasks(PrivateTaskItem task)
+    /// <summary>
+    ///     Detaches a task, and with it everything below it, from wherever it is attached —
+    ///     the root list or some parent's subtask list. Deleting only from
+    ///     <c>RootTasks</c> left every nested task in place.
+    /// </summary>
+    private bool RemoveTaskAndSubtasks(PrivateTaskItem task)
     {
-        _ = _state.RootTasks.Remove(task);
+        lock (_sync)
+        {
+            return _state.RootTasks.Remove(task) || RemoveFromSubtree(_state.RootTasks, task);
+        }
+    }
+
+    private static bool RemoveFromSubtree(List<PrivateTaskItem> candidates, PrivateTaskItem target)
+    {
+        foreach (var candidate in candidates)
+        {
+            lock (candidate.SubTasks)
+            {
+                if (candidate.SubTasks.Remove(target))
+                {
+                    return true;
+                }
+            }
+
+            if (RemoveFromSubtree(candidate.SubTasks, target))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static List<PrivateTaskItem> GetAllTasksFlat(List<PrivateTaskItem> rootTasks)
@@ -859,8 +994,8 @@ Examples:
     private static string FormatTaskDetails(PrivateTaskItem task, string header)
     {
         var sb = new StringBuilder();
-        _ = sb.AppendLine($"{string.Concat(header[..1].ToUpper(), header.AsSpan(1))}: {task.Title}");
-        _ = sb.AppendLine($"Status: {NormalizeStatusText(task.Status)}");
+        AppendLine(sb, $"{string.Concat(header[..1].ToUpper(), header.AsSpan(1))}: {task.Title}");
+        AppendLine(sb, $"Status: {NormalizeStatusText(task.Status)}");
 
         List<string> notesCopy;
         lock (task.Notes)
@@ -870,10 +1005,10 @@ Examples:
 
         if (notesCopy.Count > 0)
         {
-            _ = sb.AppendLine($"Notes ({notesCopy.Count}):");
+            AppendLine(sb, $"Notes ({notesCopy.Count}):");
             for (var i = 0; i < notesCopy.Count; i++)
             {
-                _ = sb.AppendLine($"{i + 1}. {notesCopy[i]}");
+                AppendLine(sb, $"{i + 1}. {notesCopy[i]}");
             }
         }
 
@@ -885,11 +1020,11 @@ Examples:
 
         if (subtasksCopy.Count > 0)
         {
-            _ = sb.AppendLine($"Subtasks ({subtasksCopy.Count}):");
+            AppendLine(sb, $"Subtasks ({subtasksCopy.Count}):");
             foreach (var subtask in subtasksCopy)
             {
                 var statusSymbol = GetStatusSymbol(subtask.Status);
-                _ = sb.AppendLine($"  {statusSymbol} {subtask.Id}. {subtask.Title}");
+                AppendLine(sb, $"  {statusSymbol} {subtask.Id}. {subtask.Title}");
             }
         }
 
@@ -914,18 +1049,23 @@ Examples:
 
         // Use hierarchical numbering with proper formatting
         var taskNumber = string.IsNullOrEmpty(task.DisplayId) ? task.Id.ToString() : task.DisplayId;
-        _ = sb.AppendLine(
+        AppendLine(
+            sb,
             $"{indent}{statusSymbol} {taskNumber}. {task.Title}{(task.Status == TaskStatus.Removed ? " (removed)" : string.Empty)}"
         );
 
-        var notesCopy = new List<string>(task.Notes);
+        List<string> notesCopy;
+        lock (task.Notes)
+        {
+            notesCopy = [.. task.Notes];
+        }
 
         if (notesCopy.Count > 0)
         {
-            _ = sb.AppendLine($"{indent}  Notes:");
+            AppendLine(sb, $"{indent}  Notes:");
             for (var i = 0; i < notesCopy.Count; i++)
             {
-                _ = sb.AppendLine($"{indent}  {i + 1}. {notesCopy[i]}");
+                AppendLine(sb, $"{indent}  {i + 1}. {notesCopy[i]}");
             }
         }
 
@@ -971,18 +1111,25 @@ Examples:
 
     public string JsonSerializeTasks()
     {
-        return JsonSerializer.Serialize(
-            _state,
-            new JsonSerializerOptions { WriteIndented = false, PropertyNamingPolicy = JsonNamingPolicy.CamelCase }
-        );
+        // Serialising walks the whole tree; AddTask must not be reshaping it at the same time.
+        lock (_sync)
+        {
+            return JsonSerializer.Serialize(
+                _state,
+                new JsonSerializerOptions { WriteIndented = false, PropertyNamingPolicy = JsonNamingPolicy.CamelCase }
+            );
+        }
     }
 
     public JsonElement JsonSerializeTasksToJsonElements()
     {
-        return JsonSerializer.SerializeToElement(
-            _state,
-            new JsonSerializerOptions { WriteIndented = false, PropertyNamingPolicy = JsonNamingPolicy.CamelCase }
-        );
+        lock (_sync)
+        {
+            return JsonSerializer.SerializeToElement(
+                _state,
+                new JsonSerializerOptions { WriteIndented = false, PropertyNamingPolicy = JsonNamingPolicy.CamelCase }
+            );
+        }
     }
 
     public static TaskManager DeserializeTasks(JsonElement json)
@@ -999,17 +1146,21 @@ Examples:
 
     private string GetTaskCounts(string countType)
     {
-        List<PrivateTaskItem> rootTasksCopy;
+        int total;
+        int completed;
+        int pending;
+        int removed;
+
+        // GetAllTasksFlat recurses through nested SubTasks lists that AddTask appends to
+        // under _sync alone; a snapshot of the roots leaves that traversal unguarded.
         lock (_sync)
         {
-            rootTasksCopy = [.. _state.RootTasks];
+            var allTasks = GetAllTasksFlat(_state.RootTasks);
+            total = allTasks.Count;
+            completed = allTasks.Count(t => t.Status == TaskStatus.Completed);
+            pending = allTasks.Count(t => t.Status is TaskStatus.NotStarted or TaskStatus.InProgress);
+            removed = allTasks.Count(t => t.Status == TaskStatus.Removed);
         }
-
-        var allTasks = GetAllTasksFlat(rootTasksCopy);
-        var total = allTasks.Count;
-        var completed = allTasks.Count(t => t.Status == TaskStatus.Completed);
-        var pending = allTasks.Count(t => t.Status is TaskStatus.NotStarted or TaskStatus.InProgress);
-        var removed = allTasks.Count(t => t.Status == TaskStatus.Removed);
 
         return countType switch
         {
@@ -1028,7 +1179,7 @@ Examples:
             TaskStatus.NotStarted => "[ ]",
             TaskStatus.InProgress => "[-]",
             TaskStatus.Completed => "[x]",
-            TaskStatus.Removed => "[d]",
+            TaskStatus.Removed => "[~]",
             _ => "[ ]",
         };
     }
@@ -1040,14 +1191,18 @@ Examples:
         {
             case "not started":
             case "not_started":
+            case "not-started":
             case "notstarted":
             case "todo":
             case "to do":
+            case "to-do":
+            case "to_do":
             case "pending":
                 status = TaskStatus.NotStarted;
                 return true;
             case "in progress":
             case "in_progress":
+            case "in-progress":
             case "inprogress":
             case "doing":
                 status = TaskStatus.InProgress;

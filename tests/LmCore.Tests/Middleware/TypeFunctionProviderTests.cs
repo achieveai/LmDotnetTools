@@ -334,7 +334,293 @@ public class TypeFunctionProviderTests
         Assert.False(textParam.IsRequired);
     }
 
+    #region Argument Binding Tests
+
+    [Fact]
+    public async Task Handler_QuotedNumber_BindsToIntParameter()
+    {
+        // Arrange - LLMs routinely emit numeric arguments as JSON strings.
+        var provider = new TypeFunctionProvider(new TestHandlerBinding());
+        var function = provider.GetFunctions().First(f => f.Contract.Name == "bind-int");
+
+        // Act
+        var result = await function.Handler(
+            """{"taskId":"1"}""",
+            new ToolCallContext(),
+            CancellationToken.None
+        );
+
+        // Assert
+        Assert.False(result is ToolHandlerResult.Resolved { Payload.IsError: true });
+        Assert.Equal("int:1", JsonSerializer.Deserialize<string>(result.ResultText));
+    }
+
+    [Fact]
+    public async Task Handler_UnquotedNumber_BindsToStringParameter()
+    {
+        // Arrange - the mirror case: a string parameter (dotted ids like "1.2")
+        // receiving a bare JSON number.
+        var provider = new TypeFunctionProvider(new TestHandlerBinding());
+        var function = provider.GetFunctions().First(f => f.Contract.Name == "bind-string");
+
+        // Act
+        var result = await function.Handler("""{"taskId":1}""", new ToolCallContext(), CancellationToken.None);
+
+        // Assert
+        Assert.False(result is ToolHandlerResult.Resolved { Payload.IsError: true });
+        Assert.Equal("string:1", JsonSerializer.Deserialize<string>(result.ResultText));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(null)]
+    public async Task Handler_EmptyArgumentPayload_AppliesDeclaredDefaults(string? argsJson)
+    {
+        // Arrange - an empty/null payload must still honour the C# default.
+        var provider = new TypeFunctionProvider(new TestHandlerBinding());
+        var function = provider.GetFunctions().First(f => f.Contract.Name == "bind-defaulted");
+
+        // Act
+        var result = await function.Handler(argsJson!, new ToolCallContext(), CancellationToken.None);
+
+        // Assert
+        Assert.False(result is ToolHandlerResult.Resolved { Payload.IsError: true });
+        Assert.Equal("limit:7,flag:False", JsonSerializer.Deserialize<string>(result.ResultText));
+    }
+
+    [Fact]
+    public async Task Handler_EmptyArgumentPayload_SuppliesValueTypeDefaults()
+    {
+        // Arrange - a value-type parameter with no C# default must still bind.
+        var provider = new TypeFunctionProvider(new TestHandlerBinding());
+        var function = provider.GetFunctions().First(f => f.Contract.Name == "bind-required-flag");
+
+        // Act
+        var result = await function.Handler("", new ToolCallContext(), CancellationToken.None);
+
+        // Assert
+        Assert.False(result is ToolHandlerResult.Resolved { Payload.IsError: true });
+        Assert.Equal("required:False", JsonSerializer.Deserialize<string>(result.ResultText));
+    }
+
+    [Fact]
+    public void InstanceProvider_MarksFunctionsStateful()
+    {
+        // An instance-backed provider closes over that instance; sharing the provider
+        // shares its state. StatelessFunctionProviderWrapper filters on exactly this flag.
+        var provider = new TypeFunctionProvider(new TestHandlerBinding());
+
+        Assert.All(provider.GetFunctions(), f => Assert.True(f.IsStateful));
+    }
+
+    [Fact]
+    public void StaticProvider_MarksFunctionsStateless()
+    {
+        var provider = new TypeFunctionProvider(typeof(TestHandlerWithFunctionAttribute));
+
+        Assert.All(provider.GetFunctions(), f => Assert.False(f.IsStateful));
+    }
+
+    #endregion
+
+    #region Error Signalling Tests
+
+    [Fact]
+    public async Task Handler_PlainStringReturn_IsDeliveredAsSuccess()
+    {
+        // A method that has not opted in must be unaffected, even when its text says "Error".
+        var provider = new TypeFunctionProvider(new TestHandlerErrorSignalling());
+        var function = provider.GetFunctions().First(f => f.Contract.Name == "legacy-error");
+
+        var result = await function.Handler("{}", new ToolCallContext(), CancellationToken.None);
+
+        var resolved = Assert.IsType<ToolHandlerResult.Resolved>(result);
+        Assert.False(resolved.Payload.IsError);
+        Assert.Null(resolved.Payload.ErrorCode);
+        Assert.Equal("Error: not found.", JsonSerializer.Deserialize<string>(resolved.Payload.Text));
+    }
+
+    [Fact]
+    public async Task Handler_FunctionResultError_IsDeliveredAsErrorWithCode()
+    {
+        var provider = new TypeFunctionProvider(new TestHandlerErrorSignalling());
+        var function = provider.GetFunctions().First(f => f.Contract.Name == "signalled-error");
+
+        var result = await function.Handler("{}", new ToolCallContext(), CancellationToken.None);
+
+        var resolved = Assert.IsType<ToolHandlerResult.Resolved>(result);
+        Assert.True(resolved.Payload.IsError);
+        Assert.Equal("thing_not_found", resolved.Payload.ErrorCode);
+        // Only Text is serialized, so the wire shape matches a plain string return.
+        Assert.Equal("Error: not found.", JsonSerializer.Deserialize<string>(resolved.Payload.Text));
+    }
+
+    [Fact]
+    public async Task Handler_FunctionResultSuccess_IsDeliveredAsSuccess()
+    {
+        var provider = new TypeFunctionProvider(new TestHandlerErrorSignalling());
+        var function = provider.GetFunctions().First(f => f.Contract.Name == "signalled-ok");
+
+        var result = await function.Handler("{}", new ToolCallContext(), CancellationToken.None);
+
+        var resolved = Assert.IsType<ToolHandlerResult.Resolved>(result);
+        Assert.False(resolved.Payload.IsError);
+        Assert.Null(resolved.Payload.ErrorCode);
+        Assert.Equal("all good", JsonSerializer.Deserialize<string>(resolved.Payload.Text));
+    }
+
+    [Fact]
+    public void FunctionResult_ImplicitlyConvertsFromString_AsSuccess()
+    {
+        FunctionResult result = "hello";
+
+        Assert.False(result.IsError);
+        Assert.Null(result.ErrorCode);
+        Assert.Equal("hello", result.Text);
+    }
+
+    [Fact]
+    public void FunctionResult_Error_RequiresACode()
+    {
+        _ = Assert.Throws<ArgumentException>(() => FunctionResult.Error("  ", "text"));
+    }
+
+    [Fact]
+    public void FunctionResult_Default_IsAnErrorNotAnEmptySuccess()
+    {
+        // A struct's default is reachable without either factory, so it must not read as
+        // "the operation succeeded and had nothing to say".
+        FunctionResult result = default;
+
+        Assert.True(result.IsError);
+        Assert.Equal(FunctionResult.UninitializedErrorCode, result.ErrorCode);
+        Assert.Contains("uninitialized", result.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void FunctionResult_OkWithEmptyText_StaysASuccess()
+    {
+        // The default is distinguished by never having been assigned, not by being empty.
+        var result = FunctionResult.Ok(string.Empty);
+
+        Assert.False(result.IsError);
+        Assert.Null(result.ErrorCode);
+        Assert.Equal(string.Empty, result.Text);
+    }
+
+    [Fact]
+    public async Task Handler_DefaultFunctionResult_IsDeliveredAsErrorNotAnEmptyBody()
+    {
+        var provider = new TypeFunctionProvider(new TestHandlerErrorSignalling());
+        var function = provider.GetFunctions().First(f => f.Contract.Name == "never-assigned");
+
+        var result = await function.Handler("{}", new ToolCallContext(), CancellationToken.None);
+
+        var resolved = Assert.IsType<ToolHandlerResult.Resolved>(result);
+        Assert.True(resolved.Payload.IsError);
+        Assert.Equal(FunctionResult.UninitializedErrorCode, resolved.Payload.ErrorCode);
+        // Previously this serialized to "{}" — an empty successful body.
+        Assert.NotEqual("{}", resolved.Payload.Text);
+    }
+
+    [Fact]
+    public void Contract_FunctionResultReturn_AdvertisesTheStringThatGoesOnTheWire()
+    {
+        var provider = new TypeFunctionProvider(new TestHandlerErrorSignalling());
+
+        var signalled = provider.GetFunctions().First(f => f.Contract.Name == "signalled-error");
+        var legacy = provider.GetFunctions().First(f => f.Contract.Name == "legacy-error");
+
+        // Only Text is serialized, so an opted-in tool must describe itself exactly like a string one.
+        Assert.Equal(typeof(string), signalled.Contract.ReturnType);
+        Assert.Equal(legacy.Contract.ReturnType, signalled.Contract.ReturnType);
+    }
+
+    [Fact]
+    public async Task Handler_AsyncFunctionResultReturn_ReportsTheErrorAndAdvertisesString()
+    {
+        // Task<FunctionResult> unwraps to the same string on the wire as the sync form, so it
+        // must describe itself the same way and carry the same error code.
+        var provider = new TypeFunctionProvider(new TestHandlerErrorSignalling());
+        var function = provider.GetFunctions().First(f => f.Contract.Name == "signalled-async");
+
+        Assert.Equal(typeof(string), function.Contract.ReturnType);
+
+        var result = await function.Handler("{}", new ToolCallContext(), CancellationToken.None);
+
+        var resolved = Assert.IsType<ToolHandlerResult.Resolved>(result);
+        Assert.True(resolved.Payload.IsError);
+        Assert.Equal("async_thing_not_found", resolved.Payload.ErrorCode);
+        Assert.Equal("Error: not found.", JsonSerializer.Deserialize<string>(resolved.Payload.Text));
+    }
+
+    #endregion
+
     #region Test Classes
+
+    public class TestHandlerErrorSignalling
+    {
+        [Function("legacy-error", "Returns an error-looking string without opting in")]
+        public string LegacyError()
+        {
+            return "Error: not found.";
+        }
+
+        [Function("signalled-error", "Reports a failed operation with a code")]
+        public FunctionResult SignalledError()
+        {
+            return FunctionResult.Error("thing_not_found", "Error: not found.");
+        }
+
+        [Function("signalled-ok", "Returns success through the opt-in type")]
+        public FunctionResult SignalledOk()
+        {
+            return "all good";
+        }
+
+        /// <summary>
+        ///     Stands in for every way a struct's default reaches a caller without passing
+        ///     through a factory — an unassigned field, an array slot, a missing switch arm.
+        /// </summary>
+        [Function("never-assigned", "Returns the struct's default without going through a factory")]
+        public FunctionResult NeverAssigned()
+        {
+            return default;
+        }
+
+        [Function("signalled-async", "Reports a failed operation from an async method")]
+        public Task<FunctionResult> SignalledAsync()
+        {
+            return Task.FromResult(FunctionResult.Error("async_thing_not_found", "Error: not found."));
+        }
+    }
+
+    public class TestHandlerBinding
+    {
+        [Function("bind-int", "Echoes an int parameter")]
+        public string BindInt(int taskId)
+        {
+            return $"int:{taskId}";
+        }
+
+        [Function("bind-string", "Echoes a string parameter")]
+        public string BindString(string taskId)
+        {
+            return $"string:{taskId}";
+        }
+
+        [Function("bind-defaulted", "Echoes parameters that declare C# defaults")]
+        public string BindDefaulted(int limit = 7, bool flag = false)
+        {
+            return $"limit:{limit},flag:{flag}";
+        }
+
+        [Function("bind-required-flag", "Echoes a value-type parameter with no default")]
+        public string BindRequiredFlag(bool enabled)
+        {
+            return $"required:{enabled}";
+        }
+    }
 
     public class TestHandlerWithFunctionAttribute
     {

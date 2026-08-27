@@ -2,17 +2,17 @@
 
 ## High-Level Overview
 
-The Todo Manager is an in-memory task management system that provides LLM-accessible functions for creating, managing, and displaying hierarchical todo lists. It supports two-level task hierarchies (main tasks and subtasks), status tracking, note-taking, and markdown output formatting.
+The Todo Manager is an in-memory task management system that provides LLM-accessible functions for creating, managing, and displaying hierarchical todo lists. It supports arbitrarily deep task hierarchies, status tracking, note-taking, and markdown output formatting.
 
 ## High Level Requirements
 
 - **In-memory task storage** - No persistence across application restarts
 - **Function call integration** - Expose functions via FunctionCallMiddleware with kebab-case names
-- **Two-level hierarchy** - Support main tasks with optional subtasks
+- **Unbounded hierarchy** - Support tasks nested to any depth
 - **Status management** - Track task progress through defined status states
 - **Note management** - Add and update notes for any task
 - **Markdown output** - Generate human-readable task lists in markdown format
-- **Auto-incrementing IDs** - Simple integer-based task identification
+- **Dotted path IDs** - Address any task by its position in the tree (`1`, `1.2`, `1.2.3`)
 
 ## Existing Solutions
 
@@ -29,7 +29,17 @@ The Todo Manager is an in-memory task management system that provides LLM-access
 
 ## Current Implementation
 
-This is a new feature. No existing implementation exists in the codebase.
+`src/Misc/Utils/TaskManager.cs` already implements this feature and has done since before
+this specification was written. It is a plain class whose eleven `[Function]`-annotated
+methods are surfaced by `TypeFunctionProvider`, and it is wired up per conversation in
+`samples/LmStreaming.Sample/Program.cs`. Its tests live in
+`tests/Misc.Tests/Utils/TaskManagerTests.cs`.
+
+An earlier revision of this document opened by asserting that no implementation existed.
+That was wrong, and it cost a duplicate implementation (PR #511's `TodoManager`) before
+anyone noticed. Everything below is therefore written as a description of `TaskManager`,
+not as a design for something new. Where the original acceptance criteria disagreed with
+the shipped behaviour, the criterion has been amended and the amendment is called out.
 
 ## Detailed Requirements
 
@@ -37,66 +47,104 @@ This is a new feature. No existing implementation exists in the codebase.
 - **User Story**: As a user, I need a way to represent tasks with hierarchical relationships and metadata so that I can organize my work effectively.
 
 #### Acceptance Criteria:
-1. **Task Structure**: WHEN creating the task model THEN it SHALL include properties for ID (int), Title (string), Status (enum), Notes (List<string>), and SubTasks (List<Task>)
+1. **Task Structure**: WHEN creating the task model THEN it SHALL include properties for ID (string — the dotted path its parent chain produces), Title (string), Status (enum), Notes (List<string>), and SubTasks (List<TaskItem>)
+   - *Amended.* This criterion previously said `ID (int)`, which contradicted criterion 3: an int cannot name `1.2.3`. `TaskItem.Id` is the dotted path string, and every tool takes and returns that path. An int sibling ordinal is still kept internally, but it is not the addressable ID.
 2. **Status Enum**: WHEN defining task status THEN it SHALL support "NotStarted", "InProgress", "Completed", and "Removed" states
-3. **Hierarchy Limits**: WHEN adding subtasks THEN the system SHALL enforce a maximum depth of 2 levels (main task + subtask only)
+3. **Hierarchy Depth**: WHEN adding subtasks THEN the system SHALL impose no depth limit — a task may be nested arbitrarily deep, and every task SHALL be addressable by the dotted path its parent chain produces (`1`, `1.2`, `1.2.3`, ...)
+   - *Amended.* This criterion previously required a maximum depth of 2 levels. The shipped implementation nests without limit, the tool descriptions advertise depth-3 examples, and the cap was never enforced. The cap is withdrawn rather than retrofitted.
 4. **In-Memory Storage**: WHEN storing tasks THEN they SHALL be kept in memory only with no persistence
+5. **Instance Scope**: WHEN a host serves several conversations THEN each SHALL get its own `TaskManager`; the type holds mutable state and MUST NOT be registered as a shared singleton
 
 ### Requirement 2: Add Task Function
 - **User Story**: As a user, I need to add new tasks and subtasks so that I can build my todo list.
 
 #### Acceptance Criteria:
-1. **Function Exposure**: WHEN registering functions THEN "add-task" SHALL be available to LLM with parameters for title and optional parent_id
-2. **Main Task Creation**: WHEN calling add-task without parent_id THEN it SHALL create a new main task with auto-incremented ID and "NotStarted" status
-3. **Subtask Creation**: WHEN calling add-task with valid parent_id THEN it SHALL create a subtask under the specified parent
-4. **Error Handling**: WHEN calling add-task with invalid parent_id THEN it SHALL return an error message in markdown format
+1. **Function Exposure**: WHEN registering functions THEN "add-task" SHALL be available to LLM with parameters for `title` and optional `parentId`
+   - *Amended.* The parameter is `parentId`, not `parent_id`. The tool schema is generated from the C# parameter names verbatim, so the snake_case spellings this document used throughout named parameters that do not exist.
+2. **Main Task Creation**: WHEN calling add-task without `parentId` THEN it SHALL create a new main task with auto-incremented ID and "NotStarted" status
+3. **Subtask Creation**: WHEN calling add-task with a valid `parentId` THEN it SHALL create a subtask under the specified parent, at any depth
+4. **Error Handling**: WHEN calling add-task with an invalid or blank `parentId` THEN it SHALL return an error message in markdown format. A blank `parentId` SHALL NOT be treated as an omitted one
 5. **Response Format**: WHEN task is successfully created THEN it SHALL return confirmation message with task ID in markdown format
 
 ### Requirement 3: Update Task Status Function
 - **User Story**: As a user, I need to update task status so that I can track progress on my work.
 
 #### Acceptance Criteria:
-1. **Function Exposure**: WHEN registering functions THEN "update-task" SHALL be available with parameters for task_id and status
-2. **Status Validation**: WHEN updating status THEN it SHALL only accept "not started", "in progress", "completed", or "removed"
-3. **Task Lookup**: WHEN updating task status THEN it SHALL find tasks by ID across all hierarchy levels
-4. **Error Handling**: WHEN task_id is invalid THEN it SHALL return error message in markdown format
+1. **Function Exposure**: WHEN registering functions THEN "update-task" SHALL be available with parameters for `taskId` and `status`
+   - *Amended.* The parameter is `taskId`, not `task_id` — see the note on Requirement 2.1.
+2. **Status Validation**: WHEN updating status THEN it SHALL accept "not started", "in progress", "completed", or "removed", along with the hyphenated and underscored spellings a model is apt to emit ("not-started", "in-progress", "to-do", ...)
+3. **Task Lookup**: WHEN updating task status THEN it SHALL find tasks by dotted path across all hierarchy levels
+4. **Error Handling**: WHEN `taskId` is invalid THEN it SHALL return error message in markdown format
 5. **Response Format**: WHEN status is successfully updated THEN it SHALL return confirmation message in markdown format
 
 ### Requirement 4: Add Task Notes Function
 - **User Story**: As a user, I need to add notes to tasks so that I can capture additional context and details.
 
 #### Acceptance Criteria:
-1. **Function Exposure**: WHEN registering functions THEN "add-task-notes" SHALL be available with parameters for task_id and note
+1. **Function Exposure**: WHEN registering functions THEN "add-note" SHALL be available with parameters for `taskId` and `noteText`, alongside "edit-note", "delete-note" and "list-notes"
+   - *Amended.* The tool is named `add-note`, not `add-task-notes`, and its parameters are `taskId` and `noteText`, not `task_id` and `note` — see the note on Requirement 2.1.
 2. **Note Appending**: WHEN adding notes THEN it SHALL append to the existing notes list for the task
-3. **Task Lookup**: WHEN adding notes THEN it SHALL find tasks by ID across all hierarchy levels
-4. **Error Handling**: WHEN task_id is invalid THEN it SHALL return error message in markdown format
+3. **Task Lookup**: WHEN adding notes THEN it SHALL find tasks by dotted path across all hierarchy levels, not only the first two
+4. **Error Handling**: WHEN `taskId` is invalid THEN it SHALL return error message in markdown format
 5. **Response Format**: WHEN note is successfully added THEN it SHALL return confirmation message in markdown format
 
 ### Requirement 5: List Tasks Function
 - **User Story**: As a user, I need to view all my tasks so that I can see what work needs to be done.
 
 #### Acceptance Criteria:
-1. **Function Exposure**: WHEN registering functions THEN "list-tasks" SHALL be available with no parameters
-2. **Hierarchical Display**: WHEN listing tasks THEN it SHALL show main tasks with indented subtasks
-3. **Status Indicators**: WHEN displaying tasks THEN it SHALL use [ ] for not started, [-] for in progress, [x] for completed
+1. **Function Exposure**: WHEN registering functions THEN "list-tasks" SHALL be available with optional `status` and `mainOnly` parameters
+   - *Amended.* This criterion previously said "with no parameters". The shipped tool takes two optional filters.
+2. **Hierarchical Display**: WHEN listing tasks THEN it SHALL show main tasks with indented subtasks, two spaces per level
+3. **Status Indicators**: WHEN displaying tasks THEN it SHALL use `[ ]` for not started, `[-]` for in progress, `[x]` for completed and `[~]` for removed, with a trailing ` (removed)` on a removed task
+   - *Amended.* The removed marker is stated explicitly. It was previously `[d]`; `[~]` was chosen because it reads as "struck through" rather than as an abbreviation, and nothing else in the format uses `~`.
 4. **Notes Display**: WHEN tasks have notes THEN it SHALL display them indented under the task with numbering
-5. **Markdown Format**: WHEN returning task list THEN it SHALL use markdown formatting matching the provided example
+5. **Markdown Format**: WHEN returning task list THEN it SHALL emit the format shown in "Worked Example" below
+   - *Amended.* The original criterion pointed at a "provided example" that this document never contained. The example below is the format the implementation actually produces, and `tests/Misc.Tests/Utils/TaskManagerTests.cs` pins it byte for byte.
+6. **Header On Empty**: WHEN there are no tasks, or none match the filter, THEN it SHALL still emit the header, followed by "No tasks found." or "No tasks match the specified criteria." A bare sentence with no header gives the model no clue which tool answered it.
+7. **Line Endings**: WHEN rendering THEN lines SHALL be separated by `\n` regardless of host platform, so the output is identical on Windows and elsewhere
+
+### Worked Example
+
+Numbering is the dotted path, not a bullet list. There is no `- ` prefix. The status
+summary block appears only for an unfiltered, non-`mainOnly` listing.
+
+```text
+# 📋 Task List
+
+**Status**: 1 in progress | 2 pending | 1 completed
+**Total**: 3 active tasks
+
+[-] 1. Design API
+  Notes:
+  1. Rate limit is 100/min
+  2. Auth via JWT
+  [x] 1.1. Define endpoints
+    [ ] 1.1.1. Validate JWT
+  [~] 1.2. Draft schema (removed)
+[ ] 2. Ship it
+```
+
+Note that the counts describe *active* work: a `[~]` removed task is excluded from
+"**Total**: N active tasks" and from the pending count.
 
 ### Requirement 6: Markdown Generation Method
 - **User Story**: As a developer, I need a method to generate markdown representation so that I can get formatted output programmatically.
 
 #### Acceptance Criteria:
-1. **Method Availability**: WHEN implementing TodoManager THEN it SHALL provide a GetMarkdown() method
+1. **Method Availability**: WHEN implementing TaskManager THEN it SHALL provide a GetMarkdown() method
 2. **Format Consistency**: WHEN generating markdown THEN it SHALL match the same format as list-tasks function
 3. **Complete Output**: WHEN calling GetMarkdown THEN it SHALL include all tasks, subtasks, and notes
-4. **Header Inclusion**: WHEN generating markdown THEN it SHALL include "# TODO" header
+4. **Header Inclusion**: WHEN generating markdown THEN it SHALL include the `# 📋 Task List` header
+   - *Amended.* The header is `# 📋 Task List`, not `# TODO`.
 
 ### Requirement 7: Function Provider Integration
 - **User Story**: As a developer, I need the TodoManager to integrate with the function call system so that LLMs can use it.
 
 #### Acceptance Criteria:
-1. **Provider Implementation**: WHEN creating TodoManager THEN it SHALL implement IFunctionProvider interface
-2. **Function Registration**: WHEN getting functions THEN it SHALL return FunctionDescriptor objects for all four operations
-3. **Parameter Mapping**: WHEN functions are called THEN it SHALL properly deserialize JSON parameters
-4. **Error Handling**: WHEN operations fail THEN it SHALL return descriptive error messages instead of throwing exceptions
-5. **Provider Priority**: WHEN registering provider THEN it SHALL use appropriate priority for conflict resolution
+1. **Provider Implementation**: WHEN creating TaskManager THEN it SHALL be a plain class whose `[Function]`-annotated methods are surfaced by `TypeFunctionProvider`; it SHALL NOT implement `IFunctionProvider` itself
+   - *Amended.* Hand-rolling `IFunctionProvider` would duplicate the reflection the framework already does.
+2. **Function Registration**: WHEN getting functions THEN `TypeFunctionProvider` SHALL return FunctionDescriptor objects for all eleven operations: add-task, bulk-initialize, update-task, delete-task, get-task, add-note, edit-note, delete-note, list-notes, list-tasks, search-tasks
+3. **Parameter Mapping**: WHEN functions are called THEN arguments SHALL bind even when the model's JSON types differ from the declared ones — a quoted number onto a numeric parameter, an unquoted number onto a string parameter — and a parameter the model omitted SHALL take its declared C# default rather than the type's zero value
+4. **Error Handling**: WHEN operations fail THEN it SHALL return descriptive error messages instead of throwing exceptions, and SHOULD mark the tool result as an error so the model and the host can tell a failure from a successful answer whose text happens to start with "Error"
+   - *Amended — deferred; see [#521](https://github.com/achieveai/LmDotnetTools/issues/521).* The first half is shipped: every failure returns a message rather than throwing. The second half is not. `FunctionResult` and the `TypeFunctionProvider` support for it are in place, but no `TaskManager` tool routes its failures through them yet, so every one of the eleven tools still reaches the model with `IsError = false`. #521 tracks the routing.
+5. **Statefulness**: WHEN a provider is built around a live instance THEN its descriptors SHALL be marked `IsStateful`, so hosts that only accept stateless tools exclude it rather than sharing one conversation's list with another

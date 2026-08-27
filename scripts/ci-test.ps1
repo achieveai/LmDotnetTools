@@ -16,10 +16,10 @@ $solution = "LmDotnetTools.sln"
 # green because nothing in the gate built it. tests/McpServer.AspNetCore.Tests used to live here
 # and no longer does: it, its sample and the library they exercise are all in the solution now
 # (#336), so the solution build covers them and repeating them here would only run them twice.
-$extraTestProjects = @(
-    "tests/LmConfig.Tests/LmConfig.Tests.csproj",
-    "tests/Misc.Tests/Misc.Tests.csproj"
-)
+# tests/LmConfig.Tests and tests/Misc.Tests used to live here and no longer do (#312): both are
+# in the solution now, so the solution build and test cover them and repeating them here would
+# only run them twice.
+$extraTestProjects = @()
 
 function Invoke-CiStep {
     param(

@@ -26,7 +26,7 @@
 - Simple and matches the provided example format
 
 ### Task Structure (from example)
-- Two-level hierarchy: Main tasks and subtasks
-- Status indicators: [-] (in progress), [x] (completed), [ ] (not started), [?] (removed)
+- Unbounded hierarchy: tasks nest to any depth, addressed by dotted path (`1`, `1.2`, `1.2.3`)
+- Status indicators: [-] (in progress), [x] (completed), [ ] (not started), [~] (removed)
 - Notes are numbered and associated with tasks
 - Markdown format shows hierarchy with indentation
