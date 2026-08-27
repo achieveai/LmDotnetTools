@@ -2005,6 +2005,29 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         // Ensure channel exists (recreate if it was completed by previous stop)
         EnsureChannelExists();
 
+        // PUBLISHED BEFORE the pre-loop startup below, not after it (#506). Every step of that
+        // startup - history recovery, run-ledger reconciliation, lifecycle reconciliation, usage
+        // hydration, OnBeforeRunAsync - reads and WRITES the conversation store, and while these two
+        // fields were assigned only afterwards, a StopAsync arriving inside that window found them
+        // both null and returned as a no-op. The caller was told the agent had stopped, disposal
+        // proceeded, and the startup writes carried on behind it. Assigning here makes the whole run,
+        // not merely its loop, the thing StopAsync cancels and then waits for.
+        _internalCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        _runTask = RunCoreAsync(_internalCts.Token);
+
+        await _runTask;
+    }
+
+    /// <summary>
+    /// The whole run - pre-loop startup, the loop, and the terminal usage flush - as the single task
+    /// <see cref="StopAsync"/> cancels and waits on.
+    /// </summary>
+    /// <param name="ct">
+    /// The run's own linked token. Cancelling it ends the startup steps as well as the loop, which is
+    /// the point: before #506 the startup ran on the caller's token only and no stop could reach it.
+    /// </param>
+    private async Task RunCoreAsync(CancellationToken ct)
+    {
         // Rehydrate persisted conversation history before the loop processes any input. The agent
         // pool creates a loop and starts it via RunAsync without ever calling RecoverAsync, so
         // without this an agent recreated after a restart (or a mode/provider switch, which also
@@ -2076,14 +2099,14 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
 
         await OnBeforeRunAsync();
 
-        _internalCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        _runTask = RunLoopAsync(_internalCts.Token);
-
         Logger.LogInformation("{AgentType} started. ThreadId: {ThreadId}", GetType().Name, ThreadId);
 
+        // The completeness stamping and the terminal flush wrap the LOOP only, exactly as they did
+        // when this method was the tail of RunAsync: a startup step that throws has produced no
+        // provider usage to stamp or flush, and giving it a terminal outcome would invent one.
         try
         {
-            await _runTask;
+            await RunLoopAsync(ct);
 
             // Clean terminal exit (loop returned, incl. a deliberate cancellation): every provider call
             // this loop observed is captured, so the conversation's usage is Complete (#196, BUG 2).
@@ -2135,7 +2158,23 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         }
         catch (TimeoutException)
         {
-            Logger.LogWarning("Loop stop timed out after {Timeout}", effectiveTimeout);
+            // The loop did NOT stop, so this method must not go on to behave as though it had (#506).
+            // Clearing _runTask/_internalCts below published a stopped-looking agent - IsRunning
+            // false, and a fresh RunAsync accepted - on top of a run that was still going, so the
+            // caller's next move (dispose, or restart) raced live work it had been told was over.
+            // Leaving them in place keeps IsRunning truthful and keeps disposal's own StopAsync
+            // waiting on the real task rather than on nothing.
+            //
+            // Terminalizing outstanding lifecycle runs is skipped for the same reason: the loop may
+            // still complete them itself. DisposeCoreAsync terminalizes as Interrupted afterwards,
+            // which is the accurate outcome for a run that never stopped.
+            Logger.LogError(
+                "Loop stop timed out after {Timeout} for thread {ThreadId}; the run is STILL RUNNING and "
+                    + "this agent continues to report it as such",
+                effectiveTimeout,
+                ThreadId
+            );
+            return;
         }
         catch (OperationCanceledException)
         {

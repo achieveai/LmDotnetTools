@@ -59,6 +59,33 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     private readonly CancellationTokenSource _poolCts = new();
     private bool _disposed;
 
+    /// <summary>
+    /// Every background task this pool started and discarded with <c>_ =</c>, held only so that
+    /// <see cref="DisposeAsync"/> can wait for it (#506).
+    /// </summary>
+    /// <remarks>
+    /// A discarded task is not merely unobserved, it is unreachable: the binding persist on the
+    /// creation path writes conversation-store metadata, and with nothing holding its task a pool
+    /// disposed while that write was in flight simply lost the update - no exception anywhere,
+    /// because the method self-catches. Silent persistence drift at shutdown is exactly why it went
+    /// unnoticed, and a set of live tasks is the smallest thing that turns "cannot wait" into "can".
+    /// Entries remove themselves on completion so a long-lived pool does not accumulate them.
+    /// </remarks>
+    private readonly ConcurrentDictionary<Task, byte> _backgroundWork = new();
+
+    /// <summary>
+    /// How long <see cref="DisposeAsync"/> waits for a single agent's run task, and for the discarded
+    /// background work, before giving up and reporting it.
+    /// </summary>
+    /// <remarks>
+    /// Bounded rather than indefinite because neither is killable: an agent whose loop ignores
+    /// cancellation would otherwise hang host shutdown forever. Generous enough that only a genuinely
+    /// stuck writer reaches it, and reaching it is logged at Error - a drain that gave up is a store
+    /// write that may still land after the pool reported itself disposed, which is precisely the
+    /// condition the wait exists to prevent, so it must never pass quietly.
+    /// </remarks>
+    private static readonly TimeSpan DrainTimeout = TimeSpan.FromSeconds(30);
+
     public sealed record RunStateInfo(
         bool IsInProgress,
         string? CurrentRunId,
@@ -180,6 +207,12 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         public required IMultiTurnAgent Agent { get; init; }
         public required Task RunTask { get; init; }
         public required CancellationTokenSource Cts { get; init; }
+
+        /// <summary>The pool's logger, so a run task that refuses to drain is reported rather than dropped.</summary>
+        public required ILogger Logger { get; init; }
+
+        /// <summary>The thread this entry serves, for naming it in a failed-drain report.</summary>
+        public required string ThreadId { get; init; }
         public required AgentProfile Mode { get; init; }
         public required string ProviderId { get; init; }
         public string? WorkspaceId { get; init; }
@@ -251,6 +284,48 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             }
 
             await Agent.DisposeAsync();
+
+            // This pool STARTED the run task (Task.Run in CreateAgentEntry) and is the only thing
+            // holding it, so it is the only thing that can wait for it (#506). StopAsync/DisposeAsync
+            // above drain the AGENT's own loop; they do not drain the wrapper around RunAsync that
+            // this pool created, and conversation-store writes live in the gap on both sides of that
+            // loop - the pre-loop recovery/reconciliation/hydration window, and the terminal usage
+            // flush RunAsync runs after the loop returns. Without this wait those writes outlive the
+            // disposal that was supposed to have ended them.
+            //
+            // A wait, never a rethrow. Two outcomes reach here and neither is this method's to raise:
+            //
+            //  - Cancelled. Task.Run was handed Cts.Token, so a token already cancelled when the
+            //    delegate would have been scheduled leaves the task CANCELLED without ever running
+            //    the delegate - and therefore without reaching the delegate's own catch blocks. That
+            //    is the ordinary case here, since the first thing this method does is cancel Cts.
+            //    Nothing ran, so nothing is draining and there is nothing to report.
+            //  - Faulted. The delegate catches OperationCanceledException and Exception itself, so
+            //    the started case does not fault; the catch is kept anyway rather than resting the
+            //    pool's teardown on an invariant held in another method.
+            //
+            // Only the timeout means a writer is genuinely still going, and only it is logged.
+            try
+            {
+                await RunTask.WaitAsync(DrainTimeout);
+            }
+            catch (TimeoutException)
+            {
+                Logger.LogError(
+                    "Agent run task for thread {ThreadId} did not finish within {Timeout} of disposal; "
+                        + "a conversation-store write may still land after this pool reports itself disposed",
+                    ThreadId,
+                    DrainTimeout
+                );
+            }
+            catch (OperationCanceledException)
+            {
+                // Never started, or ended by the cancel above. Drained either way.
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "Agent run task for thread {ThreadId} ended in a fault", ThreadId);
+            }
 
             if (OwnedResources != null)
             {
@@ -573,7 +648,12 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             // log warnings so silent persistence drift is visible. A single atomic write (not two
             // concurrent read-modify-writes) is what keeps the provider from being clobbered by the
             // workspace write — the lost-update race that dropped the persisted provider.
-            _ = PersistThreadBindingsIfNeededAsync(threadId, resolvedProviderId, resolvedWorkspaceId, mode.Id);
+            // Tracked, not discarded: this writes conversation-store metadata, and DisposeAsync has to
+            // be able to wait for it (#506). Still fire-and-forget from the CALLER's point of view -
+            // the WS connect path runs in a request scope and must not block on persistence.
+            TrackBackgroundWork(
+                PersistThreadBindingsIfNeededAsync(threadId, resolvedProviderId, resolvedWorkspaceId, mode.Id)
+            );
         }
 
         if (
@@ -788,6 +868,32 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
                 modeId
             );
         }
+    }
+
+    /// <summary>
+    /// Holds a fire-and-forget task in <see cref="_backgroundWork"/> until it finishes, so
+    /// <see cref="DisposeAsync"/> can drain it.
+    /// </summary>
+    /// <param name="work">
+    /// The task to track. Must be one that handles its own failures - nothing awaits it except the
+    /// drain, which deliberately does not rethrow.
+    /// </param>
+    /// <remarks>
+    /// The removal continuation runs <see cref="TaskContinuationOptions.ExecuteSynchronously"/> and is
+    /// scheduled AFTER the add, so a task that has already completed is still removed rather than
+    /// stranded in the set: a continuation on a completed task runs immediately, and by then the entry
+    /// it has to remove is there.
+    /// </remarks>
+    private void TrackBackgroundWork(Task work)
+    {
+        _ = _backgroundWork.TryAdd(work, 0);
+        _ = work.ContinueWith(
+            static (completed, state) => ((ConcurrentDictionary<Task, byte>)state!).TryRemove(completed, out _),
+            _backgroundWork,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default
+        );
     }
 
     /// <summary>
@@ -2191,7 +2297,10 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             // check. Tear it down rather than leak it — best-effort and off the caller's thread,
             // because disposal awaits and this method is synchronous by contract (it runs under the
             // per-thread creation lock).
-            _ = DiscardRefusedAgentAsync(threadId, agent, result.OwnedResources);
+            // Tracked for the same reason as the binding persist: disposing an agent flushes its usage
+            // to the conversation store, so this teardown is a store writer too and DisposeAsync must
+            // be able to wait for it.
+            TrackBackgroundWork(DiscardRefusedAgentAsync(threadId, agent, result.OwnedResources));
 
             throw new InvalidOperationException(
                 $"The agent factory produced {agent.GetType().Name} for thread '{threadId}', which does "
@@ -2230,6 +2339,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             Agent = agent,
             RunTask = runTask,
             Cts = cts,
+            Logger = _logger,
+            ThreadId = threadId,
             Mode = mode,
             ProviderId = providerId,
             WorkspaceId = workspaceId,
@@ -2303,6 +2414,36 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
 
         await Task.WhenAll(disposeTasks);
         _agents.Clear();
+
+        // Drained AFTER the entries, because disposing an entry can itself start tracked work (the
+        // refused-agent teardown), and a snapshot taken earlier would miss it. Every tracked task
+        // handles its own failures, so this waits without rethrowing - the only thing it can report
+        // is that a writer outlasted the wait.
+        var outstanding = _backgroundWork.Keys.ToArray();
+        if (outstanding.Length > 0)
+        {
+            try
+            {
+                await Task.WhenAll(outstanding).WaitAsync(DrainTimeout);
+            }
+            catch (TimeoutException)
+            {
+                _logger.LogError(
+                    "{Count} background conversation-store task(s) did not finish within {Timeout} of pool "
+                        + "disposal; a write may still land after this pool reports itself disposed",
+                    outstanding.Length,
+                    DrainTimeout
+                );
+            }
+            catch (Exception ex)
+            {
+                // Each tracked task already handles and logs its own failure; WhenAll re-raises it
+                // here purely as a side effect of waiting. Disposal must not fail on work whose whole
+                // contract is that its outcome does not reach a caller.
+                _logger.LogDebug(ex, "A background task faulted while the pool drained it during disposal");
+            }
+        }
+
         _poolCts.Dispose();
 
         _logger.LogInformation("Agent pool disposed");
