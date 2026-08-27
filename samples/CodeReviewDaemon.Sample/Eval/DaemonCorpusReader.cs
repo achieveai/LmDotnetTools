@@ -158,7 +158,7 @@ internal sealed class DaemonCorpusReader : ICorpusReader
                         context.Diff,
                         variantId: Blank(review.VariantId) ?? Blank(run.VariantId)
                             ?? PrimaryVariantFallback,
-                        modelId: run.ModelId,
+                        modelId: EffectiveGeneratorModelId(artifacts, run),
                         content: review.ReviewText
                     )
                 );
@@ -306,6 +306,78 @@ internal sealed class DaemonCorpusReader : ICorpusReader
         }
 
         return payload;
+    }
+
+    /// <summary>
+    /// The model the daemon <b>selected for</b> the primary arm's review, which is not always the
+    /// model the run was seeded with.
+    /// <para>
+    /// Selected for, not demonstrably run — and stamped only where the transport was told. On the S2S
+    /// path — which <c>Program</c> makes a boot invariant, refusing to start without
+    /// <c>UseS2SReviewAgent</c> — the review host owns model selection:
+    /// <c>S2SReviewAgentLoopFactory.Create</c> takes a per-call <c>modelId</c> and never forwards it,
+    /// building the agent from <c>LmStreamingProviderId</c> alone (the
+    /// <c>_KnowledgeModelId_comment</c> in <c>appsettings.s2s.json</c> states the same fact from the
+    /// other side: provision carries no model field). That factory therefore answers
+    /// <c>IReviewAgentLoopFactory.HonoursRequestedModelId</c> with <c>false</c>, and the executor
+    /// stamps an escalation target only where the answer is <c>true</c>: an escalated S2S run records
+    /// the run's own seeded id, so this preference returns exactly what the fallback below would have.
+    /// </para>
+    /// <para>
+    /// The two ids differ on escalated runs and nowhere else, and on those runs an
+    /// unforwarded escalation target would name a model the review host was never asked for, while the
+    /// seeded id still names the configuration the run was launched under. The gate sits on the write
+    /// side because only the executor knows which transport carried a given attempt; this reader walks
+    /// history across configurations and could only re-decide that from today's settings, which is a
+    /// guess wearing the clothes of a correction. The day a transport carries a model field its factory
+    /// answers <c>true</c>, the checkpoint starts moving with escalation, and nothing here changes. The
+    /// blast radius then is aggregates keyed on <c>ModelId</c>; <c>GeneratorFamily</c> is derived from
+    /// the same id, and <see cref="ModelFamilies.Of"/> answers null for a bare slug either way.
+    /// </para>
+    /// <para>
+    /// <c>review_run.model_id</c> is written once, on INSERT, and no <c>UPDATE</c> in
+    /// <see cref="ReviewStore"/> touches it — so a run that escalated to
+    /// <c>OverflowEscalationModelId</c> part-way through still carries the model it STARTED with.
+    /// Crediting that model attributes the review to a generator that did not write it, and every
+    /// aggregate keyed on model or family inherits the error silently, because a wrong id is
+    /// indistinguishable from a right one at this layer.
+    /// </para>
+    /// <para>
+    /// The executor already records that selection: it writes the model it selected — the escalation
+    /// override where the loop factory honours one, the run's own id where it does not — into the
+    /// lifecycle identity on the <c>review-provisional</c> checkpoint, which sits in the very
+    /// artifact list this reader has already fetched. Preferring it needs no new column. Latest wins,
+    /// as everywhere else here: every checkpoint an attempt writes carries that attempt's model, and
+    /// the ladder runs its rungs in order — so the last row recorded belongs to the rung whose output
+    /// was kept. The invariant is the ORDERING, not a count: an attempt may record more than one
+    /// checkpoint (the S2S path writes one when the conversation is minted and one when the turn
+    /// returns), and the answer is the same either way because they name the same model.
+    /// </para>
+    /// <para>
+    /// It FALLS BACK rather than overrides. A run with no checkpoint, or one whose
+    /// <see cref="ReviewLifecycleIdentity.ModelId"/> is null or blank, keeps the run's own id —
+    /// adding a checkpoint must never LOSE attribution that was already correct. Blank is not
+    /// "present": a whitespace-only id taken as a recorded model would surface as a candidate
+    /// attributed to <c>"   "</c> while the real id sat one field away.
+    /// </para>
+    /// <para>
+    /// Scoped to the primary arm on purpose. The checkpoint describes that arm's conversation, and
+    /// only that arm has an escalation ladder to escalate along; <see cref="VariantReviewer"/> runs
+    /// one collect-only turn, writes no checkpoint, and records its own model on its own
+    /// <c>b-variant-review</c> artifact, which is where the B candidate above reads it from.
+    /// </para>
+    /// </summary>
+    private string? EffectiveGeneratorModelId(
+        IReadOnlyList<ReviewArtifact> artifacts,
+        ReviewRun run
+    )
+    {
+        var provisional = Latest<ReviewArtifactPayload>(
+            artifacts,
+            DaemonReviewStageExecutor.ProvisionalReviewArtifactKind
+        );
+
+        return Blank(provisional?.Lifecycle?.ModelId) ?? run.ModelId;
     }
 
     private static string? Blank(string? value) =>

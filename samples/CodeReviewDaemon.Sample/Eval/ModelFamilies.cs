@@ -33,11 +33,37 @@ namespace CodeReviewDaemon.Sample.Eval;
 /// why guessing there is worse than answering "unknown".
 /// </para>
 /// <para>
-/// <b>The honest limit.</b> An id that is not shaped <c>[router/]vendor/model</c> is answered
-/// positionally too, so a two-segment <c>router/model</c> id would yield the router. Nothing in the
-/// daemon writes that shape — its own ids are <c>vendor/model</c>, and a routed id carries the router
-/// in front — and closing it would need per-request provider metadata the daemon does not carry.
-/// Stated here rather than papered over with a vendor list nobody maintains.
+/// <b>The honest limit.</b> A <i>two-segment</i> id is answered positionally like any other, so a
+/// <c>router/model</c> id would yield the router. (Shorter ids are not: <see cref="Of"/>
+/// short-circuits to null below two segments, and again when either of the two segments flanking the
+/// FINAL slash is blank — <c>/anthropic/claude-4</c>
+/// resolves to <c>anthropic</c> rather than to null.)
+/// Closing that would need per-request provider metadata the daemon does not carry. Stated here
+/// rather than papered over with a vendor list nobody maintains.
+/// </para>
+/// <para>
+/// <b>Where this rule bites, and where it does not.</b> Under a configuration where every configured
+/// model id is a bare slug, <see cref="Of"/> returns null for the generator, and
+/// <c>JudgeAgent.JudgeFamilyOf</c> falls back to <see cref="Unresolved"/> for the judge — so
+/// §7.1(2)'s generator-family exclusion never fires, and the rule is inert rather than wrong. Two
+/// standing reasons push the daemon's ids that way: <c>CodeReviewDaemonOptions.VariantModelId</c>'s
+/// doc records that the Copilot backend rejects OpenRouter-style slugs with
+/// <c>model_not_supported</c>; and the judge side is not a model id at all, because
+/// <c>S2SReviewAgentLoopFactory.ResolveEffectiveModelId</c> deliberately answers a colon-delimited
+/// selector, <c>lmstreaming:&lt;providerId&gt;</c>, rather than a model. That second one is
+/// structural, not a profile setting: <c>Program</c> refuses to boot without
+/// <c>UseS2SReviewAgent</c>, the in-process factory having been removed.
+/// </para>
+/// <para>
+/// Inert is the correct outcome, not a failure: nothing is misclassified because nothing is
+/// classified. A null generator family is recorded as unknown, <c>JudgePanel</c> skips the exclusion
+/// step on it, and <c>EvalRunner.Classify</c> can segment the row out as
+/// <c>ScoreExclusion.UnknownGeneratorFamily</c> — though only if no earlier arm of that ordered
+/// switch claims it first, since a gate rejection, an undecided or split verdict, and a degraded
+/// panel are all matched before the family is consulted. Self-preference stays on the record either
+/// way, from <c>JudgeArtifactPayload.SelfGraded</c>, which compares the two effective ids directly
+/// and consults no family. The rule starts costing something the moment a slash-shaped id is
+/// configured — which is when the two-segment hazard above stops being hypothetical.
 /// </para>
 /// </summary>
 internal static class ModelFamilies

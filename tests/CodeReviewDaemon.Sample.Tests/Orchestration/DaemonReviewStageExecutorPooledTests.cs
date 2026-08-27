@@ -1128,6 +1128,78 @@ public sealed class DaemonReviewStageExecutorPooledTests
         artifact.Payload.Should().Contain("grounded on the bigger model");
     }
 
+    /// <summary>
+    /// The lifecycle checkpoint is what <c>DaemonCorpusReader</c> attributes an eval candidate to, so the
+    /// model it names has to be one the transport was actually told to run. Against a factory that FORWARDS
+    /// the per-call id, the escalation target is that model — the whole point of #510 — and the checkpoint
+    /// must move with the ladder rather than keep naming the model the run was seeded with.
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_checkpoints_the_escalation_model_when_the_loop_factory_forwards_it()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun() with { ModelId = "gpt-5.6-luna" };
+
+        // A transport that can select per call: the id handed to Create is the id that runs.
+        fixture.Factory.HonoursRequestedModelId = true;
+        fixture.Factory.ThrowWhenToolAssisted = new HttpRequestException(
+            "HTTP request failed with status BadRequest (Bad Request). Response body: "
+                + "{\"error\":{\"message\":\"Your input exceeds the context window of this model.\"}}");
+        fixture.Factory.ThrowOnlyForModel = "gpt-5.6-luna";
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        // Non-vacuity: the ladder really did escalate, so the two ids on offer genuinely differ here.
+        fixture.Factory.ModelIds.Should().Equal("gpt-5.6-luna", "gpt-5.6-terra");
+        LatestCheckpointModelId(fixture, run).Should().Be("gpt-5.6-terra");
+    }
+
+    /// <summary>
+    /// And against the only factory production has, which does NOT forward it, the checkpoint keeps
+    /// <c>review_run.model_id</c>. The escalation target there is a request that never left the process —
+    /// S2S provision carries no model field — so recording it would credit the candidate to a model the
+    /// review host was never asked for, silently, a wrong id being indistinguishable from a right one at
+    /// the corpus layer.
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_keeps_the_seeded_model_on_the_checkpoint_when_the_loop_factory_discards_the_override()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun() with { ModelId = "gpt-5.6-luna" };
+
+        // The production shape: Create ignores its modelId argument entirely.
+        fixture.Factory.HonoursRequestedModelId = false;
+        fixture.Factory.ThrowWhenToolAssisted = new HttpRequestException(
+            "HTTP request failed with status BadRequest (Bad Request). Response body: "
+                + "{\"error\":{\"message\":\"Your input exceeds the context window of this model.\"}}");
+        fixture.Factory.ThrowOnlyForModel = "gpt-5.6-luna";
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        // Non-vacuity: the executor still ASKS for the bigger model — the ladder is unchanged, and this run
+        // is the escalated case. What the gate governs is only what gets written down.
+        fixture.Factory.ModelIds.Should().Equal("gpt-5.6-luna", "gpt-5.6-terra");
+        LatestCheckpointModelId(fixture, run).Should().Be("gpt-5.6-luna");
+    }
+
+    /// <summary>
+    /// The model on the LAST <c>review-provisional</c> checkpoint — the rung whose output was kept, which is
+    /// the row <c>DaemonCorpusReader.EffectiveGeneratorModelId</c> reads.
+    /// </summary>
+    private static string? LatestCheckpointModelId(Fixture fixture, ReviewRun run)
+    {
+        var checkpoints = fixture.Store.GetArtifacts(run.Id)
+            .Where(a => a.ArtifactKind == DaemonReviewStageExecutor.ProvisionalReviewArtifactKind)
+            .ToList();
+        checkpoints.Should().NotBeEmpty("the attempt must have checkpointed its lifecycle at all");
+        var payload = JsonSerializer.Deserialize<ReviewArtifactPayload>(checkpoints[^1].Payload);
+        payload.Should().NotBeNull();
+        payload!.Lifecycle.Should().NotBeNull("the model claim lives on the lifecycle identity");
+        return payload.Lifecycle!.ModelId;
+    }
+
     [Fact]
     public async Task Reviewed_templates_the_notes_dir_into_the_review_system_prompt()
     {

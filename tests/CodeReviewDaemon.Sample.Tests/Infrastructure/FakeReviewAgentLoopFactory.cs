@@ -130,6 +130,19 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
     public string? ResolveEffectiveModelId(string? requestedModelId) =>
         EffectiveModelIdOverride ?? requestedModelId;
 
+    /// <summary>
+    /// Whether <see cref="Create"/> is modelled as RUNNING the model id it is handed. Default <c>true</c> —
+    /// a transport that can select per call — while the only production factory answers <c>false</c>, so a
+    /// test about attribution has to say which it is exercising.
+    /// <para>
+    /// Deliberately a knob of its own rather than derived from <see cref="EffectiveModelIdOverride"/>: the
+    /// interface keeps "does Create run what it was asked for?" separate from "what identity can the
+    /// transport name?" precisely because those come apart, and a double that welds them together could not
+    /// tell a test which of the two a passing assertion actually turned on.
+    /// </para>
+    /// </summary>
+    public bool HonoursRequestedModelId { get; set; } = true;
+
     /// <summary>The minted conversation id is derived from the daemon-local thread id, so it is deterministic
     /// (a test can predict it) yet distinct per A/B arm and escalation rung, exactly as a real host's would be.</summary>
     private IMultiTurnAgent Decorate(FakeMultiTurnAgent agent, string threadId, string? resumeHostedThreadId)

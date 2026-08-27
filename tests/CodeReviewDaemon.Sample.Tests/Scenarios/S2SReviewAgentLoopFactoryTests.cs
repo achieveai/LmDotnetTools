@@ -80,6 +80,29 @@ public sealed class S2SReviewAgentLoopFactoryTests
         factory.ResolveEffectiveModelId("anthropic/claude-opus-4").Should().BeNull();
     }
 
+    /// <summary>
+    /// The half the executor gates its persisted model provenance on: this factory does not run the model it
+    /// is handed, whatever the configuration, because <c>Create</c> has nowhere to put it. Pinned on the real
+    /// factory since the executor's checkpoint would otherwise credit an escalated run to a model the review
+    /// host was never asked for — and note it answers <c>false</c> even where <c>ResolveEffectiveModelId</c>
+    /// answers a non-null selector, which is the whole reason the two are separate questions.
+    /// </summary>
+    [Fact]
+    public void The_per_call_model_id_is_never_honoured_even_when_the_provider_names_one()
+    {
+        using var http = new HttpClient(new FakeHttpMessageHandler()) { BaseAddress = new Uri("http://host/") };
+        var configured = NewFactory(new FakeHttpMessageHandler(), http);
+        var unconfigured = new S2SReviewAgentLoopFactory(
+            new LmStreamingS2SClient(http, "s", "id", "key"),
+            new CodeReviewDaemonOptions { UseS2SReviewAgent = true, LmStreamingModeId = "workspace-agent" },
+            NullLoggerFactory.Instance);
+
+        configured.ResolveEffectiveModelId("anthropic/claude-opus-4").Should().NotBeNull(
+            "non-vacuity: this factory DOES name an identity — it just does not honour the request");
+        configured.HonoursRequestedModelId.Should().BeFalse();
+        unconfigured.HonoursRequestedModelId.Should().BeFalse();
+    }
+
     [Fact]
     public async Task Create_seeds_the_persisted_hosted_thread_and_never_provisions_on_resume()
     {

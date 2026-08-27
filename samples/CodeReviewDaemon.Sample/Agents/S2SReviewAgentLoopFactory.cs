@@ -133,6 +133,19 @@ internal sealed class S2SReviewAgentLoopFactory : IReviewAgentLoopFactory
             ? null
             : $"lmstreaming:{_options.LmStreamingProviderId}";
 
+    /// <summary>
+    /// <c>false</c>, and structurally so rather than by configuration: <see cref="Create"/> above does not
+    /// reference its <c>modelId</c> parameter at all, because <c>ProvisionConversationRequest</c> has no model
+    /// field to put it in. A caller's per-call id therefore never leaves the daemon process, and anything that
+    /// records it as the model that ran is recording a request the wire did not carry.
+    /// <para>
+    /// Note this is a different answer from <see cref="ResolveEffectiveModelId"/>'s, which is non-null whenever
+    /// a provider is configured. Naming a selector is not honouring a request — the selector is the SAME for
+    /// every call, which is exactly why the per-call id is discardable.
+    /// </para>
+    /// </summary>
+    public bool HonoursRequestedModelId => false;
+
     private static string BuildTitle(AgentProfile profile, PreparedReviewWorkspace workspace)
     {
         var pr = $"Review PR #{workspace.PrId}";

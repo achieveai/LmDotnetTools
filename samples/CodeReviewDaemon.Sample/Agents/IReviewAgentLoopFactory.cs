@@ -52,4 +52,32 @@ internal interface IReviewAgentLoopFactory
     /// </para>
     /// </summary>
     string? ResolveEffectiveModelId(string? requestedModelId);
+
+    /// <summary>
+    /// Whether <see cref="Create"/> actually RUNS the <c>modelId</c> it is handed. <c>false</c> means the
+    /// argument is discarded and the transport selects the model itself, so a per-call id is a request the
+    /// wire never carries.
+    /// <para>
+    /// This exists because the daemon PERSISTS the model it asked for — the escalation ladder retries on
+    /// <c>OverflowEscalationModelId</c> and the stage executor writes that id into the
+    /// <c>review-provisional</c> checkpoint's <c>ReviewLifecycleIdentity</c>, from which
+    /// <c>DaemonCorpusReader</c> credits the whole eval candidate. Recorded against a factory that answers
+    /// <c>false</c>, that id names a model nothing ran, and it is silent: at the corpus layer a wrong model id
+    /// is indistinguishable from a right one. So the caller stamps the override only where it will be honoured
+    /// and keeps <c>review_run.model_id</c> otherwise.
+    /// </para>
+    /// <para>
+    /// Deliberately NOT derivable from <see cref="ResolveEffectiveModelId"/>. That answers a different
+    /// question — what identity the transport can NAME — and the two come apart in both directions: this
+    /// factory's only production implementation honours nothing yet names a selector, and a factory could
+    /// honour the request while naming nothing at all (<c>null</c> is unknown, not "no model"). Comparing the
+    /// resolved id against the requested one would read that second factory as discarding, and quietly drop
+    /// the escalation attribution this flag exists to protect.
+    /// </para>
+    /// <para>
+    /// A property, not a per-call predicate: an implementation either wires the argument through or does not,
+    /// and asking per call would invite an answer that varies where no transport's does.
+    /// </para>
+    /// </summary>
+    bool HonoursRequestedModelId { get; }
 }
