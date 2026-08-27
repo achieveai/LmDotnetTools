@@ -6,7 +6,7 @@ import { useChatModes } from '@/composables/useChatModes';
 import { useProviders } from '@/composables/useProviders';
 import { DEFAULT_WORKSPACE_ID, useWorkspaces } from '@/composables/useWorkspaces';
 import { egressDialogRequest, closeEgressDialog } from '@/composables/useEgressAuth';
-import { updateConversationMetadata } from '@/api/conversationsApi';
+import { conversationExists, updateConversationMetadata } from '@/api/conversationsApi';
 import { WorkspaceRevisionConflictError } from '@/api/workspacesApi';
 import type { ChatModeCreateUpdate } from '@/types/chatMode';
 import type { WorkspaceCreate, WorkspaceUpdate } from '@/types/workspace';
@@ -41,7 +41,11 @@ const {
   currentThreadId,
   currentConversation,
   isLoading: conversationsLoading,
+  isLoadingMore: conversationsLoadingMore,
+  sortMode: conversationSortMode,
   loadConversations,
+  loadMoreConversations,
+  setSortMode: setConversationSortMode,
   createNewConversation,
   selectConversation,
   removeConversation,
@@ -437,7 +441,13 @@ onMounted(async () => {
   // than silently falling back to the most recent conversation.
   const deepLinkThreadId = getDeepLinkThreadIdFromPageQuery();
   if (deepLinkThreadId) {
-    const exists = conversations.value.some((c) => c.threadId === deepLinkThreadId);
+    // Only the FIRST page is loaded here, so absence from the sidebar means "older than page one",
+    // not "does not exist" - and a deep link is most often to an older conversation, which is the
+    // case this screen used to report as not-found. Membership stays as a fast path for a link into
+    // a conversation already on screen; anything else is resolved against the server.
+    const exists =
+      conversations.value.some((c) => c.threadId === deepLinkThreadId) ||
+      (await conversationExists(deepLinkThreadId));
     if (exists) {
       await handleSelectConversation(deepLinkThreadId);
     } else {
@@ -446,9 +456,18 @@ onMounted(async () => {
     return;
   }
 
-  // If there are existing conversations, select the most recent one
+  // Select the most recently USED conversation OF THE FIRST PAGE. Explicitly picking the max
+  // `lastUpdated` rather than index 0: under the `created` sort the top of the list is the
+  // newest-created conversation, which is not necessarily the one the user was last working in.
+  // Only the first page is loaded at this point, so under `created` a conversation that was used
+  // recently but started long ago can sit on a later page and lose to this reduce. Paging the whole
+  // list on mount to make it exact would defeat the incremental loading this sits on top of; under
+  // the default `lastUsed` sort the first page always holds the true maximum anyway.
   if (conversations.value.length > 0) {
-    await handleSelectConversation(conversations.value[0].threadId);
+    const mostRecent = conversations.value.reduce((best, c) =>
+      c.lastUpdated > best.lastUpdated ? c : best
+    );
+    await handleSelectConversation(mostRecent.threadId);
   }
 });
 
@@ -686,11 +705,15 @@ onBeforeUnmount(() => {
       :conversations="conversations"
       :current-thread-id="currentThreadId"
       :is-loading="conversationsLoading"
+      :is-loading-more="conversationsLoadingMore"
+      :sort-mode="conversationSortMode"
       :is-collapsed="sidebarCollapsed"
       @new-chat="handleNewChat"
       @select-conversation="handleSelectConversation"
       @delete-conversation="handleDeleteConversation"
       @toggle-collapse="handleToggleCollapse"
+      @load-more="loadMoreConversations"
+      @change-sort-mode="setConversationSortMode"
     />
 
     <main class="chat-main">

@@ -470,7 +470,7 @@ public sealed class TenantsController : ControllerBase
                 ConversationListScope.ForTenant(quarantineTenantId),
                 AdoptionScanMaxThreads + 1,
                 0,
-                ct)
+                ct: ct)
             .ConfigureAwait(false) ?? [];
 
         if (rows.Count > AdoptionScanMaxThreads)

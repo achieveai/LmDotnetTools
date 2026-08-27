@@ -293,6 +293,236 @@ public class ConversationsControllerTests
             || id.StartsWith("workflow-", StringComparison.Ordinal));
     }
 
+    #region List Paging Tests
+
+    /// <summary>Page size the sidebar asks for, and this controller's default.</summary>
+    private const int SidebarPageSize = 30;
+
+    /// <summary>
+    /// The sidebar gets a FULL page of real conversations even when agent-owned threads outnumber
+    /// the page - the regression the exclusion-after-paging bug produced.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The test directly above this one seeds three threads against a page of thirty, so it passed
+    /// throughout the entire lifetime of the defect: with every row inside the page, filtering
+    /// before or after paging gives the same answer. It is kept because it still pins the exclusion
+    /// itself; what it cannot pin is WHERE the exclusion happens, which is the only thing that was
+    /// ever wrong.
+    /// </para>
+    /// <para>
+    /// This seed reproduces the live deployment's shape instead: every agent-owned row is NEWER than
+    /// every real one, and there are twice as many of them as fit in a page. Because
+    /// <c>LastUpdated</c> is bumped on every completed run and background sub-agent and workflow
+    /// runs are constant, that is not a contrived ordering - it is what 302 threads, 256 of them
+    /// agent-owned, actually looked like. Against a controller that takes the page first, the store
+    /// hands back thirty <c>subagent-*</c> rows, the post-filter deletes all thirty, and the sidebar
+    /// renders EMPTY while forty real conversations sit in the store unreachable.
+    /// </para>
+    /// <para>
+    /// Both halves of the assertion matter. The count says the page was not silently shortened; the
+    /// content says it was not filled by readmitting the rows the sidebar must never show.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task List_ReturnsAFullPageOfRealConversations_WhenAgentOwnedThreadsOutnumberThePage()
+    {
+        const int AgentOwnedCount = 60;
+        const int RealCount = 40;
+
+        var store = new InMemoryConversationStore();
+
+        for (var i = 0; i < RealCount; i++)
+        {
+            var threadId = $"thread-{1_000 + i}-real{i:D2}";
+            await store.SaveMetadataAsync(threadId, new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LastUpdated = 1_000 + i,
+                Properties = ImmutableDictionary<string, object>.Empty,
+            });
+        }
+
+        // Newer than every real conversation, and more numerous than one page.
+        for (var i = 0; i < AgentOwnedCount; i++)
+        {
+            var threadId = $"subagent-agent{i:D2}";
+            await store.SaveMetadataAsync(threadId, new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LastUpdated = 100_000 + i,
+                Properties = ImmutableDictionary<string, object>.Empty,
+            });
+        }
+
+        await using var pool = CreatePool();
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var result = await controller.List(limit: SidebarPageSize) as OkObjectResult;
+        result.Should().NotBeNull();
+        var summaries = (result!.Value as IEnumerable<ConversationSummary>)!.ToList();
+
+        summaries.Should().HaveCount(SidebarPageSize);
+        summaries.Should().OnlyContain(s =>
+            !SubAgentSummary.IsAgentOwnedThreadId(s.ThreadId));
+    }
+
+    /// <summary>
+    /// Paging past the first page keeps working with the exclusion active: the second page continues
+    /// where the first stopped, and no conversation is returned twice or skipped.
+    /// </summary>
+    /// <remarks>
+    /// The exclusion has to be applied by the STORE for this to hold. Applied to the returned page
+    /// instead, an offset counts rows the caller never saw, so page 2 starts somewhere arbitrary -
+    /// which is how "everything older silently vanished" happened without any page ever reporting
+    /// itself short.
+    /// </remarks>
+    [Fact]
+    public async Task List_PagesThroughRealConversationsWithoutGaps_WhenAgentOwnedThreadsAreInterleaved()
+    {
+        const int RealCount = 40;
+
+        var store = new InMemoryConversationStore();
+
+        for (var i = 0; i < RealCount; i++)
+        {
+            var threadId = $"thread-{1_000 + i}-real{i:D2}";
+            await store.SaveMetadataAsync(threadId, new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LastUpdated = 10_000 - (i * 2),
+                Properties = ImmutableDictionary<string, object>.Empty,
+            });
+
+            var agentThreadId = $"subagent-agent{i:D2}";
+            await store.SaveMetadataAsync(agentThreadId, new ThreadMetadata
+            {
+                ThreadId = agentThreadId,
+                LastUpdated = 10_000 - (i * 2) - 1,
+                Properties = ImmutableDictionary<string, object>.Empty,
+            });
+        }
+
+        await using var pool = CreatePool();
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var first = await controller.List(limit: SidebarPageSize) as OkObjectResult;
+        var second = await controller.List(limit: SidebarPageSize, offset: SidebarPageSize)
+            as OkObjectResult;
+
+        var page1 = (first!.Value as IEnumerable<ConversationSummary>)!.Select(s => s.ThreadId).ToList();
+        var page2 = (second!.Value as IEnumerable<ConversationSummary>)!.Select(s => s.ThreadId).ToList();
+
+        page1.Should().HaveCount(SidebarPageSize);
+        page2.Should().HaveCount(RealCount - SidebarPageSize);
+
+        var paged = page1.Concat(page2).ToList();
+        paged.Should().OnlyHaveUniqueItems();
+        paged.Should().Equal(Enumerable.Range(0, RealCount).Select(i => $"thread-{1_000 + i}-real{i:D2}"));
+    }
+
+    /// <summary>
+    /// <c>sort=created</c> orders by creation time rather than by last use.
+    /// </summary>
+    /// <remarks>
+    /// The seed makes the two orderings exact reverses of one another, because a seed in which they
+    /// agreed would pass against a controller that accepted the parameter and then ignored it.
+    /// </remarks>
+    [Fact]
+    public async Task List_OrdersByCreationTime_WhenSortIsCreated()
+    {
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync("thread-1000-aaa", new ThreadMetadata
+        {
+            ThreadId = "thread-1000-aaa",
+            LastUpdated = 9_000,
+            Properties = ImmutableDictionary<string, object>.Empty,
+        });
+        await store.SaveMetadataAsync("thread-2000-bbb", new ThreadMetadata
+        {
+            ThreadId = "thread-2000-bbb",
+            LastUpdated = 8_000,
+            Properties = ImmutableDictionary<string, object>.Empty,
+        });
+        await store.SaveMetadataAsync("thread-3000-ccc", new ThreadMetadata
+        {
+            ThreadId = "thread-3000-ccc",
+            LastUpdated = 7_000,
+            Properties = ImmutableDictionary<string, object>.Empty,
+        });
+
+        await using var pool = CreatePool();
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var lastUsed = await controller.List() as OkObjectResult;
+        var created = await controller.List(sort: "CREATED") as OkObjectResult;
+
+        (lastUsed!.Value as IEnumerable<ConversationSummary>)!.Select(s => s.ThreadId).Should()
+            .Equal("thread-1000-aaa", "thread-2000-bbb", "thread-3000-ccc");
+        (created!.Value as IEnumerable<ConversationSummary>)!.Select(s => s.ThreadId).Should()
+            .Equal("thread-3000-ccc", "thread-2000-bbb", "thread-1000-aaa");
+    }
+
+    /// <summary>
+    /// An unrecognised <c>sort</c>, a negative offset, or an out-of-range limit is refused.
+    /// </summary>
+    /// <remarks>
+    /// A silently ignored sort parameter is indistinguishable from a working one: a client that
+    /// misspelled it would receive a perfectly plausible list, in the wrong order, forever, with
+    /// nothing anywhere to notice. The same reasoning covers the paging bounds - a negative offset
+    /// that quietly became zero would serve page 1 while the client believed it had gone backwards.
+    /// </remarks>
+    [Theory]
+    [InlineData(30, 0, "lastUsedish")]
+    [InlineData(30, 0, "createdAt")]
+    [InlineData(30, -1, null)]
+    [InlineData(0, 0, null)]
+    [InlineData(101, 0, null)]
+    public async Task List_ReturnsBadRequest_ForAnUnusableQuery(int limit, int offset, string? sort)
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var result = await controller.List(limit, offset, sort);
+
+        result.Should().BeOfType<BadRequestObjectResult>();
+    }
+
+    /// <summary>
+    /// The default page size is the one the client pages at, so an unparameterised call and an
+    /// explicit <c>limit=30</c> return the same page.
+    /// </summary>
+    /// <remarks>
+    /// Pinned against the seed that exceeds it, because a default of 50 and a default of 30 are
+    /// indistinguishable on any store holding fewer than 31 conversations - which is every other
+    /// listing test in this file.
+    /// </remarks>
+    [Fact]
+    public async Task List_DefaultsToTheClientPageSize()
+    {
+        var store = new InMemoryConversationStore();
+        for (var i = 0; i < 45; i++)
+        {
+            var threadId = $"thread-{1_000 + i}-real{i:D2}";
+            await store.SaveMetadataAsync(threadId, new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LastUpdated = 1_000 + i,
+                Properties = ImmutableDictionary<string, object>.Empty,
+            });
+        }
+
+        await using var pool = CreatePool();
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var result = await controller.List() as OkObjectResult;
+
+        (result!.Value as IEnumerable<ConversationSummary>)!.Should().HaveCount(SidebarPageSize);
+    }
+
+    #endregion
+
     /// <summary>
     /// Every stored visibility reaches the wire as its NAME, and a row that predates the field reads
     /// as private - which is what <c>metadata.Visibility ?? Visibility.Private</c> already means
@@ -804,6 +1034,70 @@ public class ConversationsControllerTests
         metadata.Properties[MultiTurnAgentPool.ModePropertyKey].Should().Be(SystemChatModes.DefaultModeId);
     }
 
+    /// <summary>
+    ///     A provisioned thread id must carry a parseable creation timestamp, so the <c>created</c>
+    ///     ordering has an immutable key for every conversation the app makes.
+    /// </summary>
+    /// <remarks>
+    ///     The assertion is deliberately made AFTER moving <see cref="ThreadMetadata.LastUpdated"/>,
+    ///     because <see cref="ConversationListOptions.CreationTimestampOf"/> falls back to that field
+    ///     for an id it cannot parse. Asserting against a freshly provisioned row would pass either
+    ///     way - at provisioning time the fallback and the real creation instant are the same value,
+    ///     which is exactly the coincidence that let a bare <c>thread-{guid:N}</c> ship unnoticed.
+    ///     Bumping LastUpdated separates them: a parseable id keeps reporting the creation instant,
+    ///     an unparseable one now reports the bumped value and fails here.
+    /// </remarks>
+    [Fact]
+    public async Task Provision_MintsThreadId_CarryingAnImmutableCreationTimestamp()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var workspaceStore = new Mock<IWorkspaceStore>();
+        workspaceStore.Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TestWorkspace("ws-1"));
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal();
+
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            workspaceStore: workspaceStore.Object,
+            providerRegistry: registry);
+
+        var before = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var result = await controller.Provision(
+            new ProvisionConversationRequest
+            {
+                WorkspaceId = "ws-1",
+                ProviderId = "test",
+                ModeId = SystemChatModes.DefaultModeId,
+            },
+            CancellationToken.None);
+        var after = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var threadId = Assert.IsType<ProvisionConversationResponse>(ok.Value).ThreadId;
+
+        // A run completes much later and bumps LastUpdated. Creation order must not move with it.
+        const long BumpedLastUpdated = 4_102_444_800_000; // 2100-01-01, far past any real "now".
+        await store.UpdateMetadataAsync(
+            threadId,
+            existing => existing! with { LastUpdated = BumpedLastUpdated },
+            CancellationToken.None);
+
+        var metadata = await store.LoadMetadataAsync(threadId, CancellationToken.None);
+        var createdAt = ConversationListOptions.CreationTimestampOf(metadata!);
+
+        createdAt.Should().NotBe(
+            BumpedLastUpdated,
+            "an id without a parseable timestamp falls back to LastUpdated, which is the mutable key "
+                + "the created sort exists to avoid");
+        createdAt.Should().BeInRange(
+            before,
+            after,
+            "the id must encode the instant the conversation was provisioned");
+    }
+
     [Fact]
     public async Task Provision_ReturnsNotFound_WhenWorkspaceMissing()
     {
@@ -895,7 +1189,7 @@ public class ConversationsControllerTests
         var payload = JsonSerializer.Serialize(obj.Value);
         payload.Should().Contain("provider_unavailable");
         payload.Should().Contain("openai");
-        (await store.ListThreadsAsync(50, 0, CancellationToken.None)).Should().BeEmpty();
+        (await store.ListThreadsAsync(50, 0, ct: CancellationToken.None)).Should().BeEmpty();
     }
 
     [Fact]
@@ -1331,6 +1625,54 @@ public class ConversationsControllerTests
         var payload = JsonSerializer.Serialize(notFound.Value);
         payload.Should().Contain("unknown_runId");
         payload.Should().Contain("run-unknown");
+    }
+
+    /// <summary>
+    ///     The two 404s <c>GetStatus</c> can return must stay tellable apart by their <c>code</c>.
+    /// </summary>
+    /// <remarks>
+    ///     The two tests above each pin one branch, which leaves the pair free to converge on a
+    ///     single code without either of them noticing. The client's <c>conversationExists</c> probe
+    ///     reads exactly this difference: it asks about a thread using a run id that cannot resolve,
+    ///     and takes <c>unknown_runId</c> to mean "the conversation is real, only the run id was
+    ///     bogus". Collapse the two codes and that probe silently reports every conversation as
+    ///     missing, which is the deep-link failure it was added to fix.
+    ///     <para>
+    ///     Note what is NOT asserted: that a MISSING thread and a FORBIDDEN one differ. Those two are
+    ///     answered identically on purpose, so the route cannot be used as an existence oracle. The
+    ///     distinction pinned here is between a thread-level and a run-level miss on a thread the
+    ///     caller may already read.
+    ///     </para>
+    /// </remarks>
+    [Fact]
+    public async Task GetStatus_UsesDistinctCodes_ForUnknownThreadAndUnknownRunId()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var existingThreadId = "thread-status-discriminator";
+        await store.SaveMetadataAsync(
+            existingThreadId,
+            new ThreadMetadata { ThreadId = existingThreadId, LastUpdated = 1, Properties = ImmutableDictionary<string, object>.Empty });
+
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var missingThread = Assert.IsType<NotFoundObjectResult>(
+            await controller.GetStatus("thread-never-minted", runId: "run-x", inputId: null, CancellationToken.None));
+        var missingRun = Assert.IsType<NotFoundObjectResult>(
+            await controller.GetStatus(existingThreadId, runId: "run-x", inputId: null, CancellationToken.None));
+
+        var missingThreadCode = CodeOf(missingThread.Value);
+        var missingRunCode = CodeOf(missingRun.Value);
+
+        missingThreadCode.Should().Be("unknown_thread");
+        missingRunCode.Should().Be("unknown_runId");
+        missingRunCode.Should().NotBe(
+            missingThreadCode,
+            "a client cannot tell an absent conversation from a bad run id once these codes agree");
+
+        static string? CodeOf(object? body) =>
+            JsonSerializer.Deserialize<Dictionary<string, string>>(JsonSerializer.Serialize(body))
+                ?.GetValueOrDefault("code");
     }
 
     [Fact]

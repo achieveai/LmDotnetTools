@@ -491,6 +491,315 @@ public class InMemoryConversationStoreTests
 
     #endregion
 
+    #region ListThreadsAsync Options Tests
+
+    /// <summary>
+    ///     A page stays FULL when the excluded rows dominate the ordering - the exclusion runs before
+    ///     <c>Skip</c>/<c>Take</c>, not after it.
+    /// </summary>
+    /// <remarks>
+    ///     This is the store-level shape of a production failure. <c>LastUpdated</c> is bumped on every
+    ///     completed run and background agent runs are constant, so agent-owned rows crowd the front of
+    ///     a last-updated ordering; on a live deployment of 302 threads, 256 of them agent-owned, a
+    ///     caller that trimmed the page first and filtered second got five usable rows out of fifty and
+    ///     lost every older conversation. The seed here reproduces that shape deliberately: EVERY
+    ///     excluded row is newer than EVERY kept row, so an implementation that filters after paging
+    ///     returns nothing at all.
+    /// </remarks>
+    [Fact]
+    public async Task ListThreadsAsync_ReturnsAFullPage_WhenExcludedThreadsOutnumberTheLimit()
+    {
+        // Arrange
+        var store = new InMemoryConversationStore();
+        for (var i = 0; i < 20; i++)
+        {
+            await store.SaveMetadataAsync($"subagent-{i:D2}", new ThreadMetadata
+            {
+                ThreadId = $"subagent-{i:D2}",
+                LastUpdated = 10_000 + i,
+            });
+        }
+
+        for (var i = 0; i < 15; i++)
+        {
+            await store.SaveMetadataAsync($"keep-{i:D2}", new ThreadMetadata
+            {
+                ThreadId = $"keep-{i:D2}",
+                LastUpdated = 1_000 + i,
+            });
+        }
+
+        var options = new ConversationListOptions { ExcludedThreadIdPrefixes = ["subagent-"] };
+
+        // Act
+        var result = await store.ListThreadsAsync(limit: 10, offset: 0, options: options);
+
+        // Assert
+        result.Should().HaveCount(10);
+        result.Should().OnlyContain(m => m.ThreadId.StartsWith("keep-", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    ///     Offset paging over an excluded set is contiguous: no row appears twice and none is skipped.
+    /// </summary>
+    /// <remarks>
+    ///     The seed INTERLEAVES excluded and kept rows in the last-updated ordering, which is the case
+    ///     that separates "filtered before the page" from "filtered after it". Filtering afterwards
+    ///     would still return rows here - just roughly half a page of them each time, and a different
+    ///     half depending on where the offset happened to land. Asserting only that page 1 is non-empty
+    ///     would pass against that; asserting the concatenation of all three pages equals the full kept
+    ///     set, in order, is what does not.
+    /// </remarks>
+    [Fact]
+    public async Task ListThreadsAsync_PagesWithoutOverlapOrGaps_WhenAnExclusionIsActive()
+    {
+        // Arrange
+        var store = new InMemoryConversationStore();
+        for (var i = 0; i < 12; i++)
+        {
+            await store.SaveMetadataAsync($"keep-{i:D2}", new ThreadMetadata
+            {
+                ThreadId = $"keep-{i:D2}",
+                LastUpdated = 10_000 - (i * 2),
+            });
+            await store.SaveMetadataAsync($"subagent-{i:D2}", new ThreadMetadata
+            {
+                ThreadId = $"subagent-{i:D2}",
+                LastUpdated = 10_000 - (i * 2) - 1,
+            });
+        }
+
+        var options = new ConversationListOptions { ExcludedThreadIdPrefixes = ["subagent-"] };
+
+        // Act
+        var page1 = await store.ListThreadsAsync(limit: 5, offset: 0, options: options);
+        var page2 = await store.ListThreadsAsync(limit: 5, offset: 5, options: options);
+        var page3 = await store.ListThreadsAsync(limit: 5, offset: 10, options: options);
+
+        // Assert
+        page1.Should().HaveCount(5);
+        page2.Should().HaveCount(5);
+        page3.Should().HaveCount(2);
+
+        var paged = page1.Concat(page2).Concat(page3).Select(m => m.ThreadId).ToList();
+        paged.Should().OnlyHaveUniqueItems();
+        paged.Should().Equal(Enumerable.Range(0, 12).Select(i => $"keep-{i:D2}"));
+    }
+
+    /// <summary>
+    ///     <see cref="ConversationSortOrder.Created"/> orders by the creation time derived from the
+    ///     thread id, NOT by <c>LastUpdated</c>.
+    /// </summary>
+    /// <remarks>
+    ///     The two orderings are seeded to DISAGREE completely - the earliest-created thread carries the
+    ///     newest <c>LastUpdated</c>, so the expected sequences are exact reverses of one another. A
+    ///     seed in which they agreed could not distinguish the two implementations at all, and would
+    ///     pass against a <c>Created</c> branch that quietly did nothing.
+    /// </remarks>
+    [Fact]
+    public async Task ListThreadsAsync_OrdersByDerivedCreationTime_WhenSortOrderIsCreated()
+    {
+        // Arrange
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync("thread-1000-aaa", new ThreadMetadata
+        {
+            ThreadId = "thread-1000-aaa",
+            LastUpdated = 9_000,
+        });
+        await store.SaveMetadataAsync("thread-2000-bbb", new ThreadMetadata
+        {
+            ThreadId = "thread-2000-bbb",
+            LastUpdated = 8_000,
+        });
+        await store.SaveMetadataAsync("thread-3000-ccc", new ThreadMetadata
+        {
+            ThreadId = "thread-3000-ccc",
+            LastUpdated = 7_000,
+        });
+
+        // Act
+        var byLastUsed = await store.ListThreadsAsync(
+            limit: 10,
+            options: new ConversationListOptions { SortOrder = ConversationSortOrder.LastUsed });
+        var byCreated = await store.ListThreadsAsync(
+            limit: 10,
+            options: new ConversationListOptions { SortOrder = ConversationSortOrder.Created });
+
+        // Assert
+        byLastUsed.Select(m => m.ThreadId).Should()
+            .Equal("thread-1000-aaa", "thread-2000-bbb", "thread-3000-ccc");
+        byCreated.Select(m => m.ThreadId).Should()
+            .Equal("thread-3000-ccc", "thread-2000-bbb", "thread-1000-aaa");
+    }
+
+    /// <summary>
+    ///     A thread id that carries no timestamp segment sorts by <c>LastUpdated</c> under
+    ///     <see cref="ConversationSortOrder.Created"/> - it is neither dropped nor sorted to position
+    ///     zero.
+    /// </summary>
+    /// <remarks>
+    ///     There are two ways an id can fail to carry one, and both are seeded, because a test that
+    ///     covered only one leaves the other branch free to return anything at all. Conversations
+    ///     provisioned before the server minted a timestamp segment carry <c>thread-{guid:N}</c>,
+    ///     which has no <c>-</c> after the prefix, so the
+    ///     scan for a delimiter finds nothing; an id shaped like <c>thread-notatimestamp-zzz</c> has the
+    ///     delimiter but a segment that does not parse. Losing either row from the listing would be the
+    ///     very defect this change exists to fix, so the fallback keeps both - positioned by the one
+    ///     timestamp that does exist. The seed places both fallback values ABOVE both parseable rows, so
+    ///     an implementation that treated an unparseable id as zero would order them last and fail here.
+    /// </remarks>
+    [Fact]
+    public async Task ListThreadsAsync_FallsBackToLastUpdated_WhenTheThreadIdCarriesNoTimestamp()
+    {
+        // Arrange
+        var store = new InMemoryConversationStore();
+        var provisioned = $"thread-{Guid.NewGuid():N}";
+        const string NonNumeric = "thread-notatimestamp-zzz";
+        await store.SaveMetadataAsync("thread-5000-aaa", new ThreadMetadata
+        {
+            ThreadId = "thread-5000-aaa",
+            LastUpdated = 1_000,
+        });
+        await store.SaveMetadataAsync(provisioned, new ThreadMetadata
+        {
+            ThreadId = provisioned,
+            LastUpdated = 7_000,
+        });
+        await store.SaveMetadataAsync(NonNumeric, new ThreadMetadata
+        {
+            ThreadId = NonNumeric,
+            LastUpdated = 6_500,
+        });
+        await store.SaveMetadataAsync("thread-6000-bbb", new ThreadMetadata
+        {
+            ThreadId = "thread-6000-bbb",
+            LastUpdated = 2_000,
+        });
+
+        // Act
+        var byCreated = await store.ListThreadsAsync(
+            limit: 10,
+            options: new ConversationListOptions { SortOrder = ConversationSortOrder.Created });
+
+        // Assert - both fallbacks (7,000 and 6,500) rank above the parsed 6,000 and 5,000.
+        byCreated.Select(m => m.ThreadId).Should()
+            .Equal(provisioned, NonNumeric, "thread-6000-bbb", "thread-5000-aaa");
+    }
+
+    /// <summary>
+    ///     A null <c>options</c> is exactly today's behavior: nothing excluded, last-used order.
+    /// </summary>
+    /// <remarks>
+    ///     Every pre-existing caller passes nothing, so this is the compatibility pin: the fix must not
+    ///     change what a caller that did not ask for it receives. The agent-owned row is seeded NEWEST
+    ///     on purpose - it has to come back FIRST, because a store that quietly applied a default
+    ///     exclusion would look correct on every other assertion in this file.
+    /// </remarks>
+    [Fact]
+    public async Task ListThreadsAsync_ExcludesNothingAndOrdersByLastUsed_WhenOptionsIsNull()
+    {
+        // Arrange
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync("subagent-newest", new ThreadMetadata
+        {
+            ThreadId = "subagent-newest",
+            LastUpdated = 9_000,
+        });
+        await store.SaveMetadataAsync("thread-1000-aaa", new ThreadMetadata
+        {
+            ThreadId = "thread-1000-aaa",
+            LastUpdated = 8_000,
+        });
+        await store.SaveMetadataAsync("workflow-older", new ThreadMetadata
+        {
+            ThreadId = "workflow-older",
+            LastUpdated = 7_000,
+        });
+
+        // Act
+        var withNull = await store.ListThreadsAsync(limit: 10, offset: 0, options: null);
+        var withDefault = await store.ListThreadsAsync(
+            limit: 10,
+            offset: 0,
+            options: ConversationListOptions.Default);
+
+        // Assert
+        withNull.Select(m => m.ThreadId).Should()
+            .Equal("subagent-newest", "thread-1000-aaa", "workflow-older");
+        withDefault.Select(m => m.ThreadId).Should().Equal(withNull.Select(m => m.ThreadId));
+    }
+
+    // Rows are saved in an order that is deliberately NOT the expected one, because LINQ's sort is
+    // stable: with no tie-break the result would simply echo whatever order the backing
+    // ConcurrentDictionary enumerated, and the assertion below would be describing insertion order
+    // rather than a defined ordering.
+    [Fact]
+    public async Task ListThreadsAsync_BreaksLastUsedTiesByThreadIdDescending()
+    {
+        // Arrange
+        var store = new InMemoryConversationStore();
+        foreach (var suffix in new[] { "bbb", "eee", "aaa", "fff", "ccc", "ddd" })
+        {
+            await store.SaveMetadataAsync($"thread-5000-{suffix}", new ThreadMetadata
+            {
+                ThreadId = $"thread-5000-{suffix}",
+                LastUpdated = 5_000,
+            });
+        }
+
+        // Act
+        var listed = await store.ListThreadsAsync(limit: 10, offset: 0);
+
+        // Assert
+        listed.Select(m => m.ThreadId).Should().Equal(
+            "thread-5000-fff",
+            "thread-5000-eee",
+            "thread-5000-ddd",
+            "thread-5000-ccc",
+            "thread-5000-bbb",
+            "thread-5000-aaa");
+    }
+
+    // NOTE: this test does NOT prove the tie-break - it stays green without it. A single test run
+    // enumerates the store consistently, so the pages line up whether or not tied rows have a
+    // defined order; the instability the tie-break prevents needs the enumeration order to CHANGE
+    // between two page requests, which no deterministic test can force. What this guards is the
+    // paging arithmetic over a tied set: Skip/Take counts right, nothing double-counted, nothing
+    // dropped. The claim that ties have a defined order at all is pinned by the
+    // ...BreaksLastUsedTiesByThreadIdDescending test above, which does go red without the
+    // tie-break - and a total order is what makes this consistency hold across requests too.
+    [Fact]
+    public async Task ListThreadsAsync_PagesTiedRowsWithoutOverlapOrGaps()
+    {
+        // Arrange
+        var store = new InMemoryConversationStore();
+        var expected = new List<string>();
+        foreach (var suffix in new[] { "bbb", "eee", "aaa", "fff", "ccc", "ddd" })
+        {
+            var threadId = $"thread-5000-{suffix}";
+            expected.Add(threadId);
+            await store.SaveMetadataAsync(threadId, new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LastUpdated = 5_000,
+            });
+        }
+
+        // Act - page the tied set two at a time, exactly as the sidebar does
+        var paged = new List<string>();
+        for (var offset = 0; offset < expected.Count; offset += 2)
+        {
+            var page = await store.ListThreadsAsync(limit: 2, offset: offset);
+            paged.AddRange(page.Select(m => m.ThreadId));
+        }
+
+        // Assert
+        paged.Should().OnlyHaveUniqueItems("a tied row must not be returned by two different pages");
+        paged.Should().BeEquivalentTo(expected, "no tied row may be skipped by offset paging");
+    }
+
+    #endregion
+
     #region ReplaceMessageAsync Tests
 
     [Fact]

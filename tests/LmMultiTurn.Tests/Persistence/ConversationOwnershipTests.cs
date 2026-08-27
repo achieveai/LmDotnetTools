@@ -122,6 +122,210 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
             GrantedThreadIds = new HashSet<string>(granted, StringComparer.Ordinal),
         };
 
+    #region Presentation Exclusion Tests
+
+    /// <summary>
+    /// The presentation exclusion and the authorization scope COMPOSE, and both are applied before
+    /// the page is taken - on every store flavour, SQL one included.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two independent narrowings meet in one statement, and each has to survive the other. The
+    /// caller's own agent-owned rows are all newer than her real ones and outnumber the page, so an
+    /// exclusion applied after <c>LIMIT</c> returns an empty page; another user's row is the newest
+    /// in the tenant, so a scope dropped while adding the exclusion returns it. One test asserts
+    /// both because the two failures are what a change to either clause actually produces.
+    /// </para>
+    /// <para>
+    /// Run across all three flavours deliberately. The SQLite exclusion is a hand-written
+    /// <c>substr(...) &lt;&gt; ...</c> conjunct ANDed over the whole authorization disjunction, and
+    /// re-parenthesising that disjunction is exactly the kind of edit that silently turns
+    /// <c>A OR B AND C</c> into something that admits more than it should. In-memory agreement with
+    /// the SQL is the property this file exists to hold.
+    /// </para>
+    /// </remarks>
+    /// <param name="kind">Store flavour under test.</param>
+    [Theory]
+    [MemberData(nameof(StoreKinds))]
+    public async Task ScopedListing_AppliesTheExclusionBeforeThePage_AndStillHonoursTheScope(string kind)
+    {
+        var store = CreateStore(kind);
+
+        for (var i = 0; i < 15; i++)
+        {
+            await WriteAsync(store, $"thread-{1_000 + i}-mine{i:D2}", TenantA, UserA, lastUpdated: 1_000 + i);
+        }
+
+        for (var i = 0; i < 20; i++)
+        {
+            await WriteAsync(store, $"subagent-mine{i:D2}", TenantA, UserA, lastUpdated: 100_000 + i);
+        }
+
+        // Newest row in the tenant, and not hers.
+        await WriteAsync(store, "thread-9999-theirs", TenantA, UserA2, lastUpdated: 999_999);
+
+        var options = new ConversationListOptions { ExcludedThreadIdPrefixes = ["subagent-", "workflow-"] };
+
+        var listed = await store.ListThreadsAsync(
+            Scope(TenantA, UserA), 10, 0, options, ct: CancellationToken.None);
+
+        _ = listed.Should().HaveCount(10);
+        _ = listed.Select(t => t.ThreadId).Should()
+            .OnlyContain(id => id.StartsWith("thread-1", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A prefix containing SQL <c>LIKE</c> wildcards excludes only the ids it literally names.
+    /// </summary>
+    /// <remarks>
+    /// The SQLite clause is written as a <c>substr</c> comparison precisely so no escaping is
+    /// needed. Had it been <c>NOT LIKE $prefix || '%'</c>, the <c>%</c> and <c>_</c> below would be
+    /// wildcards and would delete rows the caller never asked to exclude - a query that succeeds and
+    /// returns the wrong set, which is the failure mode with no symptom. The kept ids are chosen to
+    /// be exactly what those wildcards would have swallowed.
+    /// </remarks>
+    /// <param name="kind">Store flavour under test.</param>
+    [Theory]
+    [MemberData(nameof(StoreKinds))]
+    public async Task ScopedListing_TreatsAnExcludedPrefixLiterally_NotAsASqlPattern(string kind)
+    {
+        var store = CreateStore(kind);
+
+        await WriteAsync(store, "a%b-excluded", TenantA, UserA, lastUpdated: 3_000);
+        await WriteAsync(store, "axb-kept", TenantA, UserA, lastUpdated: 2_000);
+        await WriteAsync(store, "ab-kept", TenantA, UserA, lastUpdated: 1_000);
+
+        var options = new ConversationListOptions { ExcludedThreadIdPrefixes = ["a%b-"] };
+
+        var listed = await store.ListThreadsAsync(
+            Scope(TenantA, UserA), 50, 0, options, ct: CancellationToken.None);
+
+        _ = listed.Select(t => t.ThreadId).Should().BeEquivalentTo(["axb-kept", "ab-kept"]);
+    }
+
+    /// <summary>
+    /// The unscoped listing applies the exclusion before the page too.
+    /// </summary>
+    /// <remarks>
+    /// A separate statement in every store, so a fix applied to one overload proves nothing about
+    /// the other. This is the overload the sample's own sidebar takes when identity enforcement is
+    /// off, so it is not a hypothetical path.
+    /// </remarks>
+    /// <param name="kind">Store flavour under test.</param>
+    [Theory]
+    [MemberData(nameof(StoreKinds))]
+    public async Task UnscopedListing_AppliesTheExclusionBeforeThePage(string kind)
+    {
+        var store = CreateStore(kind);
+
+        for (var i = 0; i < 15; i++)
+        {
+            await WriteAsync(store, $"thread-{1_000 + i}-real{i:D2}", TenantA, UserA, lastUpdated: 1_000 + i);
+        }
+
+        for (var i = 0; i < 20; i++)
+        {
+            await WriteAsync(store, $"workflow-wf{i:D2}", TenantA, UserA, lastUpdated: 100_000 + i);
+        }
+
+        var options = new ConversationListOptions { ExcludedThreadIdPrefixes = ["subagent-", "workflow-"] };
+
+        var listed = await store.ListThreadsAsync(10, 0, options, ct: CancellationToken.None);
+
+        _ = listed.Should().HaveCount(10);
+        _ = listed.Select(t => t.ThreadId).Should()
+            .OnlyContain(id => id.StartsWith("thread-1", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// SQLite REFUSES a creation-ordered listing rather than approximating it; the two in-memory
+    /// stores answer it.
+    /// </summary>
+    /// <remarks>
+    /// <c>thread_metadata</c> has no <c>created_at</c> column, and re-deriving one in SQL would be a
+    /// second copy of <see cref="ConversationListOptions.CreationTimestampOf"/> free to diverge from
+    /// the first without anyone noticing. Following the precedent the scoped overload's throwing
+    /// default set, the store says so where it is called instead of answering something plausible.
+    /// The message is asserted to name the missing column, because a bare
+    /// <see cref="NotSupportedException"/> leaves the reader no idea what to do about it.
+    /// </remarks>
+    /// <param name="kind">Store flavour under test.</param>
+    [Theory]
+    [MemberData(nameof(StoreKinds))]
+    public async Task CreationOrderedListing_IsRefusedBySqlite_AndAnsweredByTheOthers(string kind)
+    {
+        var store = CreateStore(kind);
+
+        await WriteAsync(store, "thread-1000-aaa", TenantA, UserA, lastUpdated: 9_000);
+        await WriteAsync(store, "thread-2000-bbb", TenantA, UserA, lastUpdated: 8_000);
+
+        var options = new ConversationListOptions { SortOrder = ConversationSortOrder.Created };
+
+        if (kind == "sqlite")
+        {
+            var refusal = await Assert.ThrowsAsync<NotSupportedException>(
+                () => store.ListThreadsAsync(
+                    Scope(TenantA, UserA), 50, 0, options, ct: CancellationToken.None));
+
+            _ = refusal.Message.Should().Contain("created_at");
+            _ = refusal.Message.Should().Contain(nameof(ConversationListOptions.CreationTimestampOf));
+            return;
+        }
+
+        var listed = await store.ListThreadsAsync(
+            Scope(TenantA, UserA), 50, 0, options, ct: CancellationToken.None);
+
+        _ = listed.Select(t => t.ThreadId).Should().Equal("thread-2000-bbb", "thread-1000-aaa");
+    }
+
+    /// <summary>
+    /// Every store gives tied <c>last_updated</c> rows the SAME defined order, descending by thread
+    /// id.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Offset paging issues one query per page. Two rows that compare equal and have nothing else
+    /// separating them are ordered by whatever sequence the store happened to produce - a
+    /// <c>ConcurrentDictionary</c> that reorders as it resizes, a directory enumeration, or SQLite
+    /// free to return equal keys in any order at all. If that sequence differs between the page-1
+    /// and page-2 queries, one row is returned twice and another is never returned, and the row
+    /// that is never returned is simply missing from the sidebar - the same class of silent
+    /// disappearance this whole area exists to fix.
+    /// </para>
+    /// <para>
+    /// This runs across every store BECAUSE the tie-break is spelled twice: once in
+    /// <c>ConversationListOptions.Order</c> for the two in-memory stores and once in SQLite's
+    /// <c>ORDER BY</c>. Two spellings can drift, and a test against only one of them would not
+    /// notice. The rows are written in an order that is neither ascending nor descending by id, so
+    /// no store can pass by echoing insertion or filesystem order.
+    /// </para>
+    /// </remarks>
+    /// <param name="kind">Store flavour under test.</param>
+    [Theory]
+    [MemberData(nameof(StoreKinds))]
+    public async Task TiedLastUsedRows_AreOrderedByThreadIdDescending_InEveryStore(string kind)
+    {
+        var store = CreateStore(kind);
+
+        foreach (var suffix in new[] { "bbb", "eee", "aaa", "fff", "ccc", "ddd" })
+        {
+            await WriteAsync(store, $"thread-5000-{suffix}", TenantA, UserA, lastUpdated: 5_000);
+        }
+
+        var listed = await store.ListThreadsAsync(
+            Scope(TenantA, UserA), 50, 0, ct: CancellationToken.None);
+
+        _ = listed.Select(t => t.ThreadId).Should().Equal(
+            "thread-5000-fff",
+            "thread-5000-eee",
+            "thread-5000-ddd",
+            "thread-5000-ccc",
+            "thread-5000-bbb",
+            "thread-5000-aaa");
+    }
+
+    #endregion
+
     /// <summary>
     /// The four owner columns survive a write and a read. Without this every claim below could pass
     /// vacuously by never storing anything for the filter to match.
@@ -159,7 +363,7 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
         // excluded by tenancy alone.
         await WriteAsync(store, "b-same-owner", TenantB, UserA);
 
-        var listed = await store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, CancellationToken.None);
+        var listed = await store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, ct: CancellationToken.None);
 
         _ = listed.Select(t => t.ThreadId).Should().BeEquivalentTo(["a-own"]);
     }
@@ -180,9 +384,9 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
         await WriteAsync(store, "untenanted", tenantId: null, ownerUserId: UserA);
 
         var scanned = await store.ListThreadsAsync(
-            ConversationListScope.ForTenantIncludingUntenanted(TenantA), 50, 0, CancellationToken.None);
+            ConversationListScope.ForTenantIncludingUntenanted(TenantA), 50, 0, ct: CancellationToken.None);
         var asCaller = await store.ListThreadsAsync(
-            Scope(TenantA, UserA), 50, 0, CancellationToken.None);
+            Scope(TenantA, UserA), 50, 0, ct: CancellationToken.None);
 
         _ = scanned.Select(t => t.ThreadId).Should().BeEquivalentTo(["tenanted", "untenanted"]);
         _ = asCaller.Select(t => t.ThreadId).Should().BeEquivalentTo(["tenanted"]);
@@ -200,9 +404,9 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
         var store = CreateStore(kind);
         await WriteAsync(store, "unowned", TenantA, ownerUserId: null, ownerAppId: null);
 
-        var asUser = await store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, CancellationToken.None);
+        var asUser = await store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, ct: CancellationToken.None);
         var asApp = await store.ListThreadsAsync(
-            Scope(TenantA, userId: null, appId: null), 50, 0, CancellationToken.None);
+            Scope(TenantA, userId: null, appId: null), 50, 0, ct: CancellationToken.None);
 
         _ = asUser.Should().BeEmpty();
         _ = asApp.Should().BeEmpty();
@@ -217,7 +421,7 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
         await WriteAsync(store, "mine", TenantA, UserA);
         await WriteAsync(store, "theirs", TenantA, UserA2);
 
-        var listed = await store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, CancellationToken.None);
+        var listed = await store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, ct: CancellationToken.None);
 
         _ = listed.Select(t => t.ThreadId).Should().BeEquivalentTo(["mine"]);
     }
@@ -234,9 +438,9 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
         await WriteAsync(store, "shared", TenantA, UserA2, visibility: Visibility.Shared);
 
         var withGrant = await store.ListThreadsAsync(
-            Scope(TenantA, UserA, granted: "shared"), 50, 0, CancellationToken.None);
+            Scope(TenantA, UserA, granted: "shared"), 50, 0, ct: CancellationToken.None);
         var withoutGrant = await store.ListThreadsAsync(
-            Scope(TenantA, UserA), 50, 0, CancellationToken.None);
+            Scope(TenantA, UserA), 50, 0, ct: CancellationToken.None);
 
         _ = withGrant.Select(t => t.ThreadId).Should().BeEquivalentTo(["shared"]);
         _ = withoutGrant.Should().BeEmpty();
@@ -256,7 +460,7 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
         await WriteAsync(store, "b1", TenantB, UserB);
 
         var listed = await store.ListThreadsAsync(
-            Scope(TenantA, UserA, isTenantAdmin: true), 50, 0, CancellationToken.None);
+            Scope(TenantA, UserA, isTenantAdmin: true), 50, 0, ct: CancellationToken.None);
 
         _ = listed.Select(t => t.ThreadId).Should().BeEquivalentTo(["a1", "a2"]);
     }
@@ -277,7 +481,7 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
             Scope(TenantA, userId: null, appId: "app-1", granted: "user-owned"),
             50,
             0,
-            CancellationToken.None);
+            ct: CancellationToken.None);
 
         _ = listed.Select(t => t.ThreadId).Should().BeEquivalentTo(["app-owned"]);
     }
@@ -300,7 +504,7 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
 
         await WriteAsync(store, "published", TenantA, UserA2, visibility: Visibility.TenantPublished);
 
-        var listed = await store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, CancellationToken.None);
+        var listed = await store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, ct: CancellationToken.None);
 
         _ = listed.Select(t => t.ThreadId).Should().BeEquivalentTo(["published"]);
     }
@@ -318,7 +522,7 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
         await WriteAsync(store, "private-peer", TenantA, UserA2, visibility: Visibility.Private);
         await WriteAsync(store, "unset-peer", TenantA, UserA2);
 
-        var listed = await store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, CancellationToken.None);
+        var listed = await store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, ct: CancellationToken.None);
 
         _ = listed.Should().BeEmpty();
     }
@@ -334,7 +538,7 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
 
         await WriteAsync(store, "other-published", TenantB, "user-b", visibility: Visibility.TenantPublished);
 
-        var listed = await store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, CancellationToken.None);
+        var listed = await store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, ct: CancellationToken.None);
 
         _ = listed.Should().BeEmpty();
     }
@@ -352,7 +556,7 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
 
         await WriteAsync(store, "mine", TenantA, UserA, lastUpdated: 1_000);
 
-        var listed = await store.ListThreadsAsync(Scope(TenantA, UserA), 5, 0, CancellationToken.None);
+        var listed = await store.ListThreadsAsync(Scope(TenantA, UserA), 5, 0, ct: CancellationToken.None);
 
         _ = listed.Select(t => t.ThreadId).Should().BeEquivalentTo(["mine"]);
     }
@@ -495,7 +699,7 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
         }
 
         var listed = await store.ListThreadsAsync(
-            Scope(TenantA, UserA, granted: [.. granted]), 50, 0, CancellationToken.None);
+            Scope(TenantA, UserA, granted: [.. granted]), 50, 0, ct: CancellationToken.None);
 
         // Both halves matter. The first says the oversized call completed at all; the second says
         // it still filtered - a clause that collapsed to "match everything" under the new shape

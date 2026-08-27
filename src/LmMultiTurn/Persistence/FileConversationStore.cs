@@ -249,6 +249,7 @@ public sealed class FileConversationStore
     public async Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
         int limit = 50,
         int offset = 0,
+        ConversationListOptions? options = null,
         CancellationToken ct = default)
     {
         await _lock.WaitAsync(ct);
@@ -291,10 +292,15 @@ public sealed class FileConversationStore
                 }
             }
 
+            // Exclusion and ordering both run BEFORE Skip/Take. Applying either afterwards would
+            // return a page short by however many rows it removed - the exact defect that hid real
+            // conversations behind a wall of agent-owned threads. See ConversationListOptions.
+            var listOptions = options ?? ConversationListOptions.Default;
+
             return
             [
-                .. metadataList
-                    .OrderByDescending(m => m.LastUpdated)
+                .. listOptions
+                    .Order(metadataList.Where(listOptions.Admits))
                     .Skip(offset)
                     .Take(limit)
             ];
@@ -310,20 +316,23 @@ public sealed class FileConversationStore
         ConversationListScope scope,
         int limit = 50,
         int offset = 0,
+        ConversationListOptions? options = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(scope);
 
-        // Whole-file JSON has no index to push a predicate into, so the filter runs here - but it
-        // runs BEFORE Skip/Take, which is the property that matters: a page trimmed first and
-        // filtered second is short by however many rows the caller could not see.
+        // Whole-file JSON has no index to push a predicate into, so the filters run here - but they
+        // run BEFORE Skip/Take, which is the property that matters: a page trimmed first and
+        // filtered second is short by however many rows the caller could not see, or was not asking
+        // for. The authorization predicate and the presentation predicate are separate objects on
+        // purpose (see ConversationListOptions); here they are simply two conjuncts.
         var all = await ReadAllMetadataAsync(ct).ConfigureAwait(false);
+        var listOptions = options ?? ConversationListOptions.Default;
 
         return
         [
-            .. all
-                .Where(scope.Admits)
-                .OrderByDescending(m => m.LastUpdated)
+            .. listOptions
+                .Order(all.Where(m => scope.Admits(m) && listOptions.Admits(m)))
                 .Skip(offset)
                 .Take(limit)
         ];
@@ -417,7 +426,7 @@ public sealed class FileConversationStore
 
     /// <summary>
     /// Every thread's metadata, with the same minimal-entry fallback
-    /// <see cref="ListThreadsAsync(int, int, CancellationToken)"/> uses for a directory that has
+    /// <see cref="ListThreadsAsync(int, int, ConversationListOptions, CancellationToken)"/> uses for a directory that has
     /// messages but no metadata file.
     /// </summary>
     private async Task<IReadOnlyList<ThreadMetadata>> ReadAllMetadataAsync(CancellationToken ct)
