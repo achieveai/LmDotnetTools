@@ -4,6 +4,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmWorkflow.Model;
+using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmWorkflow.Collaboration;
 
@@ -80,6 +81,10 @@ public static class WorkflowCollaboration
     ///     description are reused verbatim — trusted metadata is validated once, at the original spawn, and a
     ///     restart must not become an opportunity to re-derive it from anything the model can influence.
     /// </param>
+    /// <param name="logger">
+    ///     The launching session's logger, handed to the endpoint so a transcript read that has to drop an
+    ///     unreadable or unpaired row says so instead of dropping it silently.
+    /// </param>
     /// <exception cref="WorkflowCollaborationException">
     ///     The launcher is itself a workflow controller (nested workflows are prohibited), the root-wide agent
     ///     cap cannot admit the controller, or the directory refused the registration. Thrown BEFORE any loop
@@ -92,7 +97,8 @@ public static class WorkflowCollaboration
         string threadId,
         IConversationStore? conversationStore,
         Func<bool> isComplete,
-        CollaborationNodeRecord? persisted = null
+        CollaborationNodeRecord? persisted = null,
+        ILogger? logger = null
     )
     {
         if (caller is null)
@@ -140,7 +146,8 @@ public static class WorkflowCollaboration
         var endpoint = new WorkflowControllerEndpoint(
             () => isComplete() ? AgentCollaborationStatuses.Completed : AgentCollaborationStatuses.Running,
             threadId,
-            conversationStore
+            conversationStore,
+            logger
         );
 
         var registration = caller.Directory.TryRegister(
