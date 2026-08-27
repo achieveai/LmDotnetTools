@@ -105,6 +105,33 @@ public sealed class OperationDeleteTests
     }
 
     [Fact]
+    public async Task DeleteOperationAsync_OperationRunningOnANon409Status_StillThrowsConflict_NotProtocol()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        using var _ = client;
+        // The error_code is the classifier and the status is only the fallback, so a gateway that answers
+        // operation_running with anything other than 409 must still reach the caller as Conflict — the
+        // caller's "wait for the terminal state, then delete" strategy is driven by the code, and a 500
+        // classified as Protocol would send it down the you-hit-a-bug path for an ordinary still-running
+        // operation instead. Pinned on a NON-409 deliberately (#481 item 3): every other test that reaches
+        // this entry pairs it with a 409, where the status fallback would answer Conflict on its own — so
+        // the entry was unreachable-equivalent and its deletion went green across the whole suite, twice.
+        RegisterDelete(
+            handler,
+            HttpStatusCode.InternalServerError,
+            """{"error":"operation is running","code":500,"error_code":"operation_running","retryable":false}"""
+        );
+
+        var act = () => client.DeleteOperationAsync(SessionId, OperationId);
+
+        var exception = await act.Should().ThrowAsync<SandboxException>();
+        exception.Which.Kind.Should().Be(SandboxErrorKind.Conflict);
+        exception.Which.ErrorCode.Should().Be("operation_running");
+        exception.Which.StatusCode.Should().Be(500);
+        exception.Which.OperationId.Should().Be(OperationId);
+    }
+
+    [Fact]
     public async Task DeleteOperationAsync_CodelessConflict_ThrowsConflict_WithNoErrorCodeToMistakeForOperationRunning()
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();
