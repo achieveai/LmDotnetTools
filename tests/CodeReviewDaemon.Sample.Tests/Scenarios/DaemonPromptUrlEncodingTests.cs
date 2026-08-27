@@ -155,6 +155,31 @@ public sealed class DaemonPromptUrlEncodingTests
     /// A repo name is one path segment. Encoding it means a name carrying a separator can never open a new
     /// segment in the REST URL the agent is told to call — it stays data, not structure.
     /// </summary>
+    /// <summary>
+    /// Issue #492 item 1 — <c>is_ado</c> is derived from the SHARED <c>GitRemoteUrl.IsAzureDevOps</c>
+    /// classifier, which accepts both spellings the daemon carries (<c>azure-devops</c> as persisted,
+    /// <c>ado</c> as normalized by <c>ResolveRepo</c>). A hand-rolled <c>== "azure-devops"</c> check would
+    /// classify an <c>"ado"</c>-spelled provider as NOT ADO — the same desync shape #478 unified away.
+    /// The <c>"ado"</c> case is the distinguishing one: it goes true here and false under the old hand-check.
+    /// </summary>
+    [Theory]
+    [InlineData("azure-devops", true)]
+    [InlineData("ado", true)]
+    [InlineData("github", false)]
+    public void Is_ado_uses_the_shared_provider_classifier(string provider, bool expected)
+    {
+        var vars = Variables(new RepoIdentity
+        {
+            Provider = provider,
+            OrgOrOwner = "contoso",
+            Project = "Platform",
+            RepoName = "widgets",
+            RepoStableId = "repo-guid-ado",
+        });
+
+        vars["is_ado"].Should().Be(expected);
+    }
+
     [Fact]
     public void A_separator_in_a_repo_name_cannot_open_a_new_url_path_segment()
     {

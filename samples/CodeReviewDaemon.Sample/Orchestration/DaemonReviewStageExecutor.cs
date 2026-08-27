@@ -1645,7 +1645,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             ["review_type"] = isRereview ? "re-review" : "initial",
             // Provider + identity pieces the agent uses to build inline-posting REST calls (step 5). GitHub uses
             // the pulls/reviews + review-comment-replies APIs; Azure DevOps uses the pullRequests/threads API.
-            ["is_ado"] = string.Equals(repo.Provider, "azure-devops", StringComparison.OrdinalIgnoreCase),
+            // Classify via the SHARED GitRemoteUrl.IsAzureDevOps (issue #492 item 1) so this seam accepts the
+            // same two provider spellings as everywhere else (azure-devops persisted, ado normalized) instead of
+            // hand-rolling a single-spelling check that would desync from the unified classifier.
+            ["is_ado"] = GitRemoteUrl.IsAzureDevOps(repo.Provider),
             // URL-ENCODED, because these five are interpolated into REST URLs the agent runs through `curl`
             // (see the posting contract in daemon-prompts.yaml) — a shell, not a URI builder. An ADO project
             // or repository name may contain a space; raw, curl rejects the argument (exit 3) and the review

@@ -48,6 +48,12 @@ internal sealed class AdoPrProvider : IPrProvider
         var org = request.Repo.OrgOrOwner;
         var project = request.Repo.Project;
         var repo = request.Repo.RepoName;
+        // org/project/repo are interpolated into a URL that becomes a System.Uri when SendAsync runs it. Uri
+        // escapes a space in a segment, but NOT the delimiters '/' '?' '#' inside one — a '/' would open a new
+        // path segment, a '?' start the query, a '#' the fragment, each silently addressing a different resource.
+        // That is safe here only because Azure DevOps forbids '/' in org/project/repo names (issue #492 item 3);
+        // a future provider with laxer naming rules could not inherit this safety claim without encoding the
+        // segments up front (as GitRemoteUrl.RepoPathFor does for the git/allow-list side).
         var baseUrl =
             $"{BaseUrl}/{org}/{project}/_apis/git/repositories/{repo}/pullrequests"
             + $"?searchCriteria.status=active&api-version={ApiVersion}";
