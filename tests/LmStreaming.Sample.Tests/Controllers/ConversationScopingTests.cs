@@ -931,6 +931,57 @@ public sealed class ConversationScopingTests
     }
 
     /// <summary>
+    /// #375's last acceptance criterion: the client must be able to REFLECT the conversation's
+    /// visibility, which the sharing routes flip as the first grant is added and the last is
+    /// revoked. The roster is not a substitute for it - visibility is stored rather than derived
+    /// (see <see cref="RevokingTheLastGrant_ReturnsTheConversationToPrivate"/>), and a
+    /// tenant-published conversation carries no grants at all.
+    /// </summary>
+    /// <remarks>
+    /// Asserted on the SERIALIZED payload, not on the DTO property: a field that never leaves the
+    /// process is not exposed, and reading it off the object would pass either way.
+    /// </remarks>
+    [Fact]
+    public async Task List_ExposesTheStoredVisibility_AndFollowsTheShareFlip()
+    {
+        await using var pool = CreatePool();
+        await SeedAsync("alice-thread", TenantA, Alice);
+
+        var owner = CreateController(Signed(TenantA, Alice), pool);
+
+        _ = (await ListedVisibilityAsync(owner)).Should().Be("private");
+
+        _ = Assert.IsType<OkObjectResult>(await owner.AddShare(
+            "alice-thread",
+            new ConversationShareRequest { SubjectId = Bob, Role = "viewer" },
+            CancellationToken.None));
+
+        _ = (await ListedVisibilityAsync(owner)).Should().Be("shared");
+
+        _ = await owner.RemoveShare("alice-thread", Bob, CancellationToken.None);
+
+        _ = (await ListedVisibilityAsync(owner)).Should().Be("private");
+    }
+
+    /// <summary>MVC's default naming policy, so the payload read here is the one a client receives.</summary>
+    private static readonly JsonSerializerOptions WireOptions =
+        new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
+    /// <summary>
+    /// The <c>visibility</c> the conversation listing puts on the wire for the single conversation
+    /// these tests seed. Null when the payload carries no such field at all.
+    /// </summary>
+    private static async Task<string?> ListedVisibilityAsync(ConversationsController controller)
+    {
+        var ok = Assert.IsType<OkObjectResult>(await controller.List());
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(ok.Value, WireOptions));
+        var summary = document.RootElement.EnumerateArray().Single();
+        return summary.TryGetProperty("visibility", out var visibility)
+            ? visibility.GetString()
+            : null;
+    }
+
+    /// <summary>
     /// A stranger cannot revoke, and the grant survives the attempt. Asserting only on the status
     /// would pass against an implementation that revoked and then reported a refusal.
     /// </summary>

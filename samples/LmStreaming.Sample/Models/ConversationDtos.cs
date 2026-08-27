@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using StoredVisibility = AchieveAi.LmDotnetTools.LmCore.Identity.Visibility;
 
 namespace LmStreaming.Sample.Models;
 
@@ -33,6 +34,44 @@ public record ConversationSummary
     /// Null for legacy threads predating per-conversation mode persistence.
     /// </summary>
     public string? Mode { get; init; }
+
+    /// <summary>
+    /// Whether this conversation is <c>private</c>, <c>shared</c> with named people, or
+    /// <c>tenant-published</c> — the STORED <c>ThreadMetadata.Visibility</c> (P1 spec 8.3) that the
+    /// sharing routes flip as the first grant is added and the last one is revoked.
+    /// <para>
+    /// Carried here because a client cannot derive it: visibility is stored rather than computed
+    /// from the roster, and a tenant-published conversation has no grants at all. This listing is
+    /// the only conversation-shaped document a client reads, so a share control has nowhere else to
+    /// learn it from.
+    /// </para>
+    /// </summary>
+    public required string Visibility { get; init; }
+
+    /// <summary>
+    /// Renders a stored visibility for the wire. Hand-mapped the way the sharing routes hand-map
+    /// <c>GrantRole</c> to <c>viewer</c>/<c>editor</c>: the enum carries no
+    /// <see cref="JsonStringEnumConverter"/>, so putting it on the DTO as-is would serialize
+    /// <c>0</c>/<c>1</c>/<c>2</c> and a client switching on <c>"shared"</c> would silently never
+    /// match.
+    /// </summary>
+    /// <remarks>
+    /// Null reads as private because that is already what <c>Visibility ?? Visibility.Private</c>
+    /// means everywhere the server decides with it (see <c>ConversationAuthorizer</c>) — a row
+    /// written before the field existed, not a default invented for the client. A visibility this
+    /// method does not know throws rather than falling back to <c>private</c>: a new state reported
+    /// as "shared with nobody" would be a silent misstatement about who can read the conversation.
+    /// </remarks>
+    public static string ToWireVisibility(StoredVisibility? visibility) => visibility switch
+    {
+        null or StoredVisibility.Private => "private",
+        StoredVisibility.Shared => "shared",
+        StoredVisibility.TenantPublished => "tenant-published",
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(visibility),
+            visibility,
+            "No wire name for this visibility; add one rather than letting it read as private."),
+    };
 }
 
 /// <summary>

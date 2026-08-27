@@ -3,8 +3,9 @@
  * The share control for one conversation: the roster, plus adding and revoking a grant.
  *
  * **Why the mutation controls are offered before we know they are allowed.** No client-visible DTO
- * on these routes carries the conversation's visibility or an owner-vs-grantee flag, so there is
- * nothing to compute a permission from up front. Reading the roster needs only `Read`, which a
+ * carries an owner-vs-grantee flag, so there is nothing to compute a permission from up front.
+ * (`visibility` says who the conversation is visible TO, not who this caller is, so it cannot stand
+ * in for one — an owner and a grantee see the same `shared`.) Reading the roster needs only `Read`, which a
  * grantee has; changing it needs `Share`, which only the owner has. The only honest sequence is
  * therefore: offer, attempt, and render the server's refusal — then withdraw the control, so a
  * grantee is not left with a button that will fail every time they press it.
@@ -16,11 +17,29 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import BaseModal from './BaseModal.vue';
 import type { ConversationShare, ShareRole } from '@/types/shares';
+import type { ConversationVisibility } from '@/types/conversations';
 import { listShares, addShare, removeShare, ConversationApiError } from '@/api/sharesApi';
 
-const props = defineProps<{ threadId: string }>();
+const props = defineProps<{
+  threadId: string;
+  /**
+   * Who the conversation is visible to, as the conversation listing reported it. Passed in rather
+   * than read here because none of the three share routes carries it, and it must not be inferred
+   * from the roster: visibility is stored server-side, and a tenant-published conversation has no
+   * grants at all. Undefined when the host does not report it — then nothing is claimed.
+   */
+  visibility?: ConversationVisibility;
+}>();
 
-defineEmits<{ close: [] }>();
+const emit = defineEmits<{
+  close: [];
+  /**
+   * A grant was added or revoked, which is what makes the server flip the conversation's
+   * visibility. The host re-reads the listing so {@link props.visibility} catches up; nothing else
+   * would ever tell it to.
+   */
+  changed: [];
+}>();
 
 /**
  * What each refusal code means to a person. Written per code rather than falling back to the
@@ -79,6 +98,21 @@ const sharingOff = ref(false);
 
 const subjectId = ref('');
 const role = ref<ShareRole>('viewer');
+
+/**
+ * How each stored visibility reads to a person. Absent from the map — which is what an undefined
+ * prop gives — renders nothing at all rather than "Private": a host that never sent the field has
+ * not said the conversation is private, and saying so for it would be a claim about who can read it.
+ */
+const VISIBILITY_LABELS: Record<ConversationVisibility, string> = {
+  private: 'Private',
+  shared: 'Shared with named people',
+  'tenant-published': 'Published to the whole tenant',
+};
+
+const visibilityLabel = computed(() =>
+  props.visibility === undefined ? null : VISIBILITY_LABELS[props.visibility]
+);
 
 const canOfferMutation = computed(() => !unavailable.value && !readOnly.value);
 const addDisabled = computed(
@@ -163,6 +197,9 @@ async function handleAdd(): Promise<void> {
     // continuation would only wipe a subject the user has since typed and race that read.
     if (generation !== threadGeneration) return;
     subjectId.value = '';
+    // The server flipped visibility to `shared` if this was the first grant. Announced before the
+    // re-read so the listing refresh and the roster refresh run together rather than in series.
+    emit('changed');
     await load();
   } catch (error) {
     if (generation !== threadGeneration) return;
@@ -182,6 +219,9 @@ async function handleRemove(subject: string): Promise<void> {
   try {
     await removeShare(props.threadId, subject);
     if (generation !== threadGeneration) return;
+    // Revoking the LAST grant flips visibility back to `private`; the client cannot tell which
+    // revoke that was, and does not need to — it asks for the stored answer either way.
+    emit('changed');
     await load();
   } catch (error) {
     if (generation !== threadGeneration) return;
@@ -233,6 +273,14 @@ watch(
       <p v-if="refusal" class="share-refusal" data-testid="share-refusal">{{ refusal }}</p>
 
       <template v-if="!unavailable">
+        <!--
+          Outside the loading/list pair on purpose: this is a fact about the conversation the host
+          already knows, not something this modal is waiting on a roster read to learn.
+        -->
+        <p v-if="visibilityLabel" class="share-visibility" data-testid="share-visibility">
+          {{ visibilityLabel }}
+        </p>
+
         <p v-if="isLoading" class="share-loading" data-testid="share-loading">Loading&hellip;</p>
 
         <ul v-else class="share-list" data-testid="share-list">
@@ -309,6 +357,16 @@ watch(
   border: 1px solid #ffd9a0;
   color: #8a5300;
   font-size: 14px;
+}
+
+.share-visibility {
+  margin: 0;
+  padding: 4px 10px;
+  align-self: flex-start;
+  border-radius: 10px;
+  background: #eef3fd;
+  color: #2057bd;
+  font-size: 12px;
 }
 
 .share-loading,

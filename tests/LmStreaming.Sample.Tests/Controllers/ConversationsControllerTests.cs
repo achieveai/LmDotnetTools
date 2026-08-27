@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
@@ -290,6 +291,52 @@ public class ConversationsControllerTests
         summaries.Select(s => s.ThreadId).Should().NotContain(id =>
             id.StartsWith("subagent-", StringComparison.Ordinal)
             || id.StartsWith("workflow-", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Every stored visibility reaches the wire as its NAME, and a row that predates the field reads
+    /// as private - which is what <c>metadata.Visibility ?? Visibility.Private</c> already means
+    /// everywhere the server decides with it, not a default invented for the client.
+    /// </summary>
+    /// <remarks>
+    /// The name matters as much as the value: <see cref="Visibility"/> carries no
+    /// <c>JsonStringEnumConverter</c>, so an enum put straight on the DTO would serialize as
+    /// <c>0</c>/<c>1</c>/<c>2</c> and a client switching on <c>"shared"</c> would silently never
+    /// match. Asserting the JSON kind is a string pins that.
+    /// </remarks>
+    [Theory]
+    [InlineData(null, "private")]
+    [InlineData(Visibility.Private, "private")]
+    [InlineData(Visibility.Shared, "shared")]
+    [InlineData(Visibility.TenantPublished, "tenant-published")]
+    public async Task List_PutsEachStoredVisibilityOnTheWireAsItsName(Visibility? stored, string expected)
+    {
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            "thread-visible",
+            new ThreadMetadata
+            {
+                ThreadId = "thread-visible",
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty,
+                Visibility = stored,
+            });
+
+        await using var pool = CreatePool();
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var result = Assert.IsType<OkObjectResult>(await controller.List());
+        using var document = JsonDocument.Parse(
+            JsonSerializer.Serialize(result.Value, new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            }));
+
+        var summary = document.RootElement.EnumerateArray().Single();
+        var hasVisibility = summary.TryGetProperty("visibility", out var visibility);
+        hasVisibility.Should().BeTrue("the conversation listing is the only conversation-shaped document the client reads");
+        visibility.ValueKind.Should().Be(JsonValueKind.String);
+        visibility.GetString().Should().Be(expected);
     }
 
     [Fact]

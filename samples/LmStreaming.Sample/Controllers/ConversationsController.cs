@@ -358,6 +358,9 @@ public class ConversationsController(
                 Mode = t.Properties?.TryGetValue(MultiTurnAgentPool.ModePropertyKey, out var modeObj) == true
                     ? modeObj?.ToString()
                     : null,
+                // Read straight off the row rather than out of Properties: visibility is a
+                // first-class stamped field (spec 8.3), and it is what the share control reflects.
+                Visibility = ConversationSummary.ToWireVisibility(t.Visibility),
             });
         return Ok(result);
     }

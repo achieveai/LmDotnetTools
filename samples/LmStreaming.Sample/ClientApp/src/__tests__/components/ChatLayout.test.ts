@@ -17,6 +17,7 @@ interface ConversationSummary {
   provider?: string | null;
   workspace?: string | null;
   mode?: string | null;
+  visibility?: 'private' | 'shared' | 'tenant-published';
 }
 
 const sharedMocks = vi.hoisted(() => ({
@@ -28,6 +29,9 @@ const sharedMocks = vi.hoisted(() => ({
   // sent); an empty list with a non-null currentThreadId is a brand-new,
   // messageless thread (handleNewChat assigns the id before the first send).
   conversations: [] as ConversationSummary[],
+  // Held here rather than created inside the mock factory: the share modal asks for a re-list once
+  // it has made the server flip the conversation's visibility, and that call is what a test asserts.
+  loadConversations: vi.fn(async () => {}),
   selectMode: vi.fn(),
   switchMode: vi.fn(),
   disconnectWebSocket: vi.fn(),
@@ -87,13 +91,16 @@ const sharedMocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@/composables/useConversations', async () => {
-  const { ref } = await import('vue');
+  const { computed, ref } = await import('vue');
   return {
     useConversations: () => ({
       conversations: ref(sharedMocks.conversations),
       currentThreadId: ref(sharedMocks.currentThreadId),
+      currentConversation: computed(() =>
+        sharedMocks.conversations.find((c) => c.threadId === sharedMocks.currentThreadId)
+      ),
       isLoading: ref(false),
-      loadConversations: vi.fn(async () => {}),
+      loadConversations: sharedMocks.loadConversations,
       createNewConversation: sharedMocks.createNewConversation,
       selectConversation: vi.fn(),
       removeConversation: vi.fn(async () => {}),
@@ -1670,5 +1677,65 @@ describe('ChatLayout new-chat provisioning (#435)', () => {
       modeId: 'default',
     });
     expect(provisioned).toBe('thread-provisioned');
+  });
+});
+
+// #445 item 9, the host half of #375's visibility criterion. Visibility is stored server-side and
+// reaches the client on the conversation LISTING, so ChatLayout is what hands it to the share
+// control — and what re-lists once that control has made the server flip it.
+describe('ChatLayout share control visibility (#375)', () => {
+  const mountWithShareModal = () =>
+    mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          ChatInput: true,
+          // Stubbed: this is about what ChatLayout hands the control and what it does with the
+          // control's answer, not about the control's own roster reads.
+          ShareConversationModal: true,
+        },
+      },
+    });
+
+  beforeEach(() => {
+    // A ?threadId= left over from an earlier file would put the layout in its not-found view, which
+    // has no header at all — and therefore no share button to find.
+    window.history.pushState({}, '', '/');
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.modesLoading = false;
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [{ threadId: 'thread-1', visibility: 'shared' }];
+    sharedMocks.loadConversations.mockClear();
+  });
+
+  it('hands the share control the visibility the listing reported for the open conversation', async () => {
+    const wrapper = mountWithShareModal();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="share-button"]').trigger('click');
+    await flushPromises();
+
+    const modal = wrapper.findComponent({ name: 'ShareConversationModal' });
+    expect(modal.exists()).toBe(true);
+    expect(modal.props('visibility')).toBe('shared');
+  });
+
+  it('re-lists conversations when the share control reports a change', async () => {
+    const wrapper = mountWithShareModal();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="share-button"]').trigger('click');
+    await flushPromises();
+    // The mount-time list is not what is under test here.
+    sharedMocks.loadConversations.mockClear();
+
+    // Adding or revoking a grant is what flips visibility server-side; nothing else re-reads it.
+    wrapper.findComponent({ name: 'ShareConversationModal' }).vm.$emit('changed');
+    await flushPromises();
+
+    expect(sharedMocks.loadConversations).toHaveBeenCalledTimes(1);
   });
 });
