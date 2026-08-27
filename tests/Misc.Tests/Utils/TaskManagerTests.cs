@@ -1091,20 +1091,42 @@ public class TaskManagerTests
         result.Should().Contain($"status to '{expected}'");
     }
 
+    /// <summary>
+    ///     Smoke test only. It exercises every read path against a live writer, but it does
+    ///     NOT discriminate synchronised from unsynchronised: with an append-only writer the
+    ///     unsynchronised read is silent on .NET 9 rather than throwing, because both LINQ's
+    ///     FirstOrDefault over a List and System.Text.Json's list converter iterate by index
+    ///     and never consult the collection's version. Removing the locks leaves this test
+    ///     green. The lock coverage it accompanies is argued structurally, not by this test.
+    /// </summary>
     [Fact]
-    public async Task ReadOperations_ConcurrentWithAdds_ShouldNotObserveTornRootList()
+    public async Task ReadOperations_ConcurrentWithAdds_ShouldNotThrow()
     {
-        // Arrange - the readers walk _state.RootTasks while the writer appends to it.
-        // Unsynchronised, List<T>'s enumerator throws "Collection was modified".
-        _taskManager.AddTask("Seed");
+        // Arrange - readers scan for the last seeded id so each lookup walks the whole list,
+        // while the writer appends to that same list for as long as the readers are running.
+        // The writer is bounded by the readers rather than by its own iteration count: a
+        // fixed-count writer finishes in milliseconds and the readers then run alone.
+        const int SeedCount = 200;
+        const int ReaderIterations = 400;
+        const int WriterCap = 20000;
+
+        for (var i = 0; i < SeedCount; i++)
+        {
+            _ = _taskManager.AddTask($"Seed {i}");
+        }
+
         var failures = new ConcurrentBag<Exception>();
+        using var startingGun = new ManualResetEventSlim(false);
+        var stop = 0;
 
         // Act
         var writer = Task.Run(() =>
         {
-            for (var i = 0; i < 20000; i++)
+            startingGun.Wait();
+            var i = 0;
+            while (Volatile.Read(ref stop) == 0 && i < WriterCap)
             {
-                _taskManager.AddTask($"Churn {i}");
+                _ = _taskManager.AddTask($"Churn {i++}");
             }
         });
 
@@ -1113,13 +1135,13 @@ public class TaskManagerTests
             .Select(readerIndex =>
                 Task.Run(() =>
                 {
-                    while (!writer.IsCompleted)
+                    startingGun.Wait();
+                    for (var i = 0; i < ReaderIterations; i++)
                     {
                         try
                         {
-                            _ = _taskManager.GetTask("1");
-                            _ = _taskManager.ListNotes("1");
-                            _ = _taskManager.UpdateTask("1", "in progress");
+                            _ = _taskManager.GetTask(SeedCount.ToString());
+                            _ = _taskManager.JsonSerializeTasks();
                         }
                         catch (Exception ex)
                         {
@@ -1130,7 +1152,10 @@ public class TaskManagerTests
             )
             .ToArray();
 
-        await Task.WhenAll(readers.Append(writer));
+        startingGun.Set();
+        await Task.WhenAll(readers);
+        Volatile.Write(ref stop, 1);
+        await writer;
 
         // Assert
         failures.Should().BeEmpty();

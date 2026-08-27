@@ -1107,18 +1107,25 @@ Examples:
 
     public string JsonSerializeTasks()
     {
-        return JsonSerializer.Serialize(
-            _state,
-            new JsonSerializerOptions { WriteIndented = false, PropertyNamingPolicy = JsonNamingPolicy.CamelCase }
-        );
+        // Serialising walks the whole tree; AddTask must not be reshaping it at the same time.
+        lock (_sync)
+        {
+            return JsonSerializer.Serialize(
+                _state,
+                new JsonSerializerOptions { WriteIndented = false, PropertyNamingPolicy = JsonNamingPolicy.CamelCase }
+            );
+        }
     }
 
     public JsonElement JsonSerializeTasksToJsonElements()
     {
-        return JsonSerializer.SerializeToElement(
-            _state,
-            new JsonSerializerOptions { WriteIndented = false, PropertyNamingPolicy = JsonNamingPolicy.CamelCase }
-        );
+        lock (_sync)
+        {
+            return JsonSerializer.SerializeToElement(
+                _state,
+                new JsonSerializerOptions { WriteIndented = false, PropertyNamingPolicy = JsonNamingPolicy.CamelCase }
+            );
+        }
     }
 
     public static TaskManager DeserializeTasks(JsonElement json)
