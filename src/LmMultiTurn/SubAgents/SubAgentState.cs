@@ -297,6 +297,80 @@ internal class SubAgentState
     private volatile bool _notifyParentOnCompletion;
     public bool NotifyParentOnCompletion { get => _notifyParentOnCompletion; set => _notifyParentOnCompletion = value; }
 
+    /// <summary>
+    /// Serializes the terminal-completion relay decision against an observer trying to suppress it.
+    /// Reading <see cref="NotifyParentOnCompletion"/> and acting on it are two steps, and a bare
+    /// volatile read cannot make them one: a completion landing between an observer's check and its
+    /// write relays the result AND leaves <see cref="Completion"/> resolved, so the observer fires
+    /// too and the same result reaches the parent twice. No await ever runs under this lock and it
+    /// never nests with <c>_lifecycleLock</c>. It is taken INSIDE <c>_completionLock</c> by
+    /// <see cref="ResetCompletionIfFinished"/> and never the other way round (the three relay methods
+    /// below take it alone and call nothing), so it cannot deadlock.
+    /// </summary>
+    private readonly object _completionRelayLock = new();
+
+    /// <summary>True once the TERMINAL completion relay for THE CURRENT RUN has actually been
+    /// dispatched to the parent. Not set by the non-terminal "awaiting answer" relay, which delivers
+    /// no result. Scoped to the run, exactly like the completion latch it shadows: a continuation
+    /// opens a new run and clears it in <see cref="ResetCompletionIfFinished"/>, because a result
+    /// relayed for the previous run says nothing about the one now in flight.</summary>
+    private bool _completionRelayDispatched;
+
+    /// <summary>
+    /// Atomically decides whether this sub-agent's terminal completion relays to the parent, and
+    /// records the decision. Called exactly once per terminal completion, immediately before the
+    /// relay would be sent. Returns false when an observer has already claimed delivery.
+    /// </summary>
+    public bool TryClaimCompletionRelay()
+    {
+        lock (_completionRelayLock)
+        {
+            if (!_notifyParentOnCompletion)
+            {
+                return false;
+            }
+
+            _completionRelayDispatched = true;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Atomically suppresses the automatic completion relay on behalf of an observer that will
+    /// deliver the result itself (a <c>subagent</c> trigger wait). Returns <c>false</c> when the
+    /// relay has ALREADY been dispatched — the parent has the result, and the observer must not
+    /// deliver a second copy.
+    /// </summary>
+    public bool TrySuppressCompletionRelay()
+    {
+        lock (_completionRelayLock)
+        {
+            if (_completionRelayDispatched)
+            {
+                return false;
+            }
+
+            _notifyParentOnCompletion = false;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Restores the automatic completion relay when an observer gives up before the completion
+    /// landed, so a cancelled/timed-out wait never strands the eventual result. A no-op once the
+    /// relay has been dispatched.
+    /// </summary>
+    public void RestoreCompletionRelay()
+    {
+        lock (_completionRelayLock)
+        {
+            if (!_completionRelayDispatched)
+            {
+                _notifyParentOnCompletion = true;
+            }
+        }
+    }
+
     public Task? RunTask { get; set; }
     public Task? MonitorTask { get; set; }
     public CancellationTokenSource Cts { get; set; } = new();
@@ -774,13 +848,34 @@ internal class SubAgentState
     /// run (SendMessage continuation) can be awaited. A pending (unresolved)
     /// completion is kept — existing waiters observe the next resolution.
     /// </summary>
+    /// <remarks>
+    /// Clearing <see cref="_completionRelayDispatched"/> is part of the SAME step, not a separate
+    /// courtesy: "the previous run's result already went to the parent" is only true of the run whose
+    /// latch is being replaced. Left latched, the first background relay would make
+    /// <see cref="TrySuppressCompletionRelay"/> return false forever and every later wait on this
+    /// sub-agent would be rejected as a duplicate — a continued sub-agent could never be waited on
+    /// again. The two live under different locks but must move together, so they move here, in one
+    /// place, rather than at each continuation call site where they could drift apart.
+    /// <para>
+    /// Lock order is <c>_completionLock</c> then <c>_completionRelayLock</c>, and only ever that way:
+    /// the three relay methods take <c>_completionRelayLock</c> alone and call nothing, so there is no
+    /// path that could acquire them in the opposite order.
+    /// </para>
+    /// </remarks>
     public void ResetCompletionIfFinished()
     {
         lock (_completionLock)
         {
-            if (Completion.Task.IsCompleted)
+            if (!Completion.Task.IsCompleted)
             {
-                Completion = CreateCompletionSource();
+                return;
+            }
+
+            Completion = CreateCompletionSource();
+
+            lock (_completionRelayLock)
+            {
+                _completionRelayDispatched = false;
             }
         }
     }

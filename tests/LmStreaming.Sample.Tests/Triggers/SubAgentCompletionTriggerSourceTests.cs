@@ -227,6 +227,101 @@ public class SubAgentCompletionTriggerSourceTests : IAsyncLifetime
         await act.Should().ThrowAsync<ArgumentException>();
     }
 
+    /// <summary>
+    /// The deterministic instance of the arm-window race (#161, PR #158 F8): a background sub-agent
+    /// is spawned with <c>NotifyParentOnCompletion = true</c>, so if it reaches
+    /// <c>HandleRunCompletionAsync</c> before a trigger arms, the automatic relay ALREADY delivered
+    /// the result to the parent. Arming afterwards used to succeed — the completion latch is
+    /// resolved, so <c>ObserveCompletionAsync</c> returns immediately and the trigger fired too,
+    /// putting the same result in front of the model twice. Arming must be rejected instead.
+    /// </summary>
+    [Fact]
+    public async Task ArmAsync_AfterTheRelayAlreadyFired_IsRejected_SoTheResultIsNotDeliveredTwice()
+    {
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (manager, agentId) = await SpawnGatedSubAgentAsync(result: "sub-done", gate);
+
+        // Let the run complete FIRST — no trigger armed, so the manager's automatic relay fires and
+        // the parent already has the result.
+        gate.SetResult();
+        await _parentRelayed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var src = new SubAgentCompletionTriggerSource(() => manager);
+        var fired = new TaskCompletionSource<TriggerFireEvent>();
+
+        var act = () => src
+            .ArmAsync(ArmReq($$"""{"agentId":"{{agentId}}"}"""), SinkThatCompletes(fired), CancellationToken.None)
+            .AsTask();
+
+        // Rejected specifically because the relay already happened — NOT because the agent id went
+        // unknown. Asserting the reason keeps this from passing for the wrong reason if the manager
+        // ever starts evicting completed sub-agents.
+        (await act.Should().ThrowAsync<ArgumentException>())
+            .WithMessage("*already*relayed*");
+
+        // Nothing fired, and the parent saw the result exactly once.
+        fired.Task.IsCompleted.Should().BeFalse("a rejected arm must not deliver a second copy");
+        _parentMock.Verify(
+            p => p.SendAsync(
+                It.IsAny<List<IMessage>>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once(),
+            "the automatic relay delivered the result once; nothing may deliver it again");
+    }
+
+    /// <summary>
+    /// The counterpart to <see cref="ArmAsync_AfterTheRelayAlreadyFired_IsRejected_SoTheResultIsNotDeliveredTwice"/>,
+    /// and the case that distinguishes "this run already relayed" from "this sub-agent ever relayed".
+    /// A <c>SendMessage</c> continuation opens a NEW run with a fresh completion latch
+    /// (<c>SubAgentState.ResetCompletionIfFinished</c>), so nothing has been relayed for it and a wait
+    /// on it is legitimate. The dispatched-relay flag is per-run for exactly that reason; a flag that
+    /// only ever latched would reject every wait on every continued sub-agent for the rest of the
+    /// conversation, permanently — the first background relay would make the sub-agent un-waitable.
+    /// </summary>
+    [Fact]
+    public async Task ArmAsync_OnAContinuationRun_IsAccepted_BecauseNothingWasRelayedForThatRun()
+    {
+        var firstRun = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (manager, agentId) = await SpawnGatedSubAgentAsync(result: "first-run-done", firstRun);
+
+        // Run 1 completes with no wait armed, so the automatic relay delivers it to the parent and
+        // records the dispatch.
+        firstRun.SetResult();
+        await _parentRelayed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Run 2: a continuation. Gated so it is still in flight when the wait arms.
+        var secondRun = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        SetupGatedSubAgentResponse(
+            [new TextMessage { Text = "second-run-done", Role = Role.Assistant }],
+            secondRun);
+        _ = await manager.SendMessageAsync(agentId, "follow up", runInBackground: true);
+
+        var src = new SubAgentCompletionTriggerSource(() => manager);
+        var fired = new TaskCompletionSource<TriggerFireEvent>();
+
+        // Must NOT throw: run 2 is in flight behind a fresh latch and nothing has been relayed for it.
+        await using var handle = await src.ArmAsync(
+            ArmReq($$"""{"agentId":"{{agentId}}"}"""), SinkThatCompletes(fired), CancellationToken.None);
+
+        secondRun.SetResult();
+
+        var evt = await fired.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        evt.Payload.Should().Contain("second-run-done");
+
+        // And the suppression still held for run 2: the trigger delivered it, so the parent saw only
+        // run 1's automatic relay.
+        _parentMock.Verify(
+            p => p.SendAsync(
+                It.IsAny<List<IMessage>>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once(),
+            "run 1 relayed automatically; run 2 was delivered by the trigger, not relayed again");
+    }
+
     [Fact]
     public async Task ArmAsync_Throws_WhenManagerAccessorReturnsNull()
     {

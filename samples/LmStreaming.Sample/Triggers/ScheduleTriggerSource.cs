@@ -206,21 +206,7 @@ public sealed class ScheduleTriggerSource : ITriggerSource
             // Do NOT await _loop here: disposal is normally invoked by the runtime from within a
             // fire callback, and awaiting our own still-running task would deadlock. Dispose the
             // CTS once the loop settles, off the current stack.
-            _ = _loop.ContinueWith(
-                _ =>
-                {
-                    try
-                    {
-                        _cts.Dispose();
-                    }
-                    catch (ObjectDisposedException)
-                    {
-                        // Already disposed — nothing to do.
-                    }
-                },
-                CancellationToken.None,
-                TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
+            TriggerDisposal.DisposeAfter(_loop, _cts);
         }
     }
 }

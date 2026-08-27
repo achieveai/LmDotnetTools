@@ -18,9 +18,16 @@ public static class SampleTriggerRegistrations
     /// null at arm time (e.g. a conversation with no sub-agent orchestration configured), which the
     /// source rejects as an arm-time <see cref="ArgumentException"/>.
     /// </param>
+    /// <param name="loggerFactory">
+    /// Optional. Supplies the <c>file_tail</c> watcher's logger; without one a poll loop that has
+    /// gone structurally blind (its file deleted, its volume unmounted, an ACL change) cannot say
+    /// so, and the wait's TTL expiry reads as "nothing matched" rather than "nothing could be
+    /// observed" (#161).
+    /// </param>
     public static TriggerOptions Build(
         bool sandboxEnabled,
-        Func<SubAgentManager?>? subAgentManagerAccessor = null)
+        Func<SubAgentManager?>? subAgentManagerAccessor = null,
+        ILoggerFactory? loggerFactory = null)
     {
         var registrations = new List<TriggerSourceRegistration>();
 
@@ -33,7 +40,14 @@ public static class SampleTriggerRegistrations
             Description = "Fire when a matching line is appended to an allowed log file.",
             ArgsSchema = FileTailTriggerSource.ArgsSchemaText,
             Capabilities = FileTailTriggerSource.Capabilities,
-            Source = new FileTailTriggerSource(fileTailRoots),
+            // Redacted (the default) rather than MetadataOnly: a sample host tailing its own temp
+            // directory wants the matched line to stay useful. A deployment tailing files that can
+            // carry customer data should pass MetadataOnly instead — pattern redaction removes the
+            // shapes it knows and makes no promise about the rest.
+            Source = new FileTailTriggerSource(
+                fileTailRoots,
+                FileTailContentMode.Redacted,
+                loggerFactory?.CreateLogger<FileTailTriggerSource>()),
         });
 
         // (#143) schedule: unconditional — fires on a cron expression or a fixed interval.

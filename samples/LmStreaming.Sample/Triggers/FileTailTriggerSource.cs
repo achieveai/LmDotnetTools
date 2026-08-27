@@ -55,11 +55,35 @@ public sealed class FileTailTriggerSource : ITriggerSource
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
 
-    private readonly List<string> _allowedRoots;
+    // Consecutive failed poll ticks before the watcher says it is blind, and the gap between repeat
+    // warnings after that. At the 150 ms debounce these are ~3 s and ~60 s: long enough that a
+    // rotation race or a brief exclusive lock never logs, short enough that a real fault is visible
+    // well inside a typical wait TTL rather than after it.
+    private const int PollFaultWarnAfter = 20;
+    private const int PollFaultRepeatEvery = 400;
 
-    public FileTailTriggerSource(IReadOnlyList<string> allowedRoots)
+    private readonly List<string> _allowedRoots;
+    private readonly FileTailContentMode _contentMode;
+    private readonly ILogger? _logger;
+
+    /// <param name="allowedRoots">Host-fixed roots; every armed path must canonicalize inside one.</param>
+    /// <param name="contentMode">
+    /// How much of a matched line reaches the model. Defaults to
+    /// <see cref="FileTailContentMode.Redacted"/>.
+    /// </param>
+    /// <param name="logger">
+    /// Optional. Without it a poll loop that has gone structurally blind (ACL change, unmounted
+    /// volume, deleted file) has no way to say so, and the wait's eventual TTL expiry reads as
+    /// "nothing matched" rather than "nothing could be observed" (#161).
+    /// </param>
+    public FileTailTriggerSource(
+        IReadOnlyList<string> allowedRoots,
+        FileTailContentMode contentMode = FileTailContentMode.Redacted,
+        ILogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(allowedRoots);
+        _contentMode = contentMode;
+        _logger = logger;
         if (allowedRoots.Count == 0)
         {
             throw new ArgumentException("file_tail requires at least one allowed root.", nameof(allowedRoots));
@@ -108,7 +132,8 @@ public sealed class FileTailTriggerSource : ITriggerSource
 
         // WaitId identifies the wait to the runtime — never the file path — so nothing that reads
         // this handle's WaitId (logs, diagnostics, a future ListWaits enrichment) can leak it.
-        var handle = new FileTailArmedTrigger(request.WaitId, canonical, regex, eventSink);
+        var handle = new FileTailArmedTrigger(
+            request.WaitId, canonical, regex, eventSink, _contentMode, _logger);
         return ValueTask.FromResult<IArmedTrigger>(handle);
     }
 
@@ -259,11 +284,32 @@ public sealed class FileTailTriggerSource : ITriggerSource
     /// <c>&lt;trigger&gt;...&lt;/trigger&gt;</c> envelope boundary the runtime wraps fired/notify
     /// payloads in, and caps the delivered length so one oversized line can't dominate a fire.
     /// </summary>
-    internal static string Redact(string line)
+    /// <remarks>
+    /// Named for what it does. It was called <c>Redact</c>, which implied a privacy guarantee it has
+    /// never provided — escaping angle brackets does not remove a bearer token. Privacy redaction is
+    /// <see cref="TriggerContentRedactor.Redact(string)"/>, applied separately in
+    /// <see cref="BuildPayload"/> (#161).
+    /// </remarks>
+    internal static string SanitizeEnvelopeContent(string line)
     {
         var capped = CapUtf8Bytes(line, MaxLineBytes);
         return capped.Replace("<", "&lt;", StringComparison.Ordinal).Replace(">", "&gt;", StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// Turns a matched line into the payload actually delivered, per the source's content mode.
+    /// </summary>
+    /// <remarks>
+    /// Order matters and is not interchangeable: redact first, sanitize second. Sanitizing first
+    /// would rewrite <c>&lt;</c>/<c>&gt;</c> inside a secret (an angle-bracketed address, a quoted
+    /// connection string) and could break the very shape the redactor recognizes, forwarding the
+    /// secret because it no longer looked like one.
+    /// </remarks>
+    internal static string BuildPayload(string line, FileTailContentMode mode) =>
+        mode == FileTailContentMode.MetadataOnly
+            ? $"[file_tail] a matching line ({Encoding.UTF8.GetByteCount(line)} bytes) was appended; "
+                + "content withheld (metadata-only mode)."
+            : SanitizeEnvelopeContent(TriggerContentRedactor.Redact(line));
 
     private static string CapUtf8Bytes(string value, int maxBytes)
     {
@@ -301,7 +347,13 @@ public sealed class FileTailTriggerSource : ITriggerSource
         private readonly Task _tailTask;
         private int _disposed;
 
-        public FileTailArmedTrigger(string waitId, string path, Regex? regex, ITriggerEventSink sink)
+        public FileTailArmedTrigger(
+            string waitId,
+            string path,
+            Regex? regex,
+            ITriggerEventSink sink,
+            FileTailContentMode contentMode,
+            ILogger? logger)
         {
             WaitId = waitId;
 
@@ -344,13 +396,19 @@ public sealed class FileTailTriggerSource : ITriggerSource
                 startOffset = 0;
             }
 
-            _tailTask = RunAsync(path, startOffset, regex, sink, _cts.Token);
+            _tailTask = RunAsync(path, startOffset, regex, sink, contentMode, logger, _cts.Token);
         }
 
         public string WaitId { get; }
 
         private static async Task RunAsync(
-            string path, long startOffset, Regex? regex, ITriggerEventSink sink, CancellationToken ct)
+            string path,
+            long startOffset,
+            Regex? regex,
+            ITriggerEventSink sink,
+            FileTailContentMode contentMode,
+            ILogger? logger,
+            CancellationToken ct)
         {
             // Yield first so the fire is always asynchronous — never synchronous within ArmAsync.
             // This is purely about when the fire is delivered; the baseline it is measured against
@@ -358,6 +416,13 @@ public sealed class FileTailTriggerSource : ITriggerSource
             await Task.Yield();
 
             long offset = startOffset;
+
+            // Two streaks, not one: "the file is not there" and "the file is there but unreadable"
+            // are different faults with different fixes, and collapsing them would report whichever
+            // happened last. Both are structural blindness -- the loop keeps polling, observes
+            // nothing, and without these the wait's eventual TTL expiry reads as "nothing matched".
+            var missingStreak = new PollFaultStreak(PollFaultWarnAfter, PollFaultRepeatEvery);
+            var ioStreak = new PollFaultStreak(PollFaultWarnAfter, PollFaultRepeatEvery);
 
             while (!ct.IsCancellationRequested)
             {
@@ -372,7 +437,22 @@ public sealed class FileTailTriggerSource : ITriggerSource
 
                 if (!File.Exists(path))
                 {
+                    if (missingStreak.RecordFailure())
+                    {
+                        logger?.LogWarning(
+                            "file_tail watcher has seen no file at its armed path for {Ticks} consecutive polls; "
+                                + "it can never fire while this holds. The path was validated at arm time, so the "
+                                + "file was deleted, rotated away, or its volume unmounted.",
+                            missingStreak.Consecutive);
+                    }
+
                     continue;
+                }
+
+                if (missingStreak.RecordSuccess())
+                {
+                    logger?.LogInformation(
+                        "file_tail watcher's armed path is readable again; resuming normal polling.");
                 }
 
                 long len;
@@ -380,9 +460,20 @@ public sealed class FileTailTriggerSource : ITriggerSource
                 {
                     len = new FileInfo(path).Length;
                 }
-                catch (IOException)
+                catch (IOException ex)
                 {
-                    continue; // transient (rotation/replace race) — retry next tick.
+                    // Transient (rotation/replace race) -- retry next tick. Counted, because a
+                    // persistent one is otherwise indistinguishable from a healthy quiet file.
+                    if (ioStreak.RecordFailure())
+                    {
+                        logger?.LogWarning(
+                            ex,
+                            "file_tail watcher has failed to read its armed file's length for {Ticks} consecutive "
+                                + "polls; it can never fire while this holds.",
+                            ioStreak.Consecutive);
+                    }
+
+                    continue;
                 }
 
                 if (len < offset)
@@ -397,7 +488,12 @@ public sealed class FileTailTriggerSource : ITriggerSource
 
                 try
                 {
-                    offset = await PollOnceAsync(path, offset, len, regex, sink, ct);
+                    offset = await PollOnceAsync(path, offset, len, regex, sink, contentMode, ct);
+                    if (ioStreak.RecordSuccess())
+                    {
+                        logger?.LogInformation(
+                            "file_tail watcher read its armed file again; resuming normal polling.");
+                    }
                 }
                 catch (OperationCanceledException)
                 {
@@ -405,6 +501,19 @@ public sealed class FileTailTriggerSource : ITriggerSource
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
+                    // Counted for the same reason as the length read above: an ACL change or an
+                    // unmounted volume throws here forever, and continuing silently is exactly what
+                    // makes the trigger inert without ever saying so.
+                    if (ioStreak.RecordFailure())
+                    {
+                        logger?.LogWarning(
+                            ex,
+                            "file_tail watcher has failed to read its armed file for {Ticks} consecutive polls; "
+                                + "it can never fire while this holds. A transient rotation race clears on its "
+                                + "own; an ACL change or an unmounted volume does not.",
+                            ioStreak.Consecutive);
+                    }
+
                     // A rotation (rename+recreate) or a brief exclusive lock can race File.Exists →
                     // FileStream.Open and throw even though the file was just seen to exist. Tolerate
                     // it the same way the FileInfo.Length read above does — skip this tick and retry
@@ -421,10 +530,16 @@ public sealed class FileTailTriggerSource : ITriggerSource
         /// returns the new offset (only ever advanced past bytes actually consumed). A single line
         /// that grows past the per-iteration cap without a newline is force-consumed in
         /// <see cref="MaxReadBytesPerIteration"/>-sized slices rather than left to buffer without
-        /// bound — each such slice is itself capped again by <see cref="Redact"/> before delivery.
+        /// bound — each such slice is itself capped again by <see cref="BuildPayload"/> before delivery.
         /// </summary>
         private static async Task<long> PollOnceAsync(
-            string path, long offset, long len, Regex? regex, ITriggerEventSink sink, CancellationToken ct)
+            string path,
+            long offset,
+            long len,
+            Regex? regex,
+            ITriggerEventSink sink,
+            FileTailContentMode contentMode,
+            CancellationToken ct)
         {
             using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             fs.Seek(offset, SeekOrigin.Begin);
@@ -447,7 +562,7 @@ public sealed class FileTailTriggerSource : ITriggerSource
                     // never grows past MaxReadBytesPerIteration regardless of how long the real
                     // line eventually turns out to be.
                     var forced = Encoding.UTF8.GetString(buffer, 0, read);
-                    await FireIfMatchAsync(forced, regex, sink, ct);
+                    await FireIfMatchAsync(forced, regex, sink, contentMode, ct);
                     return offset + read;
                 }
 
@@ -477,7 +592,7 @@ public sealed class FileTailTriggerSource : ITriggerSource
                     continue;
                 }
 
-                if (await FireIfMatchAsync(line, regex, sink, ct))
+                if (await FireIfMatchAsync(line, regex, sink, contentMode, ct))
                 {
                     fired++;
                     if (fired >= MaxLinesPerBatch)
@@ -490,14 +605,19 @@ public sealed class FileTailTriggerSource : ITriggerSource
             return offset + consumed;
         }
 
-        private static async Task<bool> FireIfMatchAsync(string line, Regex? regex, ITriggerEventSink sink, CancellationToken ct)
+        private static async Task<bool> FireIfMatchAsync(
+            string line,
+            Regex? regex,
+            ITriggerEventSink sink,
+            FileTailContentMode contentMode,
+            CancellationToken ct)
         {
             if (regex != null && !SafeMatch(regex, line))
             {
                 return false;
             }
 
-            await sink.FireAsync(new TriggerFireEvent(Redact(line)), ct);
+            await sink.FireAsync(new TriggerFireEvent(BuildPayload(line, contentMode)), ct);
             return true;
         }
 
@@ -513,21 +633,7 @@ public sealed class FileTailTriggerSource : ITriggerSource
             // Do NOT await _tailTask here (same reasoning as TimerTriggerSource): disposal is
             // typically invoked from within the runtime's own fire-handling callback, and awaiting
             // our own still-running task would deadlock. Dispose the CTS once it settles instead.
-            _ = _tailTask.ContinueWith(
-                _ =>
-                {
-                    try
-                    {
-                        _cts.Dispose();
-                    }
-                    catch (ObjectDisposedException)
-                    {
-                        // Already disposed — nothing to do.
-                    }
-                },
-                CancellationToken.None,
-                TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
+            TriggerDisposal.DisposeAfter(_tailTask, _cts);
         }
     }
 }

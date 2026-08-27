@@ -255,21 +255,7 @@ public sealed class ProcessTriggerSource : ITriggerSource
             // Do NOT await _watch here (same reasoning as TimerTriggerSource): disposal is
             // typically invoked from within the runtime's own fire-handling callback, and awaiting
             // our own still-running task would deadlock. Dispose the CTS once it settles instead.
-            _ = _watch.ContinueWith(
-                _ =>
-                {
-                    try
-                    {
-                        _cts.Dispose();
-                    }
-                    catch (ObjectDisposedException)
-                    {
-                        // Already disposed — nothing to do.
-                    }
-                },
-                CancellationToken.None,
-                TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
+            TriggerDisposal.DisposeAfter(_watch, _cts);
         }
     }
 }
