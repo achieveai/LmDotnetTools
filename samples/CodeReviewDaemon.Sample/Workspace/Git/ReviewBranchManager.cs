@@ -65,19 +65,32 @@ internal sealed class ReviewBranchManager
     /// <summary>Cap on push retries when the target branch advanced under us.</summary>
     private const int MaxPushAttempts = 3;
 
+    /// <summary>The Knowledge Base directory the derived-listing rebuild stages after a merge commit.</summary>
+    private const string KnowledgeBaseDir = "KnowledgeBase";
+
     private readonly GitRunner _git;
     private readonly ISandboxFileSystem _fileSystem;
     private readonly ILogger<ReviewBranchManager> _logger;
 
+    /// <summary>
+    /// Rebuilds the Knowledge Base's derived listings (<c>_index.jsonl</c>, <c>_toc.md</c>) from the entries
+    /// present in the checkout at the given repo root, returning whether either file changed. Injected rather
+    /// than constructed here because this manager is pure git orchestration and knows nothing about the
+    /// Knowledge Base's format; <c>null</c> leaves the merge exactly as it was.
+    /// </summary>
+    private readonly Func<string, CancellationToken, Task<bool>>? _rebuildDerivedKnowledgeAsync;
+
     public ReviewBranchManager(
         GitRunner git,
         ISandboxFileSystem fileSystem,
-        ILogger<ReviewBranchManager> logger
+        ILogger<ReviewBranchManager> logger,
+        Func<string, CancellationToken, Task<bool>>? rebuildDerivedKnowledgeAsync = null
     )
     {
         _git = git ?? throw new ArgumentNullException(nameof(git));
         _fileSystem = fileSystem ?? throw new ArgumentNullException(nameof(fileSystem));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _rebuildDerivedKnowledgeAsync = rebuildDerivedKnowledgeAsync;
     }
 
     /// <summary>
@@ -304,6 +317,8 @@ internal sealed class ReviewBranchManager
             await RunGitAsync(
                     ["merge", "--no-edit", "-X", "theirs", remoteBranch], repoRoot, cancellationToken)
                 .ConfigureAwait(false);
+
+            await RebuildDerivedKnowledgeAsync(repoRoot, cancellationToken).ConfigureAwait(false);
         }
 
         var pushed = await TryPushWithRebaseAsync(repoRoot, defaultBranch, cancellationToken)
@@ -390,6 +405,68 @@ internal sealed class ReviewBranchManager
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Rebuilds <c>KnowledgeBase/_index.jsonl</c> and <c>_toc.md</c> from the tree the merge produced, and
+    /// commits them when that changed anything.
+    /// <para>
+    /// Only after a MERGE COMMIT, never after a fast-forward. `-X theirs` resolves every conflicting hunk in
+    /// favour of the notes branch, and those two files are whole-file rewrites — the extraction regenerates
+    /// them on the notes branch, so they conflict whenever a concurrent PR's knowledge reached the default
+    /// branch first. Taking the notes branch's copy is then silently wrong in one direction only: the other
+    /// PR's entry .md files survive the merge (different paths, no conflict) while vanishing from the two
+    /// listings that are the only route anything has to them. The listings are pure functions of the entries,
+    /// so the answer is to recompute rather than to pick a side (issue #218 item 6). A fast-forward resolves
+    /// nothing and needs none of this.
+    /// </para>
+    /// <para>
+    /// This does NOT make concurrent knowledge merges safe in general: `-X theirs` can still discard a
+    /// conflicting hunk INSIDE an entry two PRs both revised. That is a separate decision (a merge driver,
+    /// or serializing knowledge merges) and is deliberately not guessed at here. What this closes is the
+    /// case where a merge silently un-indexes entries it kept.
+    /// </para>
+    /// </summary>
+    private async Task RebuildDerivedKnowledgeAsync(string repoRoot, CancellationToken cancellationToken)
+    {
+        if (_rebuildDerivedKnowledgeAsync is null)
+        {
+            return;
+        }
+
+        bool changed;
+        try
+        {
+            changed = await _rebuildDerivedKnowledgeAsync(repoRoot, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // The merge itself already succeeded and every entry file is in the tree; only the listings may
+            // under-report. Failing the whole merge here would strand the notes branch and re-run the same
+            // merge next sweep, which fixes nothing. Logged at Error because the store is knowingly left
+            // inconsistent — and the next extraction's regen, which walks the same directory, repairs it.
+            _logger.LogError(
+                ex,
+                "ReviewBot merge-to-default: could not rebuild the Knowledge Base listings after the merge "
+                    + "commit; entries merged from the default branch may be missing from _index.jsonl and "
+                    + "_toc.md until the next extraction regenerates them.");
+            return;
+        }
+
+        if (!changed)
+        {
+            return;
+        }
+
+        await RunGitAsync(["add", "--", KnowledgeBaseDir], repoRoot, cancellationToken).ConfigureAwait(false);
+        await RunGitAsync(
+                ["commit", "-m", "kb: rebuild the knowledge listings from the merged tree"],
+                repoRoot,
+                cancellationToken)
+            .ConfigureAwait(false);
+        _logger.LogInformation(
+            "ReviewBot merge-to-default: rebuilt the Knowledge Base listings from the merged tree; the "
+                + "merge resolution had left them out of step with the entries it kept.");
     }
 
     /// <summary>Runs a git command, throwing when a step that must succeed fails.</summary>

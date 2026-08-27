@@ -654,8 +654,19 @@ if (daemonOptions.EnableToolAssistedReview
         var providers = sp.GetServices<IPrProvider>().ToList();
         var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
         var hostGit = new GitRunner(slots.HostRunner);
+        // The sweeper is the ONLY caller that merges the notes branch into the default branch, so it is the
+        // only ReviewBranchManager that needs to rebuild the Knowledge Base's derived listings afterwards —
+        // the review-time managers commit onto the notes branch and merge nothing. See
+        // ReviewBranchManager.RebuildDerivedKnowledgeAsync for why a merge commit can un-index entries it
+        // kept (issue #218 item 6).
+        var listingRegenerator = new KnowledgeIndexRegenerator(
+            slots.HostFileSystem, loggerFactory.CreateLogger<KnowledgeIndexRegenerator>());
         var branchManager = new ReviewBranchManager(
-            hostGit, slots.HostFileSystem, loggerFactory.CreateLogger<ReviewBranchManager>());
+            hostGit,
+            slots.HostFileSystem,
+            loggerFactory.CreateLogger<ReviewBranchManager>(),
+            (repoRoot, ct) => listingRegenerator.RegenerateAsync(
+                $"{repoRoot.TrimEnd('/')}/{KnowledgeIndexRegenerator.KnowledgeBaseDirectory}", ct));
         var sweepLogger = loggerFactory.CreateLogger("pr-lifecycle-sweep");
         // The configured repos (full identity + provider) let the sweep resolve an orphaned review/* branch —
         // whose new-scheme name carries only the repo slug + PR number — back to a pollable PR.
