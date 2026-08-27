@@ -119,7 +119,7 @@ public sealed record AccessDecision(bool Allowed, string Reason)
 /// </remarks>
 public interface IResourceAccessPolicy
 {
-    /// <summary>Evaluates one access decision. Performs no I/O.</summary>
+    /// <summary>Evaluates one access ATTEMPT. Consults the grant store and audits the decision.</summary>
     /// <param name="principal">The authenticated caller.</param>
     /// <param name="resource">Ownership facts about the target, loaded by the caller.</param>
     /// <param name="action">The action being attempted.</param>
@@ -128,5 +128,41 @@ public interface IResourceAccessPolicy
         Principal principal,
         ResourceDescriptor resource,
         AccessAction action,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Evaluates a display-time CAPABILITY - "may this principal take this action?" asked to shape a
+    /// UI affordance, not to gate an operation. Same rights table as
+    /// <see cref="EvaluateAsync(Principal, ResourceDescriptor, AccessAction, CancellationToken)"/>,
+    /// with two differences that exist because this is a probe and not an attempt (#487):
+    /// <list type="bullet">
+    /// <item>
+    /// It writes NO attempt-grade audit record. A listing that computes <c>canShare</c> for every
+    /// row would otherwise emit one Security/Warning deny per row on an admin page load - noise an
+    /// operator cannot tell from real refused attempts. A probe is not an access event.
+    /// </item>
+    /// <item>
+    /// It performs NO grant I/O: the grant the grantee branch of spec 7.4 step 3 would look up is
+    /// supplied by the caller via <paramref name="suppliedGrant"/>, so a page resolves grants once
+    /// (spec 7.5's batch) rather than once per row.
+    /// </item>
+    /// </list>
+    /// The refusal path stays audited through <see cref="EvaluateAsync(Principal, ResourceDescriptor, AccessAction, CancellationToken)"/>:
+    /// a real refused attempt still writes exactly one record.
+    /// </summary>
+    /// <param name="principal">The authenticated caller.</param>
+    /// <param name="resource">Ownership facts about the target, loaded by the caller.</param>
+    /// <param name="action">The action being probed.</param>
+    /// <param name="suppliedGrant">
+    /// The role an unexpired grant confers on this principal for this resource, resolved by the
+    /// caller (typically once for a whole page), or null when the principal holds none. Used in
+    /// place of a per-call grant store lookup.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
+    ValueTask<AccessDecision> EvaluateCapabilityAsync(
+        Principal principal,
+        ResourceDescriptor resource,
+        AccessAction action,
+        GrantRole? suppliedGrant,
         CancellationToken ct = default);
 }

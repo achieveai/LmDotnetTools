@@ -282,6 +282,75 @@ public sealed class ResourceAccessPolicyTests
         _ = _audit.Authorizations[1].Reason.Should().Be("no_relationship");
     }
 
+    // -------- #487: the capability seam. A probe reads the same table, audits nothing, and does no I/O --------
+
+    /// <summary>
+    /// A capability probe reaches the SAME decision as an attempt - here a tenant admin who may not
+    /// re-share - but writes NO audit record. Auditing a display-time probe would put one Security
+    /// deny per listed row into the trail, indistinguishable from real refused attempts (#487).
+    /// </summary>
+    [Fact]
+    public async Task EvaluateCapability_ReachesTheSameDenial_ButDoesNotAudit()
+    {
+        var decision = await CreatePolicy().EvaluateCapabilityAsync(
+            User(TenantA, UserA2, "admin"),
+            Conversation(),
+            AccessAction.Share,
+            suppliedGrant: null);
+
+        _ = decision.Allowed.Should().BeFalse();
+        _ = decision.Reason.Should().Be("admin_may_not_reshare");
+        _ = _audit.Authorizations.Should().BeEmpty("a capability probe is not an access event");
+    }
+
+    /// <summary>
+    /// The supplied grant IS the grantee branch: an Editor handed in confers write with no store
+    /// round trip. Pinned on a counting store so a regression that re-queried the store instead of
+    /// honouring the parameter is caught by the lookup count, not only by luck of an empty store.
+    /// </summary>
+    [Fact]
+    public async Task EvaluateCapability_HonoursTheSuppliedGrant_WithoutTouchingTheStore()
+    {
+        var counting = new CountingResourceGrantStore(_grants);
+        var policy = new ResourceAccessPolicy(
+            counting, _audit, new StaticEnforcementGate(true), TimeProvider.System);
+
+        var decision = await policy.EvaluateCapabilityAsync(
+            User(TenantA, UserA2),
+            Conversation(),
+            AccessAction.Write,
+            GrantRole.Editor);
+
+        _ = decision.Allowed.Should().BeTrue();
+        _ = decision.Reason.Should().Be("grant");
+        _ = counting.FindGrantCallCount.Should().Be(0, "the capability seam performs no grant I/O");
+        _ = _audit.Authorizations.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The supplied grant is AUTHORITATIVE, so a null one is "no grant" even when the store holds a
+    /// real Editor grant for the same subject. This is the non-vacuity of the test above: it fails
+    /// unless the seam actually ignores the store, so the two together pin "supplied, not queried".
+    /// </summary>
+    [Fact]
+    public async Task EvaluateCapability_IgnoresAStoredGrant_WhenNoneIsSupplied()
+    {
+        await GrantAsync(GrantRole.Editor);
+        var counting = new CountingResourceGrantStore(_grants);
+        var policy = new ResourceAccessPolicy(
+            counting, _audit, new StaticEnforcementGate(true), TimeProvider.System);
+
+        var decision = await policy.EvaluateCapabilityAsync(
+            User(TenantA, UserA2),
+            Conversation(),
+            AccessAction.Read,
+            suppliedGrant: null);
+
+        _ = decision.Allowed.Should().BeFalse();
+        _ = decision.Reason.Should().Be("no_relationship");
+        _ = counting.FindGrantCallCount.Should().Be(0);
+    }
+
     private Task GrantAsync(GrantRole role) =>
         _grants.GrantAsync(new ResourceGrant
         {

@@ -119,7 +119,7 @@ public sealed class ConversationScopingTests
             new WorkflowRunRegistry(),
             enforce
                 ? TestAuthorizers.Enforcing(principal, grantsOverride ?? _grants, _audit)
-                : TestAuthorizers.Disabled(),
+                : TestAuthorizers.Disabled(principal),
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
             new SubAgentScanCoverageCache(),
@@ -1070,7 +1070,11 @@ public sealed class ConversationScopingTests
         await using var pool = CreatePool();
         await SeedAsync("alice-thread", TenantA, Alice);
 
-        var unenforced = CreateController(principal: null, pool, enforce: false);
+        // A dev principal who does NOT own the row (Alice does). With enforcement off canShare is
+        // true for the enforcement-off reason, not because the viewer happens to be the owner - so a
+        // flag that quietly re-derived ownership, or one that needed a principal at all, goes false
+        // here and hides the share control through the pre-enforcement window.
+        var unenforced = CreateController(Signed(TenantA, Bob), pool, enforce: false);
 
         _ = (await ListedCanShareAsync(unenforced, "alice-thread")).Should().BeTrue();
     }
@@ -1172,5 +1176,84 @@ public sealed class ConversationScopingTests
         var result = await controller.GetMessages("alice-thread", viewer: null, CancellationToken.None);
 
         _ = Assert.IsType<OkObjectResult>(result);
+    }
+
+    // -------- #487: the capability seam. canShare is a display-time probe, not an attempt --------
+
+    /// <summary>
+    /// #487 Cost 1. Computing <c>canShare</c> per row must not write attempt-grade audit. Under
+    /// enforcement a tenant admin sees every conversation in the tenant and may re-share none of
+    /// them, so before the capability seam each row's Share evaluation wrote a Security/Warning
+    /// deny - one admin page load produced up to one such record per row, noise indistinguishable
+    /// from a real refused share attempt. The listing must write ZERO Security records for the
+    /// capability computation.
+    /// </summary>
+    [Fact]
+    public async Task List_UnderEnforcement_ComputesCanShareWithoutWritingSecurityAudit()
+    {
+        await using var pool = CreatePool();
+        await SeedAsync("alice-thread", TenantA, Alice);
+        await SeedAsync("bob-thread", TenantA, Bob);
+        await SeedAsync("carol-thread", TenantA, "dir-a:carol");
+
+        var admin = CreateController(Signed(TenantA, "dir-a:admin", ResourceAccessPolicy.AdminRole), pool);
+
+        var ok = Assert.IsType<OkObjectResult>(await admin.List(50, 0, CancellationToken.None));
+        _ = ((IEnumerable<ConversationSummary>)ok.Value!).Should().HaveCount(3);
+
+        _ = _audit.Authorizations
+            .Where(a => a.EventClass == AuditEventClass.Security)
+            .Should().BeEmpty(
+                "computing canShare for a list row is a display-time capability probe, not a refused attempt");
+    }
+
+    /// <summary>
+    /// #487 Cost 2. The per-row Share evaluation re-queried grants from the store once per row, so a
+    /// full page cost one grant look-up per row on top of the single one the listing scope already
+    /// resolves. The grant fetch for a page must be O(1): the capability computation consults the
+    /// batch the scope resolved and issues no per-row <see cref="IResourceGrantStore.FindGrantAsync"/>.
+    /// </summary>
+    [Fact]
+    public async Task List_UnderEnforcement_FetchesGrantsOncePerPage_NotPerRow()
+    {
+        await using var pool = CreatePool();
+        for (var i = 0; i < 8; i++)
+        {
+            await SeedAsync($"thread-{i}", TenantA, Alice);
+        }
+
+        var counting = new CountingResourceGrantStore(_grants);
+        var owner = CreateController(Signed(TenantA, Alice), pool, grantsOverride: counting);
+
+        var ok = Assert.IsType<OkObjectResult>(await owner.List(50, 0, CancellationToken.None));
+        _ = ((IEnumerable<ConversationSummary>)ok.Value!).Should().HaveCount(8);
+
+        _ = counting.FindGrantCallCount.Should().Be(
+            0,
+            "the listing resolves grants once via ListGrantedResourceIds; the per-row capability check must not FindGrant again");
+    }
+
+    /// <summary>
+    /// The seam removes audit from the capability probe ONLY, never from a real attempt: a genuine
+    /// refused Share still writes exactly one Security record. Without this, "write nothing for the
+    /// probe" could pass by silencing the attempt path too.
+    /// </summary>
+    [Fact]
+    public async Task ARefusedShareAttempt_StillWritesExactlyOneSecurityAudit()
+    {
+        await using var pool = CreatePool();
+        await SeedAsync("alice-thread", TenantA, Alice);
+
+        var admin = CreateController(Signed(TenantA, Bob, ResourceAccessPolicy.AdminRole), pool);
+        var refused = await admin.AddShare(
+            "alice-thread",
+            new ConversationShareRequest { SubjectId = "dir-a:carol", Role = "viewer" },
+            CancellationToken.None);
+
+        _ = Assert.IsType<ObjectResult>(refused).StatusCode.Should().Be(403);
+        _ = _audit.Authorizations
+            .Where(a => a.EventClass == AuditEventClass.Security)
+            .Should().ContainSingle()
+            .Which.Reason.Should().Be("admin_may_not_reshare");
     }
 }

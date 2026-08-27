@@ -350,24 +350,24 @@ public class ConversationsController(
 
         foreach (var t in listed)
         {
-            // #482. A LOOP, unlike the scope above, and unavoidably so: the listing filter answers
-            // "may this viewer SEE the row", one question for the whole page, while canShare answers
-            // "may this viewer SHARE this row", which the rights table decides per row from the row's
-            // own owner and visibility (an owner may share a private conversation and not a published
-            // one). The row loaded for the listing is the same ThreadMetadata the point read would
-            // load, so this costs no extra store round trip - only the authorizer's own grant lookup.
+            // #482/#487. A LOOP, unlike the scope above, and unavoidably so: the listing filter
+            // answers "may this viewer SEE the row", one question for the whole page, while canShare
+            // answers "may this viewer SHARE this row", which the rights table decides per row from
+            // the row's own owner and visibility (an owner may share a private conversation and not a
+            // published one). The row loaded for the listing is the same ThreadMetadata the point
+            // read would load, so this costs no extra store round trip.
             //
             // Through the authorizer rather than by comparing OwnerUserId here. Re-deriving it would
             // put a second, drifting copy of spec 7.4.1 in a controller, and the copy would be wrong
             // immediately: an owner may not re-share a tenant-published conversation, and a tenant
             // admin - who can see every row on this page - may not share any of them.
             //
-            // KNOWN COST, named rather than hidden: every decision is audited, so a page now writes
-            // one authorization record per row where it previously wrote none, and the refusals land
-            // at Security/Warning level (LoggingAuditSink). The records are accurate - these decisions
-            // really are made - but they are display-time evaluations, not attempts, and there is no
-            // non-auditing seam on IResourceAccessPolicy to reach for instead.
-            var share = await authorizer.AuthorizeAsync(t.ThreadId, t, AccessAction.Share, ct);
+            // Through the CAPABILITY seam (#487), not AuthorizeAsync: this is a display-time probe,
+            // not an access attempt. So it writes NO attempt-grade audit record - a page load used to
+            // emit one Security/Warning deny per row an admin could not share, noise an operator
+            // could not tell from real refused attempts - and it consults the grant batch the scope
+            // already resolved rather than re-querying grants once per row.
+            var canShare = await authorizer.MayShareForListingAsync(t, scope?.GrantedThreadIds, ct);
 
             result.Add(new ConversationSummary
             {
@@ -391,7 +391,7 @@ public class ConversationsController(
                 // Read straight off the row rather than out of Properties: visibility is a
                 // first-class stamped field (spec 8.3), and it is what the share control reflects.
                 Visibility = ConversationSummary.ToWireVisibility(t.Visibility),
-                CanShare = share.Allowed,
+                CanShare = canShare,
             });
         }
 

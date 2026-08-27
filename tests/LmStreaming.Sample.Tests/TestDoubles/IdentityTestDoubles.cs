@@ -158,7 +158,13 @@ internal static class TestAuthorizers
     /// keeps their expectations unchanged: with the gate off the policy short-circuits to
     /// <c>enforcement_disabled</c> before it looks at tenant, owner or role.
     /// </summary>
-    public static ConversationAuthorizer Disabled() => Create(enforce: false, principal: null);
+    /// <param name="principal">
+    /// The signed-in caller, or null. Off-arm decisions never consult it, but a test can supply a
+    /// NON-owner to prove the off-arm is the enforcement-off path and not "the principal happens to
+    /// own the row".
+    /// </param>
+    public static ConversationAuthorizer Disabled(Principal? principal = null) =>
+        Create(enforce: false, principal);
 
     /// <summary>An authorizer with enforcement ON, acting as <paramref name="principal"/>.</summary>
     /// <param name="principal">The signed-in caller, or null for an unauthenticated request.</param>
