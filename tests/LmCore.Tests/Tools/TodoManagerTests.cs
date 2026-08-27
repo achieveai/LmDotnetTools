@@ -205,6 +205,13 @@ public class TodoManagerTests
         Assert.Contains("Error", result, StringComparison.OrdinalIgnoreCase);
         var subtask = manager.Tasks[0].SubTasks.Single();
         Assert.Empty(subtask.SubTasks);
+
+        // The refusal must say the id was found and rejected, not that it was missing — a model
+        // that aimed one level too deep would otherwise retry the same id as if it did not exist.
+        Assert.Contains("already a subtask", result, StringComparison.OrdinalIgnoreCase);
+        var unknownParent = manager.AddTask("Nowhere", parentId: 99);
+        Assert.DoesNotContain("already a subtask", unknownParent, StringComparison.OrdinalIgnoreCase);
+        Assert.NotEqual(unknownParent, result);
     }
 
     // ---- Requirement 3: update-task ----
