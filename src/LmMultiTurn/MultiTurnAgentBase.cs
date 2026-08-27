@@ -913,8 +913,33 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         // succeeded, so the flag cannot be poisoned by a transient fault.
         _historyRecovered = true;
 
-        // Convert persisted messages back to IMessages
-        var messages = MessagePersistenceConverter.FromPersistedMessages(persistedMessages);
+        // Convert persisted messages back to IMessages, degrading PER-RECORD (#489): one
+        // undeserializable/corrupt row must not abort recovery of its healthy siblings. Converting the
+        // whole batch in one shot (FromPersistedMessages) threw on the first bad row and lost every
+        // record, and — because SubAgentManager.RestartRunAsync recovers through this same method with
+        // no failure handling of its own (its enclosing catch is teardown-and-rethrow) — a single
+        // corrupt record aborted the entire restart. Skip the bad row, log its id, keep the rest, so
+        // both restore sites (here and the manager) survive a corrupt store identically.
+        var messages = new List<IMessage>(persistedMessages.Count);
+        foreach (var persisted in persistedMessages)
+        {
+            IMessage converted;
+            try
+            {
+                converted = MessagePersistenceConverter.FromPersistedMessage(persisted);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(
+                    ex,
+                    "Skipping corrupt persisted record {RecordId} for thread {ThreadId} during recovery",
+                    persisted.Id,
+                    ThreadId);
+                continue;
+            }
+
+            messages.Add(converted);
+        }
 
         // Restore history
         RestoreHistory(messages);

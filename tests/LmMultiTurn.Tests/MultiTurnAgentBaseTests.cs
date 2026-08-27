@@ -942,6 +942,81 @@ public class MultiTurnAgentBaseTests
         await agent.DisposeAsync();
     }
 
+    [Fact]
+    public async Task RecoverAsync_SkipsACorruptRecord_AndRestoresHealthySiblings()
+    {
+        // #489: one undeserializable persisted record must not abort recovery of the healthy records
+        // around it. RecoverAsync degrades per-record — it skips the corrupt row (logging its id) and
+        // restores every sibling. Because SubAgentManager.RestartRunAsync recovers through this SAME
+        // method, a single bad row can no longer abort a sub-agent restart either (the two restore
+        // sites now agree). Red-first: before the fix the whole conversion aborts on the first bad
+        // row, so RecoverAsync throws JsonException and NO sibling is restored.
+        var store = new InMemoryConversationStore();
+        var threadId = "test-thread-corrupt-record";
+        const string runId = "prior-run";
+
+        // A corrupt row deliberately BETWEEN two healthy ones: a whole-list abort (the pre-fix
+        // behavior) would lose the sibling after it, so restoring both proves per-record resilience.
+        var healthyBefore =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new TextMessage
+                {
+                    Text = "before corrupt",
+                    Role = Role.User,
+                    GenerationId = "g1",
+                    RunId = runId,
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 1,
+            };
+        var corrupt = healthyBefore with
+        {
+            Id = "corrupt-record-1",
+            Timestamp = 2,
+            MessageJson = "{ this is not valid message json",
+        };
+        var healthyAfter =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new TextMessage
+                {
+                    Text = "after corrupt",
+                    Role = Role.Assistant,
+                    GenerationId = "g2",
+                    RunId = runId,
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 3,
+            };
+
+        await store.AppendMessagesAsync(threadId, [healthyBefore, corrupt, healthyAfter]);
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+
+        var recovered = await agent.RecoverAsync();
+
+        recovered.Should().BeTrue();
+        var texts = agent.SnapshotHistoryForTest().OfType<TextMessage>().Select(m => m.Text).ToList();
+        texts.Should().Contain("before corrupt").And.Contain("after corrupt");
+        // Exactly the two healthy siblings — the corrupt row contributes nothing (not a placeholder).
+        agent.SnapshotHistoryForTest().Count.Should().Be(2);
+
+        await agent.DisposeAsync();
+    }
+
     #endregion
 
     #region Metadata Preservation Tests
