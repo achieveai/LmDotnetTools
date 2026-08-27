@@ -185,21 +185,7 @@ public sealed class TimerTriggerSource : ITriggerSource
             // within the fire callback (fire → runtime finalize → source dispose), and awaiting
             // our own still-running task would deadlock. Dispose the CTS once the task settles,
             // off the current stack.
-            _ = _timerTask.ContinueWith(
-                _ =>
-                {
-                    try
-                    {
-                        _cts.Dispose();
-                    }
-                    catch (ObjectDisposedException)
-                    {
-                        // Already disposed — nothing to do.
-                    }
-                },
-                CancellationToken.None,
-                TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
+            TriggerDisposal.DisposeAfter(_timerTask, _cts);
         }
     }
 }

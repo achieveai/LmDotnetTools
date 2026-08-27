@@ -633,21 +633,7 @@ public sealed class FileTailTriggerSource : ITriggerSource
             // Do NOT await _tailTask here (same reasoning as TimerTriggerSource): disposal is
             // typically invoked from within the runtime's own fire-handling callback, and awaiting
             // our own still-running task would deadlock. Dispose the CTS once it settles instead.
-            _ = _tailTask.ContinueWith(
-                _ =>
-                {
-                    try
-                    {
-                        _cts.Dispose();
-                    }
-                    catch (ObjectDisposedException)
-                    {
-                        // Already disposed — nothing to do.
-                    }
-                },
-                CancellationToken.None,
-                TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
+            TriggerDisposal.DisposeAfter(_tailTask, _cts);
         }
     }
 }
