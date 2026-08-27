@@ -258,19 +258,10 @@ public class TypeFunctionProvider : IFunctionProvider
                     {
                         var param = parameters[i];
 
-                        if (argsDict != null && argsDict.TryGetValue(param.Name!, out var argValue))
-                        {
-                            paramValues[i] = BindArgument(argValue, param.ParameterType);
-                        }
-                        else
-                        {
-                            paramValues[i] =
-                                param.HasDefaultValue ? param.DefaultValue
-                                : !param.ParameterType.IsValueType
-                                || Nullable.GetUnderlyingType(param.ParameterType) != null
-                                    ? null
-                                : Activator.CreateInstance(param.ParameterType);
-                        }
+                        paramValues[i] =
+                            argsDict != null && argsDict.TryGetValue(param.Name!, out var argValue)
+                                ? BindArgument(argValue, param.ParameterType)
+                                : UnsuppliedArgument(param);
                     }
                 }
 
@@ -370,6 +361,23 @@ public class TypeFunctionProvider : IFunctionProvider
         }
 
         return JsonSerializer.Deserialize(argValue.GetRawText(), parameterType, ArgumentOptions);
+    }
+
+    /// <summary>
+    ///     The value to pass for a parameter the caller did not supply. A declared C# default
+    ///     wins; otherwise it is <see langword="null" /> for anything nullable and the
+    ///     zero value for a non-nullable value type.
+    /// </summary>
+    private static object? UnsuppliedArgument(ParameterInfo param)
+    {
+        if (param.HasDefaultValue)
+        {
+            return param.DefaultValue;
+        }
+
+        return !param.ParameterType.IsValueType || Nullable.GetUnderlyingType(param.ParameterType) != null
+            ? null
+            : Activator.CreateInstance(param.ParameterType);
     }
 
     private static bool IsAsyncMethod(MethodInfo method)
