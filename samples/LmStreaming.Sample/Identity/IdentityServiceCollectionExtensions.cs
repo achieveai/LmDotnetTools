@@ -149,13 +149,25 @@ public static class IdentityServiceCollectionExtensions
     /// </para>
     /// <para>
     /// Read from the built container rather than from configuration, and here rather than in
-    /// <see cref="AddSampleIdentity"/>, because two of the three escapes are only visible once
-    /// registration has finished: an <see cref="IRequestPrincipalSource"/> the host adds AFTER
-    /// <c>AddSampleIdentity</c> returns, and the authentication scheme
-    /// <see cref="AddBearerAuthentication"/> registers conditionally. <c>SchemeMap</c> is the
-    /// discriminator for the latter: <c>AddAuthentication(scheme)</c> only sets a default scheme
-    /// NAME, and it is <c>AddMicrosoftIdentityWebApi</c> - reached only with a client id configured -
-    /// that adds the entry a handler is resolved from.
+    /// <see cref="AddSampleIdentity"/>, for two DIFFERENT reasons - one per escape, and neither one
+    /// covers both.
+    /// </para>
+    /// <para>
+    /// An <see cref="IRequestPrincipalSource"/> is the escape that is genuinely invisible until
+    /// registration has finished: a host may add one AFTER <c>AddSampleIdentity</c> returns, so
+    /// nothing inside that call could have seen it.
+    /// </para>
+    /// <para>
+    /// The bearer escape is a different case, and not a deferred one. WHETHER it is configured is
+    /// legible in configuration alone - <see cref="AddBearerAuthentication"/> gates on
+    /// <see cref="ClientIdConfigKey"/>, which it reads straight from <see cref="IConfiguration"/>.
+    /// What defers the check is the discriminator chosen for it: <c>SchemeMap</c> lives on a BUILT
+    /// <c>AuthenticationOptions</c>, materialised only by resolving <c>IOptions&lt;&gt;</c> from a
+    /// container. It is preferred over re-reading the client id because it asks whether a handler
+    /// was actually registered rather than whether a setting is present:
+    /// <c>AddAuthentication(scheme)</c> only sets a default scheme NAME, and it is
+    /// <c>AddMicrosoftIdentityWebApi</c> - reached only with a client id configured - that adds the
+    /// entry a handler is resolved from.
     /// </para>
     /// </remarks>
     private static void ValidateSomeFrontDoorExists(IServiceProvider services)
@@ -182,15 +194,23 @@ public static class IdentityServiceCollectionExtensions
             return;
         }
 
-        // Both halves, because ServiceCallerPrincipalSource needs both: with no secret it returns
-        // null rather than admitting a caller on a header anyone can type, and with no registration
-        // carrying a TenantId it rejects the app id presented. A registration whose TenantId is blank
-        // is refused on the same branch as one that is absent, so it does not count as an onboarding.
+        // Three conditions, not two, because ServiceCallerPrincipalSource needs all three: with no
+        // secret it returns null rather than admitting a caller on a header anyone can type; with no
+        // registration carrying a TenantId it rejects the app id presented; and it rejects with
+        // service_app_tenant_invalid when the TenantId names LegacyTenantId, because no principal may
+        // carry the quarantine tenant (spec 8.5.2). A registration whose TenantId is blank is refused
+        // on the same branch as one that is absent, so neither counts as an onboarding.
+        //
+        // The quarantine conjunct sits INSIDE the Any so a host with one quarantine entry and one
+        // real one still boots - it has a working front door. Trimmed before comparing, matching what
+        // ServiceCallerPrincipalSource compares.
         var secretConfigured = !string.IsNullOrWhiteSpace(
             services.GetRequiredService<IConfiguration>()[InboundS2SAuthAttribute.SecretConfigKey]);
 
         if (secretConfigured
-            && options.Apps.Any(app => !string.IsNullOrWhiteSpace(app.Value?.TenantId)))
+            && options.Apps.Any(app =>
+                !string.IsNullOrWhiteSpace(app.Value?.TenantId)
+                && !string.Equals(app.Value.TenantId.Trim(), options.LegacyTenantId, StringComparison.Ordinal)))
         {
             return;
         }
@@ -201,7 +221,8 @@ public static class IdentityServiceCollectionExtensions
                 + "401 (403 on the /ws transports) and no credential a caller presents could change "
                 + $"that. Configure one of: {ClientIdConfigKey}, for interactive sign-in; "
                 + $"{InboundS2SAuthAttribute.SecretConfigKey} together with an "
-                + $"{IdentityOptions.SectionName}:Apps entry naming a TenantId, for service callers; "
+                + $"{IdentityOptions.SectionName}:Apps entry naming a TenantId other than "
+                + $"{IdentityOptions.SectionName}:LegacyTenantId, for service callers; "
                 + "or register an IRequestPrincipalSource of your own. Set "
                 + $"{IdentityOptions.SectionName}:Enforce to false to run without authentication.");
     }

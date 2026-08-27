@@ -85,13 +85,16 @@ public sealed class TenantSeedHostedService : IHostedService
                 //
                 // Inside the loop, not around it. A catch around the foreach would also stop the
                 // host aborting, and would silently drop every entry after the failing one, which
-                // is the "why did my tenant never appear" mystery the skip path above exists to
+                // is the "why did my tenant never appear" mystery the skip path below exists to
                 // prevent.
                 //
-                // OperationCanceledException is excluded because the token here is the host's own
-                // startup token: once it is cancelled the host is being torn down, and continuing
-                // to walk the list against a store that is going away turns an orderly shutdown
-                // into a run of failures.
+                // The filter excludes OperationCanceledException - and its subclasses, so
+                // TaskCanceledException too - by TYPE, unconditionally. It never asks whether
+                // anything was in fact cancelled. Shutdown is the case it is written for: this runs
+                // under the host's own startup token, and continuing to walk the list against a
+                // store that is going away turns an orderly shutdown into a run of failures. An OCE
+                // raised with nothing cancelled - an inner linked token, a WaitAsync or CancelAfter
+                // timeout inside store code - is excluded on the same rule and escapes StartAsync.
                 _logger.LogError(
                     ex,
                     "Failed to apply the Identity:SeedTenants entry for {TenantId}; startup "

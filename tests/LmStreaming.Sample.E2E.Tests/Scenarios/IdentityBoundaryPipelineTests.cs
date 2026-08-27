@@ -88,6 +88,27 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
             "every /api route outside the identity boundary is a deliberate, reviewed decision - "
                 + "see IdentityMiddleware.InfrastructureApiPaths for why each one is there");
 
+        // The forward direction, which the partition above cannot see. This test enumerates routes
+        // and asks whether each is guarded or exempt; a DEAD exemption contributes no route, so it is
+        // invisible here by construction. That is exactly how "/api/health" survived until #350 -
+        // an entry naming a path this host maps nowhere, granting nothing observable, while silently
+        // reserving the whole subtree beneath it for the day a route lands there.
+        //
+        // IsGuardedApiPath matches with StartsWithSegments, so the requirement on an entry is that it
+        // PREFIXES a published route, not that it equals one: "api/admin/tenants" legitimately covers
+        // "api/admin/tenants/{tenantId}/adopt-legacy", and "api/auth/webhook" covers
+        // "api/auth/webhook/{provider}".
+        foreach (var unguarded in IdentityMiddleware.UnguardedApiPaths)
+        {
+            var prefix = unguarded.TrimStart('/');
+
+            _ = apiRoutes.Should().Contain(
+                route => route == prefix || route.StartsWith(prefix + "/", StringComparison.Ordinal),
+                "every entry in IdentityMiddleware.UnguardedApiPaths must name a route this host "
+                    + $"actually maps, and '{unguarded}' names none - a dead exemption grants nothing "
+                    + "today and silently reserves its whole subtree for tomorrow (#350)");
+        }
+
         // Both egress-key routes are INSIDE the boundary, not exempt (BE1). The controller presents
         // no credential of its own - it is loopback-gated only - so leaving it outside enforcement
         // let a credential-less loopback caller manage egress keys under Identity:Enforce. Pinned

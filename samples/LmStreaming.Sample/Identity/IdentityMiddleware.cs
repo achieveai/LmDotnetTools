@@ -22,8 +22,7 @@ namespace LmStreaming.Sample.Identity;
 /// It runs for <c>/api</c> routes and for the WebSocket transports at <c>/ws</c> (#342). Static
 /// files and the SPA's own index have no principal to establish and must stay reachable while
 /// signed out - in particular the rejection screen itself is served by the SPA, so locking the SPA
-/// behind the principal would hide the very page that explains the refusal. (A health endpoint was
-/// named here too; the sample maps none - see <see cref="AnonymousApiPaths"/>.)
+/// behind the principal would hide the very page that explains the refusal.
 /// </para>
 /// <para>
 /// The WebSocket transports are inside the boundary even though they sit outside the <c>/api</c>
@@ -99,11 +98,11 @@ public sealed class IdentityMiddleware
     /// <remarks>
     /// Every entry must name a route this host actually maps. <c>/api/health</c> was listed here and
     /// matched nothing: the sample maps no health endpoint, so the exemption granted nothing that
-    /// could be observed and no test could distinguish it from its own absence (#350). That is what
-    /// made it worth removing rather than leaving: <see cref="IsGuardedApiPath"/> matches an entry
-    /// with <c>StartsWithSegments</c>, so a reserved prefix covers the whole subtree beneath it the
-    /// moment a route lands there - and it would land there anonymous, silently, with no edit to
-    /// this list to review. Add the endpoint first if one is wanted, then the exemption.
+    /// could be observed (#350). That is what made it worth removing rather than leaving:
+    /// <see cref="IsGuardedApiPath"/> matches an entry with <c>StartsWithSegments</c>, so a reserved
+    /// prefix covers the whole subtree beneath it the moment a route lands there - and it would land
+    /// there anonymous, silently, with no edit to this list to review. Add the endpoint first if one
+    /// is wanted, then the exemption.
     /// </remarks>
     private static readonly string[] AnonymousApiPaths =
     [
@@ -421,9 +420,16 @@ public sealed class IdentityMiddleware
         // `unavailable` is the label the sample's other 503 already uses
         // (OperatorSecretAuthAttribute), so this adds no new vocabulary.
         //
-        // The default is reached by no status this middleware emits today (401, 403 and 503 are the
-        // only three), and exists so that adding a fourth cannot silently borrow a label that
-        // misdescribes it.
+        // The default is reached by no status this middleware emits today. Enumerated over THIS
+        // repository's principal sources: PrincipalFactory answers 401/503/403/403,
+        // ServiceCallerPrincipalSource 403/403, and InvokeAsync writes 401 and 403 itself - so 401,
+        // 403 and 503 are the only three here.
+        //
+        // That is a fact about this repository, not a bound the type enforces.
+        // PrincipalResolution.Reject validates the CODE and accepts any status int, and
+        // IRequestPrincipalSource is a documented public seam a host outside this repository
+        // implements. So a fourth status can arrive without anyone editing this file. The default
+        // exists so that when one does, it cannot silently borrow a label that misdescribes it.
         var error = statusCode switch
         {
             StatusCodes.Status401Unauthorized => "unauthorized",

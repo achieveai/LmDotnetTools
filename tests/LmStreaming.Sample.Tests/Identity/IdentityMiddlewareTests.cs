@@ -222,11 +222,10 @@ public sealed class IdentityMiddlewareTests
     public async Task WithEnforcementOn_TheHealthPrefix_IsGuardedLikeAnyOtherApiRoute(string path)
     {
         // #350 item 1. "/api/health" sat in AnonymousApiPaths and no such route existed anywhere in
-        // the sample - the only occurrence of the string in the whole project was that entry. An
-        // exemption for a route that does not exist grants nothing today and cannot be observed, so
-        // nothing would have reported it turning into a real hole: IsGuardedApiPath matches by
-        // StartsWithSegments, so the day someone maps /api/health/live it would ship anonymous, and
-        // the whole subtree with it. The second case is the one that makes that concrete.
+        // the sample. An exemption for a route that does not exist grants nothing today and cannot
+        // be observed, so nothing would have reported it turning into a real hole: IsGuardedApiPath
+        // matches by StartsWithSegments, so the day someone maps /api/health/live it would ship
+        // anonymous, and the whole subtree with it. The second case makes that concrete.
         //
         // Asserted through the real pipeline rather than through IsGuardedApiPath directly, and on
         // the refusal CODE as well as the status: the terminal endpoint in this host answers every
@@ -274,6 +273,12 @@ public sealed class IdentityMiddlewareTests
         // The companion to the 503 case above. Deriving the label from the status must not be a
         // blanket rename: 401 and 403 keep the labels the SPA and the S2S guard already answer with,
         // so the fix narrows one wrong answer rather than changing the wire format for everyone.
+        //
+        // The `code` is asserted for the same reason it is asserted there, and it is the 401 row that
+        // needs it. Status plus label alone is satisfiable WITHOUT the arranged rejection ever being
+        // read: if the stash broke entirely, ResolveAsync would fall through to null and the
+        // `principal is null` branch answers 401/"unauthorized" - both assertions green, the arranged
+        // rejection untouched. Only the code tells the two apart.
         var rejection = PrincipalResolution.Reject(PrincipalResolution.TenantNotProvisioned, statusCode);
         using var server = await StartAsync(enforce: true, rejection);
 
@@ -281,6 +286,7 @@ public sealed class IdentityMiddlewareTests
 
         _ = ((int)response.StatusCode).Should().Be(statusCode);
         _ = (await ReadErrorAsync(response)).Should().Be(expectedLabel);
+        _ = (await ReadCodeAsync(response)).Should().Be(PrincipalResolution.TenantNotProvisioned);
     }
 
     [Theory]

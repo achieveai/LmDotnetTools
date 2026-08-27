@@ -56,6 +56,12 @@ public sealed class IdentityWiringValidationTests : IDisposable
         _ = services.AddSingleton<IConfiguration>(configuration);
         _ = services.AddLogging();
         _ = services.AddSingleton(TimeProvider.System);
+
+        // Load-bearing, not boilerplate. UseSampleIdentity calls UseAuthorization, whose
+        // VerifyServicesRegistered throws InvalidOperationException when the authorization services
+        // are missing - inside the same Record.Exception scope as the gate below. Drop this line and
+        // every refusal test still sees an InvalidOperationException, from the wrong place. The
+        // message assertions on those tests are what keep the two apart.
         _ = services.AddAuthorization();
         _ = services.AddSampleIdentity(configuration);
         register?.Invoke(services);
@@ -147,7 +153,11 @@ public sealed class IdentityWiringValidationTests : IDisposable
             settings[AppTenantKey] = "tnt_daemon";
         }
 
-        _ = WireWith(settings).Should().BeOfType<InvalidOperationException>();
+        // Asserted on the message, not the type alone: UseAuthorization throws the same type from
+        // the same Record.Exception scope, so a type-only assertion passes on an exception this test
+        // is not about.
+        _ = WireWith(settings).Should().BeOfType<InvalidOperationException>()
+            .Which.Message.Should().Contain("no front door");
     }
 
     [Fact]
@@ -160,7 +170,39 @@ public sealed class IdentityWiringValidationTests : IDisposable
         settings[S2SSecretKey] = "inbound-secret-value";
         settings[AppTenantKey] = "   ";
 
-        _ = WireWith(settings).Should().BeOfType<InvalidOperationException>();
+        _ = WireWith(settings).Should().BeOfType<InvalidOperationException>()
+            .Which.Message.Should().Contain("no front door");
+    }
+
+    [Fact]
+    public void AnEnforcingHostWhoseOnlyAppNamesTheQuarantineTenant_RefusesToBoot()
+    {
+        // The gate has to ask the question ServiceCallerPrincipalSource answers, not a weaker one.
+        // That source rejects with service_app_tenant_invalid / 403 whenever the registration's
+        // TenantId equals Identity:LegacyTenantId - no principal may ever carry the quarantine tenant
+        // (spec 8.5.2). So a registration naming it is not an onboarding: the host boots with a
+        // secret and an Apps entry, and is still permanently unable to establish a principal, which
+        // is precisely the dead host this gate exists to prevent.
+        var settings = Enforcing();
+        settings[S2SSecretKey] = "inbound-secret-value";
+        settings[AppTenantKey] = "legacy";
+
+        _ = WireWith(settings).Should().BeOfType<InvalidOperationException>()
+            .Which.Message.Should().Contain("no front door");
+    }
+
+    [Fact]
+    public void AnEnforcingHostWithOneQuarantineAppAndOneRealOne_Boots()
+    {
+        // The quarantine test lives inside the Any, not around it. One unusable registration
+        // alongside a usable one leaves a working front door, so refusing here would refuse a
+        // deployment that authenticates perfectly well.
+        var settings = Enforcing();
+        settings[S2SSecretKey] = "inbound-secret-value";
+        settings[AppTenantKey] = "legacy";
+        settings["Identity:Apps:other-daemon:TenantId"] = "tnt_daemon";
+
+        _ = WireWith(settings).Should().BeNull();
     }
 
     [Fact]

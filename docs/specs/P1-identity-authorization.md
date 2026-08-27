@@ -713,9 +713,12 @@ bound, the UPN is never consulted again (8.2).
 
 `IdentityMiddleware` partitions `/api` into three sets. `AnonymousApiPaths` are user-facing routes
 that must stay reachable while signed out (the identity config the SPA reads *before* it can sign
-in; the tenant-admin surface, which authenticates with the operator secret; health). Everything not
-named is guarded. `InfrastructureApiPaths` is the third set — routes that sit outside the boundary
-altogether — and this section records what may go in it.
+in; the tenant-admin surface, which authenticates with the operator secret). Everything not
+named is guarded. **Health is deliberately absent** (#350): this host maps no health route, and an
+exemption naming a route that does not exist grants nothing observable while silently reserving the
+whole subtree beneath it — `IsGuardedApiPath` matches by prefix — for whatever lands there next. The
+exemption follows the endpoint; it never precedes it. `InfrastructureApiPaths` is the third set —
+routes that sit outside the boundary altogether — and this section records what may go in it.
 
 **The admission test is "can any `IRequestPrincipalSource` speak for this caller?", not "does this
 route have some other check?".** A route with its own authority is still guarded; the two layers
