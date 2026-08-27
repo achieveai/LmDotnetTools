@@ -29,6 +29,5 @@
   <ItemGroup>
     <ProjectReference Include="../../src/Misc/AchieveAi.LmDotnetTools.Misc.csproj" />
     <ProjectReference Include="../../src/LmTestUtils/LmTestUtils.csproj" />
-    <ProjectReference Include="../../src/LmTestUtils.Xunit/LmTestUtils.Xunit.csproj" />
   </ItemGroup>
 </Project>

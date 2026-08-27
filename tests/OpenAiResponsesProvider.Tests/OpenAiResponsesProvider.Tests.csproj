@@ -26,7 +26,6 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\OpenAiResponsesProvider\AchieveAi.LmDotnetTools.OpenAiResponsesProvider.csproj" />
     <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
-    <ProjectReference Include="../../src/LmTestUtils.Xunit/LmTestUtils.Xunit.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Using Include="Xunit" />

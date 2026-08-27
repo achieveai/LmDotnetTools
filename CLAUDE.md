@@ -56,11 +56,12 @@ dotnet test LmDotnetTools.sln --logger "trx;LogFileName=results.trx" --results-d
 ```
 
 ### Structured Test Logs
-All tests output structured JSON logs to `.logs/tests/tests.jsonl`.
+Tests that use `LoggingTestBase` output structured JSON logs to `.logs/tests/tests.jsonl`. Projects
+that do not reference `LmTestUtils.Xunit` produce no rows there.
 
 Current logging stack:
 - `Serilog` via `Serilog.Extensions.Logging`
-- JSON sink: `CompactJsonFormatter` in `src/LmTestUtils/Logging/TestLoggingConfiguration.cs`
+- JSON sink: `CompactJsonFormatter` in `src/LmTestUtils.Xunit/Logging/TestLoggingConfiguration.cs`
 - Ambient test context: Serilog `LogContext` properties
 
 Each log line includes:
@@ -72,6 +73,10 @@ Each log line includes:
 Previous test logs are automatically archived to `.logs/tests/tests-{timestamp}.jsonl.gz` and old archives (>7 days) are deleted.
 
 ### Using LoggingTestBase
+`LoggingTestBase` lives in `AchieveAi.LmDotnetTools.LmTestUtils.Xunit`, so the test project needs a
+reference to `src/LmTestUtils.Xunit/LmTestUtils.Xunit.csproj` — `LmTestUtils` alone is not enough and
+gives a "type or namespace not found" despite the `using` below being correct.
+
 Inherit from `LoggingTestBase` to get automatic test correlation in logs:
 
 ```csharp

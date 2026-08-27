@@ -26,7 +26,6 @@
   <ItemGroup>
     <ProjectReference Include="..\..\samples\MockProviderHost\MockProviderHost.csproj" />
     <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
-    <ProjectReference Include="../../src/LmTestUtils.Xunit/LmTestUtils.Xunit.csproj" />
     <ProjectReference Include="..\..\src\OpenAiResponsesProvider\AchieveAi.LmDotnetTools.OpenAiResponsesProvider.csproj" />
   </ItemGroup>
   <ItemGroup>

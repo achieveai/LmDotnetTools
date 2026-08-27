@@ -25,6 +25,12 @@
       both do), so anything referenced here lands in their published closure and, worse, in
       the assembly graph that Serilog.Enrichers.CallerInfo eagerly walks at host startup.
       The xunit-coupled logging helpers live in LmTestUtils.Xunit instead.
+
+      Note that this splits the AchieveAi.LmDotnetTools.LmTestUtils.Logging namespace across two
+      assemblies with no reference between them: CapturingLogger and ListLogger stay here, while
+      LoggingTestBase, TestLoggingConfiguration, TestLoggingFixture and TestLoggingModuleInitializer
+      are in LmTestUtils.Xunit. A "type or namespace not found" on one of those four means the
+      project needs a reference to LmTestUtils.Xunit, not a using directive.
     -->
   </ItemGroup>
   <ItemGroup>
