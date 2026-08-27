@@ -317,10 +317,37 @@ internal sealed class ReviewBranchManager
             await RunGitAsync(
                     ["merge", "--no-edit", "-X", "theirs", remoteBranch], repoRoot, cancellationToken)
                 .ConfigureAwait(false);
-
-            await RebuildDerivedKnowledgeAsync(repoRoot, cancellationToken).ConfigureAwait(false);
         }
 
+        // After EITHER kind of merge, including the fast-forward (issue #469 item 2). See
+        // RebuildDerivedKnowledgeAsync for why the fast-forward is not the free-by-induction case it looks
+        // like. It is close to free in cost terms: on a healthy tree the regenerator answers "unchanged" and
+        // this returns before staging anything.
+        await RebuildDerivedKnowledgeAsync(repoRoot, cancellationToken).ConfigureAwait(false);
+
+        // The rebuild is NOT re-run inside the push retry below, and that is deliberate rather than
+        // overlooked (issue #469 item 3). TryPushWithRebaseAsync can replay this commit onto a default that
+        // advanced under us, so the listings it wrote could in principle describe a tree that no longer
+        // exists. Traced against real git, every outcome is either correct or deferred, never silently wrong:
+        //
+        //  * The rebase FLATTENS — it drops the merge commit and replays the notes-branch commits plus the
+        //    rebuild commit onto the advanced default. The notes content therefore survives the drop; it
+        //    rides the notes commits, not the merge.
+        //  * The remote advanced by writing knowledge (the ordinary race), so the listing edits land near
+        //    each other and the replay CONFLICTS. TryPushWithRebaseAsync aborts the rebase and stops, this
+        //    method returns false with the notes branch KEPT, and the next sweep re-merges it as a non-ff
+        //    merge that rebuilds from the merged tree. Deferred by one sweep, nothing lost.
+        //  * The edits are disjoint, so the three-way merge UNIONS both insertions and the listing that
+        //    lands names every entry in the tree. Correct, not degraded — the listings are sorted line-wise,
+        //    which is what makes a union the right answer here.
+        //  * The remote added an entry file WITHOUT updating the listings — the only way a clean apply can
+        //    push an under-reporting listing. That is the broken-listing state, and it is now self-healing:
+        //    since the rebuild runs on fast-forwards too, the next merge-to-default on this repo repairs it
+        //    whatever shape that merge takes. It no longer waits on an extraction that writes an entry.
+        //
+        // Re-running the rebuild after a successful rebase would buy only the last case, one sweep earlier,
+        // at the cost of giving the shared TryPushWithRebaseAsync a Knowledge-Base-shaped parameter its other
+        // caller (CommitNotesAsync, pushing the notes branch) must then be reasoned about too.
         var pushed = await TryPushWithRebaseAsync(repoRoot, defaultBranch, cancellationToken)
             .ConfigureAwait(false);
         if (!pushed)
@@ -411,14 +438,24 @@ internal sealed class ReviewBranchManager
     /// Rebuilds <c>KnowledgeBase/_index.jsonl</c> and <c>_toc.md</c> from the tree the merge produced, and
     /// commits them when that changed anything.
     /// <para>
-    /// Only after a MERGE COMMIT, never after a fast-forward. `-X theirs` resolves every conflicting hunk in
+    /// The case that MOTIVATES it is the merge commit. `-X theirs` resolves every conflicting hunk in
     /// favour of the notes branch, and those two files are whole-file rewrites — the extraction regenerates
     /// them on the notes branch, so they conflict whenever a concurrent PR's knowledge reached the default
     /// branch first. Taking the notes branch's copy is then silently wrong in one direction only: the other
     /// PR's entry .md files survive the merge (different paths, no conflict) while vanishing from the two
     /// listings that are the only route anything has to them. The listings are pure functions of the entries,
-    /// so the answer is to recompute rather than to pick a side (issue #218 item 6). A fast-forward resolves
-    /// nothing and needs none of this.
+    /// so the answer is to recompute rather than to pick a side (issue #218 item 6).
+    /// </para>
+    /// <para>
+    /// It runs after a FAST-FORWARD too (issue #469 item 2), which the merge-commit argument alone does not
+    /// justify — a fast-forward resolves nothing, so on its own it loses nothing. Excluding it was an
+    /// induction on "the notes branch's own listings describe its tree", and the base case fails: when this
+    /// rebuild throws, the failure is swallowed below on the promise that the next extraction's regen repairs
+    /// it, and that regen runs only after a successful entry WRITE (<see cref="Agents.KnowledgeAgent"/>). A
+    /// run of declined extractions writes none, so the default branch keeps broken listings indefinitely and
+    /// every later fast-forward propagated them forward untouched — the one path with no way back. Including
+    /// the fast-forward closes that by construction rather than by argument, and costs nothing: the `!changed`
+    /// guard and the staged-diff check below make a healthy tree a no-op with no commit.
     /// </para>
     /// <para>
     /// This does NOT make concurrent knowledge merges safe in general: `-X theirs` can still discard a

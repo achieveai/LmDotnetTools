@@ -566,31 +566,81 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         commands.Should().NotContain(a => a.Contains("commit -m", StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// Issue #469 item 2. The fast-forward used to be EXCLUDED from the rebuild, on the argument that a
+    /// fast-forward resolves nothing so there is nothing to recover. That argument is an induction, and it
+    /// has a base case that does not hold: when a post-merge rebuild throws, the failure is swallowed at
+    /// Error on the promise that "the next extraction's regen repairs it" — and that regen runs only after a
+    /// successful entry WRITE (<c>KnowledgeAgent</c>). A run of declined extractions writes none, so the
+    /// default branch keeps under-reporting listings indefinitely and every subsequent fast-forward carried
+    /// them forward untouched. Rebuilding on the fast-forward too closes that by construction and costs
+    /// nothing: the listings are pure functions of the entries, so on a healthy tree the regenerator answers
+    /// "unchanged", nothing stages, and the <c>diff --cached --quiet</c> gate returns before <c>commit</c>.
+    /// </summary>
     [Fact]
-    public async Task MergeToDefault_does_not_rebuild_the_listings_on_a_fast_forward()
+    public async Task MergeToDefault_rebuilds_the_listings_on_a_fast_forward_too()
     {
         var runner = new FakeSandboxCommandRunner();
+        // Exit 1 from `diff --cached --quiet` means there IS a staged difference — the rebuilt listings.
+        runner.OnArgvContains("diff --cached --quiet", new SandboxCommandResult(1, string.Empty, string.Empty));
         var fs = new FakeSandboxFileSystem();
 
+        var reconciledAfterCommands = -1;
         var reconcileCalls = 0;
         var result = await CreateManager(
                 runner,
                 fs,
-                (_, _) =>
+                (repoRoot, _) =>
                 {
+                    repoRoot.Should().Be(RepoRoot);
                     reconcileCalls++;
+                    reconciledAfterCommands = runner.Commands.Count;
                     return Task.FromResult(true);
                 })
             .MergeToDefaultAsync(RepoRoot, ReviewBranch, DefaultBranch, CancellationToken.None);
 
         result.Should().BeTrue();
+        reconcileCalls.Should().Be(1, "the fast-forward is exactly where a broken listing would otherwise persist");
 
-        // A fast-forward means the default branch is an ANCESTOR of the notes branch: nothing landed on
-        // the default since the notes branch was checked out, so the listings the extraction regenerated
-        // there already describe the resulting tree exactly. Nothing was resolved, so nothing was lost.
-        reconcileCalls
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        reconciledAfterCommands
             .Should()
-            .Be(0, "a fast-forward discards no side, so there is nothing for a rebuild to recover");
+            .BeGreaterThan(
+                IndexOf(commands, $"merge --ff-only origin/{ReviewBranch}"),
+                "the listings must describe the tree the fast-forward produced, not the one before it");
+        IndexOf(commands, "add -- KnowledgeBase").Should().BeLessThan(IndexOf(commands, "commit -m"));
+        IndexOf(commands, "commit -m")
+            .Should()
+            .BeLessThan(
+                IndexOf(commands, $"push origin {DefaultBranch}"),
+                "the repair must ride the same push, not wait for a follow-up sweep");
+    }
+
+    /// <summary>
+    /// The other half of the new fast-forward contract, and the one that keeps it free: an ordinary
+    /// fast-forward — the overwhelming majority — must still commit nothing. The renderers are deterministic
+    /// and sorted, so an unchanged rebuild is the normal outcome; committing anyway would put an empty commit
+    /// on the default branch on every sweep.
+    /// </summary>
+    [Fact]
+    public async Task MergeToDefault_commits_nothing_on_a_fast_forward_whose_listings_already_match()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        var fs = new FakeSandboxFileSystem();
+
+        var result = await CreateManager(runner, fs, (_, _) => Task.FromResult(false))
+            .MergeToDefaultAsync(RepoRoot, ReviewBranch, DefaultBranch, CancellationToken.None);
+
+        result.Should().BeTrue();
+
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().NotContain(a => a.Contains("add -- KnowledgeBase", StringComparison.Ordinal));
+        commands.Should().NotContain(a => a.Contains("commit -m", StringComparison.Ordinal));
+        commands
+            .Should()
+            .Contain(
+                a => a.Contains($"push origin {DefaultBranch}", StringComparison.Ordinal),
+                "the fast-forward still lands; only the empty repair commit is skipped");
     }
 
     private static int IndexOf(List<string> commands, string contains) =>
