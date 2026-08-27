@@ -182,8 +182,10 @@ public sealed partial class SandboxClient
                 .ConfigureAwait(false);
         }
 
-        // A 204 carries no body — there is nothing to parse, and nothing to return: the caller learns the
-        // outcome from the absence of an exception.
+        // Any success status is a completed delete, not just the 204 the gateway sends today: there is no
+        // body worth parsing either way, and nothing to return — the caller learns the outcome from the
+        // absence of an exception. Narrowing this to exactly-204 would turn a successful cleanup into a
+        // reported failure the moment the gateway answered 200.
     }
 
     /// <summary>The gateway execution timeout, in whole seconds (at least 1), sent as the operation's <c>timeout_secs</c>.</summary>

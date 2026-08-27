@@ -50,6 +50,22 @@ public sealed class OperationDeleteTests
     }
 
     [Fact]
+    public async Task DeleteOperationAsync_Ok_IsAcceptedLikeNoContent_BecauseTheSuccessGuardIsAny2xx()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        using var _ = client;
+        // The gateway answers 204 today, but the SDK classifies on IsSuccessStatusCode, not on the exact
+        // code — so a 200 (with or without a body) is a successful delete, not a protocol violation. This
+        // pins that lenient direction: narrowing the guard to exactly-204 would make a future gateway that
+        // answers 200 look like a failed cleanup, and the caller would re-issue a delete that already ran.
+        RegisterDelete(handler, HttpStatusCode.OK, """{"deleted":true}""");
+
+        await client.DeleteOperationAsync(SessionId, OperationId);
+
+        handler.Requests.Should().ContainSingle();
+    }
+
+    [Fact]
     public async Task DeleteOperationAsync_PercentEncodesSessionAndOperationIds()
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();
@@ -198,6 +214,7 @@ public sealed class OperationDeleteTests
         var exception = await act.Should().ThrowAsync<SandboxException>();
         exception.Which.Kind.Should().Be(SandboxErrorKind.Protocol);
         exception.Which.StatusCode.Should().Be(302);
+        exception.Which.OperationId.Should().Be(OperationId);
         // Only the DELETE was ever sent: the SDK never chased the Location (which would replay the
         // X-Sbx-* credential headers to the redirect target).
         handler.Requests.Should().ContainSingle();
