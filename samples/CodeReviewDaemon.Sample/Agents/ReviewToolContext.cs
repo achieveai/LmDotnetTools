@@ -25,7 +25,11 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// <item>the COMMIT GATE — <c>DaemonReviewStageExecutor.CommitPooledNotesAsync</c> commits with
 /// <c>stagePaths: [lease.NotesRelPath]</c>, so only <c>PRs/&lt;pr&gt;/…</c> is ever staged;</item>
 /// <item>no write credential in the agent session;</item>
-/// <item><c>SlotHygiene</c>'s strip + clean-on-entry, which erases anything else in the slot before reuse.</item>
+/// <item><c>SlotHygiene</c>'s CLEAN-ON-ENTRY — <c>ReviewSlotPreparer.PrepareAsync</c> calls
+/// <c>SlotHygiene.EnsureCleanAsync</c> unconditionally, so anything else left in the slot is erased before
+/// the next lease uses it. (Not the clean-on-EXIT strip: <c>StripAsync</c>'s only call site is guarded by
+/// <c>if (!_options.UseS2SReviewAgent)</c>, and the daemon refuses to boot with S2S off, so the strip does
+/// not run in production at all.)</item>
 /// </list>
 /// <para>
 /// A reader looking for the write-scope enforcement point should look at the commit gate and

@@ -51,16 +51,17 @@ internal sealed class AdoPrProvider : IPrProvider
         // org/project/repo are interpolated into a URL that becomes a System.Uri when SendAsync runs it. Uri
         // escapes a space in a segment, but NOT the delimiters '/' '?' '#' inside one — a '/' would open a new
         // path segment, a '?' start the query, a '#' the fragment, each silently addressing a different resource.
-        // All three are excluded before the value ever reaches here, and by two different mechanisms, so neither
-        // alone is the whole reason:
-        //   '/'      — cannot survive PrPollTargetBuilder's split; an embedded one shows up as an empty segment
-        //              or a wrong segment count, and ValidateEnabledRepos refuses startup on both (issue #491).
-        //   '?', '#' — carried through the split intact, so ValidateEnabledRepos rejects them explicitly by
-        //              character (alongside '%', which would otherwise smuggle any of the three back in).
-        // Azure DevOps also forbids these in org/project/repo names (issue #492 item 3), but that is a property
-        // of the upstream service, not something this code enforces — a future provider with laxer naming rules
-        // would still be covered by the validator, and would only need encoding here if it ALSO widened what
-        // ValidateEnabledRepos accepts (as GitRemoteUrl.RepoPathFor encodes for the git/allow-list side).
+        // What makes that safe is that Azure DevOps FORBIDS all three in an org/project/repo name (issue #492
+        // item 3). That reason is deliberately about the names themselves rather than about any validation
+        // this daemon runs, because it has to hold on every route into this file — and the routes do not
+        // share a guard. PrPollTargetBuilder.ValidateEnabledRepos does reject these characters at config load
+        // (issue #491), but it only covers identities built from EnabledRepos: GetPullRequestAsync below
+        // (:427) is reached from GetPrStateAsync with a RepoIdentity read back out of ReviewStore, which is
+        // never re-validated. So the validator is a second, earlier guard on the poll route, NOT the reason
+        // this interpolation is safe.
+        // A future provider with laxer naming rules could not inherit the safety claim: it would need the
+        // segments encoded up front (as GitRemoteUrl.RepoPathFor does for the git/allow-list side), because
+        // nothing on the store-fed route would stop them.
         var baseUrl =
             $"{BaseUrl}/{org}/{project}/_apis/git/repositories/{repo}/pullrequests"
             + $"?searchCriteria.status=active&api-version={ApiVersion}";

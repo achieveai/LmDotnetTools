@@ -171,7 +171,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         // The context carries the read-only allow-list as data. Write-scoping is NOT carried here, and no mount
         // takes its place: writes outside the notes dir are ineffective rather than blocked — the commit gate
-        // stages only the PR's notes dir and SlotHygiene erases the rest — so this context no longer has any
+        // stages only the PR's notes dir and the next lease's clean-on-entry erases the rest — so this
+        // context no longer has any
         // write-scope fields to assert (issue #490).
         var toolContext = fixture.Factory.ToolContexts.Where(t => t is not null).Should().ContainSingle().Subject!;
         toolContext.ReadOnlyToolAllowList.Should().BeEquivalentTo(["Read", "Grep", "Glob", "Skill"]);

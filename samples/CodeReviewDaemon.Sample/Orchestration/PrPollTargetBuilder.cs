@@ -29,8 +29,16 @@ internal static class PrPollTargetBuilder
     /// An entry must split into exactly 2 (<c>owner/repo</c>) or 3 (<c>org/project/repo</c>) segments, each
     /// non-empty and free of <c>? # %</c>. A <c>/</c> inside a name cannot survive the split, so it surfaces
     /// here as an empty segment or a wrong segment count. Spaces are allowed — a legitimate Azure DevOps org or
-    /// project name may contain them, and every downstream consumer escapes them (<c>GitRemoteUrl.RepoPathFor</c>
-    /// percent-encodes each segment; <c>System.Uri</c> escapes a space in the <c>AdoPrProvider</c> REST path).
+    /// project name may contain them, and the two consumers that build URLs do escape them
+    /// (<c>GitRemoteUrl.RepoPathFor</c> percent-encodes each segment; <c>System.Uri</c> escapes a space in the
+    /// <c>AdoPrProvider</c> REST path).
+    /// </para>
+    /// <para>
+    /// That is NOT a claim about every downstream consumer. <c>DaemonOperationPolicy</c> builds its allow-rule
+    /// prefixes by raw interpolation (<c>AdoGitRepoPath</c>, <c>AdoApiRepoPrefix</c>), so a spaced name yields a
+    /// raw prefix matched against an escaped <c>PathAndQuery</c>. Whether that seam handles a spaced org
+    /// correctly is a separate, pre-existing question this validator does not settle — it is only asserted here
+    /// that validation must not reject the space, not that every consumer downstream copes with it.
     /// </para>
     /// <para>
     /// Every diagnostic names the offending element by its configuration INDEX and quotes its raw value, so an

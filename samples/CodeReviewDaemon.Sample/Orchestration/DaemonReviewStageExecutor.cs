@@ -407,7 +407,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             // NOT the substitute boundary — the design's R1 resolution records that a per-path read-only mount
             // is unavailable, so repos/<Repo> stays writable. What bounds the reviewer is that such writes never
             // persist: CommitPooledNotesAsync stages only stagePaths: [lease.NotesRelPath], no write credential
-            // enters the agent session, and SlotHygiene erases the rest of the slot before reuse.
+            // enters the agent session, and the next lease's SlotHygiene.EnsureCleanAsync (clean-on-entry,
+            // unconditional) erases the rest of the slot. NOT the clean-on-exit strip below — that one is
+            // guarded off on S2S, which is the only path the daemon can boot into.
             await EnsureGatewaySkillSupportAsync(run, cancellationToken).ConfigureAwait(false);
             return null;
         }
@@ -437,7 +439,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             // has no production caller (see ReviewToolContext). Write-scoping is not carried here either, and
             // not because a mount replaces it: writes outside the notes dir are simply ineffective — the commit
             // gate stages only stagePaths: [lease.NotesRelPath], the write credential stays out of the agent
-            // session, and SlotHygiene wipes the remainder of the slot.
+            // session, and the next lease's clean-on-entry (SlotHygiene.EnsureCleanAsync) wipes the remainder
+            // of the slot.
             return new ReviewToolContext(
                 GatewayBaseUrl: _gatewayBaseUrl
                     ?? Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY")
