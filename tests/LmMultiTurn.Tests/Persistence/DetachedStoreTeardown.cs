@@ -126,8 +126,9 @@ internal static class DetachedStoreTeardown
                 // The root went away between the check above and here. Nothing is attached to protect.
                 // Racing that window needs a seam this helper does not have, so this arm is deliberately
                 // NOT covered by a test: mutating the return to a throw leaves the suite green. It earns
-                // its place on diagnostics — without it a vanished root would exhaust the retries below
-                // and report "something is still holding the tree", which would be simply false.
+                // its place on diagnostics — without it a vanished root would fall into the retry arm
+                // below, burn the whole budget, and then fail the run reporting a root it could not
+                // detach, when in fact there was nothing left to detach.
                 return;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
