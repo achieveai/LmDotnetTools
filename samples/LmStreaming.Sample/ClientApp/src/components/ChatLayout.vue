@@ -39,6 +39,7 @@ import ShareConversationModal from './ShareConversationModal.vue';
 const {
   conversations,
   currentThreadId,
+  currentConversation,
   isLoading: conversationsLoading,
   loadConversations,
   createNewConversation,
@@ -816,9 +817,17 @@ onBeforeUnmount(() => {
           Gated on a thread id rather than accepting null: every share route is addressed by
           thread, so with no conversation open there is nothing to share and nothing to list.
         -->
+        <!--
+          `visibility` comes from the conversation LISTING, the only conversation-shaped document
+          the client reads; the three share routes do not carry it. The server flips it as the first
+          grant is added and the last is revoked, so `changed` re-lists — otherwise the control would
+          keep showing the visibility from before the grant it just made.
+        -->
         <ShareConversationModal
           v-if="shareModalOpen && currentThreadId"
           :thread-id="currentThreadId"
+          :visibility="currentConversation?.visibility"
+          @changed="loadConversations"
           @close="shareModalOpen = false"
         />
 

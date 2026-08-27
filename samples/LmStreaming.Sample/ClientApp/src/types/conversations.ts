@@ -1,4 +1,13 @@
 /**
+ * Who a conversation is visible to, mirroring the server's stored `ThreadMetadata.Visibility`.
+ *
+ * A closed union rather than `string`: the server hand-maps its enum to exactly these three names
+ * (`ConversationSummary.ToWireVisibility`), and it throws rather than reporting an unknown state as
+ * `private`, so a fourth value never reaches the client silently.
+ */
+export type ConversationVisibility = 'private' | 'shared' | 'tenant-published';
+
+/**
  * Summary of a conversation for display in the sidebar.
  */
 export interface ConversationSummary {
@@ -22,6 +31,15 @@ export interface ConversationSummary {
    * instead of falling back to the default. Null for legacy threads predating mode persistence.
    */
   mode?: string | null;
+  /**
+   * Who this conversation is visible to. The server flips it as the first grant is added and the
+   * last one is revoked, so it is what a share control reflects.
+   *
+   * Optional because a host predating the field sends nothing, and silence is not `private`:
+   * reading it that way would state a fact about who can see the conversation that nothing on the
+   * wire supports. Render nothing instead.
+   */
+  visibility?: ConversationVisibility;
 }
 
 /**

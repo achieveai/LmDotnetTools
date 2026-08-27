@@ -103,6 +103,75 @@ describe('ShareConversationModal mutations', () => {
   });
 });
 
+// #445 item 9, closing #375's last acceptance criterion: "reflect the conversation's `visibility`
+// (`private` / `shared`), which the server flips automatically as the first grant is added and the
+// last one is revoked".
+//
+// Visibility is STORED server-side, not derived from the roster — a tenant-published conversation
+// has no grants at all — so the modal renders what the conversation listing reports and asks for a
+// re-read when it has just made the server flip it.
+describe('ShareConversationModal visibility (#375)', () => {
+  it('renders the visibility the server stores for this conversation', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    fetchSpy.mockResolvedValueOnce(jsonResponse([viewerGrant]));
+    const wrapper = mount(ShareConversationModal, {
+      props: { threadId: 'thread-1', visibility: 'shared' },
+      attachTo: document.body,
+    });
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="share-visibility"]').text()).toContain('Shared');
+  });
+
+  it('renders no visibility at all when the host reports none', async () => {
+    // A host predating the field says nothing. Showing "Private" for silence would state a fact
+    // about the conversation that nothing on the wire supports.
+    const { wrapper } = await mountModal([viewerGrant]);
+
+    expect(wrapper.find('[data-testid="share-visibility"]').exists()).toBe(false);
+  });
+
+  it('emits changed once a grant is added, so the listing carrying visibility is re-read', async () => {
+    const { wrapper, fetchSpy } = await mountModal([]);
+
+    const added: ConversationShare = { ...viewerGrant, subjectId: 'tid-1:oid-b' };
+    fetchSpy.mockResolvedValueOnce(jsonResponse(added));
+    fetchSpy.mockResolvedValueOnce(jsonResponse([added]));
+
+    await wrapper.find('[data-testid="share-subject-input"]').setValue('tid-1:oid-b');
+    await wrapper.find('[data-testid="share-add-button"]').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.emitted('changed')).toHaveLength(1);
+  });
+
+  it('emits changed once a grant is revoked', async () => {
+    const { wrapper, fetchSpy } = await mountModal([viewerGrant]);
+
+    fetchSpy.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    fetchSpy.mockResolvedValueOnce(jsonResponse([]));
+
+    await wrapper.find('[data-testid="share-remove-tid-1:oid-a"]').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.emitted('changed')).toHaveLength(1);
+  });
+
+  it('does not emit changed when the mutation was refused', async () => {
+    // Nothing flipped, so asking for a re-read would claim a change the server never made.
+    const { wrapper, fetchSpy } = await mountModal([]);
+
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse({ error: 'forbidden', code: 'grantee_may_not_reshare' }, 403)
+    );
+    await wrapper.find('[data-testid="share-subject-input"]').setValue('tid-1:oid-b');
+    await wrapper.find('[data-testid="share-add-button"]').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.emitted('changed')).toBeUndefined();
+  });
+});
+
 describe('ShareConversationModal sharing_unavailable', () => {
   it('disables the add control and explains that sharing is off on this host', async () => {
     const { wrapper, fetchSpy } = await mountModal([]);
