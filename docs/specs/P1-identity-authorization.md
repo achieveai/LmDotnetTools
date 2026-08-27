@@ -167,8 +167,8 @@ Failure is `401` with `{ "error": "unauthorized", "code": "s2s_auth_failed" }` (
 in constant time over SHA-256 digests (`:150-160`).
 
 It is applied to `ConversationsController` (`:165`), `WorkspacesController`
-(`samples/LmStreaming.Sample/Controllers/WorkspacesController.cs:11`), and `FileBrowserController`.
-**It is not applied to `ChatModesController`** - that controller has no inbound guard at all.
+(`samples/LmStreaming.Sample/Controllers/WorkspacesController.cs:11`), `FileBrowserController`, and
+`ChatModesController` (`samples/LmStreaming.Sample/Controllers/ChatModesController.cs:38`, #519).
 
 ### 2.4 Listing endpoints are unscoped
 
@@ -619,9 +619,8 @@ carrying neither `X-S2S-Auth` nor `X-Sbx-App-Id` is still the interactive path a
 Step 3 is the fail-closed rule that makes the whole design safe. It is the one place where a
 tolerant implementation would create a privilege-escalation path.
 
-**One gap to close in the same slice.** `ChatModesController` carries no `[InboundS2SAuth]`
-attribute today (2.3). It must be added, or `/api/chat-modes` becomes an unauthenticated way to
-read and write every tenant's modes once modes become per-user (#304).
+**Gap closed.** `ChatModesController` now carries `[InboundS2SAuth]` (2.3, #519). Per-user scoping
+of modes remains its own open item, tracked separately as #304.
 
 ### 4.3 Convergence point
 
@@ -2227,7 +2226,7 @@ reconsidering (OQ-3).
 | `samples/LmStreaming.Sample/Identity/PrincipalFactory.cs`, `IPrincipalAccessor.cs` | new |
 | `samples/LmStreaming.Sample/Controllers/ConversationsController.cs` | extend `InboundS2SAuthAttribute`; scope all 14 endpoints |
 | `samples/LmStreaming.Sample/Controllers/WorkspacesController.cs` | scope all 4 endpoints; `shares` routes per 8.4 |
-| `samples/LmStreaming.Sample/Controllers/ChatModesController.cs` | **add `[InboundS2SAuth]`**; scope endpoints; `publication` and `shares` routes |
+| `samples/LmStreaming.Sample/Controllers/ChatModesController.cs` | `[InboundS2SAuth]` already carried (#519); scope endpoints; `publication` and `shares` routes |
 | `samples/LmStreaming.Sample/Controllers/EmbedTokensController.cs` | new - `POST /api/embed/tokens` |
 | `samples/LmStreaming.Sample/Controllers/TenantsController.cs` | new - operator tenant provisioning (4.4) and `adopt-legacy` (8.5.3) |
 | `samples/LmStreaming.Sample/Controllers/DiagnosticsController.cs` | add `GET api/diagnostics/identity` (5.4) |
@@ -2540,7 +2539,8 @@ grantee may do neither; a tenant admin may `read` it and may not `write`, `delet
 
 ### Slice 4 - [#304] Per-user chat modes
 
-**Ships.** `[InboundS2SAuth]` **added to `ChatModesController`** - an existing hole (2.3).
+**Ships.** `[InboundS2SAuth]` on `ChatModesController` - the existing hole at 2.3 - was already
+closed ahead of this slice (#519).
 Ownership fields on `ChatMode`; `FileChatModeStore` legacy-tolerant load; `IChatModeStore`
 filtering; `Visibility.TenantPublished` and an admin-only publish/unpublish endpoint
 (`POST`/`DELETE /api/chat-modes/{modeId}/publication`); `POST`/`DELETE
