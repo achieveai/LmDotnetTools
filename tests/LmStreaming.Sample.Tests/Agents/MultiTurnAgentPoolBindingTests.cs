@@ -123,9 +123,18 @@ public class MultiTurnAgentPoolBindingTests
 
         _ = pool.GetOrCreateAgent("thread-dispose-throws", Mode);
 
-        // Disposal throws, but the binding MUST still be cleared (the finally path).
+        // The agent's dispose throws, but the binding MUST still be cleared (the finally path).
         var act = () => pool.RemoveAgentAsync("thread-dispose-throws").AsTask();
-        await act.Should().ThrowAsync<Exception>();
+
+        // NOT propagated, and that is a deliberate change (#506): AgentEntry.DisposeAsync now isolates
+        // Agent.DisposeAsync in its own try/catch, because an escaping throw from it skipped the run-task
+        // drain, the owned resources and the CTS that follow — the very waits this issue added. This
+        // assertion previously pinned the propagation, which was incidental scaffolding rather than the
+        // claim in this test's name; the claim is the line below, and it is unchanged. Pinned as a
+        // non-throw rather than deleted so the isolation cannot be silently removed again.
+        await act.Should().NotThrowAsync(
+            "a failure tearing the agent down must not abort the removal, nor skip the drain behind it"
+        );
         sink.Cleared.Should().ContainSingle().Which.Should().Be("thread-dispose-throws");
     }
 
