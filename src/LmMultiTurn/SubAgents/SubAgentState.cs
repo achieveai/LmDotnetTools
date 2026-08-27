@@ -45,7 +45,8 @@ public sealed record SubAgentTurnSnapshot(
     string? ToolName,
     string? ToolArgsPreview,
     string? TextPreview,
-    DateTimeOffset Timestamp);
+    DateTimeOffset Timestamp
+);
 
 /// <summary>
 /// Typed observation entry for a single target in a batch CheckAgents query.
@@ -116,6 +117,34 @@ internal enum ContinuationMode
 internal readonly record struct ContinuationDecision(ContinuationMode Mode, Task? RestartCompleted);
 
 /// <summary>
+/// Whether a faulted run's monitor owns that run's terminal teardown, as decided by
+/// <see cref="SubAgentState.TryBeginFaultTeardownAsync"/>.
+/// </summary>
+internal enum FaultTeardownOutcome
+{
+    /// <summary>
+    /// A newer restart epoch owns these resources, or a continuation already claimed the single-flight
+    /// restart and will cancel/await/rebuild itself. The monitor must tear down NOTHING — disposing here
+    /// is precisely the reuse-vs-dispose race. No <c>EndRestart</c>/<c>EndTerminalDisposal</c> is owed.
+    /// </summary>
+    Superseded,
+
+    /// <summary>
+    /// This monitor owns the teardown and no admitted send is in flight: cancel, observe the run, and
+    /// dispose the owned provider. The caller owes <c>EndTerminalDisposal</c> + <c>EndRestart</c>.
+    /// </summary>
+    Claimed,
+
+    /// <summary>
+    /// This monitor owns the teardown, but an admitted inject send did not drain within the ceiling, so
+    /// the owned provider may still be mid-write. Cancel and observe the run, but do NOT dispose the
+    /// provider — record its outcome as unknown and hand it to the manager's abandoned-provider sweep.
+    /// The caller still owes <c>EndTerminalDisposal</c> + <c>EndRestart</c>.
+    /// </summary>
+    ClaimedSendsPending,
+}
+
+/// <summary>
 /// How a presentation-only observer must proceed after the instance it was subscribed to ends its
 /// stream, as decided atomically by <see cref="SubAgentState.DecideAfterStreamEnd"/> against the
 /// replacement signal and the restart-in-progress flag. Deterministic: it never depends on elapsed time.
@@ -163,8 +192,9 @@ internal class SubAgentState
     // the replacement instance (or null at teardown) and re-subscribe. It is set with RunContinuationsAsynchronously so completing it never runs an
     // observer's continuation inline under a restart/dispose path. It does NOT participate in execution
     // and is never awaited by the run/monitor/restart machinery.
-    private volatile TaskCompletionSource<IMultiTurnAgent?> _agentReplaced =
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private volatile TaskCompletionSource<IMultiTurnAgent?> _agentReplaced = new(
+        TaskCreationOptions.RunContinuationsAsynchronously
+    );
 
     // Guards the (Agent, _agentReplaced) pair so a presentation-only observer can capture BOTH under one
     // critical section (SnapshotForObservation) while an owned-provider restart swaps BOTH atomically
@@ -266,6 +296,23 @@ internal class SubAgentState
     // this one) instead. Cleared when a fresh provider is assigned via SetOwnedProviderAgent.
     private volatile bool _ownedProviderTerminalDisposeFailed;
 
+    // Set when a RESTART's failure cleanup disposed the live loop instance without installing a working
+    // replacement. That cleanup always disposes Agent, and — unlike a failed spawn — leaves the
+    // sub-agent registered, so the Agent property is then a reference to a torn-down object. The
+    // owned-provider flags do NOT cover this: they are about the PROVIDER, and for a BORROWED provider
+    // neither is ever set, so the restart path's rebuild branch would be skipped entirely and the next
+    // continuation would call RunAsync/SendAsync on the disposed loop. Cleared the moment a live
+    // instance is installed again (SwapLiveAgentAndSignalReplaced).
+    private volatile bool _loopDisposedByFailedRestart;
+
+    // Set when a teardown ABANDONED its wait on the owned provider's disposal (the ceiling elapsed) or
+    // could not safely start that disposal at all. Distinct from _ownedProviderTerminalDisposeFailed,
+    // which means "the disposal ran and threw": there the guard reset to Idle so a later cleanup RETRIES
+    // it, whereas here the disposal is still IN FLIGHT and must never be retried concurrently. What the
+    // two share is that the provider's state is unknown, so no new epoch may reuse it. Sticky until a
+    // fresh provider is assigned via SetOwnedProviderAgent.
+    private volatile bool _ownedProviderDisposeOutcomeUnknown;
+
     // Monotonic run-instance counter. A restart opens a new generation (BeginRunGeneration) before the
     // restarted loop can report completion; the terminal completion for that run records it in
     // _terminalGeneration. The restart's own "arm Running" publish (TryArmRunning) is guarded by this so
@@ -287,7 +334,11 @@ internal class SubAgentState
     /// handler awaiting <see cref="Completion"/> returns the result directly instead.
     /// </summary>
     private volatile bool _notifyParentOnCompletion;
-    public bool NotifyParentOnCompletion { get => _notifyParentOnCompletion; set => _notifyParentOnCompletion = value; }
+    public bool NotifyParentOnCompletion
+    {
+        get => _notifyParentOnCompletion;
+        set => _notifyParentOnCompletion = value;
+    }
 
     public Task? RunTask { get; set; }
     public Task? MonitorTask { get; set; }
@@ -295,7 +346,11 @@ internal class SubAgentState
     public ConcurrentQueue<SubAgentTurnSummary> TurnBuffer { get; } = new();
 
     private volatile SubAgentStatus _status = SubAgentStatus.Running;
-    public SubAgentStatus Status { get => _status; set => _status = value; }
+    public SubAgentStatus Status
+    {
+        get => _status;
+        set => _status = value;
+    }
 
     /// <summary>
     /// UTC instant the sub-agent reached its terminal status, captured once at the transition
@@ -307,7 +362,13 @@ internal class SubAgentState
     private DateTimeOffset? _terminalAtUtc;
     public DateTimeOffset? TerminalAtUtc
     {
-        get { lock (_lifecycleLock) { return _terminalAtUtc; } }
+        get
+        {
+            lock (_lifecycleLock)
+            {
+                return _terminalAtUtc;
+            }
+        }
     }
 
     /// <summary>
@@ -493,6 +554,114 @@ internal class SubAgentState
     }
 
     /// <summary>
+    /// Attempts to take ownership of the terminal teardown for a run whose MONITOR faulted, through the
+    /// SAME two claims a graceful terminal completion uses — the single-flight restart claim
+    /// (<see cref="BeginContinuation"/>) and the terminal-disposal flag
+    /// (<see cref="BeginTerminalDisposalAsync"/>) — so a concurrent continuation can neither inject
+    /// through nor rebuild on top of a provider/loop this teardown is about to dispose.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A monitor fault is the one terminal path that arrives without a <c>RunCompletedMessage</c>, so it
+    /// never went through <see cref="BeginTerminalDisposalAsync"/>. Disposing from there unguarded races
+    /// two readers: a <see cref="BeginContinuation"/> admitted just BEFORE the fault flipped the status
+    /// (it holds a send lease and is injecting through the provider), and a continuation that arrives
+    /// just AFTER (it takes the restart path and would reuse the loop/provider being torn down).
+    /// </para>
+    /// <para>
+    /// The claim is deliberately NON-BLOCKING on <c>_restarting</c>. If a continuation already owns the
+    /// transition, this returns <see cref="FaultTeardownOutcome.Superseded"/> and the monitor tears down
+    /// NOTHING: that restart cancels the run, awaits this very monitor task, and rebuilds. Waiting for
+    /// the claim instead would deadlock — the restart is waiting on us.
+    /// </para>
+    /// <para>
+    /// A claim is also refused when <paramref name="generation"/> is no longer the current run: a
+    /// superseded epoch's monitor must not dispose resources a newer epoch now owns.
+    /// </para>
+    /// <para>
+    /// On a successful claim the caller MUST call <see cref="EndTerminalDisposal"/> and
+    /// <see cref="EndRestart"/> in a finally — the first so a later restart's re-arm admits injects
+    /// again, the second so continuations parked on <see cref="ContinuationMode.AwaitRestart"/> wake and
+    /// re-evaluate against the torn-down state.
+    /// </para>
+    /// </remarks>
+    /// <param name="generation">Run generation the faulting monitor belongs to.</param>
+    /// <param name="sendDrainCeiling">Longest this will wait for an already-admitted inject send to
+    /// finish. Exceeding it yields <see cref="FaultTeardownOutcome.ClaimedSendsPending"/> rather than
+    /// disposing a provider a live send may still be writing through.</param>
+    public async Task<FaultTeardownOutcome> TryBeginFaultTeardownAsync(long generation, TimeSpan sendDrainCeiling)
+    {
+        Task? drain = null;
+        CancellationTokenSource? toCancel = null;
+
+        lock (_lifecycleLock)
+        {
+            // A newer restart epoch already superseded this run; its resources are not ours to tear down.
+            if (_runGeneration != generation)
+            {
+                return FaultTeardownOutcome.Superseded;
+            }
+
+            // A continuation owns the transition. See remarks: returning here is what makes the
+            // teardown/restart pair deadlock-free.
+            if (_restarting)
+            {
+                return FaultTeardownOutcome.Superseded;
+            }
+
+            _restarting = true;
+            _restartCompleted = NewLifecycleSignal();
+            _terminating = true;
+
+            // Only an owned provider is disposed by this teardown, so only then is there anything a send
+            // could race.
+            if (OwnedProviderAgent is not null && _activeSendLeases > 0)
+            {
+                _sendLeasesDrained = NewLifecycleSignal();
+                drain = _sendLeasesDrained.Task;
+                toCancel = _lifecycleCts;
+            }
+        }
+
+        // Cancel outside the lock: Cancel() runs linked-token callbacks synchronously. Same swallow as
+        // BeginTerminalDisposalAsync — a throwing callback must not abort the transition, and the token
+        // has already propagated.
+        try
+        {
+            toCancel?.Cancel();
+        }
+        catch (AggregateException)
+        {
+            // A linked-token callback threw; the lifecycle token is already cancelled, so proceed.
+        }
+
+        if (drain is not null)
+        {
+            try
+            {
+                await drain.WaitAsync(sendDrainCeiling);
+            }
+            catch (TimeoutException)
+            {
+                // The send ignored the lifecycle cancellation and is still inside the provider. Keep the
+                // claim (so nothing else adopts these resources) but tell the caller NOT to dispose:
+                // tearing the provider down under a live write is worse than leaving it to the manager's
+                // abandoned-provider sweep.
+                return FaultTeardownOutcome.ClaimedSendsPending;
+            }
+            finally
+            {
+                lock (_lifecycleLock)
+                {
+                    _sendLeasesDrained = null;
+                }
+            }
+        }
+
+        return FaultTeardownOutcome.Claimed;
+    }
+
+    /// <summary>
     /// Returns a cancellation source that fires when EITHER the caller's token or this run's lifecycle
     /// token (cancelled at terminal owned-provider disposal) fires. The inject-send path passes the
     /// resulting token so a terminal disposal can unblock a stalled send; the caller disposes the source.
@@ -608,6 +777,48 @@ internal class SubAgentState
     /// </summary>
     public void MarkOwnedProviderTerminalDisposeFailed() => _ownedProviderTerminalDisposeFailed = true;
 
+    /// <summary>
+    /// True when a teardown could not establish that the owned provider was disposed — the wait hit the
+    /// teardown ceiling, or the disposal was never safely startable. The provider is in an UNKNOWN state
+    /// and possibly still disposing, so no new epoch may reuse it and nothing may retry disposing it.
+    /// </summary>
+    public bool OwnedProviderDisposeOutcomeUnknown => _ownedProviderDisposeOutcomeUnknown;
+
+    /// <summary>
+    /// Records that the owned provider's disposal outcome is unknown (see
+    /// <see cref="OwnedProviderDisposeOutcomeUnknown"/>). Callers hand the provider handle to the
+    /// manager's abandoned-provider sweep, since the state slot will be overwritten by the rebuild.
+    /// </summary>
+    public void MarkOwnedProviderDisposeOutcomeUnknown() => _ownedProviderDisposeOutcomeUnknown = true;
+
+    /// <summary>
+    /// True when a continuation must rebuild the loop/provider pipeline instead of driving the current
+    /// instance. The single predicate the restart transition reads, covering all four ways an instance
+    /// stops being reusable: its owned provider was disposed cleanly at completion; that disposal threw
+    /// (poisoned, retryable); that disposal's outcome is unknown (possibly still in flight, NOT
+    /// retryable); or a failed restart disposed the loop itself — the only signal available when the
+    /// provider is BORROWED.
+    /// </summary>
+    public bool RequiresFreshPipeline =>
+        HasDisposedOwnedProviderAgent
+        || OwnedProviderTerminalDisposeFailed
+        || OwnedProviderDisposeOutcomeUnknown
+        || RequiresPipelineRebuild;
+
+    /// <summary>
+    /// True when <see cref="Agent"/> refers to a loop instance a failed restart already disposed, so the
+    /// next continuation MUST rebuild the loop/provider pipeline rather than drive it. Distinct from the
+    /// owned-provider flags: this one is about the LOOP, and it is the only signal available when the
+    /// provider is borrowed.
+    /// </summary>
+    public bool RequiresPipelineRebuild => _loopDisposedByFailedRestart;
+
+    /// <summary>
+    /// Records that a restart's failure cleanup disposed the live loop instance while this sub-agent
+    /// stays registered. Cleared when <see cref="SwapLiveAgentAndSignalReplaced"/> installs a fresh one.
+    /// </summary>
+    public void MarkLoopDisposedByFailedRestart() => _loopDisposedByFailedRestart = true;
+
     public IConversationStore? Store { get; set; }
 
     /// <summary>
@@ -683,8 +894,7 @@ internal class SubAgentState
     /// continuation must create a fresh provider pipeline.
     /// </summary>
     public bool HasDisposedOwnedProviderAgent =>
-        OwnedProviderAgent is not null
-        && Volatile.Read(ref _ownedProviderDisposeState) == OwnedProviderDisposeDisposed;
+        OwnedProviderAgent is not null && Volatile.Read(ref _ownedProviderDisposeState) == OwnedProviderDisposeDisposed;
 
     /// <summary>
     /// Assigns the provider created for the current run. This resets the per-run disposal guard
@@ -695,6 +905,7 @@ internal class SubAgentState
         OwnedProviderAgent = ownedProviderAgent;
         Volatile.Write(ref _ownedProviderDisposeState, OwnedProviderDisposeIdle);
         _ownedProviderTerminalDisposeFailed = false;
+        _ownedProviderDisposeOutcomeUnknown = false;
     }
 
     /// <summary>
@@ -850,6 +1061,9 @@ internal class SubAgentState
         {
             _restartInProgress = false;
             Agent = replacement;
+            // A live instance is installed again, so the "the live reference is a corpse" flag a
+            // previous failed restart may have set no longer holds.
+            _loopDisposedByFailedRestart = false;
             SignalAgentReplacedLocked(replacement);
         }
     }
@@ -881,7 +1095,8 @@ internal class SubAgentState
     {
         var previous = Interlocked.Exchange(
             ref _agentReplaced,
-            new TaskCompletionSource<IMultiTurnAgent?>(TaskCreationOptions.RunContinuationsAsynchronously));
+            new TaskCompletionSource<IMultiTurnAgent?>(TaskCreationOptions.RunContinuationsAsynchronously)
+        );
         _ = previous.TrySetResult(replacement);
     }
 }

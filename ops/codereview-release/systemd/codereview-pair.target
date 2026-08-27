@@ -2,3 +2,6 @@
 Description=Verified CodeReview host and daemon pair
 Requires=codereview-host.service codereview-daemon.service
 After=codereview-host.service codereview-daemon.service
+
+[Install]
+WantedBy=default.target

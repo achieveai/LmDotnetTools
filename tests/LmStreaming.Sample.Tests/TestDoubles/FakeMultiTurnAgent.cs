@@ -20,6 +20,57 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent
 
     public bool IsRunning { get; set; } = true;
 
+    /// <summary>
+    /// Receipt ids this fake has acknowledged and not yet named a run for. Mirrors what
+    /// <c>MultiTurnAgentBase</c> reports through <see cref="HasUnassignedInput"/>: an input that has
+    /// been accepted (the caller holds a receipt) but that no run owns yet, which is precisely the
+    /// state in which <see cref="CurrentRunId"/> is still null.
+    /// </summary>
+    private readonly List<string> _unassignedReceiptIds = [];
+
+    /// <inheritdoc />
+    public bool HasUnassignedInput
+    {
+        get
+        {
+            lock (_unassignedReceiptIds)
+            {
+                return _unassignedReceiptIds.Count > 0;
+            }
+        }
+    }
+
+    /// <summary>Receipt ids accepted but not yet assigned to a run, for assertions.</summary>
+    public IReadOnlyList<string> UnassignedReceiptIds
+    {
+        get
+        {
+            lock (_unassignedReceiptIds)
+            {
+                return [.. _unassignedReceiptIds];
+            }
+        }
+    }
+
+    /// <summary>
+    /// Models the run loop finally picking up everything it has been handed: assigns
+    /// <paramref name="runId"/> and clears the unassigned set, exactly as
+    /// <c>MultiTurnAgentBase.StartRunAsync</c> does when it sets the current run id.
+    /// </summary>
+    public void AssignRun(string runId)
+    {
+        lock (_unassignedReceiptIds)
+        {
+            _unassignedReceiptIds.Clear();
+        }
+
+        CurrentRunId = runId;
+    }
+
+    /// <summary>True once <see cref="DisposeAsync"/> has run — the observable form of "this agent,
+    /// and anything it was still holding, is gone".</summary>
+    public bool Disposed { get; private set; }
+
     /// <summary>When true, <see cref="DisposeAsync"/> throws — used to prove a switch tolerates a
     /// failure tearing down the PREVIOUS agent (the new one is already swapped in).</summary>
     public bool ThrowOnDispose { get; set; }
@@ -52,7 +103,8 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         _ = messages;
         _ = parentRunId;
@@ -60,6 +112,11 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent
 
         SendCount++;
         var receiptId = inputId ?? Guid.NewGuid().ToString("N");
+        lock (_unassignedReceiptIds)
+        {
+            _unassignedReceiptIds.Add(receiptId);
+        }
+
         return ValueTask.FromResult(new SendReceipt(receiptId, inputId, DateTimeOffset.UtcNow));
     }
 
@@ -67,7 +124,8 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         if (SendGate is { } gate)
         {
@@ -94,7 +152,8 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent
 #pragma warning disable CS1998, IDE0391 // Async iterator lacks 'await' - intentional empty stub using yield break
     public async IAsyncEnumerable<IMessage> ExecuteRunAsync(
         UserInput userInput,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         _ = userInput;
         _ = ct;
@@ -102,7 +161,8 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent
     }
 
     public async IAsyncEnumerable<IMessage> SubscribeAsync(
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         _ = ct;
         yield break;
@@ -122,6 +182,10 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent
 
     public ValueTask DisposeAsync()
     {
+        Disposed = true;
+        _ = Interlocked.Increment(ref _disposeCount);
+        _ = DisposedSignal.TrySetResult();
+
         if (ThrowOnDispose)
         {
             throw new InvalidOperationException("Simulated dispose failure for the previous agent.");
@@ -129,6 +193,25 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent
 
         return ValueTask.CompletedTask;
     }
+
+    private int _disposeCount;
+
+    /// <summary>How many times the pool disposed this agent.</summary>
+    public int DisposeCount => Volatile.Read(ref _disposeCount);
+
+    /// <summary>
+    /// Completes the first time <see cref="DisposeAsync"/> is entered — including when
+    /// <see cref="ThrowOnDispose"/> then makes it throw, so it records the ATTEMPT rather than a clean
+    /// outcome. Lets a test wait on "the pool took ownership of tearing this agent down" as an event
+    /// instead of sleeping and looking.
+    /// <para>
+    /// Distinct from <see cref="Disposed"/>, which is the same fact as a pollable flag. Both are kept:
+    /// a test that already HAS the agent in hand asserts the flag, while a test racing the pool needs an
+    /// awaitable it can bound with a guardrail. Awaiting is not a stylistic preference here — polling a
+    /// bool for a disposal that happens on another thread is exactly the sleep-and-look this suite bans.
+    /// </para>
+    /// </summary>
+    public TaskCompletionSource DisposedSignal { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 }
 
 /// <summary>
@@ -137,8 +220,7 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent
 /// the controller gates on, and <see cref="LastInput"/> records the <see cref="UserInput"/> it received so a
 /// test can prove the flag actually reached the agent rather than merely being echoed back.
 /// </summary>
-internal sealed class SpawnSuppressingFakeAgent(string threadId)
-    : FakeMultiTurnAgent(threadId), ISpawnSuppressingAgent
+internal sealed class SpawnSuppressingFakeAgent(string threadId) : FakeMultiTurnAgent(threadId), ISpawnSuppressingAgent
 {
     /// <summary>The last input handed to the capability-aware send path (null until one arrives).</summary>
     public UserInput? LastInput { get; private set; }

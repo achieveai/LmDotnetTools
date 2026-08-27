@@ -46,11 +46,14 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         // Default parent mock: accept any SendAsync call immediately (individual tests
         // override this when they need to control relay timing, e.g. the F3 test).
         _parentMock
-            .Setup(p => p.SendAsync(
-                It.IsAny<List<IMessage>>(),
-                It.IsAny<string?>(),
-                It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(p =>
+                p.SendAsync(
+                    It.IsAny<List<IMessage>>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .ReturnsAsync(new SendReceipt("receipt-1", null, DateTimeOffset.UtcNow));
 
         return Task.CompletedTask;
@@ -80,23 +83,23 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         };
 
         _manager = CreateManagerWithTemplates(maxConcurrent, templates);
-        _manager.TestAgentFactoryOverride = (_, template) => new FakeMultiTurnAgent
-        {
-            SendImpl = template.Name == "throws-on-send"
-                ? _ => ValueTask.FromException<SendReceipt>(new InvalidOperationException("send failed"))
-                : null,
-        };
+        _manager.TestAgentFactoryOverride = (_, template) =>
+            new FakeMultiTurnAgent
+            {
+                SendImpl =
+                    template.Name == "throws-on-send"
+                        ? _ => ValueTask.FromException<SendReceipt>(new InvalidOperationException("send failed"))
+                        : null,
+            };
 
-        var act = () => _manager.SpawnAsync(
-            "throws-on-send", "task", name: "failed-spawn", runInBackground: true);
+        var act = () => _manager.SpawnAsync("throws-on-send", "task", name: "failed-spawn", runInBackground: true);
 
         await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("send failed");
 
         // The failed spawn's partial registration must be rolled back: its name no longer
         // resolves to anything.
         var sendToRolledBack = () => _manager.SendMessageAsync("failed-spawn", "x");
-        await sendToRolledBack.Should().ThrowAsync<ArgumentException>()
-            .WithMessage("*Unknown sub-agent*failed-spawn*");
+        await sendToRolledBack.Should().ThrowAsync<ArgumentException>().WithMessage("*Unknown sub-agent*failed-spawn*");
 
         // Fill capacity with agents that never complete (holding their slots forever) to prove
         // exactly maxConcurrent slots are free - not fewer (stuck slot) and not more
@@ -111,8 +114,7 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         // With the pool now exactly full, one more spawn is DEFER-QUEUED (status="queued") rather than
         // run inline. This is the current over-capacity probe: an over-released gate would instead leave
         // a free slot and return "spawned" here, so "queued" still proves the count is exactly full.
-        var overCapacityJson = await _manager.SpawnAsync(
-            "normal", "one-too-many", runInBackground: true);
+        var overCapacityJson = await _manager.SpawnAsync("normal", "one-too-many", runInBackground: true);
         using var overCapacityDoc = JsonDocument.Parse(overCapacityJson);
         overCapacityDoc.RootElement.GetProperty("status").GetString().Should().Be("queued");
     }
@@ -139,24 +141,24 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
 
         var fake = new FakeMultiTurnAgent
         {
-            SendImpl = callIndex => callIndex == 1
-                ? new ValueTask<SendReceipt>(new SendReceipt("r1", null, DateTimeOffset.UtcNow))
-                : ValueTask.FromException<SendReceipt>(new InvalidOperationException("restart send failed")),
-            SubscribeImpl = (callIndex, ct) => callIndex == 1
-                // Epoch 1: completes immediately, then - like a real agent - keeps its
-                // subscription open/blocked until cancelled.
-                ? FakeMultiTurnAgent.CompleteOnceThenWaitForeverStream("run-1", ct)
-                // Epoch 2: never gets a chance to complete (SendAsync throws first); just
-                // waits to be cancelled during the restart-failure cleanup.
-                : FakeMultiTurnAgent.WaitForeverStream(ct),
+            SendImpl = callIndex =>
+                callIndex == 1
+                    ? new ValueTask<SendReceipt>(new SendReceipt("r1", null, DateTimeOffset.UtcNow))
+                    : ValueTask.FromException<SendReceipt>(new InvalidOperationException("restart send failed")),
+            SubscribeImpl = (callIndex, ct) =>
+                callIndex == 1
+                    // Epoch 1: completes immediately, then - like a real agent - keeps its
+                    // subscription open/blocked until cancelled.
+                    ? FakeMultiTurnAgent.CompleteOnceThenWaitForeverStream("run-1", ct)
+                    // Epoch 2: never gets a chance to complete (SendAsync throws first); just
+                    // waits to be cancelled during the restart-failure cleanup.
+                    : FakeMultiTurnAgent.WaitForeverStream(ct),
         };
 
-        _manager.TestAgentFactoryOverride = (_, template) => template.Name == "restartable"
-            ? fake
-            : new FakeMultiTurnAgent();
+        _manager.TestAgentFactoryOverride = (_, template) =>
+            template.Name == "restartable" ? fake : new FakeMultiTurnAgent();
 
-        var spawnJson = await _manager.SpawnAsync(
-            "restartable", "initial task", runInBackground: true);
+        var spawnJson = await _manager.SpawnAsync("restartable", "initial task", runInBackground: true);
         using var spawnDoc = JsonDocument.Parse(spawnJson);
         var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
 
@@ -166,10 +168,17 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         await WaitForConditionAsync(
             () =>
             {
-                try { return _manager!.Peek(agentId).Contains("\"completed\""); }
-                catch { return false; }
+                try
+                {
+                    return _manager!.Peek(agentId).Contains("\"completed\"");
+                }
+                catch
+                {
+                    return false;
+                }
             },
-            TimeSpan.FromSeconds(10));
+            TimeSpan.FromSeconds(10)
+        );
 
         // Act: SendMessageAsync on the completed agent goes through RestartRunAsync, whose own
         // SendAsync (the fake's 2nd call) throws after epoch 2's monitor has already started.
@@ -189,8 +198,7 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
 
         // Pool exactly full -> one more spawn defer-queues ("queued"); a corrupted upward count would
         // leave a slot free and return "spawned" instead.
-        var overCapacityJson = await _manager.SpawnAsync(
-            "normal", "one-too-many", runInBackground: true);
+        var overCapacityJson = await _manager.SpawnAsync("normal", "one-too-many", runInBackground: true);
         using var overCapacityDoc = JsonDocument.Parse(overCapacityJson);
         overCapacityDoc.RootElement.GetProperty("status").GetString().Should().Be("queued");
     }
@@ -206,17 +214,22 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         var relayRelease = new TaskCompletionSource<bool>();
 
         _parentMock
-            .Setup(p => p.SendAsync(
-                It.IsAny<List<IMessage>>(),
-                It.IsAny<string?>(),
-                It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()))
-            .Returns<List<IMessage>, string?, string?, CancellationToken>(async (_, _, _, ct) =>
-            {
-                _ = relayEntered.TrySetResult(true);
-                await relayRelease.Task.WaitAsync(ct);
-                return new SendReceipt("relayed", null, DateTimeOffset.UtcNow);
-            });
+            .Setup(p =>
+                p.SendAsync(
+                    It.IsAny<List<IMessage>>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<List<IMessage>, string?, string?, CancellationToken>(
+                async (_, _, _, ct) =>
+                {
+                    _ = relayEntered.TrySetResult(true);
+                    await relayRelease.Task.WaitAsync(ct);
+                    return new SendReceipt("relayed", null, DateTimeOffset.UtcNow);
+                }
+            );
 
         var templates = new Dictionary<string, SubAgentTemplate>
         {
@@ -225,17 +238,20 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         };
 
         _manager = CreateManagerWithTemplates(maxConcurrent, templates);
-        _manager.TestAgentFactoryOverride = (_, template) => template.Name == "completing"
-            ? new FakeMultiTurnAgent
-            {
-                SubscribeImpl = (_, ct) => FakeMultiTurnAgent.CompleteOnceThenWaitForeverStream("run-1", ct),
-            }
-            : new FakeMultiTurnAgent();
+        _manager.TestAgentFactoryOverride = (_, template) =>
+            template.Name == "completing"
+                ? new FakeMultiTurnAgent
+                {
+                    SubscribeImpl = (_, ct) => FakeMultiTurnAgent.CompleteOnceThenWaitForeverStream("run-1", ct),
+                }
+                : new FakeMultiTurnAgent();
 
         await _manager.SpawnAsync("completing", "task", runInBackground: true);
 
         // Wait until the completed sub-agent's parent relay is in flight (blocked).
-        (await relayEntered.Task.WaitAsync(TimeSpan.FromSeconds(10))).Should().BeTrue();
+        (await relayEntered.Task.WaitAsync(TimeSpan.FromSeconds(10)))
+            .Should()
+            .BeTrue();
 
         // Act: a fresh spawn must succeed even while the first agent's relay is still blocked.
         var secondSpawnJson = await _manager
@@ -254,24 +270,19 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         // F5: if SubscribeAsync fails outright with a non-cancellation exception, the monitor's
         // generic terminal catch must fault state.Completion, or ObserveCompletionAsync hangs
         // forever. Guarded by a timeout so a regression here hangs this one test, not the suite.
-        var templates = new Dictionary<string, SubAgentTemplate>
-        {
-            ["broken"] = DummyTemplate("broken"),
-        };
+        var templates = new Dictionary<string, SubAgentTemplate> { ["broken"] = DummyTemplate("broken") };
 
         _manager = CreateManagerWithTemplates(maxConcurrent: 5, templates);
         var thrown = new InvalidOperationException("subscribe blew up");
-        _manager.TestAgentFactoryOverride = (_, _) => new FakeMultiTurnAgent
-        {
-            SubscribeImpl = (_, _) => FakeMultiTurnAgent.ThrowingStream(thrown),
-        };
+        _manager.TestAgentFactoryOverride = (_, _) =>
+            new FakeMultiTurnAgent { SubscribeImpl = (_, _) => FakeMultiTurnAgent.ThrowingStream(thrown) };
 
         var spawnJson = await _manager.SpawnAsync("broken", "task", runInBackground: true);
         using var spawnDoc = JsonDocument.Parse(spawnJson);
         var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
 
-        var act = () => _manager!.ObserveCompletionAsync(agentId, CancellationToken.None)
-            .WaitAsync(TimeSpan.FromSeconds(5));
+        var act = () =>
+            _manager!.ObserveCompletionAsync(agentId, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
 
         await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("subscribe blew up");
     }
@@ -284,16 +295,14 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         // and the owned provider undisposed, and only the following terminal completion disposes the
         // provider — exactly once. Without direct coverage this branch could regress while the rest of
         // the suite stays green.
-        var templates = new Dictionary<string, SubAgentTemplate>
-        {
-            ["owned"] = DummyTemplate("owned"),
-        };
+        var templates = new Dictionary<string, SubAgentTemplate> { ["owned"] = DummyTemplate("owned") };
 
         _manager = CreateManagerWithTemplates(maxConcurrent: 2, templates);
 
         var disposeCount = 0;
         var provider = new Mock<IStreamingAgent>();
-        provider.As<IAsyncDisposable>()
+        provider
+            .As<IAsyncDisposable>()
             .Setup(d => d.DisposeAsync())
             .Returns(() =>
             {
@@ -304,11 +313,12 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         var pendingEmitted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseTerminal = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        _manager.TestAgentFactoryOverride = (_, _) => new FakeMultiTurnAgent
-        {
-            SubscribeImpl = (_, ct) => FakeMultiTurnAgent.PendingThenTerminalStream(
-                "run-1", pendingEmitted, releaseTerminal.Task, ct),
-        };
+        _manager.TestAgentFactoryOverride = (_, _) =>
+            new FakeMultiTurnAgent
+            {
+                SubscribeImpl = (_, ct) =>
+                    FakeMultiTurnAgent.PendingThenTerminalStream("run-1", pendingEmitted, releaseTerminal.Task, ct),
+            };
         _manager.TestOwnedProviderOverride = (_, _) => provider.Object;
 
         var spawnJson = await _manager.SpawnAsync("owned", "task", runInBackground: true);
@@ -317,9 +327,13 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
 
         // After the pending (non-terminal) completion: the owned provider must remain undisposed and
         // the sub-agent must still read as running.
-        (await pendingEmitted.Task.WaitAsync(TimeSpan.FromSeconds(10))).Should().BeTrue();
+        (await pendingEmitted.Task.WaitAsync(TimeSpan.FromSeconds(10)))
+            .Should()
+            .BeTrue();
         await Task.Delay(150); // give HandleRunCompletionAsync time to (wrongly) dispose if it regressed
-        Volatile.Read(ref disposeCount).Should()
+        Volatile
+            .Read(ref disposeCount)
+            .Should()
             .Be(0, "a HasPendingMessages completion must not dispose the owned provider");
         _manager.Peek(agentId).Should().Contain("\"running\"");
 
@@ -336,10 +350,7 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         // down. A later continuation must NOT reuse it — the restart path must rebuild a fresh provider.
         // A failed disposal resets the dispose guard (HasDisposedOwnedProviderAgent == false), so without
         // the poison flag the rebuild branch would be skipped and the partially-disposed provider reused.
-        var templates = new Dictionary<string, SubAgentTemplate>
-        {
-            ["owned"] = DummyTemplate("owned"),
-        };
+        var templates = new Dictionary<string, SubAgentTemplate> { ["owned"] = DummyTemplate("owned") };
 
         _manager = CreateManagerWithTemplates(maxConcurrent: 2, templates);
 
@@ -351,9 +362,10 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
             var idx = Interlocked.Increment(ref agentCallCount);
             return new FakeMultiTurnAgent
             {
-                SubscribeImpl = (_, ct) => idx == 1
-                    ? FakeMultiTurnAgent.CompleteOnceThenWaitForeverStream("run-1", ct)
-                    : FakeMultiTurnAgent.WaitForeverStream(ct),
+                SubscribeImpl = (_, ct) =>
+                    idx == 1
+                        ? FakeMultiTurnAgent.CompleteOnceThenWaitForeverStream("run-1", ct)
+                        : FakeMultiTurnAgent.WaitForeverStream(ct),
             };
         };
 
@@ -368,7 +380,8 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
             if (idx == 1)
             {
                 var poisoned = new Mock<IStreamingAgent>();
-                poisoned.As<IAsyncDisposable>()
+                poisoned
+                    .As<IAsyncDisposable>()
                     .Setup(d => d.DisposeAsync())
                     .Returns(() =>
                     {
@@ -391,12 +404,21 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         await WaitForConditionAsync(
             () =>
             {
-                try { return _manager!.Peek(agentId).Contains("\"completed\""); }
-                catch { return false; }
+                try
+                {
+                    return _manager!.Peek(agentId).Contains("\"completed\"");
+                }
+                catch
+                {
+                    return false;
+                }
             },
-            TimeSpan.FromSeconds(10));
-        Volatile.Read(ref poisonedDisposeAttempts).Should().Be(1,
-            "the terminal disposal must have attempted (and failed) to dispose provider #1 exactly once");
+            TimeSpan.FromSeconds(10)
+        );
+        Volatile
+            .Read(ref poisonedDisposeAttempts)
+            .Should()
+            .Be(1, "the terminal disposal must have attempted (and failed) to dispose provider #1 exactly once");
         providerCallCount.Should().Be(1, "only the initial provider exists before the continuation");
 
         // Act: a continuation restarts the finished run. Because provider #1's terminal disposal FAILED,
@@ -404,8 +426,10 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         _ = await _manager.SendMessageAsync(agentId, "continue", runInBackground: true);
 
         providerCallCount.Should().Be(2, "the poisoned provider must be replaced with a fresh one on restart");
-        Volatile.Read(ref poisonedDisposeAttempts).Should().Be(2,
-            "the restart must RETRY disposing the poisoned provider before swapping in the replacement");
+        Volatile
+            .Read(ref poisonedDisposeAttempts)
+            .Should()
+            .Be(2, "the restart must RETRY disposing the poisoned provider before swapping in the replacement");
         _manager.Peek(agentId).Should().Contain("\"running\"", "the resumed run is live on the fresh provider");
     }
 
@@ -417,10 +441,7 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         // the user's message — the continuation must re-enter the decision loop and deliver the prompt to
         // the restarted run. Exercised through the REAL SubAgentManager.SendMessageAsync boundary (not the
         // SubAgentState primitive directly), so it fails if the manager stops using the linked token.
-        var templates = new Dictionary<string, SubAgentTemplate>
-        {
-            ["owned"] = DummyTemplate("owned"),
-        };
+        var templates = new Dictionary<string, SubAgentTemplate> { ["owned"] = DummyTemplate("owned") };
 
         _manager = CreateManagerWithTemplates(maxConcurrent: 2, templates);
 
@@ -478,11 +499,21 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
             .WaitAsync(TimeSpan.FromSeconds(15));
 
         using var resultDoc = JsonDocument.Parse(resultJson);
-        resultDoc.RootElement.GetProperty("status").GetString().Should().Be("resumed",
-            "the lifecycle-cancelled inject must be re-driven through the restart path, not surfaced as cancellation");
+        resultDoc
+            .RootElement.GetProperty("status")
+            .GetString()
+            .Should()
+            .Be(
+                "resumed",
+                "the lifecycle-cancelled inject must be re-driven through the restart path, not surfaced as cancellation"
+            );
         agentCallCount.Should().Be(2, "the finished run must be restarted on a fresh agent");
-        sentSink.Should().Contain("resumed-prompt",
-            "the user's prompt must reach the restarted run rather than being dropped on lifecycle cancellation");
+        sentSink
+            .Should()
+            .Contain(
+                "resumed-prompt",
+                "the user's prompt must reach the restarted run rather than being dropped on lifecycle cancellation"
+            );
     }
 
     [Fact]
@@ -492,27 +523,25 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         // restart". An internal OperationCanceledException from Agent.SendAsync (e.g. its own timeout) with
         // NEITHER the caller token NOR the linked lifecycle token cancelled must PROPAGATE, not be retried —
         // otherwise the manager risks duplicate delivery or an unbounded retry loop.
-        var templates = new Dictionary<string, SubAgentTemplate>
-        {
-            ["owned"] = DummyTemplate("owned"),
-        };
+        var templates = new Dictionary<string, SubAgentTemplate> { ["owned"] = DummyTemplate("owned") };
 
         _manager = CreateManagerWithTemplates(maxConcurrent: 2, templates);
 
         var sendCount = 0;
-        _manager.TestAgentFactoryOverride = (_, _) => new FakeMultiTurnAgent
-        {
-            // Spawn send (call 1) succeeds; the inject (call 2) throws an INTERNAL cancellation unrelated
-            // to either supplied token.
-            SendImpl = _ =>
+        _manager.TestAgentFactoryOverride = (_, _) =>
+            new FakeMultiTurnAgent
             {
-                var n = Interlocked.Increment(ref sendCount);
-                return n == 1
-                    ? new ValueTask<SendReceipt>(new SendReceipt("r1", null, DateTimeOffset.UtcNow))
-                    : ValueTask.FromException<SendReceipt>(new OperationCanceledException("internal send timeout"));
-            },
-            SubscribeImpl = (_, ct) => FakeMultiTurnAgent.WaitForeverStream(ct),
-        };
+                // Spawn send (call 1) succeeds; the inject (call 2) throws an INTERNAL cancellation unrelated
+                // to either supplied token.
+                SendImpl = _ =>
+                {
+                    var n = Interlocked.Increment(ref sendCount);
+                    return n == 1
+                        ? new ValueTask<SendReceipt>(new SendReceipt("r1", null, DateTimeOffset.UtcNow))
+                        : ValueTask.FromException<SendReceipt>(new OperationCanceledException("internal send timeout"));
+                },
+                SubscribeImpl = (_, ct) => FakeMultiTurnAgent.WaitForeverStream(ct),
+            };
 
         var spawnJson = await _manager.SpawnAsync("owned", "task", runInBackground: true);
         using var spawnDoc = JsonDocument.Parse(spawnJson);
@@ -534,10 +563,7 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         // Status write), so TryArmRunning observes this generation's terminal and refuses to overwrite
         // Error with Running — which would advertise a dead run. Synchronized so it deterministically hits
         // the fault-before-arm ordering.
-        var templates = new Dictionary<string, SubAgentTemplate>
-        {
-            ["owned"] = DummyTemplate("owned"),
-        };
+        var templates = new Dictionary<string, SubAgentTemplate> { ["owned"] = DummyTemplate("owned") };
 
         _manager = CreateManagerWithTemplates(maxConcurrent: 2, templates);
 
@@ -577,34 +603,61 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
 
         await WaitForConditionAsync(
-            () => { try { return _manager!.Peek(agentId).Contains("\"completed\""); } catch { return false; } },
-            TimeSpan.FromSeconds(10));
+            () =>
+            {
+                try
+                {
+                    return _manager!.Peek(agentId).Contains("\"completed\"");
+                }
+                catch
+                {
+                    return false;
+                }
+            },
+            TimeSpan.FromSeconds(10)
+        );
 
         // Begin the restart on a background task; its restart SendAsync blocks on the gate.
         var restartTask = Task.Run(() => _manager!.SendMessageAsync(agentId, "resumed-prompt", runInBackground: true));
 
         // The restarted monitor faults and records the generation-aware terminal Error.
         await WaitForConditionAsync(
-            () => { try { return _manager!.Peek(agentId).Contains("\"error\""); } catch { return false; } },
-            TimeSpan.FromSeconds(10));
+            () =>
+            {
+                try
+                {
+                    return _manager!.Peek(agentId).Contains("\"error\"");
+                }
+                catch
+                {
+                    return false;
+                }
+            },
+            TimeSpan.FromSeconds(10)
+        );
 
         // Now let the restart SendAsync return so TryArmRunning(runGeneration) executes AFTER the fault.
         restartSendGate.SetResult(true);
         _ = await restartTask.WaitAsync(TimeSpan.FromSeconds(10));
 
         // TryArmRunning must NOT resurrect the faulted run: status stays Error, never Running.
-        _manager.Peek(agentId).Should().Contain("\"error\"",
-            "a monitor fault recorded against the run generation must block TryArmRunning from restoring Running");
+        _manager
+            .Peek(agentId)
+            .Should()
+            .Contain(
+                "\"error\"",
+                "a monitor fault recorded against the run generation must block TryArmRunning from restoring Running"
+            );
         _manager.Peek(agentId).Should().NotContain("\"running\"");
     }
 
     [Fact]
     public async Task ForegroundCancellationAfterPermitAcquisition_StopsBeforeRegistration()
     {
-        var manager = CreateManagerWithTemplates(1, new Dictionary<string, SubAgentTemplate>
-        {
-            ["worker"] = DummyTemplate("worker"),
-        });
+        var manager = CreateManagerWithTemplates(
+            1,
+            new Dictionary<string, SubAgentTemplate> { ["worker"] = DummyTemplate("worker") }
+        );
         _manager = manager;
         var constructed = new FakeMultiTurnAgent();
         manager.TestAgentFactoryOverride = (_, _) => constructed;
@@ -631,10 +684,10 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
     [Fact]
     public async Task DisposeRacingInlineSpawn_RejectsRegistrationAndDisposesConstructedAgent()
     {
-        var manager = CreateManagerWithTemplates(1, new Dictionary<string, SubAgentTemplate>
-        {
-            ["worker"] = DummyTemplate("worker"),
-        });
+        var manager = CreateManagerWithTemplates(
+            1,
+            new Dictionary<string, SubAgentTemplate> { ["worker"] = DummyTemplate("worker") }
+        );
         _manager = manager;
         var constructed = new FakeMultiTurnAgent();
         manager.TestAgentFactoryOverride = (_, _) => constructed;
@@ -677,20 +730,23 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         var pendingEmitted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseTerminal = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        _manager.TestAgentFactoryOverride = (_, template) => template.Name == "pending"
-            ? new FakeMultiTurnAgent
-            {
-                SubscribeImpl = (_, ct) => FakeMultiTurnAgent.PendingThenTerminalStream(
-                    "run-1", pendingEmitted, releaseTerminal.Task, ct),
-            }
-            : new FakeMultiTurnAgent();
+        _manager.TestAgentFactoryOverride = (_, template) =>
+            template.Name == "pending"
+                ? new FakeMultiTurnAgent
+                {
+                    SubscribeImpl = (_, ct) =>
+                        FakeMultiTurnAgent.PendingThenTerminalStream("run-1", pendingEmitted, releaseTerminal.Task, ct),
+                }
+                : new FakeMultiTurnAgent();
 
         var spawnJson = await _manager.SpawnAsync("pending", "task", runInBackground: true);
         using var spawnDoc = JsonDocument.Parse(spawnJson);
         var pendingAgentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
 
         // After the pending completion is processed, the permit must still be held.
-        (await pendingEmitted.Task.WaitAsync(TimeSpan.FromSeconds(10))).Should().BeTrue();
+        (await pendingEmitted.Task.WaitAsync(TimeSpan.FromSeconds(10)))
+            .Should()
+            .BeTrue();
         await Task.Delay(150); // give the monitor time to (wrongly) release the permit if it regressed
 
         // While the pending agent is still active (holding the only permit), a second spawn is
@@ -698,8 +754,14 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         // did NOT free the slot: had it wrongly released, Wait(0) would succeed and return "spawned".
         var queuedJson = await _manager!.SpawnAsync("normal", "queued-while-busy", runInBackground: true);
         using var queuedDoc = JsonDocument.Parse(queuedJson);
-        queuedDoc.RootElement.GetProperty("status").GetString().Should().Be("queued",
-            "a pending (nonterminal) completion must not free the slot while the sub-agent is still active");
+        queuedDoc
+            .RootElement.GetProperty("status")
+            .GetString()
+            .Should()
+            .Be(
+                "queued",
+                "a pending (nonterminal) completion must not free the slot while the sub-agent is still active"
+            );
         var queuedAgentId = queuedDoc.RootElement.GetProperty("agent_id").GetString()!;
 
         // The terminal completion frees the slot; the background pump then starts the queued spawn on the
@@ -709,22 +771,39 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         await WaitForConditionAsync(
             () =>
             {
-                try { return _manager!.Peek(pendingAgentId).Contains("\"completed\""); }
-                catch { return false; }
+                try
+                {
+                    return _manager!.Peek(pendingAgentId).Contains("\"completed\"");
+                }
+                catch
+                {
+                    return false;
+                }
             },
-            TimeSpan.FromSeconds(10));
+            TimeSpan.FromSeconds(10)
+        );
 
         await WaitForConditionAsync(
             () =>
             {
-                try { return _manager!.Peek(queuedAgentId).Contains("\"running\""); }
-                catch { return false; }
+                try
+                {
+                    return _manager!.Peek(queuedAgentId).Contains("\"running\"");
+                }
+                catch
+                {
+                    return false;
+                }
             },
-            TimeSpan.FromSeconds(10));
+            TimeSpan.FromSeconds(10)
+        );
 
         using var queuedPeek = JsonDocument.Parse(_manager.Peek(queuedAgentId));
-        queuedPeek.RootElement.GetProperty("status").GetString().Should().Be("running",
-            "the terminal completion released the slot, so the pump started the queued sub-agent");
+        queuedPeek
+            .RootElement.GetProperty("status")
+            .GetString()
+            .Should()
+            .Be("running", "the terminal completion released the slot, so the pump started the queued sub-agent");
     }
 
     #region Helpers
@@ -750,27 +829,25 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         {
             Name = name,
             SystemPrompt = "You are a test agent.",
-            AgentFactory = () => throw new NotSupportedException(
-                "Bypassed by TestAgentFactoryOverride; should never be invoked."),
+            AgentFactory = () =>
+                throw new NotSupportedException("Bypassed by TestAgentFactoryOverride; should never be invoked."),
         };
     }
 
     private SubAgentManager CreateManagerWithTemplates(
         int maxConcurrent,
-        IReadOnlyDictionary<string, SubAgentTemplate> templates)
+        IReadOnlyDictionary<string, SubAgentTemplate> templates
+    )
     {
-        var options = new SubAgentOptions
-        {
-            Templates = templates,
-            MaxConcurrentSubAgents = maxConcurrent,
-        };
+        var options = new SubAgentOptions { Templates = templates, MaxConcurrentSubAgents = maxConcurrent };
 
         return new SubAgentManager(
             parentAgent: _parentMock.Object,
             parentContracts: [],
             parentHandlers: new Dictionary<string, ToolHandler>(),
             options: options,
-            source: new MutableSubAgentTemplateSource(options.Templates));
+            source: new MutableSubAgentTemplateSource(options.Templates)
+        );
     }
 
     #endregion
@@ -789,8 +866,25 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
     private int _sendCallCount;
     private int _subscribeCallCount;
     private int _disposeCount;
+    private int _invocationsAfterDispose;
 
     public int DisposeCount => Volatile.Read(ref _disposeCount);
+
+    /// <summary>
+    /// Count of <see cref="SendAsync"/>/<see cref="SubscribeAsync"/>/<see cref="RunAsync"/> calls that
+    /// arrived AFTER this instance was disposed. A real <c>MultiTurnAgentLoop</c> is unusable once
+    /// disposed, so any non-zero value means the manager kept driving a torn-down loop. Recorded rather
+    /// than thrown so a test asserts the count directly instead of depending on where the throw surfaces.
+    /// </summary>
+    public int InvocationsAfterDispose => Volatile.Read(ref _invocationsAfterDispose);
+
+    private void NoteInvocation()
+    {
+        if (Volatile.Read(ref _disposeCount) > 0)
+        {
+            _ = Interlocked.Increment(ref _invocationsAfterDispose);
+        }
+    }
 
     public string? CurrentRunId => null;
 
@@ -826,12 +920,21 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
     /// </summary>
     public Func<int, CancellationToken, IAsyncEnumerable<IMessage>>? SubscribeImpl { get; set; }
 
+    /// <summary>
+    /// Replaces the default cancellable <see cref="RunAsync"/> body, so a test can supply a
+    /// NON-COOPERATIVE run task (one that ignores its token) and prove every teardown path that awaits
+    /// it is bounded rather than hanging on it forever. Null (default) =&gt; the cancellable body.
+    /// </summary>
+    public Func<CancellationToken, Task>? RunImpl { get; set; }
+
     public ValueTask<SendReceipt> SendAsync(
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
+        NoteInvocation();
         SentSink?.Enqueue(messages.OfType<TextMessage>().Select(m => m.Text).FirstOrDefault() ?? string.Empty);
         var callIndex = Interlocked.Increment(ref _sendCallCount);
         if (SendWithTokenImpl != null)
@@ -841,39 +944,43 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
 
         return SendImpl != null
             ? SendImpl(callIndex)
-            : new ValueTask<SendReceipt>(
-                new SendReceipt(Guid.NewGuid().ToString("N"), inputId, DateTimeOffset.UtcNow));
+            : new ValueTask<SendReceipt>(new SendReceipt(Guid.NewGuid().ToString("N"), inputId, DateTimeOffset.UtcNow));
     }
 
     public ValueTask<SendReceipt?> TrySendAsync(
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         throw new NotSupportedException("Not used by SubAgentManager or these tests.");
     }
 
-    public IAsyncEnumerable<IMessage> ExecuteRunAsync(
-        UserInput userInput,
-        CancellationToken ct = default)
+    public IAsyncEnumerable<IMessage> ExecuteRunAsync(UserInput userInput, CancellationToken ct = default)
     {
         throw new NotSupportedException("Not used by SubAgentManager or these tests.");
     }
 
     public IAsyncEnumerable<IMessage> SubscribeAsync(CancellationToken ct = default)
     {
+        NoteInvocation();
         var callIndex = Interlocked.Increment(ref _subscribeCallCount);
-        return SubscribeImpl != null
-            ? SubscribeImpl(callIndex, ct)
-            : WaitForeverStream(ct);
+        return SubscribeImpl != null ? SubscribeImpl(callIndex, ct) : WaitForeverStream(ct);
     }
 
     public async Task RunAsync(CancellationToken ct = default)
     {
+        NoteInvocation();
         IsRunning = true;
         try
         {
+            if (RunImpl != null)
+            {
+                await RunImpl(ct);
+                return;
+            }
+
             await Task.Delay(Timeout.InfiniteTimeSpan, ct);
         }
         finally
@@ -899,8 +1006,7 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
     /// to do (the loop and subscriber channels stay alive across individual run completions;
     /// only explicit cancellation/disposal closes them).
     /// </summary>
-    internal static async IAsyncEnumerable<IMessage> WaitForeverStream(
-        [EnumeratorCancellation] CancellationToken ct)
+    internal static async IAsyncEnumerable<IMessage> WaitForeverStream([EnumeratorCancellation] CancellationToken ct)
     {
         await Task.Delay(Timeout.InfiniteTimeSpan, ct);
         yield break;
@@ -915,11 +1021,32 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
     internal static async IAsyncEnumerable<IMessage> WaitThenCompleteStream(
         Task gate,
         string completedRunId,
-        [EnumeratorCancellation] CancellationToken ct)
+        [EnumeratorCancellation] CancellationToken ct
+    )
     {
         await gate.WaitAsync(ct);
         yield return new RunCompletedMessage { CompletedRunId = completedRunId };
         await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+    }
+
+    /// <summary>
+    /// Stream that waits for <paramref name="gate"/> and then THROWS, so a test can make the monitor
+    /// fault at an instant it chooses — for example while an admitted inject send is still in flight
+    /// through the owned provider. Deliberately ignores <paramref name="ct"/> while waiting: the fault
+    /// must be driven by the test's gate, not by whatever cancellation the manager happens to raise.
+    /// </summary>
+    internal static async IAsyncEnumerable<IMessage> WaitThenThrowStream(
+        Task gate,
+        Exception toThrow,
+        [EnumeratorCancellation] CancellationToken ct
+    )
+    {
+        _ = ct;
+        await gate;
+        throw toThrow;
+#pragma warning disable CS0162 // Unreachable: required to make this an iterator method.
+        yield break;
+#pragma warning restore CS0162
     }
 
     /// <summary>
@@ -930,7 +1057,8 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
     /// </summary>
     internal static async IAsyncEnumerable<IMessage> CompleteOnceThenWaitForeverStream(
         string completedRunId,
-        [EnumeratorCancellation] CancellationToken ct)
+        [EnumeratorCancellation] CancellationToken ct
+    )
     {
         yield return new RunCompletedMessage { CompletedRunId = completedRunId };
         await Task.Delay(Timeout.InfiniteTimeSpan, ct);
@@ -947,13 +1075,46 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
         string completedRunId,
         TaskCompletionSource<bool> pendingEmitted,
         Task releaseTerminal,
-        [EnumeratorCancellation] CancellationToken ct)
+        [EnumeratorCancellation] CancellationToken ct
+    )
     {
         yield return new RunCompletedMessage { CompletedRunId = completedRunId, HasPendingMessages = true };
         _ = pendingEmitted.TrySetResult(true);
         await releaseTerminal.WaitAsync(ct);
         yield return new RunCompletedMessage { CompletedRunId = completedRunId };
         await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+    }
+
+    /// <summary>
+    /// Stream that yields one terminal <see cref="RunCompletedMessage"/> and then blocks on
+    /// <paramref name="block"/> WITHOUT observing the subscription token — a NON-COOPERATIVE monitor.
+    /// Cancelling the run never ends this stream, so every teardown path that awaits the resulting
+    /// <c>MonitorTask</c> must be bounded or it hangs forever.
+    /// </summary>
+    internal static async IAsyncEnumerable<IMessage> CompleteOnceThenBlockIgnoringCancellationStream(
+        string completedRunId,
+        Task block,
+        [EnumeratorCancellation] CancellationToken ct
+    )
+    {
+        _ = ct;
+        yield return new RunCompletedMessage { CompletedRunId = completedRunId };
+        await block;
+    }
+
+    /// <summary>
+    /// Stream that never yields and blocks on <paramref name="block"/> WITHOUT observing the
+    /// subscription token — a NON-COOPERATIVE monitor from the first instant. Used to prove manager
+    /// shutdown is bounded even when a child's monitor ignores cancellation outright.
+    /// </summary>
+    internal static async IAsyncEnumerable<IMessage> BlockIgnoringCancellationStream(
+        Task block,
+        [EnumeratorCancellation] CancellationToken ct
+    )
+    {
+        _ = ct;
+        await block;
+        yield break;
     }
 
     /// <summary>

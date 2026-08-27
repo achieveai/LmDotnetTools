@@ -56,7 +56,26 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     private readonly MultiTurnLifecycleServices? _lifecycleServices;
     private readonly ILogger<MultiTurnAgentPool> _logger;
     private readonly CancellationTokenSource _poolCts = new();
-    private bool _disposed;
+
+    /// <summary>
+    /// Guards the pool's terminal boundary: the <see cref="_disposed"/> flag, every commit into
+    /// <see cref="_agents"/>, and every read of <see cref="_poolCts"/>'s token.
+    /// <para>
+    /// Without it, <c>_disposed</c> was a check-then-act spanning the agent factory: a caller checked
+    /// the flag, the factory ran (provider handshake, sandbox session, MCP clients — not fast), and by
+    /// the time the entry was committed <see cref="DisposeAsync"/> could already have snapshotted
+    /// <see cref="_agents"/>, disposed what it found and cleared the map. The late entry then landed in
+    /// a dictionary nobody would read again: a live agent with a running loop and owned resources, and
+    /// no owner left to stop it.
+    /// </para>
+    /// <para>
+    /// LOCK ORDER: per-thread creation lock -> this lock. <see cref="DisposeAsync"/> takes only this
+    /// one, and nothing takes this one and then a creation lock, so the two cannot deadlock. Never await
+    /// while holding it.
+    /// </para>
+    /// </summary>
+    private readonly object _lifecycleLock = new();
+    private volatile bool _disposed;
 
     public sealed record RunStateInfo(
         bool IsInProgress,
@@ -156,6 +175,19 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         /// </summary>
         public SandboxEstablishedBinding? EstablishedBinding { get; init; }
 
+        /// <summary>
+        /// Tears the entry down. NOT SAFE TO RUN TWICE, and not safe to run concurrently with itself: its
+        /// first act cancels a <see cref="CancellationTokenSource"/> it disposes at the end (cancelling a
+        /// disposed source throws <see cref="ObjectDisposedException"/>), and <c>IMultiTurnAgent.StopAsync</c>
+        /// is not concurrency-safe either — it nulls out the run task and the internal token source that a
+        /// second caller is still reading.
+        /// <para>
+        /// The caller must therefore have CLAIMED this entry: obtained it from <c>ClaimEntry</c>, from
+        /// <c>TryCommitEntry</c>'s <c>replaced</c> out-parameter, from the pool's own
+        /// <c>DisposeAsync</c> snapshot, or as an entry that was never committed at all. All of those are
+        /// mutually exclusive under <c>_lifecycleLock</c>, so a claimed entry has exactly one owner.
+        /// </para>
+        /// </summary>
         public async ValueTask DisposeAsync()
         {
             await Cts.CancelAsync();
@@ -239,8 +271,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             liveSessionResolver,
             lifecycleServices,
             factoryReadsContext: true
-        )
-    { }
+        ) { }
 
     /// <summary>
     /// Back-compat overload taking a four-arg (threadId, mode, providerId, dump) factory that
@@ -263,8 +294,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             liveSessionResolver: null,
             lifecycleServices,
             factoryReadsContext: false
-        )
-    { }
+        ) { }
 
     /// <summary>
     /// Back-compat overload that omits the provider-id parameter from the factory. The
@@ -285,8 +315,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             liveSessionResolver: null,
             lifecycleServices,
             factoryReadsContext: false
-        )
-    { }
+        ) { }
 
     // factoryReadsContext is false for the back-compat overloads, whose factories take loose
     // positional arguments and so never see the AgentCreationContext — including the bundle on it.
@@ -350,7 +379,11 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     /// If the agent doesn't exist, it's created and its RunAsync() is started.
     /// The provider id is resolved from persisted metadata (if any) or the registry default.
     /// </summary>
-    public IMultiTurnAgent GetOrCreateAgent(string threadId, AgentProfile mode, string? requestResponseDumpFileName = null)
+    public IMultiTurnAgent GetOrCreateAgent(
+        string threadId,
+        AgentProfile mode,
+        string? requestResponseDumpFileName = null
+    )
     {
         return GetOrCreateAgent(threadId, mode, requestedProviderId: null, requestResponseDumpFileName);
     }
@@ -432,13 +465,14 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         // ConcurrentDictionary.GetOrAdd does not guarantee the factory runs at most once,
         // which would leak disposable resources (MCP clients) from the losing invocation.
         var lockObj = _creationLocks.GetOrAdd(threadId, _ => new object());
-        AgentEntry entry;
+        AgentEntry? entry = null;
+        AgentEntry? uncommitted = null;
         var created = false;
         lock (lockObj)
         {
             if (!_agents.TryGetValue(threadId, out var existing))
             {
-                entry = CreateAgentEntry(
+                var candidate = CreateAgentEntry(
                     threadId,
                     mode,
                     resolvedProviderId,
@@ -446,9 +480,20 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
                     resolvedWorkspaceId,
                     callerCredential
                 );
-                _agents[threadId] = entry;
-                PublishBindingIfStaged(threadId, entry);
-                created = true;
+
+                // The commit re-checks disposal under the lifecycle lock. The disposed check at the top
+                // of this method is only a fast path: the factory above can run for as long as a provider
+                // handshake takes, and the pool can be disposed inside that window.
+                if (TryCommitEntry(threadId, candidate, out _))
+                {
+                    entry = candidate;
+                    PublishBindingIfStaged(threadId, candidate);
+                    created = true;
+                }
+                else
+                {
+                    uncommitted = candidate;
+                }
             }
             else
             {
@@ -470,6 +515,18 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             }
         }
 
+        if (uncommitted != null)
+        {
+            // Outside the per-thread lock: the abandonment must not hold it, and the caller gets the
+            // same refusal it would have got had it arrived a moment later.
+            AbandonUncommittedEntry(threadId, uncommitted);
+            throw DisposedException();
+        }
+
+        // Non-null on every path that reaches here: the lock body either resolved an existing entry,
+        // committed a new one, or left `uncommitted` set and threw above.
+        var resolvedEntry = entry!;
+
         if (created)
         {
             // Persist the provider, workspace, and mode on first creation in ONE atomic metadata
@@ -483,18 +540,22 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
 
         if (
             !string.IsNullOrWhiteSpace(requestResponseDumpFileName)
-            && !string.Equals(entry.RequestResponseDumpFileName, requestResponseDumpFileName, StringComparison.Ordinal)
+            && !string.Equals(
+                resolvedEntry.RequestResponseDumpFileName,
+                requestResponseDumpFileName,
+                StringComparison.Ordinal
+            )
         )
         {
             _logger.LogWarning(
                 "Request/response recording was requested for thread {ThreadId}, but an existing agent is being reused. "
                     + "Recording dump file is fixed at agent creation time. Existing dump base: {ExistingDumpBase}",
                 threadId,
-                entry.RequestResponseDumpFileName ?? "(none)"
+                resolvedEntry.RequestResponseDumpFileName ?? "(none)"
             );
         }
 
-        return entry.Agent;
+        return resolvedEntry.Agent;
     }
 
     /// <summary>
@@ -636,43 +697,45 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
 
         try
         {
-            await _conversationStore.UpdateMetadataAsync(
-                threadId,
-                existing =>
-                {
-                    var properties = existing?.Properties ?? ImmutableDictionary<string, object>.Empty;
-
-                    if (!properties.ContainsKey(ProviderPropertyKey))
+            await _conversationStore
+                .UpdateMetadataAsync(
+                    threadId,
+                    existing =>
                     {
-                        properties = properties.SetItem(ProviderPropertyKey, providerId);
-                    }
+                        var properties = existing?.Properties ?? ImmutableDictionary<string, object>.Empty;
 
-                    if (!properties.ContainsKey(WorkspacePropertyKey))
-                    {
-                        properties = properties.SetItem(WorkspacePropertyKey, workspaceId);
-                    }
-
-                    // Seed the mode only when absent — a plain reconnect that recreates the agent must
-                    // not overwrite a mode the user deliberately switched to.
-                    if (!string.IsNullOrWhiteSpace(modeId) && !properties.ContainsKey(ModePropertyKey))
-                    {
-                        properties = properties.SetItem(ModePropertyKey, modeId);
-                    }
-
-                    return (
-                        existing
-                        ?? new ThreadMetadata
+                        if (!properties.ContainsKey(ProviderPropertyKey))
                         {
-                            ThreadId = threadId,
-                            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                            properties = properties.SetItem(ProviderPropertyKey, providerId);
                         }
-                    ) with
-                    {
-                        Properties = properties,
-                        LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    };
-                }
-            ).ConfigureAwait(false);
+
+                        if (!properties.ContainsKey(WorkspacePropertyKey))
+                        {
+                            properties = properties.SetItem(WorkspacePropertyKey, workspaceId);
+                        }
+
+                        // Seed the mode only when absent — a plain reconnect that recreates the agent must
+                        // not overwrite a mode the user deliberately switched to.
+                        if (!string.IsNullOrWhiteSpace(modeId) && !properties.ContainsKey(ModePropertyKey))
+                        {
+                            properties = properties.SetItem(ModePropertyKey, modeId);
+                        }
+
+                        return (
+                            existing
+                            ?? new ThreadMetadata
+                            {
+                                ThreadId = threadId,
+                                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                            }
+                        ) with
+                        {
+                            Properties = properties,
+                            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        };
+                    }
+                )
+                .ConfigureAwait(false);
 
             _logger.LogInformation(
                 "Persisted bindings for thread {ThreadId} (provider={ProviderId}, workspace={WorkspaceId}, mode={ModeId})",
@@ -722,12 +785,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     /// the value is blank; persistence failures are logged and swallowed — the in-memory swap already
     /// succeeded, so a failed persist only forfeits the restore-after-refresh, not the live switch.
     /// </summary>
-    private async Task PersistThreadPropertyAsync(
-        string threadId,
-        string propertyKey,
-        string? value,
-        string label
-    )
+    private async Task PersistThreadPropertyAsync(string threadId, string propertyKey, string? value, string label)
     {
         if (_conversationStore == null || string.IsNullOrWhiteSpace(value))
         {
@@ -736,44 +794,37 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
 
         try
         {
-            await _conversationStore.UpdateMetadataAsync(
-                threadId,
-                existing =>
-                {
-                    var properties = (existing?.Properties ?? ImmutableDictionary<string, object>.Empty)
-                        .SetItem(propertyKey, value);
-
-                    return (
-                        existing
-                        ?? new ThreadMetadata
-                        {
-                            ThreadId = threadId,
-                            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                        }
-                    ) with
+            await _conversationStore
+                .UpdateMetadataAsync(
+                    threadId,
+                    existing =>
                     {
-                        Properties = properties,
-                        LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    };
-                }
-            ).ConfigureAwait(false);
+                        var properties = (existing?.Properties ?? ImmutableDictionary<string, object>.Empty).SetItem(
+                            propertyKey,
+                            value
+                        );
 
-            _logger.LogInformation(
-                "Persisted {Label} {Value} for thread {ThreadId}",
-                label,
-                value,
-                threadId
-            );
+                        return (
+                            existing
+                            ?? new ThreadMetadata
+                            {
+                                ThreadId = threadId,
+                                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                            }
+                        ) with
+                        {
+                            Properties = properties,
+                            LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        };
+                    }
+                )
+                .ConfigureAwait(false);
+
+            _logger.LogInformation("Persisted {Label} {Value} for thread {ThreadId}", label, value, threadId);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(
-                ex,
-                "Failed to persist {Label} {Value} for thread {ThreadId}",
-                label,
-                value,
-                threadId
-            );
+            _logger.LogWarning(ex, "Failed to persist {Label} {Value} for thread {ThreadId}", label, value, threadId);
         }
     }
 
@@ -912,7 +963,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
 
         var deferred = await loop.GetDeferredToolCallsAsync(ct);
         return deferred.Any(d =>
-            string.Equals(d.FunctionName, WaitToolProvider.WaitToolName, StringComparison.Ordinal));
+            string.Equals(d.FunctionName, WaitToolProvider.WaitToolName, StringComparison.Ordinal)
+        );
     }
 
     /// <summary>
@@ -942,8 +994,11 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         }
 
         var deferred = await loop.GetDeferredToolCallsAsync(ct);
-        if (deferred.Any(d =>
-            string.Equals(d.FunctionName, AskUserQuestionToolProvider.ToolName, StringComparison.Ordinal)))
+        if (
+            deferred.Any(d =>
+                string.Equals(d.FunctionName, AskUserQuestionToolProvider.ToolName, StringComparison.Ordinal)
+            )
+        )
         {
             return true;
         }
@@ -989,10 +1044,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             EnsureCallerMatches(threadId, observed, callerCredential);
         }
 
-        if (
-            _liveSessionResolver is null
-            || observed.EstablishedBinding is not { SessionId.Length: > 0 } binding
-        )
+        if (_liveSessionResolver is null || observed.EstablishedBinding is not { SessionId.Length: > 0 } binding)
         {
             return new AgentRefreshResult(observed.Agent, AgentRefreshStatus.Current);
         }
@@ -1004,6 +1056,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         }
 
         AgentEntry? replacedEntry = null;
+        AgentEntry? abandonedReplacement = null;
+        AgentEntry? uncommitted = null;
         AgentEntry current;
         lock (lockObj)
         {
@@ -1029,6 +1083,29 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
                 return new AgentRefreshResult(current.Agent, AgentRefreshStatus.RefreshDeferred);
             }
 
+            // The second half of "busy", and the one CurrentRunId cannot report. An input is
+            // acknowledged to its caller — a receipt returned, an accepted-input row written — the
+            // moment the agent takes it, but no run names it until the run loop wakes, drains it and
+            // mints a run id. Every signal above reads idle for that whole span, so replacing here
+            // disposed the agent, completed its input channel, and dropped work this host had
+            // already promised to do, with nothing failing anywhere: the caller keeps its 202 and
+            // its inputId, and the turn simply never happens.
+            //
+            // Deferring instead is safe in both directions. It cannot wedge, because the signal is
+            // gated on the run loop still being alive to consume the input — a dead loop refreshes
+            // as before — and because it clears as soon as the run loop assigns the input a run.
+            // Placed AHEAD of the replace:false early return deliberately: that probe's caller
+            // closes the client's socket on RefreshRequired, which is the wrong move on top of an
+            // input the loop is about to run.
+            if (HasUnconsumedAcknowledgedInput(current))
+            {
+                _logger.LogInformation(
+                    "Deferring sandbox session refresh for thread {ThreadId}: input has been acknowledged but not yet assigned to a run",
+                    threadId
+                );
+                return new AgentRefreshResult(current.Agent, AgentRefreshStatus.RefreshDeferred);
+            }
+
             if (!replace)
             {
                 return new AgentRefreshResult(current.Agent, AgentRefreshStatus.RefreshRequired);
@@ -1042,10 +1119,70 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
                 current.WorkspaceId,
                 current.CallerCredential
             );
-            _agents[threadId] = replacement;
-            PublishBindingIfStaged(threadId, replacement);
-            replacedEntry = current;
-            current = replacement;
+
+            // Repeat the check on the FAR side of construction. Building the replacement is the slow
+            // part of this method — a workspace agent starts a sandbox session over the network — and
+            // callers hold their agent reference outside this lock, so a send can be acknowledged by
+            // the entry we are one line away from discarding. Checking only before construction would
+            // leave that whole span open, which is the same defect at a shorter timescale. Throw the
+            // fresh entry away instead of the input: nothing has been published for it yet
+            // (PublishBindingIfStaged runs only on the commit below), so discarding it is clean, and
+            // the refresh simply happens on the next attempt.
+            //
+            // ORDER IS LOAD-BEARING: the acknowledged-input check runs BEFORE the commit, never after.
+            // TryCommitEntry publishes on success, so testing it first would publish the replacement
+            // and drop the acknowledged input in exactly the case this branch exists to prevent. Taken
+            // in this order both invariants hold: input pending means nothing is committed AND the
+            // replacement is still disposed, so neither the input nor the entry is lost.
+            if (HasUnconsumedAcknowledgedInput(current))
+            {
+                abandonedReplacement = replacement;
+            }
+            // Same disposal-atomic commit as the create and swap paths: a sandbox refresh that outlives
+            // the pool must not publish a replacement into a map disposal has already drained.
+            else if (!TryCommitEntry(threadId, replacement, out _))
+            {
+                uncommitted = replacement;
+            }
+            else
+            {
+                PublishBindingIfStaged(threadId, replacement);
+                replacedEntry = current;
+                current = replacement;
+            }
+        }
+
+        if (abandonedReplacement != null)
+        {
+            _logger.LogInformation(
+                "Discarding the freshly built replacement agent for thread {ThreadId}: input was acknowledged while it was being constructed, so the original agent keeps the conversation",
+                threadId
+            );
+
+            try
+            {
+                await abandonedReplacement.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Failed to dispose the discarded replacement agent for thread {ThreadId}",
+                    threadId
+                );
+            }
+
+            return new AgentRefreshResult(current.Agent, AgentRefreshStatus.RefreshDeferred);
+        }
+
+        // A DIFFERENT abandonment from the one above, kept separate because the reason is the whole
+        // diagnostic: that one keeps a live conversation and answers RefreshDeferred, this one means the
+        // pool is going away and owes the caller an ObjectDisposedException rather than a retryable
+        // "not now".
+        if (uncommitted != null)
+        {
+            await AbandonUncommittedEntryAsync(threadId, uncommitted);
+            throw DisposedException();
         }
 
         _logger.LogInformation(
@@ -1055,27 +1192,29 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             liveSession.SessionId
         );
 
-        try
+        // Non-null on every path that reaches here: the commit branch above is the only one that
+        // falls through, and the discard branch returns. Checked rather than suppressed so a later
+        // edit that adds a third way out of the lock cannot turn a missed assignment into a NRE.
+        if (replacedEntry != null)
         {
-            await replacedEntry.DisposeAsync().ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(
-                ex,
-                "Failed to dispose the previous agent for thread {ThreadId} after sandbox session refresh",
-                threadId
-            );
+            try
+            {
+                await replacedEntry.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Failed to dispose the previous agent for thread {ThreadId} after sandbox session refresh",
+                    threadId
+                );
+            }
         }
 
         return new AgentRefreshResult(current.Agent, AgentRefreshStatus.Replaced);
     }
 
-    private static void EnsureCallerMatches(
-        string threadId,
-        AgentEntry entry,
-        SandboxCredential? callerCredential
-    )
+    private static void EnsureCallerMatches(string threadId, AgentEntry entry, SandboxCredential? callerCredential)
     {
         var existingAppId = entry.CallerCredential?.AppId;
         var requestedAppId = callerCredential?.AppId;
@@ -1090,6 +1229,22 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         var hasRunId = !string.IsNullOrWhiteSpace(entry.Agent.CurrentRunId);
         return hasRunId && entry.Agent.IsRunning && !entry.RunTask.IsCompleted;
     }
+
+    /// <summary>
+    /// Whether <paramref name="entry"/> holds input it has already acknowledged to a caller that no
+    /// run owns yet — the window in which <see cref="IsEntryInProgress"/> reads idle but tearing the
+    /// entry down would silently destroy accepted work.
+    /// </summary>
+    /// <remarks>
+    /// Gated on the same liveness half as <see cref="IsEntryInProgress"/>, and for the same reason
+    /// read backwards: a loop that has already exited can never consume the input, so holding the
+    /// refresh open for it would trade a lost input for a permanently stale sandbox and never
+    /// recover either. Deliberately NOT folded into <see cref="IsEntryInProgress"/>: that predicate
+    /// also answers <see cref="GetRunStateInfo"/> / <see cref="IsRunInProgress"/> for clients, where
+    /// "a run is in progress" must keep meaning a run actually exists.
+    /// </remarks>
+    private static bool HasUnconsumedAcknowledgedInput(AgentEntry entry) =>
+        entry.Agent.HasUnassignedInput && entry.Agent.IsRunning && !entry.RunTask.IsCompleted;
 
     /// <summary>
     /// Returns true when an existing agent has an active run in progress.
@@ -1135,37 +1290,45 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
 
     /// <summary>
     /// Removes and disposes an agent for the specified threadId.
+    /// <para>
+    /// The entry is CLAIMED (see <see cref="ClaimEntry"/>) rather than merely removed, so this method and
+    /// <see cref="DisposeAsync"/> can never both end up owning the same entry. A no-op when the thread has
+    /// no agent — including when the pool has already been disposed, which drained every entry.
+    /// </para>
     /// </summary>
     public async ValueTask RemoveAgentAsync(string threadId)
     {
-        if (_agents.TryRemove(threadId, out var entry))
+        var entry = ClaimEntry(threadId);
+        if (entry is null)
         {
-            _logger.LogInformation("Removing agent for thread {ThreadId}", threadId);
-            try
+            return;
+        }
+
+        _logger.LogInformation("Removing agent for thread {ThreadId}", threadId);
+        try
+        {
+            await entry.DisposeAsync();
+        }
+        finally
+        {
+            // Clear the conversation's sandbox binding even if agent disposal threw: the pooled agent
+            // is already removed, so the browse binding must not outlive it. Compare-and-clear under the
+            // SAME per-thread lock the publish uses (CreateAgentEntry commit): if a concurrent
+            // GetOrCreate/swap re-created the agent for this thread while we were disposing, _agents holds
+            // the new entry and its freshly-published binding — leave it intact rather than clobbering it.
+            // Clearing never destroys the shared (workspaceId, appId) gateway session another conversation
+            // may still use. ClearEstablishedBinding is a lock-free dictionary remove, safe under the lock.
+            var lockObj = _creationLocks.GetOrAdd(threadId, static _ => new object());
+            lock (lockObj)
             {
-                await entry.DisposeAsync();
-            }
-            finally
-            {
-                // Clear the conversation's sandbox binding even if agent disposal threw: the pooled agent
-                // is already removed, so the browse binding must not outlive it. Compare-and-clear under the
-                // SAME per-thread lock the publish uses (CreateAgentEntry commit): if a concurrent
-                // GetOrCreate/swap re-created the agent for this thread while we were disposing, _agents holds
-                // the new entry and its freshly-published binding — leave it intact rather than clobbering it.
-                // Clearing never destroys the shared (workspaceId, appId) gateway session another conversation
-                // may still use. ClearEstablishedBinding is a lock-free dictionary remove, safe under the lock.
-                var lockObj = _creationLocks.GetOrAdd(threadId, static _ => new object());
-                lock (lockObj)
+                if (!_agents.ContainsKey(threadId))
                 {
-                    if (!_agents.ContainsKey(threadId))
-                    {
-                        _bindingSink?.ClearEstablishedBinding(threadId);
-                    }
+                    _bindingSink?.ClearEstablishedBinding(threadId);
                 }
             }
-
-            RaiseThreadRemoved(threadId);
         }
+
+        RaiseThreadRemoved(threadId);
     }
 
     /// <summary>
@@ -1343,8 +1506,9 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     {
         // Acquire the per-key lock to prevent races with concurrent GetOrCreateAgent calls.
         var lockObj = _creationLocks.GetOrAdd(threadId, _ => new object());
-        AgentEntry? oldEntry;
-        AgentEntry entry;
+        AgentEntry? oldEntry = null;
+        AgentEntry? entry = null;
+        AgentEntry? uncommitted = null;
         lock (lockObj)
         {
             // Preserve the credential the conversation was frozen to at creation — a mode/provider
@@ -1374,7 +1538,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
 
             // Construct BEFORE evicting — a throw here leaves the current agent registered (the thread
             // is untouched) rather than stranding the conversation with no pooled agent.
-            entry = CreateAgentEntry(
+            var candidate = CreateAgentEntry(
                 threadId,
                 mode,
                 providerId,
@@ -1382,9 +1546,26 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
                 workspaceId,
                 frozenCredential
             );
-            _ = _agents.TryRemove(threadId, out oldEntry);
-            _agents[threadId] = entry;
-            PublishBindingIfStaged(threadId, entry);
+
+            // The swap is a commit, so it takes the same disposal-atomic path as a fresh create: the
+            // factory above can outlive the pool, and a replacement published into a cleared map would
+            // leak exactly as a late creation does. On refusal the CURRENT entry stays registered, so
+            // pool disposal still tears it down.
+            if (TryCommitEntry(threadId, candidate, out oldEntry))
+            {
+                entry = candidate;
+                PublishBindingIfStaged(threadId, candidate);
+            }
+            else
+            {
+                uncommitted = candidate;
+            }
+        }
+
+        if (uncommitted != null)
+        {
+            await AbandonUncommittedEntryAsync(threadId, uncommitted);
+            throw DisposedException();
         }
 
         // Dispose old entry outside the lock to avoid blocking concurrent operations. The new agent is
@@ -1409,7 +1590,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             }
         }
 
-        return entry;
+        return entry!;
     }
 
     private AgentEntry CreateAgentEntry(
@@ -1443,7 +1624,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             )
         );
         var agent = result.Agent;
-        var cts = CancellationTokenSource.CreateLinkedTokenSource(_poolCts.Token);
+        var cts = CreateEntryCts();
 
         // Start the agent's background run loop
         var runTask = Task.Run(
@@ -1480,22 +1661,178 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         };
     }
 
+    /// <summary>
+    /// Takes the thread's entry OUT of <see cref="_agents"/> under the lifecycle lock and hands the caller
+    /// sole ownership of tearing it down, or returns <c>null</c> if there was nothing to claim.
+    /// <para>
+    /// This is the removal half of the claim protocol, and it is what makes "exactly one path disposes an
+    /// entry" true rather than merely likely. Every act that takes an entry out of <see cref="_agents"/> —
+    /// this, the overwrite inside <see cref="TryCommitEntry"/>, and the snapshot-and-clear inside
+    /// <see cref="DisposeAsync"/> — now runs under <see cref="_lifecycleLock"/>, so they are totally
+    /// ordered. A bare <c>ConcurrentDictionary.TryRemove</c> here was NOT ordered against
+    /// <c>DisposeAsync</c>'s <c>[.. _agents.Values]</c> / <c>Clear()</c> pair: a remove landing between
+    /// those two statements handed the same entry to both paths.
+    /// </para>
+    /// <para>
+    /// Deliberately does NOT take the per-thread creation lock. Doing so would order removal against a
+    /// concurrent <c>GetOrCreateAgent</c>'s lookup, but that lock is held across the agent factory
+    /// — a provider handshake or sandbox session — so a remover would block a thread for the whole of
+    /// somebody else's creation.
+    /// </para>
+    /// <para>
+    /// KNOWN REMAINDER, unchanged by this protocol and pre-existing: a caller that has already been
+    /// HANDED an <c>IMultiTurnAgent</c> by <c>GetOrCreateAgent</c> holds no claim on it, so a
+    /// <c>RemoveAgentAsync</c> arriving immediately afterwards can dispose the agent under that caller's
+    /// feet. What the protocol guarantees is that the entry is torn down exactly ONCE, not that nobody
+    /// else is still using it. Closing that would need reference counting or holding the creation lock
+    /// across the caller's use — both far wider than this change.
+    /// </para>
+    /// </summary>
+    private AgentEntry? ClaimEntry(string threadId)
+    {
+        lock (_lifecycleLock)
+        {
+            return _agents.TryRemove(threadId, out var entry) ? entry : null;
+        }
+    }
+
+    /// <summary>
+    /// The cancellation source for one entry, obtained atomically against pool disposal.
+    /// <para>
+    /// Deliberately does NOT refuse when the pool is disposing. The factory has already run by this
+    /// point, so refusing here would strand the agent and owned resources it built with nobody to
+    /// dispose them; the refusal belongs at the commit, which hands the caller back an entry it can tear
+    /// down. When the pool is disposing we return a standalone, already-cancelled source — exactly the
+    /// state a source linked to the (already cancelled) pool token would be in.
+    /// </para>
+    /// </summary>
+    private CancellationTokenSource CreateEntryCts()
+    {
+        lock (_lifecycleLock)
+        {
+            if (_disposed)
+            {
+                var cancelled = new CancellationTokenSource();
+                cancelled.Cancel();
+                return cancelled;
+            }
+
+            // Reading _poolCts.Token under the lock is what keeps it from racing the _poolCts.Dispose()
+            // at the end of DisposeAsync, which would otherwise surface as an ObjectDisposedException
+            // naming CancellationTokenSource from deep inside a creation.
+            return CancellationTokenSource.CreateLinkedTokenSource(_poolCts.Token);
+        }
+    }
+
+    /// <summary>
+    /// Publishes <paramref name="entry"/> as the thread's agent, atomically against pool disposal, and
+    /// hands back the entry it replaced (<c>null</c> on a first creation). Returns <c>false</c> when the
+    /// pool has begun disposing, in which case NOTHING was published and the caller owns disposing
+    /// <paramref name="entry"/> — see <see cref="AbandonUncommittedEntry"/>.
+    /// <para>
+    /// MUST be called under the per-thread creation lock (see <see cref="_lifecycleLock"/> for the
+    /// ordering rule). The sandbox binding is deliberately NOT published here: that call reaches an
+    /// injected sink, and a foreign call has no business running under the pool's global lifecycle lock.
+    /// Callers publish it immediately after a <c>true</c> return, still under the per-thread lock.
+    /// </para>
+    /// </summary>
+    private bool TryCommitEntry(string threadId, AgentEntry entry, out AgentEntry? replaced)
+    {
+        lock (_lifecycleLock)
+        {
+            if (_disposed)
+            {
+                replaced = null;
+                return false;
+            }
+
+            // Peek-then-overwrite, never remove-then-add: every commit runs under the per-thread lock so
+            // no other writer can interleave, and an overwrite leaves no instant where a lock-free reader
+            // (GetRunStateInfo, HasAgent) sees the thread as having no agent at all.
+            _ = _agents.TryGetValue(threadId, out replaced);
+            _agents[threadId] = entry;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Tears down an entry whose commit lost the race to pool disposal. It was never published, so the
+    /// pool's own disposal cannot see it and this is the only owner it will ever have. Fire-and-forget
+    /// because the synchronous creation path cannot await, and blocking it would hold the caller (and,
+    /// on the swap path, a per-thread lock) on another agent's shutdown.
+    /// </summary>
+    private void AbandonUncommittedEntry(string threadId, AgentEntry entry)
+    {
+        _logger.LogWarning(
+            "Pool disposal raced agent creation for thread {ThreadId}; disposing the uncommitted agent rather than leaking it",
+            threadId
+        );
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await entry.DisposeAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to dispose the uncommitted agent for thread {ThreadId}", threadId);
+            }
+        });
+    }
+
+    /// <summary>
+    /// The awaited form of <see cref="AbandonUncommittedEntry"/>, for the async commit paths (mode /
+    /// provider switch, sandbox refresh) that can wait for the orphan to be torn down before they
+    /// surface the refusal. A teardown failure is logged, never rethrown: the caller is already going to
+    /// throw <see cref="ObjectDisposedException"/>, and that is the more useful diagnosis.
+    /// </summary>
+    private async Task AbandonUncommittedEntryAsync(string threadId, AgentEntry entry)
+    {
+        _logger.LogWarning(
+            "Pool disposal raced agent creation for thread {ThreadId}; disposing the uncommitted agent rather than leaking it",
+            threadId
+        );
+
+        try
+        {
+            await entry.DisposeAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to dispose the uncommitted agent for thread {ThreadId}", threadId);
+        }
+    }
+
+    private ObjectDisposedException DisposedException() => new(GetType().FullName);
+
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
-        if (_disposed)
+        AgentEntry[] entries;
+        lock (_lifecycleLock)
         {
-            return;
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+
+            // Snapshot AND clear under the same lock every commit takes. From here on a commit is
+            // refused, so this array is provably the complete set of entries the pool ever published —
+            // no later arrival can slip in behind the snapshot and be cleared away undisposed.
+            entries = [.. _agents.Values];
+            _agents.Clear();
         }
 
-        _disposed = true;
-        _logger.LogInformation("Disposing agent pool with {Count} agents", _agents.Count);
+        _logger.LogInformation("Disposing agent pool with {Count} agents", entries.Length);
 
         // Signal all agents to stop
         await _poolCts.CancelAsync();
 
         // Dispose all agent entries
-        var disposeTasks = _agents.Values.Select(async entry =>
+        var disposeTasks = entries.Select(async entry =>
         {
             try
             {
@@ -1508,8 +1845,12 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         });
 
         await Task.WhenAll(disposeTasks);
-        _agents.Clear();
-        _poolCts.Dispose();
+
+        // Under the lock so it cannot race a creation reading _poolCts.Token (see CreateEntryCts).
+        lock (_lifecycleLock)
+        {
+            _poolCts.Dispose();
+        }
 
         _logger.LogInformation("Agent pool disposed");
     }

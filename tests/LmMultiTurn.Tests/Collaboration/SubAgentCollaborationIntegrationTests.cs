@@ -33,11 +33,14 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     public Task InitializeAsync()
     {
         _ = _parentMock
-            .Setup(p => p.SendAsync(
-                It.IsAny<List<IMessage>>(),
-                It.IsAny<string?>(),
-                It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(p =>
+                p.SendAsync(
+                    It.IsAny<List<IMessage>>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .ReturnsAsync(new SendReceipt("receipt-1", null, DateTimeOffset.UtcNow));
 
         SetupSubAgentReply("done");
@@ -61,16 +64,17 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
 
         var functions = provider.GetFunctions().ToList();
 
-        functions.Select(f => f.Contract.Name)
-            .Should().BeEquivalentTo(["Agent", "SendMessage", "CheckAgent"]);
+        functions.Select(f => f.Contract.Name).Should().BeEquivalentTo(["Agent", "SendMessage", "CheckAgent"]);
 
         var agentParams = functions.First(f => f.Contract.Name == "Agent").Contract.Parameters!;
         agentParams.Select(p => p.Name).Should().NotContain("role");
         agentParams.First(p => p.Name == "description").IsRequired.Should().BeFalse();
 
-        functions.First(f => f.Contract.Name == "SendMessage").Contract.Parameters!
-            .Select(p => p.Name)
-            .Should().BeEquivalentTo(["target", "prompt", "run_in_background"]);
+        functions
+            .First(f => f.Contract.Name == "SendMessage")
+            .Contract.Parameters!.Select(p => p.Name)
+            .Should()
+            .BeEquivalentTo(["target", "prompt", "run_in_background"]);
     }
 
     [Fact]
@@ -80,8 +84,7 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
 
         var names = provider.GetFunctions().Select(f => f.Contract.Name).ToList();
 
-        names.Should().BeEquivalentTo(
-            ["Agent", "CheckAgents", "WaitForAgents", "GetAgents", "SendMessage"]);
+        names.Should().BeEquivalentTo(["Agent", "CheckAgents", "WaitForAgents", "GetAgents", "SendMessage"]);
         names.Should().NotContain("CheckAgent");
     }
 
@@ -93,11 +96,14 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         // exist, and hiding CheckAgents or WaitForAgents would leave it able to ask a question it
         // could never notice the answer to.
         var (_, provider) = CreateManager(
-            CreateRegisteredRoot(new AgentCollaborationOptions { MaxDelegationDepth = 0 }));
+            CreateRegisteredRoot(new AgentCollaborationOptions { MaxDelegationDepth = 0 })
+        );
 
-        provider.GetFunctions().Select(f => f.Contract.Name)
-            .Should().BeEquivalentTo(
-                ["CheckAgents", "WaitForAgents", "GetAgents", "SendMessage"]);
+        provider
+            .GetFunctions()
+            .Select(f => f.Contract.Name)
+            .Should()
+            .BeEquivalentTo(["CheckAgents", "WaitForAgents", "GetAgents", "SendMessage"]);
     }
 
     [Fact]
@@ -105,8 +111,7 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     {
         var (_, provider) = CreateManager(CreateRegisteredRoot());
 
-        var parameters = provider.GetFunctions()
-            .First(f => f.Contract.Name == "Agent").Contract.Parameters!;
+        var parameters = provider.GetFunctions().First(f => f.Contract.Name == "Agent").Contract.Parameters!;
 
         parameters.Select(p => p.Name).Should().Contain("role");
         parameters.First(p => p.Name == "description").IsRequired.Should().BeTrue();
@@ -119,13 +124,11 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         // before it writes them — a warning added afterwards cannot un-share what was already put there.
         var (_, provider) = CreateManager(CreateRegisteredRoot());
 
-        var parameters = provider.GetFunctions()
-            .First(f => f.Contract.Name == "Agent").Contract.Parameters!;
+        var parameters = provider.GetFunctions().First(f => f.Contract.Name == "Agent").Contract.Parameters!;
 
         foreach (var name in new[] { "role", "description" })
         {
-            parameters.First(p => p.Name == name).Description
-                .Should().Contain("secrets").And.Contain("customer data");
+            parameters.First(p => p.Name == name).Description.Should().Contain("secrets").And.Contain("customer data");
         }
     }
 
@@ -136,12 +139,14 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         // the model's mistake at schema time, where it costs nothing.
         var (_, provider) = CreateManager(CreateRegisteredRoot());
 
-        var msgType = provider.GetFunctions()
-            .First(f => f.Contract.Name == "SendMessage").Contract.Parameters!
-            .First(p => p.Name == "msg_type");
+        var msgType = provider
+            .GetFunctions()
+            .First(f => f.Contract.Name == "SendMessage")
+            .Contract.Parameters!.First(p => p.Name == "msg_type");
 
-        msgType.ParameterType!.Enum.Should().BeEquivalentTo(
-            ["question", "delegate_task", "task_update", "steer", "response"]);
+        msgType
+            .ParameterType!.Enum.Should()
+            .BeEquivalentTo(["question", "delegate_task", "task_update", "steer", "response"]);
     }
 
     [Fact]
@@ -151,8 +156,7 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         // to rule cases out as explicitly as it rules them in.
         var (_, provider) = CreateManager(CreateRegisteredRoot());
 
-        var description = provider.GetFunctions()
-            .First(f => f.Contract.Name == "WaitForAgents").Contract.Description!;
+        var description = provider.GetFunctions().First(f => f.Contract.Name == "WaitForAgents").Contract.Description!;
 
         description.Should().Contain("WHEN TO USE IT").And.Contain("WHEN NOT TO USE IT");
     }
@@ -174,16 +178,21 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
                 Role = "code reviewer",
                 RoleMode = SubAgentRoleMode.Fixed,
                 AgentFactory = () => _subAgentMock.Object,
-            });
+            }
+        );
 
-        var payload = await InvokeAsync(provider, "Agent", new
-        {
-            subagent_type = "worker",
-            prompt = "review",
-            role = "release manager",
-            description = "Reviews the auth change.",
-            run_in_background = true,
-        });
+        var payload = await InvokeAsync(
+            provider,
+            "Agent",
+            new
+            {
+                subagent_type = "worker",
+                prompt = "review",
+                role = "release manager",
+                description = "Reviews the auth change.",
+                run_in_background = true,
+            }
+        );
 
         payload.IsError.Should().BeTrue();
         payload.ErrorCode.Should().Be(SubAgentCollaborationFailureCodes.InvalidRole);
@@ -194,12 +203,16 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     {
         var (_, provider) = CreateManager(CreateRegisteredRoot());
 
-        var payload = await InvokeAsync(provider, "Agent", new
-        {
-            subagent_type = "worker",
-            prompt = "work",
-            description = "Handles the migration.",
-        });
+        var payload = await InvokeAsync(
+            provider,
+            "Agent",
+            new
+            {
+                subagent_type = "worker",
+                prompt = "work",
+                description = "Handles the migration.",
+            }
+        );
 
         payload.IsError.Should().BeTrue();
         payload.ErrorCode.Should().Be(SubAgentCollaborationFailureCodes.InvalidRole);
@@ -210,12 +223,16 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     {
         var (_, provider) = CreateManager(CreateRegisteredRoot());
 
-        var payload = await InvokeAsync(provider, "Agent", new
-        {
-            subagent_type = "worker",
-            prompt = "work",
-            role = "migrator",
-        });
+        var payload = await InvokeAsync(
+            provider,
+            "Agent",
+            new
+            {
+                subagent_type = "worker",
+                prompt = "work",
+                role = "migrator",
+            }
+        );
 
         payload.IsError.Should().BeTrue();
         payload.ErrorCode.Should().Be(SubAgentCollaborationFailureCodes.InvalidDescription);
@@ -234,19 +251,23 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
                 Role = "code reviewer",
                 RoleMode = SubAgentRoleMode.Fixed,
                 AgentFactory = () => _subAgentMock.Object,
-            });
+            }
+        );
 
-        var payload = await InvokeAsync(provider, "Agent", new
-        {
-            subagent_type = "worker",
-            prompt = "review",
-            description = "Reviews the auth change.",
-            run_in_background = true,
-        });
+        var payload = await InvokeAsync(
+            provider,
+            "Agent",
+            new
+            {
+                subagent_type = "worker",
+                prompt = "review",
+                description = "Reviews the auth change.",
+                run_in_background = true,
+            }
+        );
 
         payload.IsError.Should().BeFalse();
-        manager.Collaboration!.Directory.Snapshot()
-            .Should().ContainSingle(e => e.Role == "code reviewer");
+        manager.Collaboration!.Directory.Snapshot().Should().ContainSingle(e => e.Role == "code reviewer");
     }
 
     [Fact]
@@ -255,18 +276,25 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var root = CreateRegisteredRoot();
         var (manager, provider) = CreateManager(root);
 
-        _ = await InvokeAsync(provider, "Agent", new
-        {
-            subagent_type = "worker",
-            prompt = "work",
-            role = "migrator",
-            description = "Owns the auth migration.",
-            name = "auth-migrator",
-            run_in_background = true,
-        });
+        _ = await InvokeAsync(
+            provider,
+            "Agent",
+            new
+            {
+                subagent_type = "worker",
+                prompt = "work",
+                role = "migrator",
+                description = "Owns the auth migration.",
+                name = "auth-migrator",
+                run_in_background = true,
+            }
+        );
 
-        var child = manager.Collaboration!.Directory.Snapshot()
-            .Should().ContainSingle(e => e.Name == "auth-migrator").Subject;
+        var child = manager
+            .Collaboration!.Directory.Snapshot()
+            .Should()
+            .ContainSingle(e => e.Name == "auth-migrator")
+            .Subject;
 
         child.Role.Should().Be("migrator");
         child.Description.Should().Be("Owns the auth migration.");
@@ -303,8 +331,9 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var result = await InvokeAsync(second, "Agent", NewSpawn("after-dispose"));
 
         result.IsError.Should().BeFalse();
-        root.Directory.FindById(root.AgentId).Should().NotBeNull(
-            because: "retiring a child must not disturb the agent that spawned it");
+        root.Directory.FindById(root.AgentId)
+            .Should()
+            .NotBeNull(because: "retiring a child must not disturb the agent that spawned it");
     }
 
     [Fact]
@@ -320,8 +349,7 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var spawn = async () => await InvokeAsync(provider, "Agent", NewSpawn("doomed"));
 
         _ = await spawn.Should().ThrowAsync<InvalidOperationException>();
-        root.Directory.Capacity.InUse.Should()
-            .Be(0, "a spawn that never produced an agent is not occupying a slot");
+        root.Directory.Capacity.InUse.Should().Be(0, "a spawn that never produced an agent is not occupying a slot");
         root.Directory.FindById(root.AgentId).Should().NotBeNull();
 
         // The permit accounting is only worth anything if the next spawn can actually use it, so the
@@ -344,7 +372,8 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var (manager, _) = CreateManager(
             root,
             template: BlockingTemplate(),
-            configure: options => options with { MaxConcurrentSubAgents = 1 });
+            configure: options => options with { MaxConcurrentSubAgents = 1 }
+        );
 
         // Occupies the only local slot forever (BlockingTemplate never completes), so the gate the
         // second spawn queues behind can never free up on its own.
@@ -354,7 +383,8 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
             name: "first",
             role: "worker role",
             description: "Holds the only local slot.",
-            runInBackground: true);
+            runInBackground: true
+        );
 
         root.Directory.Capacity.InUse.Should().Be(1);
 
@@ -369,10 +399,11 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
             name: "second",
             role: "worker role",
             description: "Never gets a local slot.",
-            ct: cts.Token);
+            ct: cts.Token
+        );
 
-        root.Directory.Capacity.InUse.Should().Be(
-            2, "the queued spawn already holds a root-wide lease even though it never got a local slot");
+        root.Directory.Capacity.InUse.Should()
+            .Be(2, "the queued spawn already holds a root-wide lease even though it never got a local slot");
         root.Directory.Resolve("second").Entry!.Status.Should().Be(AgentCollaborationStatuses.Queued);
 
         cts.Cancel();
@@ -382,16 +413,173 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         // The pump retires the admission before it unblocks the caller's await (see
         // SubAgentManager.CancelQueuedSpawn), so both halves are already reclaimed by the time the
         // cancellation has been observed above — nothing here is racing the pump.
-        root.Directory.Capacity.InUse.Should().Be(
-            1, "the cancelled spawn's root-wide lease must come back, not stay charged forever");
+        root.Directory.Capacity.InUse.Should()
+            .Be(1, "the cancelled spawn's root-wide lease must come back, not stay charged forever");
 
         var entry = root.Directory.Resolve("second").Entry;
-        entry.Should().NotBeNull(
-            because: "the row is retained for correlation, not deleted");
-        entry!.Status.Should().Be(
-            AgentCollaborationStatuses.Stopped,
-            because: "left as \"queued\" it would look like pending work that will eventually run");
+        entry.Should().NotBeNull(because: "the row is retained for correlation, not deleted");
+        entry!
+            .Status.Should()
+            .Be(
+                AgentCollaborationStatuses.Stopped,
+                because: "left as \"queued\" it would look like pending work that will eventually run"
+            );
         entry.IsLive.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Spawn_CancelledAfterThePumpClaimedItForStart_LeavesTheAdmissionWithTheStartingAgent()
+    {
+        // The MIRROR IMAGE of the test above, and the reason the two must be read together. That test
+        // proves a cancellation BEFORE the pump claims the spawn hands back the root-wide lease and
+        // retires the row. This one proves the same cancellation AFTER the pump has claimed it must do
+        // NEITHER — because at that point the lease and the row belong to an agent that is genuinely
+        // being started, and the start path (not the queue) owns their disposal.
+        //
+        // Retiring there is not a leak, it is the opposite and it is worse: it releases a lease that is
+        // still in use (so the collaboration over-subscribes MaxTotalAgents by one and admits an agent
+        // it has no capacity for) and marks a live row "Stopped" (so the directory reports an agent that
+        // is running as dead). Cancelling StateReady there also strands the agent the pump is about to
+        // hand over: the pump's TrySetResult loses to the TrySetCanceled, so a fully-started sub-agent
+        // is left running with nobody holding its state.
+        //
+        // The window is real because the pump's pre-start cancellation check and the caller's
+        // ct.Register callback ran on two threads with nothing serialising them. It is made
+        // DETERMINISTIC here by parking the pump inside StartWithHeldPermitAsync at
+        // TestBeforeAgentRegistrationAsync — a point only reachable once the pump has already passed
+        // that check, taken the permit and claimed the entry.
+        var root = CreateRegisteredRoot(new AgentCollaborationOptions { MaxTotalAgents = 5 });
+        var slotHolder = new ReleasableTemplate();
+        var (manager, _) = CreateManager(
+            root,
+            template: slotHolder.Template,
+            configure: options => options with { MaxConcurrentSubAgents = 1 }
+        );
+
+        // Occupies the only local slot until this test hands it over, so the second spawn must queue.
+        _ = await manager
+            .SpawnAsync(
+                "worker",
+                "work",
+                name: "first",
+                role: "worker role",
+                description: "Holds the only local slot until released.",
+                runInBackground: true
+            )
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        // Armed only AFTER "first" is started, so the hook can only ever fire for "second".
+        var pumpAtRegistration = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releasePump = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        manager.TestBeforeAgentRegistrationAsync = async () =>
+        {
+            _ = pumpAtRegistration.TrySetResult();
+            await releasePump.Task;
+        };
+
+        using var cts = new CancellationTokenSource();
+        var queuedSpawn = manager.SpawnAsync(
+            "worker",
+            "work",
+            name: "second",
+            role: "worker role",
+            description: "Queued, then claimed by the pump.",
+            ct: cts.Token
+        );
+
+        // SpawnAsync runs synchronously from entry through admission AND the enqueue (its first await is
+        // the StateReady wait), so this observes the queued state without polling. It is a GUARD, not
+        // decoration: if "second" had taken the inline fast path instead, the hook below would fire for
+        // an inline spawn and the test would exercise a path with no pump and no race in it at all.
+        manager
+            .ListAgents()
+            .Should()
+            .ContainSingle(
+                s => s.Name == "second" && s.Status == SubAgentStatus.Queued,
+                "the race under test only exists for a spawn that went through the defer queue"
+            );
+        root.Directory.Capacity.InUse.Should().Be(2);
+        root.Directory.Resolve("second").Entry!.Status.Should().Be(AgentCollaborationStatuses.Queued);
+
+        // Hand the only local permit to the pump; it dequeues "second", claims it and parks in the hook.
+        // From here the pump is BLOCKED inside the hook, and this manager's DisposeAsync awaits the pump
+        // task — so an assertion that escaped without releasing it would hang the fixture teardown
+        // instead of reporting a failure. The finally guarantees the release on every exit.
+        slotHolder.Release();
+        try
+        {
+            await pumpAtRegistration.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            manager
+                .ListAgents()
+                .Should()
+                .NotContain(
+                    s => s.Name == "second" && s.Status == SubAgentStatus.Queued,
+                    "reaching the pre-registration hook means the pump has already claimed this spawn for start"
+                );
+
+            // THE RACE. The callback registered by the foreground caller runs synchronously on this
+            // thread inside Cancel(), so by the time Cancel() returns the damage (if any) is already
+            // done — these assertions are not racing the pump.
+            cts.Cancel();
+
+            root.Directory.Capacity.InUse.Should()
+                .Be(
+                    2,
+                    "the claimed spawn's lease belongs to the agent the pump is starting; releasing it here "
+                        + "would let the collaboration admit one more agent than MaxTotalAgents allows"
+                );
+            root.Directory.Resolve("second")
+                .Entry!.Status.Should()
+                .NotBe(
+                    AgentCollaborationStatuses.Stopped,
+                    "the row must not be marked dead while the pump is mid-start on it"
+                );
+        }
+        finally
+        {
+            // Let the start proceed. The caller's cancellation is STILL honoured — just through the
+            // start path (which is handed the caller's token) rather than by retiring the queue entry
+            // behind it.
+            releasePump.TrySetResult();
+
+            // Disarm before the follow-up spawn below: the hook is per-manager, not per-spawn, and
+            // leaving it armed would park that spawn too.
+            manager.TestBeforeAgentRegistrationAsync = null;
+        }
+
+        var act = async () => await queuedSpawn.WaitAsync(TimeSpan.FromSeconds(30));
+        _ = await act.Should()
+            .ThrowAsync<OperationCanceledException>(
+                "suppressing the queue-side retirement must not swallow the cancellation itself"
+            );
+
+        // Exactly-once accounting after the rollback: 1 (only "first" still admitted), never 2 (the
+        // lease stuck forever) and never 0 (released twice — once by the racing cancellation and again
+        // by the start path's own rollback).
+        root.Directory.Capacity.InUse.Should().Be(1, "the rolled-back start must return its lease exactly once");
+        manager
+            .ListAgents()
+            .Should()
+            .NotContain(s => s.Name == "second", "the cancelled spawn must not be left registered");
+
+        // The permit must also have come back exactly once: a fresh spawn takes the local slot inline
+        // ("spawned"), which it could not do if the rollback had leaked the permit.
+        var followUpJson = await manager
+            .SpawnAsync(
+                "worker",
+                "work",
+                name: "third",
+                role: "worker role",
+                description: "Proves the local permit came back.",
+                runInBackground: true
+            )
+            .WaitAsync(TimeSpan.FromSeconds(30));
+        using var followUpDoc = JsonDocument.Parse(followUpJson);
+        followUpDoc
+            .RootElement.GetProperty("status")
+            .GetString()
+            .Should()
+            .Be("spawned", "a leaked permit would have deferred this spawn to the queue instead");
     }
 
     [Fact]
@@ -410,37 +598,59 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var (manager, _) = CreateManager(
             root,
             template: BlockingTemplate(),
-            configure: options => options with { MaxConcurrentSubAgents = 1 });
+            configure: options => options with { MaxConcurrentSubAgents = 1 }
+        );
 
         // Occupies the only local slot forever (BlockingTemplate never completes).
         _ = await manager.SpawnAsync(
-            "worker", "work", name: "first", role: "worker role",
-            description: "Holds the only local slot.", runInBackground: true);
+            "worker",
+            "work",
+            name: "first",
+            role: "worker role",
+            description: "Holds the only local slot.",
+            runInBackground: true
+        );
 
         // Both queue behind the saturated local gate; neither ever gets a permit before disposal.
         _ = await manager.SpawnAsync(
-            "worker", "work", name: "second", role: "worker role",
-            description: "Queued behind the saturated gate.", runInBackground: true);
+            "worker",
+            "work",
+            name: "second",
+            role: "worker role",
+            description: "Queued behind the saturated gate.",
+            runInBackground: true
+        );
         _ = await manager.SpawnAsync(
-            "worker", "work", name: "third", role: "worker role",
-            description: "Also queued behind the saturated gate.", runInBackground: true);
+            "worker",
+            "work",
+            name: "third",
+            role: "worker role",
+            description: "Also queued behind the saturated gate.",
+            runInBackground: true
+        );
 
-        root.Directory.Capacity.InUse.Should().Be(
-            3, "all three spawns admitted to the collaboration before any of them ran or queued");
+        root.Directory.Capacity.InUse.Should()
+            .Be(3, "all three spawns admitted to the collaboration before any of them ran or queued");
 
         await manager.DisposeAsync();
 
-        root.Directory.Capacity.InUse.Should().Be(
-            0, "disposal must give back every root-wide lease — the one held by the running agent AND "
-                + "the ones held by spawns that never got past the defer-queue");
+        root.Directory.Capacity.InUse.Should()
+            .Be(
+                0,
+                "disposal must give back every root-wide lease — the one held by the running agent AND "
+                    + "the ones held by spawns that never got past the defer-queue"
+            );
 
         foreach (var name in new[] { "second", "third" })
         {
             var entry = root.Directory.Resolve(name).Entry;
             entry.Should().NotBeNull(because: "the row is retained for correlation, not deleted");
-            entry!.Status.Should().Be(
-                AgentCollaborationStatuses.Stopped,
-                because: $"'{name}' never ran and must not be left looking like pending work");
+            entry!
+                .Status.Should()
+                .Be(
+                    AgentCollaborationStatuses.Stopped,
+                    because: $"'{name}' never ran and must not be left looking like pending work"
+                );
             entry.IsLive.Should().BeFalse();
         }
     }
@@ -459,11 +669,12 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
 
         var (grandchildManager, _) = CreateManager(childSetup);
 
-        var act = () => grandchildManager.SpawnAsync(
-            "worker", "work", role: "deeper", description: "Should never exist.");
+        var act = () =>
+            grandchildManager.SpawnAsync("worker", "work", role: "deeper", description: "Should never exist.");
 
-        (await act.Should().ThrowAsync<SubAgentCollaborationException>()).Which
-            .FailureCode.Should().Be(SubAgentCollaborationFailureCodes.DepthLimit);
+        (await act.Should().ThrowAsync<SubAgentCollaborationException>())
+            .Which.FailureCode.Should()
+            .Be(SubAgentCollaborationFailureCodes.DepthLimit);
     }
 
     [Fact]
@@ -485,8 +696,10 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
 
         var childId = await SpawnAndResolveIdAsync(provider);
 
-        manager.GetChildCollaboration(childId)!.CanDelegate.Should().BeFalse(
-            "the default limit makes the child a leaf — which is the case this test exists for");
+        manager
+            .GetChildCollaboration(childId)!
+            .CanDelegate.Should()
+            .BeFalse("the default limit makes the child a leaf — which is the case this test exists for");
 
         // Delivery is dispatched off the sender's turn, so this waits on the arrival itself rather than
         // on the child's completion — condition, not clock.
@@ -515,18 +728,21 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         grandchildManager.Should().NotBeSameAs(parentManager);
         childProvider.GetFunctions().Select(f => f.Contract.Name).Should().Contain("Agent");
 
-        _ = await InvokeAsync(childProvider, "Agent", new
-        {
-            subagent_type = "worker",
-            prompt = "deep work",
-            role = "specialist",
-            description = "Does the deepest piece.",
-            name = "specialist",
-            run_in_background = true,
-        });
+        _ = await InvokeAsync(
+            childProvider,
+            "Agent",
+            new
+            {
+                subagent_type = "worker",
+                prompt = "deep work",
+                role = "specialist",
+                description = "Does the deepest piece.",
+                name = "specialist",
+                run_in_background = true,
+            }
+        );
 
-        var grandchild = root.Directory.Snapshot()
-            .Should().ContainSingle(e => e.Name == "specialist").Subject;
+        var grandchild = root.Directory.Snapshot().Should().ContainSingle(e => e.Name == "specialist").Subject;
 
         grandchild.DelegationDepth.Should().Be(2);
         grandchild.ParentAgentId.Should().Be(childId);
@@ -546,15 +762,18 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var (parentManager, parentProvider) = CreateManager(
             root,
             BlockingTemplate(),
-            options => options with
-            {
-                AvailableModelIds = ["catalog-model"],
-                SpawnNameGate = name =>
-                    name == AuthoredUnit ? null : $"'{name}' is not a unit of this workflow.",
-                SpawnModelSelectionResolver = _ => new SubAgentSpawnModelSelection("catalog-model", null),
-                SpawnMetadataResolver = _ => new SubAgentSpawnMetadata(
-                    "authored role", "Authored by the workflow, not by whoever called the tool."),
-            });
+            options =>
+                options with
+                {
+                    AvailableModelIds = ["catalog-model"],
+                    SpawnNameGate = name => name == AuthoredUnit ? null : $"'{name}' is not a unit of this workflow.",
+                    SpawnModelSelectionResolver = _ => new SubAgentSpawnModelSelection("catalog-model", null),
+                    SpawnMetadataResolver = _ => new SubAgentSpawnMetadata(
+                        "authored role",
+                        "Authored by the workflow, not by whoever called the tool."
+                    ),
+                }
+        );
 
         var delegateId = await SpawnAndResolveIdAsync(parentProvider, AuthoredUnit);
         var delegateLoop = ChildLoop(parentManager, delegateId);
@@ -564,20 +783,22 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var spawned = await InvokeAsync(delegateLoop.SubAgentTools!, "Agent", NewSpawn("ordinary-helper"));
         spawned.IsError.Should().BeFalse(spawned.Text);
 
-        var helper = root.Directory.Snapshot()
-            .Should().ContainSingle(e => e.Name == "ordinary-helper").Subject;
+        var helper = root.Directory.Snapshot().Should().ContainSingle(e => e.Name == "ordinary-helper").Subject;
 
         helper.DelegationDepth.Should().Be(2);
         helper.ParentAgentId.Should().Be(delegateId);
         helper.Role.Should().Be("worker role", "a delegate's own helper is described by its delegate");
         helper.Description.Should().Be("Does a unit of work.");
 
-        delegateLoop.SubAgentManager!.SpawnNameGate.Should().BeNull(
-            "the gate names the units of the workflow above, not of the delegate's own work");
-        delegateLoop.SubAgentManager.SpawnModelSelectionResolver.Should().BeNull(
-            "authority over a spawn's model belongs to the host that authored that spawn");
-        delegateLoop.SubAgentManager.AvailableModelIds.Should().Equal(
-            ["catalog-model"], "the catalog is configuration, not authority, so it is inherited");
+        delegateLoop
+            .SubAgentManager!.SpawnNameGate.Should()
+            .BeNull("the gate names the units of the workflow above, not of the delegate's own work");
+        delegateLoop
+            .SubAgentManager.SpawnModelSelectionResolver.Should()
+            .BeNull("authority over a spawn's model belongs to the host that authored that spawn");
+        delegateLoop
+            .SubAgentManager.AvailableModelIds.Should()
+            .Equal(["catalog-model"], "the catalog is configuration, not authority, so it is inherited");
     }
 
     [Fact]
@@ -593,33 +814,36 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var (parentManager, parentProvider) = CreateManager(
             root,
             BlockingTemplate(),
-            options => options with
-            {
-                NonInheritedToolNames = [ViewerBoundProvider.ToolName],
-                ChildToolProviderFactory = agentId =>
+            options =>
+                options with
                 {
-                    boundTo.Add(agentId);
-                    return new ViewerBoundProvider(agentId);
-                },
-            });
+                    NonInheritedToolNames = [ViewerBoundProvider.ToolName],
+                    ChildToolProviderFactory = agentId =>
+                    {
+                        boundTo.Add(agentId);
+                        return new ViewerBoundProvider(agentId);
+                    },
+                }
+        );
 
         var childId = await SpawnAndResolveIdAsync(parentProvider);
         var childLoop = ChildLoop(parentManager, childId);
 
-        childLoop.RegisteredToolNames.Should().Contain(
-            ViewerBoundProvider.ToolName, "a spawned participant gets its own instance of the tool");
+        childLoop
+            .RegisteredToolNames.Should()
+            .Contain(ViewerBoundProvider.ToolName, "a spawned participant gets its own instance of the tool");
         boundTo.Should().Equal([childId], "and that instance is bound to the child, not to its parent");
 
-        childLoop.SubAgentManager!.GetInheritableToolSnapshot().Contracts.Select(c => c.Name)
-            .Should().NotContain(
-                ViewerBoundProvider.ToolName,
-                "the child's own instance must not travel down to ITS children");
+        childLoop
+            .SubAgentManager!.GetInheritableToolSnapshot()
+            .Contracts.Select(c => c.Name)
+            .Should()
+            .NotContain(ViewerBoundProvider.ToolName, "the child's own instance must not travel down to ITS children");
 
         var grandchildId = await SpawnAndResolveIdAsync(childLoop.SubAgentTools!, "grandchild");
         var grandchildLoop = ChildLoop(childLoop.SubAgentManager, grandchildId);
 
-        boundTo.Should().Equal(
-            [childId, grandchildId], "the factory travels down even though the instances do not");
+        boundTo.Should().Equal([childId, grandchildId], "the factory travels down even though the instances do not");
         grandchildLoop.RegisteredToolNames.Should().ContainSingle(n => n == ViewerBoundProvider.ToolName);
     }
 
@@ -660,13 +884,18 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var payload = await InvokeAsync(provider, "GetAgents", new { });
 
         using var doc = JsonDocument.Parse(payload.Text);
-        var child = doc.RootElement.GetProperty("agents").EnumerateArray()
+        var child = doc
+            .RootElement.GetProperty("agents")
+            .EnumerateArray()
             .Single(a => a.GetProperty("name").GetString() == "peer");
 
         child.GetProperty("structural_depth").GetInt32().Should().Be(1);
         child.GetProperty("delegation_depth").GetInt32().Should().Be(1);
-        child.GetProperty("transcript_readable").GetBoolean().Should().BeTrue(
-            because: "a parent may always read a child it spawned");
+        child
+            .GetProperty("transcript_readable")
+            .GetBoolean()
+            .Should()
+            .BeTrue(because: "a parent may always read a child it spawned");
     }
 
     #endregion
@@ -680,12 +909,16 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var (peerEndpoint, _) = RegisterPeer(root, "helper");
         var (_, provider) = CreateManager(root);
 
-        var payload = await InvokeAsync(provider, "SendMessage", new
-        {
-            target = "helper",
-            content = "What does the auth flag default to?",
-            msg_type = "question",
-        });
+        var payload = await InvokeAsync(
+            provider,
+            "SendMessage",
+            new
+            {
+                target = "helper",
+                content = "What does the auth flag default to?",
+                msg_type = "question",
+            }
+        );
 
         payload.IsError.Should().BeFalse();
         using var doc = JsonDocument.Parse(payload.Text);
@@ -703,12 +936,16 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     {
         var (_, provider) = CreateManager(CreateRegisteredRoot());
 
-        var payload = await InvokeAsync(provider, "SendMessage", new
-        {
-            target = "nobody",
-            content = "hello",
-            msg_type = "question",
-        });
+        var payload = await InvokeAsync(
+            provider,
+            "SendMessage",
+            new
+            {
+                target = "nobody",
+                content = "hello",
+                msg_type = "question",
+            }
+        );
 
         payload.IsError.Should().BeTrue();
         payload.ErrorCode.Should().Be(AgentDirectoryFailureCodes.NotFound);
@@ -725,12 +962,16 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         _ = root.Bundle.RetireAgent(peerSetup.AgentId, AgentCollaborationStatuses.Completed);
         var (_, provider) = CreateManager(root);
 
-        var payload = await InvokeAsync(provider, "SendMessage", new
-        {
-            target = "helper",
-            content = "hello",
-            msg_type = "question",
-        });
+        var payload = await InvokeAsync(
+            provider,
+            "SendMessage",
+            new
+            {
+                target = "helper",
+                content = "hello",
+                msg_type = "question",
+            }
+        );
 
         payload.IsError.Should().BeTrue();
         payload.ErrorCode.Should().Be(AgentMessageFailureCodes.UnknownTarget);
@@ -752,12 +993,16 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var (_, provider) = CreateManager(peerSetup);
         _ = root.Bundle.RetireAgent(peerSetup.AgentId, AgentCollaborationStatuses.Completed);
 
-        var payload = await InvokeAsync(provider, "SendMessage", new
-        {
-            target = root.Name,
-            content = "hello",
-            msg_type = "question",
-        });
+        var payload = await InvokeAsync(
+            provider,
+            "SendMessage",
+            new
+            {
+                target = root.Name,
+                content = "hello",
+                msg_type = "question",
+            }
+        );
 
         payload.IsError.Should().BeTrue();
         payload.ErrorCode.Should().Be(AgentMessageFailureCodes.InvalidSender);
@@ -770,12 +1015,16 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var root = CreateRegisteredRoot();
         var (_, provider) = CreateManager(root);
 
-        var payload = await InvokeAsync(provider, "SendMessage", new
-        {
-            target = root.AgentId,
-            content = "hello",
-            msg_type = "question",
-        });
+        var payload = await InvokeAsync(
+            provider,
+            "SendMessage",
+            new
+            {
+                target = root.AgentId,
+                content = "hello",
+                msg_type = "question",
+            }
+        );
 
         payload.IsError.Should().BeTrue();
         payload.ErrorCode.Should().Be(AgentMessageFailureCodes.SelfDelivery);
@@ -788,12 +1037,16 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         _ = RegisterPeer(root, "helper");
         var (_, provider) = CreateManager(root);
 
-        var payload = await InvokeAsync(provider, "SendMessage", new
-        {
-            target = "helper",
-            content = "the answer",
-            msg_type = "response",
-        });
+        var payload = await InvokeAsync(
+            provider,
+            "SendMessage",
+            new
+            {
+                target = "helper",
+                content = "the answer",
+                msg_type = "response",
+            }
+        );
 
         payload.IsError.Should().BeTrue();
         payload.ErrorCode.Should().Be("missing_correlation");
@@ -808,12 +1061,16 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         _ = RegisterPeer(root, "helper");
         var (_, provider) = CreateManager(root);
 
-        var payload = await InvokeAsync(provider, "SendMessage", new
-        {
-            target = "helper",
-            content = "half done",
-            msg_type = "task_update",
-        });
+        var payload = await InvokeAsync(
+            provider,
+            "SendMessage",
+            new
+            {
+                target = "helper",
+                content = "half done",
+                msg_type = "task_update",
+            }
+        );
 
         payload.IsError.Should().BeTrue();
         payload.ErrorCode.Should().Be("missing_correlation");
@@ -826,16 +1083,19 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         // the opposite of redirecting — or be dropped later, after the sender had been told "accepted".
         var root = CreateRegisteredRoot();
         var (_, peerSetup) = RegisterPeer(root, "helper");
-        _ = root.Directory.TryUpdateStatus(
-            peerSetup.AgentId, AgentCollaborationStatuses.Completed);
+        _ = root.Directory.TryUpdateStatus(peerSetup.AgentId, AgentCollaborationStatuses.Completed);
         var (_, provider) = CreateManager(root);
 
-        var payload = await InvokeAsync(provider, "SendMessage", new
-        {
-            target = "helper",
-            content = "focus on the parser instead",
-            msg_type = "steer",
-        });
+        var payload = await InvokeAsync(
+            provider,
+            "SendMessage",
+            new
+            {
+                target = "helper",
+                content = "focus on the parser instead",
+                msg_type = "steer",
+            }
+        );
 
         payload.IsError.Should().BeTrue();
         payload.ErrorCode.Should().Be(AgentMessageFailureCodes.TargetNotActive);
@@ -854,12 +1114,17 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         using var cts = new CancellationTokenSource();
         await cts.CancelAsync();
 
-        var payload = await InvokeAsync(provider, "SendMessage", new
-        {
-            target = "helper",
-            content = "still needs to arrive",
-            msg_type = "question",
-        }, cts.Token);
+        var payload = await InvokeAsync(
+            provider,
+            "SendMessage",
+            new
+            {
+                target = "helper",
+                content = "still needs to arrive",
+                msg_type = "question",
+            },
+            cts.Token
+        );
 
         payload.IsError.Should().BeFalse(payload.Text);
         _ = await peerEndpoint.Received.WaitAsync(TimeSpan.FromSeconds(10));
@@ -876,11 +1141,9 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var childId = await SpawnAndResolveIdAsync(provider);
         _ = await InvokeAsync(provider, "WaitForAgents", new { agent_ids = childId });
 
-        root.Directory.FindById(childId)!.Status
-            .Should().Be(AgentCollaborationStatuses.Completed);
+        root.Directory.FindById(childId)!.Status.Should().Be(AgentCollaborationStatuses.Completed);
 
-        var dispatch = new AgentCollaborationMessenger(root).Send(
-            childId, "One more thing", AgentMessageType.Question);
+        var dispatch = new AgentCollaborationMessenger(root).Send(childId, "One more thing", AgentMessageType.Question);
         await dispatch.Delivery.WaitAsync(TimeSpan.FromSeconds(10));
 
         root.Directory.FindById(childId)!.Status.Should().Be(AgentCollaborationStatuses.Running);
@@ -899,7 +1162,10 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         _ = await InvokeAsync(provider, "WaitForAgents", new { agent_ids = childId });
 
         var dispatch = new AgentCollaborationMessenger(root).Send(
-            childId, "Which branch did you use?", AgentMessageType.Question);
+            childId,
+            "Which branch did you use?",
+            AgentMessageType.Question
+        );
         dispatch.Result.Succeeded.Should().BeTrue();
 
         var seen = await restart.Restarted.WaitAsync(TimeSpan.FromSeconds(10));
@@ -918,12 +1184,16 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         _ = RegisterPeer(root, "helper");
         var (_, provider) = CreateManager(root);
 
-        var payload = await InvokeAsync(provider, "SendMessage", new
-        {
-            target = "helper",
-            content = "hello",
-            msg_type = "shout",
-        });
+        var payload = await InvokeAsync(
+            provider,
+            "SendMessage",
+            new
+            {
+                target = "helper",
+                content = "hello",
+                msg_type = "shout",
+            }
+        );
 
         payload.IsError.Should().BeTrue();
         payload.ErrorCode.Should().Be("invalid_msg_type");
@@ -941,10 +1211,7 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var first = await SpawnAndResolveIdAsync(provider, "one");
         var second = await SpawnAndResolveIdAsync(provider, "two");
 
-        var payload = await InvokeAsync(provider, "CheckAgents", new
-        {
-            agent_ids = $"{first},{second}",
-        });
+        var payload = await InvokeAsync(provider, "CheckAgents", new { agent_ids = $"{first},{second}" });
 
         using var doc = JsonDocument.Parse(payload.Text);
         doc.RootElement.GetProperty("requested").GetInt32().Should().Be(2);
@@ -961,10 +1228,7 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var (_, peerSetup) = RegisterPeer(root, "cousin");
         var (_, provider) = CreateManager(root);
 
-        var payload = await InvokeAsync(provider, "CheckAgents", new
-        {
-            agent_ids = peerSetup.AgentId,
-        });
+        var payload = await InvokeAsync(provider, "CheckAgents", new { agent_ids = peerSetup.AgentId });
 
         using var doc = JsonDocument.Parse(payload.Text);
         doc.RootElement.GetProperty("not_found").GetInt32().Should().Be(0);
@@ -992,10 +1256,7 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var (_, provider) = CreateManager(CreateRegisteredRoot());
         var agentId = await SpawnAndResolveIdAsync(provider);
 
-        var payload = await InvokeAsync(provider, "WaitForAgents", new
-        {
-            agent_ids = $"{agentId},ghost",
-        });
+        var payload = await InvokeAsync(provider, "WaitForAgents", new { agent_ids = $"{agentId},ghost" });
 
         payload.IsError.Should().BeTrue();
         payload.ErrorCode.Should().Be("unknown_agent");
@@ -1013,7 +1274,10 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var (_, peerSetup) = RegisterPeer(root, "asker");
 
         var dispatch = new AgentCollaborationMessenger(peerSetup).Send(
-            root.AgentId, "Which branch?", AgentMessageType.Question);
+            root.AgentId,
+            "Which branch?",
+            AgentMessageType.Question
+        );
         dispatch.Result.Succeeded.Should().BeTrue();
 
         // Settle the delivery before waiting, so the question is unambiguously open by the time the
@@ -1024,8 +1288,7 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
 
         using var doc = JsonDocument.Parse(payload.Text);
         doc.RootElement.GetProperty("status").GetString().Should().Be("question_received");
-        doc.RootElement.GetProperty("question").GetProperty("from_name").GetString()
-            .Should().Be("asker");
+        doc.RootElement.GetProperty("question").GetProperty("from_name").GetString().Should().Be("asker");
     }
 
     [Fact]
@@ -1040,18 +1303,17 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var (_, peerSetup) = RegisterPeer(root, "asker");
 
         var dispatch = new AgentCollaborationMessenger(peerSetup).Send(
-            root.AgentId, "Which branch?", AgentMessageType.Question);
+            root.AgentId,
+            "Which branch?",
+            AgentMessageType.Question
+        );
         await dispatch.Delivery.WaitAsync(TimeSpan.FromSeconds(10));
 
         var first = await InvokeAsync(provider, "WaitForAgents", new { agent_ids = agentId });
         using var firstDoc = JsonDocument.Parse(first.Text);
         firstDoc.RootElement.GetProperty("status").GetString().Should().Be("question_received");
 
-        var second = await InvokeAsync(provider, "WaitForAgents", new
-        {
-            agent_ids = agentId,
-            timeout_seconds = 1,
-        });
+        var second = await InvokeAsync(provider, "WaitForAgents", new { agent_ids = agentId, timeout_seconds = 1 });
 
         using var secondDoc = JsonDocument.Parse(second.Text);
         secondDoc.RootElement.GetProperty("status").GetString().Should().Be("timeout");
@@ -1073,52 +1335,61 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var root = CreateRegisteredRoot();
         var (_, provider) = CreateManager(
             root,
-            configure: options => options with
-            {
-                Templates = new Dictionary<string, SubAgentTemplate>(options.Templates)
+            configure: options =>
+                options with
                 {
-                    ["blocker"] = BlockingTemplate(),
-                },
-            });
+                    Templates = new Dictionary<string, SubAgentTemplate>(options.Templates)
+                    {
+                        ["blocker"] = BlockingTemplate(),
+                    },
+                }
+        );
 
         var finishedId = await SpawnAndResolveIdAsync(provider, "finished");
         var blockedId = await SpawnAndResolveIdAsync(provider, "still-running", "blocker");
 
         // Settle the finished child while no question exists, so the wait that loses below is racing an
         // observation that was already complete before the race began.
-        using (var settled = JsonDocument.Parse(
-            (await InvokeAsync(provider, "WaitForAgents", new { agent_ids = finishedId })).Text))
+        using (
+            var settled = JsonDocument.Parse(
+                (await InvokeAsync(provider, "WaitForAgents", new { agent_ids = finishedId })).Text
+            )
+        )
         {
             settled.RootElement.GetProperty("status").GetString().Should().Be("completed");
         }
 
         var (_, peerSetup) = RegisterPeer(root, "asker");
         var dispatch = new AgentCollaborationMessenger(peerSetup).Send(
-            root.AgentId, "Which branch?", AgentMessageType.Question);
+            root.AgentId,
+            "Which branch?",
+            AgentMessageType.Question
+        );
         await dispatch.Delivery.WaitAsync(TimeSpan.FromSeconds(10));
 
         var lost = await InvokeAsync(provider, "WaitForAgents", new { agent_ids = finishedId });
         using var lostDoc = JsonDocument.Parse(lost.Text);
         lostDoc.RootElement.GetProperty("status").GetString().Should().Be("completed");
-        lostDoc.RootElement.GetProperty("question").ValueKind.Should().Be(
-            JsonValueKind.Null, "the completion won, so no question is being reported to the caller");
+        lostDoc
+            .RootElement.GetProperty("question")
+            .ValueKind.Should()
+            .Be(JsonValueKind.Null, "the completion won, so no question is being reported to the caller");
 
         // The next wait has nothing to complete, so only the question can end it — which it can only do
         // if the claim the previous wait took but never used was returned.
-        var interrupted = await InvokeAsync(provider, "WaitForAgents", new
-        {
-            agent_ids = blockedId,
-            timeout_seconds = 5,
-        });
+        var interrupted = await InvokeAsync(
+            provider,
+            "WaitForAgents",
+            new { agent_ids = blockedId, timeout_seconds = 5 }
+        );
 
         using var interruptedDoc = JsonDocument.Parse(interrupted.Text);
-        interruptedDoc.RootElement.GetProperty("status").GetString()
-            .Should().Be("question_received");
-        interruptedDoc.RootElement.GetProperty("question").GetProperty("from_name").GetString()
-            .Should().Be("asker");
+        interruptedDoc.RootElement.GetProperty("status").GetString().Should().Be("question_received");
+        interruptedDoc.RootElement.GetProperty("question").GetProperty("from_name").GetString().Should().Be("asker");
 
-        root.Bundle.Ledger.GetOpenInbound(root.AgentId).Should().ContainSingle(
-            "being interrupted by a question is still not an answer to it");
+        root.Bundle.Ledger.GetOpenInbound(root.AgentId)
+            .Should()
+            .ContainSingle("being interrupted by a question is still not an answer to it");
     }
 
     [Fact]
@@ -1135,7 +1406,10 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
 
         var wait = InvokeAsync(provider, "WaitForAgents", new { agent_ids = agentId });
         var dispatch = new AgentCollaborationMessenger(peerSetup).Send(
-            root.AgentId, "Which branch?", AgentMessageType.Question);
+            root.AgentId,
+            "Which branch?",
+            AgentMessageType.Question
+        );
         dispatch.Result.Succeeded.Should().BeTrue();
 
         var payload = await wait;
@@ -1150,16 +1424,14 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         var (manager, provider) = CreateManager(CreateRegisteredRoot(), template: BlockingTemplate());
         var agentId = await SpawnAndResolveIdAsync(provider);
 
-        var payload = await InvokeAsync(provider, "WaitForAgents", new
-        {
-            agent_ids = agentId,
-            timeout_seconds = 1,
-        });
+        var payload = await InvokeAsync(provider, "WaitForAgents", new { agent_ids = agentId, timeout_seconds = 1 });
 
         using var doc = JsonDocument.Parse(payload.Text);
         doc.RootElement.GetProperty("status").GetString().Should().Be("timeout");
-        manager.TryPeek(agentId, out _).Should().BeTrue(
-            because: "a wait that expires abandons the observation, never the agent");
+        manager
+            .TryPeek(agentId, out _)
+            .Should()
+            .BeTrue(because: "a wait that expires abandons the observation, never the agent");
     }
 
     #endregion
@@ -1169,15 +1441,16 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     /// <summary>The one spawn name a workflow-style <c>SpawnNameGate</c> in these tests will allow.</summary>
     private const string AuthoredUnit = "authored-unit";
 
-    private static object NewSpawn(string name, string subagentType = "worker") => new
-    {
-        subagent_type = subagentType,
-        prompt = "work",
-        role = "worker role",
-        description = "Does a unit of work.",
-        name,
-        run_in_background = true,
-    };
+    private static object NewSpawn(string name, string subagentType = "worker") =>
+        new
+        {
+            subagent_type = subagentType,
+            prompt = "work",
+            role = "worker role",
+            description = "Does a unit of work.",
+            name,
+            run_in_background = true,
+        };
 
     /// <summary>
     /// Creates a root handle and publishes it, as <see cref="MultiTurnAgentLoop"/> does for a real
@@ -1188,30 +1461,35 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     /// closes its own ledger entry, which would silently turn "sent a question to the root" into
     /// "there is no open question" a moment later.
     /// </remarks>
-    private static AgentCollaborationSetup CreateRegisteredRoot(
-        AgentCollaborationOptions? options = null)
+    private static AgentCollaborationSetup CreateRegisteredRoot(AgentCollaborationOptions? options = null)
     {
         var setup = AgentCollaborationSetup.CreateRoot(options ?? new AgentCollaborationOptions());
         _ = setup.Directory.TryRegister(
             setup.Context,
             setup.Name,
             AgentCollaborationStatuses.Running,
-            new RecordingEndpoint());
+            new RecordingEndpoint()
+        );
         return setup;
     }
 
     private (RecordingEndpoint Endpoint, AgentCollaborationSetup Setup) RegisterPeer(
         AgentCollaborationSetup root,
-        string name)
+        string name
+    )
     {
         var context = root.Context.CreateChild(
-            $"agent-{name}", AgentKind.SubAgent, $"{name} role", $"Stands in for {name}.");
+            $"agent-{name}",
+            AgentKind.SubAgent,
+            $"{name} role",
+            $"Stands in for {name}."
+        );
         var endpoint = new RecordingEndpoint();
 
         _ = root.Directory.TryAcquireCapacity(context.AgentId);
-        root.Directory
-            .TryRegister(context, name, AgentCollaborationStatuses.Running, endpoint)
-            .Succeeded.Should().BeTrue();
+        root.Directory.TryRegister(context, name, AgentCollaborationStatuses.Running, endpoint)
+            .Succeeded.Should()
+            .BeTrue();
 
         return (endpoint, root.ForChild(context, name));
     }
@@ -1219,13 +1497,15 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     private (SubAgentManager Manager, SubAgentToolProvider Provider) CreateManager(
         AgentCollaborationSetup? collaboration,
         SubAgentTemplate? template = null,
-        Func<SubAgentOptions, SubAgentOptions>? configure = null)
+        Func<SubAgentOptions, SubAgentOptions>? configure = null
+    )
     {
         var options = new SubAgentOptions
         {
             Templates = new Dictionary<string, SubAgentTemplate>
             {
-                ["worker"] = template
+                ["worker"] =
+                    template
                     ?? new SubAgentTemplate
                     {
                         SystemPrompt = "You are a worker.",
@@ -1245,18 +1525,20 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
             parentHandlers: new Dictionary<string, ToolHandler>(),
             options: options,
             source: source,
-            collaboration: collaboration);
+            collaboration: collaboration
+        );
 
         _managers.Add(manager);
         return (manager, new SubAgentToolProvider(manager, source));
     }
 
     /// <summary>A template whose agent cannot be built, standing in for a bad model or a dead provider.</summary>
-    private static SubAgentTemplate FailingTemplate() => new()
-    {
-        SystemPrompt = "You are a worker.",
-        AgentFactory = () => throw new InvalidOperationException("provider unavailable"),
-    };
+    private static SubAgentTemplate FailingTemplate() =>
+        new()
+        {
+            SystemPrompt = "You are a worker.",
+            AgentFactory = () => throw new InvalidOperationException("provider unavailable"),
+        };
 
     private const string LeafGreeting = "Reporting in from the depth limit.";
 
@@ -1265,61 +1547,79 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     /// tool call goes through the child's OWN loop, so it can only succeed if that loop was given the
     /// collaboration tool surface — which is the point of the test that uses this.
     /// </summary>
-    private static SubAgentTemplate MessagingTemplate(string target) => new()
-    {
-        SystemPrompt = "You are a worker.",
-        AgentFactory = () =>
+    private static SubAgentTemplate MessagingTemplate(string target) =>
+        new()
         {
-            var turn = 0;
-            var mock = new Mock<IStreamingAgent>();
-            _ = mock
-                .Setup(a => a.GenerateReplyStreamingAsync(
-                    It.IsAny<IEnumerable<IMessage>>(),
-                    It.IsAny<GenerateReplyOptions>(),
-                    It.IsAny<CancellationToken>()))
-                .Returns(() => Task.FromResult(ToAsyncEnumerable(
-                    Interlocked.Increment(ref turn) == 1
-                        ? [new ToolCallMessage
-                            {
-                                FunctionName = "SendMessage",
-                                FunctionArgs = JsonSerializer.Serialize(new
-                                {
-                                    target,
-                                    content = LeafGreeting,
-                                    // A question stands on its own. The reply-only types (response,
-                                    // task_update) are refused without an in_response_to, and this
-                                    // template has nothing to correlate to.
-                                    msg_type = "question",
-                                }),
-                                ToolCallId = "tc_1",
-                                Role = Role.Assistant,
-                            }]
-                        : [new TextMessage { Text = "done", Role = Role.Assistant }])));
-            return mock.Object;
-        },
-    };
+            SystemPrompt = "You are a worker.",
+            AgentFactory = () =>
+            {
+                var turn = 0;
+                var mock = new Mock<IStreamingAgent>();
+                _ = mock.Setup(a =>
+                        a.GenerateReplyStreamingAsync(
+                            It.IsAny<IEnumerable<IMessage>>(),
+                            It.IsAny<GenerateReplyOptions>(),
+                            It.IsAny<CancellationToken>()
+                        )
+                    )
+                    .Returns(() =>
+                        Task.FromResult(
+                            ToAsyncEnumerable(
+                                Interlocked.Increment(ref turn) == 1
+                                    ?
+                                    [
+                                        new ToolCallMessage
+                                        {
+                                            FunctionName = "SendMessage",
+                                            FunctionArgs = JsonSerializer.Serialize(
+                                                new
+                                                {
+                                                    target,
+                                                    content = LeafGreeting,
+                                                    // A question stands on its own. The reply-only types (response,
+                                                    // task_update) are refused without an in_response_to, and this
+                                                    // template has nothing to correlate to.
+                                                    msg_type = "question",
+                                                }
+                                            ),
+                                            ToolCallId = "tc_1",
+                                            Role = Role.Assistant,
+                                        },
+                                    ]
+                                    : [new TextMessage { Text = "done", Role = Role.Assistant }]
+                            )
+                        )
+                    );
+                return mock.Object;
+            },
+        };
 
-    private SubAgentTemplate BlockingTemplate() => new()
-    {
-        SystemPrompt = "You are a worker.",
-        AgentFactory = () =>
+    private SubAgentTemplate BlockingTemplate() =>
+        new()
         {
-            var mock = new Mock<IStreamingAgent>();
-            _ = mock
-                .Setup(a => a.GenerateReplyStreamingAsync(
-                    It.IsAny<IEnumerable<IMessage>>(),
-                    It.IsAny<GenerateReplyOptions>(),
-                    It.IsAny<CancellationToken>()))
-                .Returns<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
-                    (_, _, ct) => Task.FromResult(BlockingStream(ct)));
-            return mock.Object;
-        },
-    };
+            SystemPrompt = "You are a worker.",
+            AgentFactory = () =>
+            {
+                var mock = new Mock<IStreamingAgent>();
+                _ = mock.Setup(a =>
+                        a.GenerateReplyStreamingAsync(
+                            It.IsAny<IEnumerable<IMessage>>(),
+                            It.IsAny<GenerateReplyOptions>(),
+                            It.IsAny<CancellationToken>()
+                        )
+                    )
+                    .Returns<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
+                        (_, _, ct) => Task.FromResult(BlockingStream(ct))
+                    );
+                return mock.Object;
+            },
+        };
 
     private async Task<string> SpawnAndResolveIdAsync(
         SubAgentToolProvider provider,
         string name = "child",
-        string subagentType = "worker")
+        string subagentType = "worker"
+    )
     {
         var payload = await InvokeAsync(provider, "Agent", NewSpawn(name, subagentType));
         payload.IsError.Should().BeFalse(payload.Text);
@@ -1351,30 +1651,26 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         public int Priority => 100;
 
         public IEnumerable<FunctionDescriptor> GetFunctions() =>
-        [
-            new FunctionDescriptor
-            {
-                Contract = new FunctionContract
+            [
+                new FunctionDescriptor
                 {
-                    Name = ToolName,
-                    Description = "Acts as exactly one agent.",
+                    Contract = new FunctionContract { Name = ToolName, Description = "Acts as exactly one agent." },
+                    Handler = (_, _, _) =>
+                        Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(viewerAgentId)),
+                    ProviderName = "ViewerBoundTools",
                 },
-                Handler = (_, _, _) =>
-                    Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(viewerAgentId)),
-                ProviderName = "ViewerBoundTools",
-            },
-        ];
+            ];
     }
 
     private static async Task<ToolHandlerResultPayload> InvokeAsync(
         SubAgentToolProvider provider,
         string toolName,
         object args,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         var handler = provider.GetFunctions().First(f => f.Contract.Name == toolName).Handler;
-        var result = await handler(
-            JsonSerializer.Serialize(args), new ToolCallContext(), ct);
+        var result = await handler(JsonSerializer.Serialize(args), new ToolCallContext(), ct);
 
         return result.Should().BeOfType<ToolHandlerResult.Resolved>().Subject.Payload;
     }
@@ -1382,17 +1678,20 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     private void SetupSubAgentReply(string text)
     {
         _ = _subAgentMock
-            .Setup(a => a.GenerateReplyStreamingAsync(
-                It.IsAny<IEnumerable<IMessage>>(),
-                It.IsAny<GenerateReplyOptions>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(Task.FromResult(ToAsyncEnumerable(
-                [new TextMessage { Text = text, Role = Role.Assistant }])));
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(Task.FromResult(ToAsyncEnumerable([new TextMessage { Text = text, Role = Role.Assistant }])));
     }
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
         List<IMessage> messages,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         foreach (var message in messages)
         {
@@ -1402,11 +1701,58 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         }
     }
 
-    private static async IAsyncEnumerable<IMessage> BlockingStream(
-        [EnumeratorCancellation] CancellationToken ct)
+    private static async IAsyncEnumerable<IMessage> BlockingStream([EnumeratorCancellation] CancellationToken ct)
     {
         await Task.Delay(Timeout.InfiniteTimeSpan, ct);
         yield break;
+    }
+
+    /// <summary>
+    /// A worker that holds its local concurrency permit until <see cref="Release"/> is called, then
+    /// finishes its run normally so the permit is handed to the defer-queue pump.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="BlockingTemplate"/> can only saturate the gate forever; this one lets a test decide
+    /// the exact moment the pump gets to start the spawn queued behind it, which is what makes the
+    /// pump-versus-cancellation race reachable deterministically instead of by timing.
+    /// </remarks>
+    private sealed class ReleasableTemplate
+    {
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ReleasableTemplate()
+        {
+            Template = new SubAgentTemplate
+            {
+                SystemPrompt = "You are a worker.",
+                AgentFactory = () =>
+                {
+                    var mock = new Mock<IStreamingAgent>();
+                    _ = mock.Setup(a =>
+                            a.GenerateReplyStreamingAsync(
+                                It.IsAny<IEnumerable<IMessage>>(),
+                                It.IsAny<GenerateReplyOptions>(),
+                                It.IsAny<CancellationToken>()
+                            )
+                        )
+                        .Returns<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
+                            (_, _, ct) => Task.FromResult(Run(ct))
+                        );
+                    return mock.Object;
+                },
+            };
+        }
+
+        public SubAgentTemplate Template { get; }
+
+        /// <summary>Lets every run built from this template finish, freeing the permit it holds.</summary>
+        public void Release() => _release.TrySetResult();
+
+        private async IAsyncEnumerable<IMessage> Run([EnumeratorCancellation] CancellationToken ct)
+        {
+            await _release.Task.WaitAsync(ct);
+            yield return new TextMessage { Text = "done", Role = Role.Assistant };
+        }
     }
 
     /// <summary>
@@ -1420,8 +1766,9 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     /// </remarks>
     private sealed class RestartCapturingTemplate
     {
-        private readonly TaskCompletionSource<IReadOnlyList<IMessage>> _restarted =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<IReadOnlyList<IMessage>> _restarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
 
         private int _runs;
 
@@ -1433,13 +1780,16 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
                 AgentFactory = () =>
                 {
                     var mock = new Mock<IStreamingAgent>();
-                    _ = mock
-                        .Setup(a => a.GenerateReplyStreamingAsync(
-                            It.IsAny<IEnumerable<IMessage>>(),
-                            It.IsAny<GenerateReplyOptions>(),
-                            It.IsAny<CancellationToken>()))
+                    _ = mock.Setup(a =>
+                            a.GenerateReplyStreamingAsync(
+                                It.IsAny<IEnumerable<IMessage>>(),
+                                It.IsAny<GenerateReplyOptions>(),
+                                It.IsAny<CancellationToken>()
+                            )
+                        )
                         .Returns<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
-                            (messages, _, ct) => Task.FromResult(Run(messages, ct)));
+                            (messages, _, ct) => Task.FromResult(Run(messages, ct))
+                        );
                     return mock.Object;
                 },
             };
@@ -1450,14 +1800,11 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
 
         public SubAgentTemplate Template { get; }
 
-        private IAsyncEnumerable<IMessage> Run(
-            IEnumerable<IMessage> messages,
-            CancellationToken ct)
+        private IAsyncEnumerable<IMessage> Run(IEnumerable<IMessage> messages, CancellationToken ct)
         {
             if (Interlocked.Increment(ref _runs) == 1)
             {
-                return ToAsyncEnumerable(
-                    [new TextMessage { Text = "done", Role = Role.Assistant }]);
+                return ToAsyncEnumerable([new TextMessage { Text = "done", Role = Role.Assistant }]);
             }
 
             _ = _restarted.TrySetResult([.. messages]);
@@ -1468,18 +1815,19 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     /// <summary>A stand-in for another agent's owner, so a delivery can be observed without a loop.</summary>
     private sealed class RecordingEndpoint : IAgentWriteEndpoint
     {
-        private readonly TaskCompletionSource<AgentMessage> _received =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<AgentMessage> _received = new(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
 
         public Task<AgentMessage> Received => _received.Task;
 
         public ValueTask<AgentDeliveryOutcome> DeliverAsync(
             AgentMessage message,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default
+        )
         {
             _ = _received.TrySetResult(message);
-            return ValueTask.FromResult(
-                new AgentDeliveryOutcome(AgentDeliveryDisposition.Delivered));
+            return ValueTask.FromResult(new AgentDeliveryOutcome(AgentDeliveryDisposition.Delivered));
         }
     }
 

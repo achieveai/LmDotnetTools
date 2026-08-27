@@ -56,6 +56,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     private bool _replayBufferTruncated;
     private long _replayBufferBytes;
     private string? _replayRunId;
+
     // Replay is bounded by BOTH a message count and an estimated byte budget: a long tool/reasoning
     // turn can stay under the count cap while still retaining large per-message payloads (text, tool
     // args/results), and multiple live conversations multiply that. Whichever cap trips first stops
@@ -68,6 +69,22 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     private string? _latestRunId;
     private readonly object _stateLock = new();
     private readonly object _historyLock = new();
+
+    // Count of drained-but-not-yet-assigned input items that carry real work. It exists because
+    // PendingInputCount goes to zero the instant TryDrainInputs takes an item out of the channel,
+    // while _currentRunId is not set until StartRunAsync — so between those two points an
+    // acknowledged input is held only in a local variable inside the run loop and every signal a
+    // host can see reads "idle". See HasUnassignedInput.
+    private int _inputsInHand;
+
+    // Count of acknowledged inputs a loop has drained and PARKED — taken out of the channel, not yet
+    // handed to a run, and held in a loop-owned structure across further drains (ClaudeAgentLoop's
+    // local message queue is the only such structure today). It is separate from _inputsInHand
+    // because that field is settled by ASSIGNMENT on every drain, so the next drain overwrites
+    // whatever the previous one claimed — fine while a claim lives only until the very next
+    // statement, wrong the moment a batch is parked and a second drain follows it. This one is
+    // additive: each park adds, each consumption subtracts exactly what it consumed.
+    private int _inputsRetained;
 
     // Lifecycle
     private Task? _runTask;
@@ -98,6 +115,31 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     // ConversationUsageProjection.MaxCompleteness, so a stale InProgress write can never regress it.
     private UsageCompleteness _usageCompleteness = UsageCompleteness.InProgress;
     private volatile bool _isDisposed;
+
+    // Disposal is a SHARED boundary, not a per-caller one. `_isDisposed` alone made DisposeAsync a
+    // check-then-act: two callers could both observe false and both run the whole teardown (double
+    // Dispose on the cancellation sources, double terminal flush), and — the worse half — a caller that
+    // lost the race returned a COMPLETED ValueTask the instant the flag was set, so
+    // `await agent.DisposeAsync()` could return while the agent's channels, tokens and owned resources
+    // were still being torn down, and a teardown that threw faulted exactly one caller while every other
+    // one saw a clean success. `_disposeGate` elects a single runner via Interlocked; every other caller,
+    // then and later, awaits `_disposeCompletion`, so they all observe the same completion instant and
+    // the SAME exception instance.
+    //
+    // Re-entrancy caveat: a DisposeAsync called from INSIDE the teardown (e.g. an OnDisposeAsync override
+    // disposing its own agent) would await a boundary only its own caller can complete. No override in
+    // this repository does that, and the previous code would have recursed there instead.
+    private int _disposeGate;
+    private readonly TaskCompletionSource _disposeCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    // Closed under `_replayLock` at the START of disposal; the terminal drain snapshots and clears the
+    // subscriber map under that SAME lock at the end. Registration and drain therefore serialise: a
+    // subscriber either registers before the gate closes (and is drained with the rest, still receiving
+    // whatever the shutdown path publishes in between) or finds the gate closed and is handed an
+    // already-completed channel. Neither order can leave a registered subscriber whose channel nobody
+    // will ever complete — which is not a leak that eventually clears but a `SubscribeAsync` enumerator
+    // parked forever, i.e. a hung request.
+    private bool _subscribersClosed;
 
     // Set once run-ledger reconciliation has run for this process instance, so RunAsync never
     // re-reconciles on an explicit restart within the same process (only a genuine new process
@@ -234,6 +276,41 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <inheritdoc />
     public bool IsRunning => _runTask != null && !_runTask.IsCompleted;
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// Covers BOTH halves of the acknowledged-but-unassigned window, because a host reading a
+    /// single half would still tear the agent down in the other:
+    /// <list type="bullet">
+    /// <item><description>
+    /// input still sitting in the input channel (<see cref="PendingInputCount"/>) — the wide half,
+    /// open for as long as the run loop takes to wake and drain;
+    /// </description></item>
+    /// <item><description>
+    /// input the loop has drained but not yet named a run for (<c>_inputsInHand</c>) — the narrow
+    /// half, which the channel count cannot see because the item has already left the channel.
+    /// </description></item>
+    /// <item><description>
+    /// input the loop has drained and PARKED for a later run (<c>_inputsRetained</c>) — the long
+    /// half, open for as long as the loop holds the batch in its own queue. <c>_inputsInHand</c>
+    /// cannot cover this, because it is settled by assignment and the next drain overwrites it.
+    /// </description></item>
+    /// </list>
+    /// The claim is raised inside <see cref="TryDrainInputs"/> BEFORE the read that empties the
+    /// channel, so the two halves overlap rather than leaving a gap between them, and it is
+    /// released the moment a run owns the input (<see cref="StartRunAsync"/>,
+    /// <see cref="RecordInjectedInputsAsync"/>) or the input has been durably folded into history
+    /// instead (<see cref="ReleaseInputsInHand"/>). Every release is an assignment to zero rather
+    /// than a decrement: over-releasing only narrows the window this reports, whereas a missed
+    /// decrement would strand the agent as permanently "busy" and block its host's refresh forever.
+    /// A loop that parks a batch converts the in-hand claim into a retained one
+    /// (<see cref="RetainInputs"/>) before the next drain can overwrite it, and gives it back with
+    /// <see cref="ReleaseRetainedInputs"/> once a run owns the parked batch. Stranding is bounded
+    /// the same way: the pool reads this only alongside a live run loop, so an abandoned retention
+    /// on a dead loop cannot block a refresh.
+    /// </remarks>
+    public bool HasUnassignedInput =>
+        PendingInputCount > 0 || Volatile.Read(ref _inputsInHand) > 0 || Volatile.Read(ref _inputsRetained) > 0;
+
     /// <summary>
     /// The most recent run id observed (current or last completed). Available to
     /// subclasses overriding metadata persistence — for example, recording a
@@ -291,7 +368,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         int maxReplayBufferSize = 10_000,
         long maxReplayBufferBytes = 8L * 1024 * 1024,
         bool persistRunLedger = false,
-        MultiTurnLifecycleServices? lifecycleServices = null)
+        MultiTurnLifecycleServices? lifecycleServices = null
+    )
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
@@ -316,17 +394,22 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         // the provider pick its default model — this sets budget only, never clobbers model selection).
         var baseOptions = defaultOptions ?? new GenerateReplyOptions();
         DefaultOptions = baseOptions.MaxToken is null
-            ? baseOptions with { MaxToken = DefaultMaxTokenFloor }
+            ? baseOptions with
+            {
+                MaxToken = DefaultMaxTokenFloor,
+            }
             : baseOptions;
         Store = store;
         Logger = logger ?? NullLogger.Instance;
 
         if (persistRunLedger)
         {
-            RunLedgerStore = store as IRunLedgerStore
+            RunLedgerStore =
+                store as IRunLedgerStore
                 ?? throw new ArgumentException(
                     $"{nameof(persistRunLedger)} is true but {nameof(store)} is null or does not implement {nameof(IRunLedgerStore)}.",
-                    nameof(store));
+                    nameof(store)
+                );
         }
 
         LifecycleServices = lifecycleServices ?? MultiTurnLifecycleServices.Disabled;
@@ -334,11 +417,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         // The conversation store doubles as the lifecycle store when it can, but only for a host
         // that actually asked for lifecycle — persisting to SQLite must not by itself start writing
         // run_lifecycle rows.
-        Lifecycle = new RunTurnLifecycleFinalizer(
-            threadId,
-            LifecycleServices,
-            store as IRunLifecycleStore,
-            Logger);
+        Lifecycle = new RunTurnLifecycleFinalizer(threadId, LifecycleServices, store as IRunLifecycleStore, Logger);
 
         // Create initial channel
         _inputChannel = CreateInputChannel();
@@ -355,7 +434,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                 FullMode = BoundedChannelFullMode.Wait,
                 SingleReader = true,
                 SingleWriter = false,
-            });
+            }
+        );
     }
 
     /// <summary>
@@ -443,7 +523,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             usageMessage,
             ThreadId,
             UsageExecutionKind.Primary,
-            DefaultOptions.ModelId);
+            DefaultOptions.ModelId
+        );
         ledger.RecordUsage(record);
 
         EnsureUsageWriter()?.Schedule();
@@ -485,8 +566,15 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         lock (_usageWriterLock)
         {
             return _usageWriter ??= new UsagePersistenceWriter(
-                    ct => ConversationUsageProjection.SaveAsync(store, ledger.Snapshot(CurrentUsageCompleteness), ledger.SnapshotRecords(), ct),
-                    onError: ex => Logger.LogWarning(ex, "Failed to persist usage snapshot for thread {ThreadId}", ThreadId));
+                ct =>
+                    ConversationUsageProjection.SaveAsync(
+                        store,
+                        ledger.Snapshot(CurrentUsageCompleteness),
+                        ledger.SnapshotRecords(),
+                        ct
+                    ),
+                onError: ex => Logger.LogWarning(ex, "Failed to persist usage snapshot for thread {ThreadId}", ThreadId)
+            );
         }
     }
 
@@ -569,7 +657,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             {
                 Logger.LogError(
                     "Usage flush did not achieve durability for thread {ThreadId}; final usage may remain only in memory",
-                    ThreadId);
+                    ThreadId
+                );
             }
         }
         catch (Exception ex)
@@ -679,7 +768,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// </exception>
     protected (ToolCallResultMessage Old, ToolCallResultMessage New) UpdateToolResultByCallId(
         string toolCallId,
-        Func<ToolCallResultMessage, ToolCallResultMessage> updater)
+        Func<ToolCallResultMessage, ToolCallResultMessage> updater
+    )
     {
         ArgumentException.ThrowIfNullOrEmpty(toolCallId);
         ArgumentNullException.ThrowIfNull(updater);
@@ -687,11 +777,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         lock (_historyLock)
         {
             var index = ConversationHistory.FindLastIndex(m =>
-                m is ToolCallResultMessage tcr && tcr.ToolCallId == toolCallId);
+                m is ToolCallResultMessage tcr && tcr.ToolCallId == toolCallId
+            );
             if (index < 0)
             {
                 throw new InvalidOperationException(
-                    $"No ToolCallResultMessage with ToolCallId '{toolCallId}' found in history.");
+                    $"No ToolCallResultMessage with ToolCallId '{toolCallId}' found in history."
+                );
             }
 
             var old = (ToolCallResultMessage)ConversationHistory[index];
@@ -710,7 +802,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     protected async Task ReplacePersistedAsync(
         ToolCallResultMessage old,
         ToolCallResultMessage updated,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         ArgumentNullException.ThrowIfNull(old);
         ArgumentNullException.ThrowIfNull(updated);
@@ -746,7 +839,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             Logger.LogWarning(
                 ex,
                 "Failed to persist deferred-tool resolution for ToolCallId={ToolCallId}",
-                updated.ToolCallId);
+                updated.ToolCallId
+            );
         }
     }
 
@@ -889,7 +983,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             "Recovered {MessageCount} messages for thread {ThreadId}. LatestRunId: {LatestRunId}",
             messages.Count,
             ThreadId,
-            metadata.LatestRunId);
+            metadata.LatestRunId
+        );
 
         return true;
     }
@@ -963,7 +1058,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         ArgumentNullException.ThrowIfNull(queuedInput);
         ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-        return _inputChannel.Writer.TryWrite(queuedInput) ? ValueTask.CompletedTask : _inputChannel.Writer.WriteAsync(queuedInput, ct);
+        return _inputChannel.Writer.TryWrite(queuedInput)
+            ? ValueTask.CompletedTask
+            : _inputChannel.Writer.WriteAsync(queuedInput, ct);
     }
 
     /// <summary>
@@ -1002,10 +1099,32 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     protected bool TryDrainInputs(out List<QueuedInput> inputs)
     {
         inputs = [];
-        while (_inputChannel.Reader.TryRead(out var item))
+        var work = 0;
+        while (true)
         {
+            // Claim BEFORE the read, not after. TryRead removes the item and drops
+            // PendingInputCount in the same call, so a claim raised afterwards would leave a
+            // window — however narrow — in which HasUnassignedInput reads false for an
+            // acknowledged input that exists only in this method's local list. Speculating one
+            // claim and giving it back on an empty read is what makes the two halves overlap.
+            _ = Interlocked.Increment(ref _inputsInHand);
+            if (!_inputChannel.Reader.TryRead(out var item))
+            {
+                _ = Interlocked.Decrement(ref _inputsInHand);
+                break;
+            }
+
             inputs.Add(item);
+            if (CarriesUnassignedWork(item))
+            {
+                work++;
+            }
         }
+
+        // Settle the speculative claims down to what this batch actually carries. An assignment,
+        // not a decrement: a batch of nothing but internal sentinels settles to zero rather than
+        // leaving a phantom claim that no later release would ever clear.
+        Volatile.Write(ref _inputsInHand, work);
 
         if (inputs.Count > 1)
         {
@@ -1015,22 +1134,107 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         return inputs.Count > 0;
     }
 
+    /// <summary>
+    /// Whether losing <paramref name="item"/> would lose acknowledged work. Internal sentinels —
+    /// the deferred-tool resume marker and the wake-up used to break the loop's channel wait — carry
+    /// no messages and no caller receipt, so a batch made only of them must not hold a host's
+    /// refresh open.
+    /// </summary>
+    private static bool CarriesUnassignedWork(QueuedInput item) => item.Resume == null && item.Input.Messages.Count > 0;
+
+    /// <summary>
+    /// Declares that the inputs this loop had in hand are no longer at risk — they have been folded
+    /// into a run, or persisted into history under one — so <see cref="HasUnassignedInput"/> should
+    /// stop reporting them. Call from any path that consumes a drained batch WITHOUT going through
+    /// <see cref="StartRunAsync"/>; the run-start and injection paths release on their own.
+    /// </summary>
+    protected void ReleaseInputsInHand() => Volatile.Write(ref _inputsInHand, 0);
+
+    /// <summary>
+    /// Converts the in-hand claim on <paramref name="inputs"/> into a RETAINED claim that survives
+    /// later drains, for a loop that parks a drained batch instead of running it immediately.
+    /// Returns the number of items claimed, which the caller must hand back to
+    /// <see cref="ReleaseRetainedInputs"/> once a run owns the batch.
+    /// </summary>
+    /// <remarks>
+    /// Call this on the drain's own thread, between <see cref="TryDrainInputs"/> and the park, and
+    /// before anything can drain again. <c>_inputsInHand</c> is settled by ASSIGNMENT, so the next
+    /// drain publishes only its OWN batch's count — a parked batch that relied on it would silently
+    /// lose its claim to a later drain of one item, and lose it completely to a drain that carries
+    /// no work at all (a resume sentinel or a wake-up settles the field to zero). Retention is
+    /// additive precisely so N parked batches read as N claims, not as the last one's.
+    /// Only work-carrying items are counted, on the same rule <see cref="TryDrainInputs"/> uses, so
+    /// a parked batch of pure sentinels never holds a host's refresh open.
+    /// </remarks>
+    protected int RetainInputs(IReadOnlyCollection<QueuedInput> inputs)
+    {
+        ArgumentNullException.ThrowIfNull(inputs);
+
+        var work = 0;
+        foreach (var item in inputs)
+        {
+            if (CarriesUnassignedWork(item))
+            {
+                work++;
+            }
+        }
+
+        if (work > 0)
+        {
+            _ = Interlocked.Add(ref _inputsRetained, work);
+        }
+
+        return work;
+    }
+
+    /// <summary>
+    /// Gives back a claim taken by <see cref="RetainInputs"/>, once the parked batch it covered has
+    /// been handed to a run (or abandoned). Pass exactly the value <see cref="RetainInputs"/>
+    /// returned.
+    /// </summary>
+    /// <remarks>
+    /// Clamped at zero rather than allowed to go negative. A negative counter would MASK a
+    /// concurrent, legitimate retention — the agent would read idle while an acknowledged input was
+    /// parked, which is the exact failure this counter exists to prevent — so a double release costs
+    /// nothing while an unclamped decrement could cost an input.
+    /// </remarks>
+    protected void ReleaseRetainedInputs(int count)
+    {
+        if (count <= 0)
+        {
+            return;
+        }
+
+        while (true)
+        {
+            var current = Volatile.Read(ref _inputsRetained);
+            if (current <= 0)
+            {
+                return;
+            }
+
+            var next = Math.Max(0, current - count);
+            if (Interlocked.CompareExchange(ref _inputsRetained, next, current) == current)
+            {
+                return;
+            }
+        }
+    }
+
     /// <inheritdoc />
     public virtual ValueTask<SendReceipt> SendAsync(
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
-        CancellationToken ct = default) =>
-        SendAsync(new UserInput(messages, inputId, parentRunId), ct);
+        CancellationToken ct = default
+    ) => SendAsync(new UserInput(messages, inputId, parentRunId), ct);
 
     /// <summary>
     /// <see cref="SendAsync(List{IMessage}, string?, string?, CancellationToken)"/> over a full
     /// <see cref="UserInput"/>, so per-input flags (notably
     /// <see cref="UserInput.SuppressSubAgentSpawning"/>) reach the run instead of being rebuilt away.
     /// </summary>
-    public virtual ValueTask<SendReceipt> SendAsync(
-        UserInput input,
-        CancellationToken ct = default)
+    public virtual ValueTask<SendReceipt> SendAsync(UserInput input, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(input);
         ObjectDisposedException.ThrowIf(_isDisposed, this);
@@ -1058,8 +1262,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
         Logger.LogDebug("Message queued. ReceiptId: {ReceiptId}, InputId: {InputId}", receiptId, inputId);
 
-        return ValueTask.FromResult(
-            new SendReceipt(receiptId, inputId, queuedAt, SpawningSuppressed: suppressed));
+        return ValueTask.FromResult(new SendReceipt(receiptId, inputId, queuedAt, SpawningSuppressed: suppressed));
     }
 
     /// <inheritdoc />
@@ -1067,8 +1270,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
-        CancellationToken ct = default) =>
-        TrySendAsync(new UserInput(messages, inputId, parentRunId), ct);
+        CancellationToken ct = default
+    ) => TrySendAsync(new UserInput(messages, inputId, parentRunId), ct);
 
     /// <summary>
     /// Whether THIS agent will actually ENFORCE <see cref="UserInput.SuppressSubAgentSpawning"/> on the run
@@ -1090,8 +1293,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// spawn, and echoing the flag back would let an agent that ignores it advertise a guarantee nothing is
     /// keeping. Shared by both send paths so the two cannot drift apart.
     /// </summary>
-    private bool WillSuppressSpawning(UserInput input) =>
-        input.SuppressSubAgentSpawning && EnforcesSpawnSuppression;
+    private bool WillSuppressSpawning(UserInput input) => input.SuppressSubAgentSpawning && EnforcesSpawnSuppression;
 
     /// <summary>
     /// <see cref="TrySendAsync(List{IMessage}, string?, string?, CancellationToken)"/> over a full
@@ -1099,9 +1301,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <see cref="UserInput.SuppressSubAgentSpawning"/> — survive as far as the run that consumes them
     /// instead of being rebuilt away from a message list.
     /// </summary>
-    public virtual async ValueTask<SendReceipt?> TrySendAsync(
-        UserInput input,
-        CancellationToken ct = default)
+    public virtual async ValueTask<SendReceipt?> TrySendAsync(UserInput input, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(input);
         ObjectDisposedException.ThrowIf(_isDisposed, this);
@@ -1135,35 +1335,48 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             return null;
         }
 
-        Logger.LogDebug("Message queued via TrySendAsync. ReceiptId: {ReceiptId}, InputId: {InputId}", receiptId, inputId);
-
-        return new SendReceipt(
+        Logger.LogDebug(
+            "Message queued via TrySendAsync. ReceiptId: {ReceiptId}, InputId: {InputId}",
             receiptId,
-            inputId,
-            queuedAt,
-            SpawningSuppressed: WillSuppressSpawning(input));
+            inputId
+        );
+
+        return new SendReceipt(receiptId, inputId, queuedAt, SpawningSuppressed: WillSuppressSpawning(input));
     }
 
     /// <inheritdoc />
     public virtual async IAsyncEnumerable<IMessage> ExecuteRunAsync(
         UserInput userInput,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(userInput);
         ObjectDisposedException.ThrowIf(_isDisposed, this);
 
         // Subscribe first to ensure we don't miss any messages
         var subscriberId = Guid.NewGuid().ToString("N");
-        var outputChannel = Channel.CreateBounded<IMessage>(new BoundedChannelOptions(_outputChannelCapacity)
-        {
-            FullMode = BoundedChannelFullMode.Wait,
-            SingleReader = true,
-            SingleWriter = true,
-        });
+        var outputChannel = Channel.CreateBounded<IMessage>(
+            new BoundedChannelOptions(_outputChannelCapacity)
+            {
+                FullMode = BoundedChannelFullMode.Wait,
+                SingleReader = true,
+                SingleWriter = true,
+            }
+        );
 
-        if (!_outputSubscribers.TryAdd(subscriberId, outputChannel))
+        // Register under the SAME lock the terminal drain snapshots under, so this is not a
+        // check-then-act against the `_isDisposed` test above: either this subscriber is in the set the
+        // drain will complete, or the gate is already closed and it is refused outright. Admitting one
+        // after the drain would leave the caller enumerating a channel with no writer left to complete
+        // it — a parked run, not an error.
+        lock (_replayLock)
         {
-            throw new InvalidOperationException("Failed to create subscriber for ExecuteRun");
+            ObjectDisposedException.ThrowIf(_subscribersClosed, this);
+
+            if (!_outputSubscribers.TryAdd(subscriberId, outputChannel))
+            {
+                throw new InvalidOperationException("Failed to create subscriber for ExecuteRun");
+            }
         }
 
         try
@@ -1208,10 +1421,11 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                         // pending completion is the terminal one. Fire fallback.
                         Logger.LogWarning(
                             "ExecuteRun terminating on RunId {RunId} via deferred fallback — receipt {ReceiptId} was never observed in a RunAssignmentMessage and no further messages arrived within {GraceMs}ms. "
-                            + "This indicates the implementation did not publish a receipt-correlated assignment for this run.",
+                                + "This indicates the implementation did not publish a receipt-correlated assignment for this run.",
                             pendingFallbackRunId,
                             receiptId,
-                            (int)FallbackGracePeriod.TotalMilliseconds);
+                            (int)FallbackGracePeriod.TotalMilliseconds
+                        );
                         yield break;
                     }
                 }
@@ -1285,40 +1499,68 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     #region Output API
 
     /// <inheritdoc />
-    public async IAsyncEnumerable<IMessage> SubscribeAsync(
-        [EnumeratorCancellation] CancellationToken ct = default)
+    public async IAsyncEnumerable<IMessage> SubscribeAsync([EnumeratorCancellation] CancellationToken ct = default)
     {
         var subscriberId = Guid.NewGuid().ToString("N");
-        var channel = Channel.CreateBounded<IMessage>(new BoundedChannelOptions(_outputChannelCapacity)
-        {
-            FullMode = BoundedChannelFullMode.Wait,
-            SingleReader = true,
-            SingleWriter = false,
-        });
+        var channel = Channel.CreateBounded<IMessage>(
+            new BoundedChannelOptions(_outputChannelCapacity)
+            {
+                FullMode = BoundedChannelFullMode.Wait,
+                SingleReader = true,
+                SingleWriter = false,
+            }
+        );
 
         // Register this subscriber AND snapshot the in-flight run's buffered messages under ONE lock,
         // so a message published concurrently is delivered EITHER via this replay snapshot OR via
         // the live channel below — never both, never neither. See `_replayLock` remarks.
         //
-        // NOTHING ENFORCES THIS. Moving the registration below out of the lock — the whole of the
+        // The same lock is what makes registration atomic against DISPOSAL's terminal drain: `_subscribersClosed`
+        // is set under it, and the drain snapshots the subscriber map under it. A subscriber that arrives after
+        // the gate closed is refused here and handed an already-completed channel, so the enumerator below ends
+        // immediately — the same observable outcome as registering a moment earlier and being drained. Before
+        // this, such a subscriber was registered into a map the drain had already listed, and its enumerator
+        // parked on `ReadAllAsync` forever with no writer left alive to complete it.
+        //
+        // NOTHING ENFORCES THE REPLAY HALF. Moving the registration below out of the lock — the whole of the
         // defect — was measured to leave every test in MultiTurnAgentReplayTests green, 20 of 20 on
         // the test named for this property and 10 of 10 across the file. The window is a few
         // instructions wide and opens inside this method, so no test can schedule a publish into it
-        // from outside. Treat the guarantee above as a requirement the reader must uphold by hand,
-        // NOT as one the suite will catch you breaking. See #107 for the options.
+        // from outside. Treat the replay guarantee above as a requirement the reader must uphold by hand,
+        // NOT as one the suite will catch you breaking. See #107 for the options. (The disposal half IS
+        // covered: MultiTurnAgentTerminalLifecycleTests parks disposal and then subscribes.)
         IReadOnlyList<IMessage> replay;
+        bool refused;
         lock (_replayLock)
         {
-            _outputSubscribers[subscriberId] = channel;
-            replay = _replayRunActive && _replayBuffer.Count > 0
-                ? [.. _replayBuffer]
-                : [];
+            refused = _subscribersClosed;
+            if (refused)
+            {
+                replay = [];
+            }
+            else
+            {
+                _outputSubscribers[subscriberId] = channel;
+                replay = _replayRunActive && _replayBuffer.Count > 0 ? [.. _replayBuffer] : [];
+            }
         }
 
-        Logger.LogDebug(
-            "Subscriber {SubscriberId} connected (replaying {ReplayCount} in-flight message(s))",
-            subscriberId,
-            replay.Count);
+        if (refused)
+        {
+            _ = channel.Writer.TryComplete();
+            Logger.LogDebug(
+                "Subscriber {SubscriberId} arrived after the agent began disposing; ending its stream immediately",
+                subscriberId
+            );
+        }
+        else
+        {
+            Logger.LogDebug(
+                "Subscriber {SubscriberId} connected (replaying {ReplayCount} in-flight message(s))",
+                subscriberId,
+                replay.Count
+            );
+        }
 
         try
         {
@@ -1399,7 +1641,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                                 + "reconnecting mid-run may miss the earliest deltas of this run (persisted history "
                                 + "still covers its completed messages).",
                             _maxReplayBufferSize,
-                            _maxReplayBufferBytes);
+                            _maxReplayBufferBytes
+                        );
                     }
                 }
 
@@ -1460,7 +1703,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                 "Dropping slow subscriber {SubscriberId}: output channel full at capacity {Capacity}; "
                     + "the live run is not blocked and the client can reconnect to resume.",
                 subscriberId,
-                _outputChannelCapacity);
+                _outputChannelCapacity
+            );
         }
     }
 
@@ -1481,18 +1725,18 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             case TextMessage t:
                 return baseOverhead + ((t.Text?.Length ?? 0) * 2L);
             case ToolsCallMessage tc:
+            {
+                var bytes = baseOverhead;
+                if (tc.ToolCalls is { } calls)
                 {
-                    var bytes = baseOverhead;
-                    if (tc.ToolCalls is { } calls)
+                    foreach (var call in calls)
                     {
-                        foreach (var call in calls)
-                        {
-                            bytes += ((call.FunctionName?.Length ?? 0) + (call.FunctionArgs?.Length ?? 0)) * 2L;
-                        }
+                        bytes += ((call.FunctionName?.Length ?? 0) + (call.FunctionArgs?.Length ?? 0)) * 2L;
                     }
-
-                    return bytes;
                 }
+
+                return bytes;
+            }
 
             default:
                 return baseOverhead;
@@ -1541,7 +1785,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                 Logger.LogWarning(
                     ex,
                     "History recovery failed for thread {ThreadId}; starting with empty history",
-                    ThreadId);
+                    ThreadId
+                );
             }
         }
 
@@ -1670,50 +1915,105 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
-        if (_isDisposed)
+        if (Interlocked.CompareExchange(ref _disposeGate, 1, 0) != 0)
         {
+            // Another caller owns disposal. Await THEIR completion so this call returns only once the
+            // agent really is disposed, and rethrows the identical failure if their teardown threw.
+            await _disposeCompletion.Task;
             return;
         }
 
+        try
+        {
+            await DisposeCoreAsync();
+            _disposeCompletion.SetResult();
+        }
+        catch (Exception ex)
+        {
+            // Publish before rethrowing so waiters and this caller observe the same exception object.
+            _disposeCompletion.SetException(ex);
+
+            // Reading .Exception marks the boundary task observed. Without it, a disposal that faulted
+            // with no concurrent caller leaves a faulted Task nobody ever awaits, which surfaces later as
+            // a TaskScheduler.UnobservedTaskException — a second, misattributed report of a failure this
+            // caller is already throwing.
+            _ = _disposeCompletion.Task.Exception;
+
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// The teardown itself. Runs exactly once, for exactly one caller — see <c>_disposeGate</c>.
+    /// </summary>
+    private async Task DisposeCoreAsync()
+    {
         _isDisposed = true;
 
-        // Before StopAsync, so an internal enqueue still parked on a full channel is released
-        // rather than holding the loop's shutdown open behind it.
-        await _lifetimeCts.CancelAsync();
-
-        await StopAsync();
-
-        // Disposal is a terminal boundary: if no run-level outcome stamped completeness (e.g. the loop was
-        // disposed without RunAsync having reached its finally, or only descendant usage was relayed), mark
-        // Complete — but never upgrade a run's Partial. force: false only advances from InProgress (#196).
-        SetUsageCompleteness(UsageCompleteness.Complete, force: false);
-
-        // Normally a no-op: StopAsync has already closed whatever was in flight. It matters for an
-        // agent disposed without ever having been started-and-stopped, whose lifecycle runs would
-        // otherwise never be closed by anyone.
-        await Lifecycle.TerminalizeOutstandingAsync(LifecycleRunOutcomes.Interrupted, CancellationToken.None);
-
-        // Final durability boundary: flush any usage write scheduled by a late/background descendant that
-        // finished after the run stopped, so it is persisted rather than lost at shutdown (#196).
-        await FlushUsageAsync();
-
-        _internalCts?.Dispose();
-        _lifetimeCts.Dispose();
-
-        await OnDisposeAsync();
-
-        // Complete input channel on disposal (final cleanup - no restart possible)
-        _ = _inputChannel.Writer.TryComplete();
-
-        // Close all subscriber channels
-        foreach (var (_, channel) in _outputSubscribers)
+        // Close the subscriber gate BEFORE the teardown below: everything from here on is shutdown, and
+        // a subscriber that joined during it would be registered after the drain at the bottom had
+        // already listed the subscribers it will complete. Subscribers already registered are NOT
+        // dropped here — the shutdown path still publishes a run's terminal lifecycle messages to them,
+        // and the drain ends them at the very end.
+        lock (_replayLock)
         {
-            _ = channel.Writer.TryComplete();
+            _subscribersClosed = true;
         }
 
-        _outputSubscribers.Clear();
+        try
+        {
+            // Before StopAsync, so an internal enqueue still parked on a full channel is released
+            // rather than holding the loop's shutdown open behind it.
+            await _lifetimeCts.CancelAsync();
 
-        GC.SuppressFinalize(this);
+            await StopAsync();
+
+            // Disposal is a terminal boundary: if no run-level outcome stamped completeness (e.g. the loop was
+            // disposed without RunAsync having reached its finally, or only descendant usage was relayed), mark
+            // Complete — but never upgrade a run's Partial. force: false only advances from InProgress (#196).
+            SetUsageCompleteness(UsageCompleteness.Complete, force: false);
+
+            // Normally a no-op: StopAsync has already closed whatever was in flight. It matters for an
+            // agent disposed without ever having been started-and-stopped, whose lifecycle runs would
+            // otherwise never be closed by anyone.
+            await Lifecycle.TerminalizeOutstandingAsync(LifecycleRunOutcomes.Interrupted, CancellationToken.None);
+
+            // Final durability boundary: flush any usage write scheduled by a late/background descendant that
+            // finished after the run stopped, so it is persisted rather than lost at shutdown (#196).
+            await FlushUsageAsync();
+
+            _internalCts?.Dispose();
+            _lifetimeCts.Dispose();
+
+            await OnDisposeAsync();
+        }
+        finally
+        {
+            // The drain runs even when the teardown above threw. A channel that is never completed does
+            // not fail loudly: its subscriber's enumerator simply never ends, so ending them must not be
+            // conditional on a clean shutdown.
+
+            // Complete input channel on disposal (final cleanup - no restart possible)
+            _ = _inputChannel.Writer.TryComplete();
+
+            // Close all subscriber channels, taking the snapshot under the same lock that guards
+            // registration so the set drained here is provably every subscriber the agent ever admitted.
+            KeyValuePair<string, Channel<IMessage>>[] remaining;
+            lock (_replayLock)
+            {
+#pragma warning disable IDE0305 // ToArray(): see PublishToAllAsync for why a collection expression tears here.
+                remaining = _outputSubscribers.ToArray();
+#pragma warning restore IDE0305
+                _outputSubscribers.Clear();
+            }
+
+            foreach (var (_, channel) in remaining)
+            {
+                _ = channel.Writer.TryComplete();
+            }
+
+            GC.SuppressFinalize(this);
+        }
     }
 
     #endregion
@@ -1736,8 +2036,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <returns>
     /// A tuple of (parent run id from caller input or null, whether caller explicitly forked).
     /// </returns>
-    protected (string? ParentRunId, bool IsExplicitFork) ResolveBatchParent(
-        IReadOnlyList<QueuedInput> inputs)
+    protected (string? ParentRunId, bool IsExplicitFork) ResolveBatchParent(IReadOnlyList<QueuedInput> inputs)
     {
         ArgumentNullException.ThrowIfNull(inputs);
 
@@ -1771,7 +2070,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                 "Mixed ParentRunId values in batch ({Count} distinct: {Parents}); using first-encountered '{First}'.",
                 distinct.Count,
                 string.Join(",", distinct),
-                first);
+                first
+            );
         }
 
         return (first, first != null);
@@ -1813,7 +2113,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         bool wasForked = false,
         string? runId = null,
         string? causeKind = null,
-        string? causeToolCallId = null)
+        string? causeToolCallId = null
+    )
     {
         ArgumentNullException.ThrowIfNull(inputs);
 
@@ -1827,15 +2128,23 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             _currentRunId = runId;
         }
 
+        // The run now names these inputs, so CurrentRunId carries the "busy" signal on their behalf
+        // and the in-hand claim can go. Ordered strictly AFTER the assignment above: releasing first
+        // would reopen — for exactly the length of this statement — the window the claim exists to
+        // close.
+        ReleaseInputsInHand();
+
         if (RunLedgerStore != null)
         {
             var createdAt = DateTimeOffset.UtcNow;
             await RunLedgerStore.UpsertRunLedgerAsync(
                 new RunLedgerEntry(ThreadId, runId, RunStatus.Queued, inputIds, createdAt, createdAt),
-                ct);
+                ct
+            );
             await RunLedgerStore.UpsertRunLedgerAsync(
                 new RunLedgerEntry(ThreadId, runId, RunStatus.InProgress, inputIds, createdAt, DateTimeOffset.UtcNow),
-                ct);
+                ct
+            );
 
             // Now folded into the run's own InputIds above — the pre-run acceptance record has
             // served its purpose (see TrySendAsync) and would otherwise accumulate forever.
@@ -1852,14 +2161,16 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             causeKind: causeKind,
             causeToolCallId: causeToolCallId,
             wasForked: wasForked,
-            ct: ct);
+            ct: ct
+        );
 
         Logger.LogInformation(
             "Starting run {RunId} (parent: {ParentRunId}, generation: {GenerationId}, inputs: {InputCount})",
             runId,
             parentRunId ?? "none",
             generationId,
-            inputs.Count);
+            inputs.Count
+        );
 
         return new RunAssignment(runId, generationId, inputIds, parentRunId);
     }
@@ -1875,8 +2186,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// reported by the finalizer with the run's own outcome, which is what keeps error,
     /// cancellation, and teardown from needing a copy of this logic in each loop.
     /// </remarks>
-    protected void BeginTurn(string runId, string generationId) =>
-        Lifecycle.TurnStarted(runId, generationId);
+    protected void BeginTurn(string runId, string generationId) => Lifecycle.TurnStarted(runId, generationId);
 
     /// <summary>
     /// Folds a message the current turn produced into that turn's lifecycle report.
@@ -1909,12 +2219,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         string runId,
         string generationId,
         string? outcome = null,
-        CancellationToken ct = default) =>
-        Lifecycle.TurnCompletedAsync(
-            runId,
-            generationId,
-            outcome ?? LifecycleTurnOutcomes.Completed,
-            ct: ct);
+        CancellationToken ct = default
+    ) => Lifecycle.TurnCompletedAsync(runId, generationId, outcome ?? LifecycleTurnOutcomes.Completed, ct: ct);
 
     /// <summary>
     /// Reports the discovered context a provider request is about to carry, reading it back out of
@@ -1940,13 +2246,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         string runId,
         string generationId,
         IEnumerable<IMessage>? request,
-        CancellationToken ct = default) =>
+        CancellationToken ct = default
+    ) =>
         Lifecycle.PublishesEvents
-            ? Lifecycle.ContextLoadedAsync(
-                runId,
-                generationId,
-                RenderedContextBlock.ScanRequest(request),
-                ct)
+            ? Lifecycle.ContextLoadedAsync(runId, generationId, RenderedContextBlock.ScanRequest(request), ct)
             : Task.CompletedTask;
 
     /// <summary>
@@ -1968,13 +2271,15 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         string generationId,
         string? prompt,
         string? phase = null,
-        CancellationToken ct = default) =>
+        CancellationToken ct = default
+    ) =>
         Lifecycle.PublishesEvents
             ? Lifecycle.ContextLoadedAsync(
                 runId,
                 generationId,
                 RenderedContextBlock.Scan(prompt, phase ?? LifecycleContextPhases.MidSession),
-                ct)
+                ct
+            )
             : Task.CompletedTask;
 
     /// <summary>
@@ -1991,9 +2296,17 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     protected async Task RecordInjectedInputsAsync(
         string runId,
         IReadOnlyList<string> injectedInputIds,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(injectedInputIds);
+
+        // These inputs have been folded into a live run, so the run's own id is what marks the agent
+        // busy from here on. Released before the store guard below, because the in-hand claim is not
+        // a persistence concern: a host with no run ledger would otherwise keep a claim raised by the
+        // injection drain until the next drain, which for a final-turn injection is until the next
+        // message arrives — a refresh blocked indefinitely on work that is no longer at risk.
+        ReleaseInputsInHand();
 
         if (RunLedgerStore == null || injectedInputIds.Count == 0)
         {
@@ -2006,14 +2319,20 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             Logger.LogWarning(
                 "No run ledger entry found for RunId {RunId} to record injected inputs {InputIds}",
                 runId,
-                string.Join(",", injectedInputIds));
+                string.Join(",", injectedInputIds)
+            );
             return;
         }
 
         var mergedInputIds = existing.InputIds.Union(injectedInputIds, StringComparer.Ordinal).ToList();
         await RunLedgerStore.UpsertRunLedgerAsync(
-            existing with { InputIds = mergedInputIds, UpdatedAt = DateTimeOffset.UtcNow },
-            ct);
+            existing with
+            {
+                InputIds = mergedInputIds,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            },
+            ct
+        );
 
         // Same cleanup as StartRunAsync: these ids are now covered by the run's InputIds.
         foreach (var injectedInputId in injectedInputIds)
@@ -2055,7 +2374,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         bool isError = false,
         string? errorMessage = null,
         string? outcome = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         if (RunLedgerStore != null)
         {
@@ -2064,14 +2384,20 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             {
                 var status = isError ? RunStatus.Errored : RunStatus.Completed;
                 await RunLedgerStore.UpsertRunLedgerAsync(
-                    existing with { Status = status, UpdatedAt = DateTimeOffset.UtcNow },
-                    ct);
+                    existing with
+                    {
+                        Status = status,
+                        UpdatedAt = DateTimeOffset.UtcNow,
+                    },
+                    ct
+                );
             }
             else
             {
                 Logger.LogWarning(
                     "No run ledger entry found for RunId {RunId} at completion; skipping terminal ledger write",
-                    runId);
+                    runId
+                );
             }
         }
 
@@ -2082,23 +2408,25 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             runId,
             generationId,
             outcome ?? (isError ? LifecycleRunOutcomes.Error : LifecycleRunOutcomes.Completed),
-            isError
-                ? new LifecycleError { Message = errorMessage ?? "The run failed." }
-                : null,
-            ct: ct);
+            isError ? new LifecycleError { Message = errorMessage ?? "The run failed." } : null,
+            ct: ct
+        );
 
-        await PublishToAllAsync(new RunCompletedMessage
-        {
-            CompletedRunId = runId,
-            WasForked = wasForked,
-            ForkedToRunId = forkedToRunId,
-            ThreadId = ThreadId,
-            GenerationId = generationId,
-            HasPendingMessages = pendingMessageCount > 0,
-            PendingMessageCount = pendingMessageCount,
-            IsError = isError,
-            ErrorMessage = errorMessage,
-        }, ct);
+        await PublishToAllAsync(
+            new RunCompletedMessage
+            {
+                CompletedRunId = runId,
+                WasForked = wasForked,
+                ForkedToRunId = forkedToRunId,
+                ThreadId = ThreadId,
+                GenerationId = generationId,
+                HasPendingMessages = pendingMessageCount > 0,
+                PendingMessageCount = pendingMessageCount,
+                IsError = isError,
+                ErrorMessage = errorMessage,
+            },
+            ct
+        );
 
         lock (_stateLock)
         {
@@ -2157,13 +2485,19 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                 if (run.Status is RunStatus.Queued or RunStatus.InProgress)
                 {
                     await RunLedgerStore.UpsertRunLedgerAsync(
-                        run with { Status = RunStatus.Interrupted, UpdatedAt = DateTimeOffset.UtcNow },
-                        ct);
+                        run with
+                        {
+                            Status = RunStatus.Interrupted,
+                            UpdatedAt = DateTimeOffset.UtcNow,
+                        },
+                        ct
+                    );
                     Logger.LogWarning(
                         "Marking dangling run {RunId} (status {Status}) Interrupted on restart for thread {ThreadId}",
                         run.RunId,
                         run.Status,
-                        ThreadId);
+                        ThreadId
+                    );
                 }
             }
 
@@ -2179,12 +2513,14 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                 var now = DateTimeOffset.UtcNow;
                 await RunLedgerStore.UpsertRunLedgerAsync(
                     new RunLedgerEntry(ThreadId, orphanRunId, RunStatus.Interrupted, [inputId], now, now),
-                    ct);
+                    ct
+                );
                 Logger.LogWarning(
                     "Synthesized orphan Interrupted run {RunId} for accepted-but-never-assigned InputId {InputId} on restart for thread {ThreadId}",
                     orphanRunId,
                     inputId,
-                    ThreadId);
+                    ThreadId
+                );
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -2193,7 +2529,11 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         }
         catch (Exception ex)
         {
-            Logger.LogWarning(ex, "Run-ledger reconciliation failed for thread {ThreadId}; continuing without it", ThreadId);
+            Logger.LogWarning(
+                ex,
+                "Run-ledger reconciliation failed for thread {ThreadId}; continuing without it",
+                ThreadId
+            );
         }
     }
 

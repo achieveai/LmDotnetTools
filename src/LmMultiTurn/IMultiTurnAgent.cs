@@ -32,6 +32,33 @@ public interface IMultiTurnAgent : IAsyncDisposable
     bool IsRunning { get; }
 
     /// <summary>
+    /// True while this agent is holding input it has already ACKNOWLEDGED — a
+    /// <see cref="SendReceipt"/> was handed back, and for a run-ledger-backed implementation an
+    /// accepted-input record was durably written — but has not yet folded into a run.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="CurrentRunId"/> only becomes non-null once the loop has DRAINED an accepted input
+    /// and started a run for it. Between the acknowledgement and that assignment the agent reads as
+    /// idle on every other signal this interface exposes, so a host that tears an agent down on the
+    /// strength of "no run is in flight" — a pooled sandbox refresh, an eviction — discards work it
+    /// has already promised to do, and does it silently: the caller holds a receipt, the input is
+    /// gone with the disposed agent's input channel, and nothing errors.
+    /// </para>
+    /// <para>
+    /// Any such host MUST consult this property alongside <see cref="CurrentRunId"/> and treat a
+    /// true reading as "busy, come back later". It stays true for as long as losing the input would
+    /// lose acknowledged work, which includes input the loop has drained but not yet assigned.
+    /// </para>
+    /// <para>
+    /// Defaults to <c>false</c> for implementations that have no input queue of their own (a
+    /// collect-only or delegating agent), which is the honest answer for them: they never
+    /// acknowledge an input they could then drop.
+    /// </para>
+    /// </remarks>
+    bool HasUnassignedInput => false;
+
+    /// <summary>
     /// Enqueue messages for processing. Returns immediately with a receipt (non-blocking).
     /// The actual run assignment is published to subscribers via RunAssignmentMessage
     /// when the implementation decides to start processing.
@@ -45,7 +72,8 @@ public interface IMultiTurnAgent : IAsyncDisposable
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 
     /// <summary>
     /// Non-blocking variant of <see cref="SendAsync"/> for callers (e.g. an HTTP request handler)
@@ -64,7 +92,8 @@ public interface IMultiTurnAgent : IAsyncDisposable
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 
     /// <summary>
     /// Execute a single run synchronously (foreground-style).
@@ -74,9 +103,7 @@ public interface IMultiTurnAgent : IAsyncDisposable
     /// <param name="userInput">The user input containing messages to process</param>
     /// <param name="ct">Cancellation token</param>
     /// <returns>AsyncEnumerable of all messages produced during this run</returns>
-    IAsyncEnumerable<IMessage> ExecuteRunAsync(
-        UserInput userInput,
-        CancellationToken ct = default);
+    IAsyncEnumerable<IMessage> ExecuteRunAsync(UserInput userInput, CancellationToken ct = default);
 
     /// <summary>
     /// Subscribe to output messages from the agent.
@@ -84,8 +111,7 @@ public interface IMultiTurnAgent : IAsyncDisposable
     /// </summary>
     /// <param name="ct">Cancellation token</param>
     /// <returns>AsyncEnumerable of messages produced by the agent</returns>
-    IAsyncEnumerable<IMessage> SubscribeAsync(
-        CancellationToken ct = default);
+    IAsyncEnumerable<IMessage> SubscribeAsync(CancellationToken ct = default);
 
     /// <summary>
     /// Start the background loop. Runs until cancellation or disposal.

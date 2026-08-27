@@ -23,6 +23,11 @@ internal abstract class DelegatingLoop(IMultiTurnAgent inner) : IMultiTurnAgent
 
     public bool IsRunning => inner.IsRunning;
 
+    /// <summary>Forwarded rather than left on the interface default: answering <c>false</c> here while the
+    /// inner loop is holding an acknowledged input would tell a pooling host the conversation is idle and
+    /// invite it to dispose the very agent that owes a turn.</summary>
+    public bool HasUnassignedInput => inner.HasUnassignedInput;
+
     public ValueTask<SendReceipt> SendAsync(
         List<IMessage> messages,
         string? inputId = null,

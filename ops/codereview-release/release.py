@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import socket
 import sqlite3
 import stat
@@ -33,6 +34,13 @@ VERIFICATION_FORMAT_VERSION = 3
 COMMAND_TIMEOUT_SECONDS = 900
 SEAL = ".release-seal.json"
 EXCLUDED_PARTS = {".git", ".run", ".logs", "bin", "obj", "node_modules"}
+# The single supervised handle for the two listeners. Both units declare PartOf= this target,
+# so stopping it is the deliberate release of ports 5080/5081 and starting it is the hand-back.
+SUPERVISOR_UNIT = "codereview-pair.target"
+# Candidate processes are started by this tool rather than the supervisor, so their identity has
+# to survive the tool: a crashed activation must still be able to take the ports back from them.
+CANDIDATE_PROCESSES = "candidate-processes.json"
+PORT_HANDOVER_TIMEOUT_SECONDS = 30.0
 
 
 def _utc() -> str:
@@ -616,13 +624,27 @@ class ActivationAdapter:
     def backup_database(self, release_id: str) -> str: self._missing(); return ""
     def migration_copy_gate(self, release_id: str) -> None: self._missing()
     def drain(self, previous: str) -> None: self._missing()
+    def stop_incumbent(self, previous: str) -> None:
+        """Take the listener ports from whoever owns them before the candidate binds them.
+
+        The candidate reuses the incumbent's ports, so this must leave them free or the
+        candidate start fails with EADDRINUSE.
+        """
+        self._missing()
+
     def start_host(self, release: Path) -> None: self._missing()
     def canary_host(self, identity: dict[str, Any]) -> None: self._missing()
     def start_daemon_held(self, release: Path) -> None: self._missing()
     def handshake(self, identity: dict[str, Any]) -> None: self._missing()
     def enable_admission(self, release_id: str) -> None: self._missing()
     def stabilize(self, release_id: str) -> None: self._missing()
-    def rollback(self, previous: str, backup: str) -> None: self._missing()
+
+    def rollback(self, previous: str, backup: str) -> None:
+        """Put `previous` back in service: stop the candidate, give it the ports back, and
+        undo the drain. Restoring the pointer alone leaves a live but non-admitting system.
+        """
+        self._missing()
+
     def health(self, component: str) -> dict[str, Any]: self._missing(); return {}
 
 
@@ -660,6 +682,36 @@ def _events(root: Path) -> list[dict[str, Any]]:
                 break
             raise RuntimeError(f"activation journal is corrupt at record {index + 1}") from exc
     return events
+
+
+def _record_candidate(root: Path, component: str, pid: int, executable: str) -> None:
+    """Persist a candidate's identity so a later run can take the ports back from it."""
+    path = root / CANDIDATE_PROCESSES
+    try:
+        rows = json.loads(path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        rows = {}
+    if not isinstance(rows, dict):
+        rows = {}
+    rows[component] = {"pid": pid, "executable": executable}
+    atomic_write(path, _json(rows))
+
+
+def _recorded_candidates(root: Path) -> dict[str, dict[str, Any]]:
+    try:
+        rows = json.loads((root / CANDIDATE_PROCESSES).read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    return rows if isinstance(rows, dict) else {}
+
+
+def _is_candidate_process(pid: int, executable: str) -> bool:
+    """Guard against pid reuse: the live process must still be the recorded executable."""
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return False
+    return executable in raw.decode(errors="replace").split("\0")
 
 
 @contextlib.contextmanager
@@ -737,6 +789,10 @@ def activate(root: Path, release_id: str, adapter: ActivationAdapter | None = No
         steps: list[tuple[str, Callable[[], Any]]] = [
             ("drained", lambda: _run_adapter_boundary("drain", lambda: adapter.drain(old))),
             (
+                "incumbent-stopped",
+                lambda: _run_adapter_boundary("stop-incumbent", lambda: adapter.stop_incumbent(old)),
+            ),
+            (
                 "host-canary",
                 lambda: (
                     _run_adapter_boundary(
@@ -803,12 +859,16 @@ class LocalActivationAdapter(ActivationAdapter):
         daemon_url: str,
         control_socket: Path,
         profile: str,
+        supervisor_unit: str = SUPERVISOR_UNIT,
+        runner: CommandRunner | None = None,
     ):
         self.root = root
         self.database = database
         self.urls = {"host": host_url.rstrip("/"), "daemon": daemon_url.rstrip("/")}
         self.control_socket = control_socket
         self.profile = profile
+        self.supervisor_unit = supervisor_unit
+        self.runner = runner or CommandRunner()
         self.processes: dict[str, subprocess.Popen[bytes]] = {}
 
     def backup_database(self, release_id: str) -> str:
@@ -826,7 +886,7 @@ class LocalActivationAdapter(ActivationAdapter):
         shutil.copy2(self.database, check)
         try:
             executable = self.root / "releases" / release_id / "daemon" / "CodeReviewDaemon.Sample"
-            result = CommandRunner().run(
+            result = self.runner.run(
                 [str(executable), "--verify-database-migration", str(check)],
                 executable.parent,
                 env={**os.environ, "ASPNETCORE_ENVIRONMENT": "Production", "DOTNET_ENVIRONMENT": "Production"},
@@ -848,18 +908,74 @@ class LocalActivationAdapter(ActivationAdapter):
         finally:
             check.unlink(missing_ok=True)
 
-    def _control(self, command: str) -> None:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-            client.settimeout(10)
-            client.connect(str(self.control_socket))
-            client.sendall((command + "\n").encode())
-            response = client.recv(128).decode().strip()
+    def _control(self, command: str, wait: float = 0.0) -> None:
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                    client.settimeout(10)
+                    client.connect(str(self.control_socket))
+                    client.sendall((command + "\n").encode())
+                    response = client.recv(128).decode().strip()
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.1)
+                continue
             if response != "ok":
                 raise RuntimeError(f"daemon control command {command!r} failed: {response}")
+            return
 
     def drain(self, previous: str) -> None:
         if previous and self.control_socket.exists():
             self._control("drain")
+
+    def _systemctl(self, verb: str) -> None:
+        self.runner.run(["systemctl", "--user", verb, self.supervisor_unit], self.root, timeout=120)
+
+    def _address(self, component: str) -> tuple[str, int]:
+        authority = self.urls[component].split("://", 1)[-1].split("/", 1)[0]
+        host, separator, port = authority.rpartition(":")
+        if not separator or not port.isdigit():
+            raise RuntimeError(f"{component} url must name an explicit port: {self.urls[component]}")
+        return host or "127.0.0.1", int(port)
+
+    def _wait_port_bindable(self, component: str, timeout: float | None = None) -> None:
+        """Prove the candidate can actually take the port, not merely that nothing answers on it.
+
+        A refused connect is not proof of ownership transfer: a socket that is bound but has not
+        called listen() refuses connections and still holds the address, so a connect-based gate
+        passes and the candidate then dies on EADDRINUSE. Mirror the listener instead — same
+        family, same SO_REUSEADDR, same bind and listen the candidate performs — and release it.
+        """
+        host, port = self._address(component)
+        deadline = time.monotonic() + (PORT_HANDOVER_TIMEOUT_SECONDS if timeout is None else timeout)
+        while True:
+            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                probe.bind((host, port))
+                probe.listen(1)
+                return
+            except OSError as exc:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        f"{component} port {port} is still owned after stopping {self.supervisor_unit}: {exc}"
+                    ) from exc
+            finally:
+                # Closing a listener that never accepted a connection leaves no TIME_WAIT, so the
+                # candidate can bind immediately after this returns.
+                probe.close()
+            time.sleep(0.1)
+
+    def stop_incumbent(self, previous: str) -> None:
+        # Two things can own the ports: the supervisor, and an unsupervised candidate left by an
+        # earlier activation. Ownership transfer has to be deliberate about both.
+        self._systemctl("stop")
+        self._stop_candidates()
+        for component in ("host", "daemon"):
+            self._wait_port_bindable(component)
+        journal(self.root, "incumbent-released", previous=previous, unit=self.supervisor_unit)
 
     def _start(self, component: str, executable: Path, args: list[str]) -> None:
         log_dir = self.root / "process-logs"
@@ -874,6 +990,7 @@ class LocalActivationAdapter(ActivationAdapter):
             start_new_session=True,
         )
         self.processes[component] = process
+        _record_candidate(self.root, component, process.pid, str(executable))
 
     def start_host(self, release: Path) -> None:
         self._start("host", release / "host" / "LmStreaming.Sample", ["--urls", self.urls["host"]])
@@ -918,17 +1035,50 @@ class LocalActivationAdapter(ActivationAdapter):
                 continue
             raise RuntimeError("candidate process exited during stabilization")
 
-    def rollback(self, previous: str, backup: str) -> None:
+    def _terminate(self, pid: int, process: subprocess.Popen[bytes] | None = None) -> None:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pid, signal.SIGTERM)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if process is not None:
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    process.wait(timeout=0.1)
+                    return
+                continue
+            try:
+                os.killpg(pid, 0)
+            except (ProcessLookupError, PermissionError):
+                return
+            time.sleep(0.1)
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pid, signal.SIGKILL)
+        if process is not None:
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=5)
+
+    def _stop_candidates(self) -> None:
         for process in self.processes.values():
             if process.poll() is None:
-                os.killpg(process.pid, 15)
-                try:
-                    process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, 9)
-                    process.wait(timeout=5)
+                self._terminate(process.pid, process)
+        self.processes.clear()
+        for row in _recorded_candidates(self.root).values():
+            pid, executable = row.get("pid"), row.get("executable", "")
+            if isinstance(pid, int) and _is_candidate_process(pid, executable):
+                self._terminate(pid)
+        (self.root / CANDIDATE_PROCESSES).unlink(missing_ok=True)
+
+    def rollback(self, previous: str, backup: str) -> None:
+        self._stop_candidates()
         if backup:
             shutil.copy2(backup, self.database)
+        if not previous:
+            return
+        # The pointer already names `previous`, so a supervised start brings that exact release
+        # back on the ports. Starting is idempotent when the incumbent was only drained, and the
+        # control command is what undoes that drain — without it the system runs but admits nothing.
+        self._systemctl("start")
+        self._control("activate", wait=60)
+        journal(self.root, "previous-readmitted", previous=previous, unit=self.supervisor_unit)
 
     def health(self, component: str) -> dict[str, Any]:
         suffix = "/api/system/release" if component == "host" else "/health/version"
@@ -975,6 +1125,7 @@ def main() -> int:
         command.add_argument("--daemon-url", default="http://127.0.0.1:5081")
         command.add_argument("--control-socket", type=Path, required=True)
         command.add_argument("--profile", default="achieveai")
+        command.add_argument("--supervisor-unit", default=SUPERVISOR_UNIT)
 
     act = sub.add_parser("activate"); add_activation_options(act); act.add_argument("release_id")
     rec = sub.add_parser("recover"); add_activation_options(rec)
@@ -989,6 +1140,7 @@ def main() -> int:
             args.daemon_url,
             args.control_socket.resolve(),
             args.profile,
+            args.supervisor_unit,
         )
     if args.cmd == "snapshot": print(json.dumps(snapshot(args.repo.resolve(), args.output.resolve(), args.include_dirty), sort_keys=True))
     elif args.cmd == "prepare": print(json.dumps(prepare(args.repo.resolve(), args.candidate.resolve(), args.include_dirty), sort_keys=True))

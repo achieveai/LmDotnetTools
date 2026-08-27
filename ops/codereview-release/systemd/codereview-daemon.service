@@ -2,6 +2,9 @@
 Description=Verified CodeReview daemon
 After=codereview-host.service
 Requires=codereview-host.service
+# See codereview-host.service: PartOf makes the pair target a real stop/start handle so
+# release.py can take 127.0.0.1:5081 deliberately instead of racing this unit for it.
+PartOf=codereview-pair.target
 
 [Service]
 Type=simple
@@ -16,4 +19,4 @@ RestartSec=10
 NoNewPrivileges=true
 
 [Install]
-WantedBy=default.target
+WantedBy=codereview-pair.target

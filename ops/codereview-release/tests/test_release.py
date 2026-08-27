@@ -1,11 +1,15 @@
+import contextlib
 import fcntl
 import importlib.util
 import json
 import os
+import socket
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -13,6 +17,25 @@ HERE = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("release", HERE / "release.py")
 r = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(r)
+
+
+def listen(port: int = 0) -> socket.socket:
+    """Bind a real listener. SO_REUSEADDR is set but SO_REUSEPORT is not, so a second
+    bind while a live listener owns the port fails with EADDRINUSE exactly as in production."""
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", port))
+    server.listen(8)
+    return server
+
+
+PORT_HOLDER = (
+    "import socket,sys,time\n"
+    "s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n"
+    "s.bind(('127.0.0.1', int(sys.argv[1]))); s.listen(8)\n"
+    "sys.stdout.write('bound\\n'); sys.stdout.flush()\n"
+    "time.sleep(300)\n"
+)
 
 
 class FakeRunner:
@@ -69,6 +92,7 @@ class RecordingAdapter(r.ActivationAdapter):
     def backup_database(self, release_id): self.calls.append("backup"); return "backup.db"
     def migration_copy_gate(self, release_id): self.calls.append("migration-copy")
     def drain(self, previous): self.calls.append("drain")
+    def stop_incumbent(self, previous): self.calls.append("stop-incumbent")
     def start_host(self, release): self.calls.append("host-start")
     def canary_host(self, identity): self.calls.append("host-canary")
     def start_daemon_held(self, release): self.calls.append("daemon-held")
@@ -77,6 +101,152 @@ class RecordingAdapter(r.ActivationAdapter):
     def stabilize(self, release_id): self.calls.append("stabilize")
     def rollback(self, previous, backup): self.calls.append("rollback")
     def health(self, component): return self.health_rows.get(component, {})
+
+
+class FakeUnitSupervisor:
+    """A systemd-shaped incumbent. It owns both listener ports until deliberately stopped,
+    and a supervised (re)start always comes up admitting because it is a fresh process."""
+
+    def __init__(self):
+        self.listeners = {component: listen() for component in ("host", "daemon")}
+        self.ports = {component: server.getsockname()[1] for component, server in self.listeners.items()}
+        self.admission = "active"
+        self.transitions = []
+
+    def stop(self):
+        for server in self.listeners.values():
+            server.close()
+        self.listeners.clear()
+        self.transitions.append("stop")
+
+    def start(self):
+        for component in ("host", "daemon"):
+            if component not in self.listeners:
+                self.listeners[component] = listen(self.ports[component])
+        self.admission = "active"
+        self.transitions.append("start")
+
+    def owns(self, component):
+        return component in self.listeners
+
+    def close(self):
+        self.stop()
+
+
+class SupervisedAdapter(r.ActivationAdapter):
+    """Activation against a supervised incumbent. The candidate binds the very ports the
+    incumbent owns, so a missing ownership transfer fails the way production fails."""
+
+    def __init__(self, supervisor):
+        self.supervisor = supervisor
+        self.calls = []
+        self.candidate = {}
+        self.incumbent_owned_at_start = {}
+        self.health_rows = {}
+
+    def backup_database(self, release_id): self.calls.append("backup"); return "backup.db"
+    def migration_copy_gate(self, release_id): self.calls.append("migration-copy")
+
+    def drain(self, previous):
+        self.calls.append("drain")
+        if previous:
+            self.supervisor.admission = "drained"
+
+    def stop_incumbent(self, previous):
+        self.calls.append("stop-incumbent")
+        self.supervisor.stop()
+
+    def _bind_candidate(self, component):
+        self.incumbent_owned_at_start[component] = self.supervisor.owns(component)
+        self.candidate[component] = listen(self.supervisor.ports[component])
+
+    def start_host(self, release): self.calls.append("host-start"); self._bind_candidate("host")
+    def canary_host(self, identity): self.calls.append("host-canary")
+
+    def start_daemon_held(self, release):
+        self.calls.append("daemon-held")
+        self._bind_candidate("daemon")
+        self.supervisor.admission = "held"
+
+    def handshake(self, identity): self.calls.append("handshake")
+
+    def enable_admission(self, release_id):
+        self.calls.append("activate")
+        self.supervisor.admission = "active"
+
+    def stabilize(self, release_id): self.calls.append("stabilize")
+
+    def rollback(self, previous, backup):
+        """The contract activate() must be able to rely on: give the ports back and re-admit."""
+        self.calls.append("rollback")
+        for server in self.candidate.values():
+            server.close()
+        self.candidate.clear()
+        if previous:
+            self.supervisor.start()
+
+    def health(self, component): return self.health_rows.get(component, {})
+
+    def close(self):
+        for server in self.candidate.values():
+            server.close()
+        self.candidate.clear()
+
+
+class FakeSystemctl:
+    """Command boundary for LocalActivationAdapter: models `systemctl start/stop <unit>`."""
+
+    def __init__(self, supervisor):
+        self.supervisor = supervisor
+        self.commands = []
+
+    def run(self, args, cwd, env=None, timeout=None):
+        self.commands.append(args)
+        if args and args[0] == "systemctl":
+            verb = args[-2]
+            if verb == "stop":
+                self.supervisor.stop()
+            elif verb == "start":
+                self.supervisor.start()
+        return {"args": args, "exitCode": 0, "stdout": "", "stderr": ""}
+
+    def verbs(self):
+        return [args[-2] for args in self.commands if args and args[0] == "systemctl"]
+
+    def units(self):
+        return [args[-1] for args in self.commands if args and args[0] == "systemctl"]
+
+
+class ControlServer:
+    """Stand-in for the daemon control socket; records the admission commands it receives."""
+
+    def __init__(self, path, supervisor=None):
+        self.commands = []
+        self.supervisor = supervisor
+        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.server.bind(str(path))
+        self.server.listen(8)
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+        self.thread.start()
+
+    def _serve(self):
+        while True:
+            try:
+                connection, _ = self.server.accept()
+            except OSError:
+                return
+            with connection:
+                command = connection.recv(128).decode().strip()
+                if command:
+                    self.commands.append(command)
+                    if self.supervisor is not None:
+                        self.supervisor.admission = {"drain": "drained", "activate": "active"}.get(
+                            command, self.supervisor.admission
+                        )
+                connection.sendall(b"ok\n")
+
+    def close(self):
+        self.server.close()
 
 
 class ReleaseTests(unittest.TestCase):
@@ -219,13 +389,14 @@ class ReleaseTests(unittest.TestCase):
     def test_activation_runs_exact_order_and_updates_pointer_only_after_handshake(self):
         root, _, release_id = self.published(); adapter = RecordingAdapter()
         r.activate(root, release_id, adapter)
-        self.assertEqual(["backup", "migration-copy", "drain", "host-start", "host-canary", "daemon-held", "handshake", "activate", "stabilize"], adapter.calls)
+        self.assertEqual(["backup", "migration-copy", "drain", "stop-incumbent", "host-start", "host-canary", "daemon-held", "handshake", "activate", "stabilize"], adapter.calls)
         self.assertEqual(release_id, (root / "pointers" / "active").read_text().strip())
         events = [row["event"] for row in r._events(root)]
         self.assertLess(events.index("handshake"), events.index("pointers-updated"))
+        self.assertLess(events.index("drained"), events.index("incumbent-stopped"))
 
     def test_every_activation_crash_point_rolls_back_and_replay_is_clean(self):
-        steps = ["database-gated", "drained", "host-canary", "daemon-held", "handshake", "pointers-updated", "admission-active", "stabilized"]
+        steps = ["database-gated", "drained", "incumbent-stopped", "host-canary", "daemon-held", "handshake", "pointers-updated", "admission-active", "stabilized"]
         for step in steps:
             with self.subTest(step=step):
                 root, _, release_id = self.published(); (root / "pointers" / "active").write_text("old\n")
@@ -256,6 +427,8 @@ class ReleaseTests(unittest.TestCase):
             "journal:database-gated",
             "adapter:drain:before",
             "adapter:drain:after",
+            "adapter:stop-incumbent:before",
+            "adapter:stop-incumbent:after",
             "adapter:start-host:before",
             "adapter:start-host:after",
             "adapter:canary-host:before",
@@ -279,6 +452,7 @@ class A(m.ActivationAdapter):
   p=root/"backups"/(release_id+"-child.sqlite"); p.parent.mkdir(parents=True,exist_ok=True); p.write_bytes(b"backup"); return str(p)
  def migration_copy_gate(self, release_id): pass
  def drain(self, previous): pass
+ def stop_incumbent(self, previous): pass
  def start_host(self, release): pass
  def canary_host(self, identity): pass
  def start_daemon_held(self, release): pass
@@ -336,6 +510,272 @@ m.activate(root, release_id, A())'''
         self.assertNotIn("CODEREVIEW_DAEMON_ADMISSION", daemon)
         self.assertIn("ControlSocketPath", daemon)
         self.assertIn("127.0.0.1:5080", host); self.assertIn("127.0.0.1:5081", daemon); self.assertIn("--review achieveai", daemon)
+
+    # --- port ownership between the supervisor and the activator -------------------------
+
+    def supervised_world(self):
+        supervisor = FakeUnitSupervisor()
+        self.addCleanup(supervisor.close)
+        root = Path(tempfile.mkdtemp())
+        (root / "review.db").write_bytes(b"live")
+        control_path = root / "control.sock"
+        control = ControlServer(control_path, supervisor)
+        self.addCleanup(control.close)
+        return supervisor, root, control_path, control
+
+    def local_adapter(self, supervisor, root, control_path):
+        runner = FakeSystemctl(supervisor)
+        adapter = r.LocalActivationAdapter(
+            root,
+            root / "review.db",
+            f"http://127.0.0.1:{supervisor.ports['host']}",
+            f"http://127.0.0.1:{supervisor.ports['daemon']}",
+            control_path,
+            "achieveai",
+            runner=runner,
+        )
+        return adapter, runner
+
+    def holder_script(self, root):
+        script = root / "port-holder"
+        script.write_text("#!/usr/bin/env python3\n" + PORT_HOLDER)
+        script.chmod(0o755)
+        return script
+
+    def start_candidate(self, adapter, component, script, port):
+        adapter._start(component, script, [str(port)])
+        process = adapter.processes[component]
+        self.addCleanup(self.reap, process)
+        self.wait_port(port, True)
+        return process.pid
+
+    def reap(self, process):
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(process.pid, 9)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=5)
+
+    def wait_port(self, port, occupied, timeout=15):
+        deadline = time.monotonic() + timeout
+        busy = None
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=1):
+                    pass
+                busy = True
+            except OSError:
+                busy = False
+            if busy == occupied:
+                return
+            time.sleep(0.05)
+        self.fail(f"port {port} busy={busy}, expected busy={occupied}")
+
+    def assert_stopped(self, pid):
+        try:
+            state = (Path("/proc") / str(pid) / "stat").read_text().rsplit(") ", 1)[1].split()[0]
+        except FileNotFoundError:
+            return
+        self.assertEqual("Z", state, f"candidate pid {pid} is still running")
+
+    def test_activation_takes_port_ownership_from_the_supervised_incumbent_before_starting(self):
+        root, _, release_id = self.published()
+        (root / "pointers" / "active").write_text("old\n")
+        supervisor = FakeUnitSupervisor(); self.addCleanup(supervisor.close)
+        adapter = SupervisedAdapter(supervisor); self.addCleanup(adapter.close)
+        r.activate(root, release_id, adapter)
+        self.assertEqual(
+            ["backup", "migration-copy", "drain", "stop-incumbent", "host-start", "host-canary", "daemon-held", "handshake", "activate", "stabilize"],
+            adapter.calls,
+        )
+        self.assertEqual({"host": False, "daemon": False}, adapter.incumbent_owned_at_start)
+        self.assertEqual(["stop"], supervisor.transitions)
+        self.assertEqual("active", supervisor.admission)
+        self.assertEqual(release_id, (root / "pointers" / "active").read_text().strip())
+        events = [row["event"] for row in r._events(root)]
+        self.assertLess(events.index("drained"), events.index("incumbent-stopped"))
+        self.assertLess(events.index("incumbent-stopped"), events.index("host-canary"))
+
+    def test_failure_after_drain_or_candidate_start_restores_previous_release_and_admission(self):
+        for step in ["drained", "incumbent-stopped", "host-canary", "daemon-held", "handshake", "pointers-updated", "admission-active", "stabilized"]:
+            with self.subTest(step=step):
+                root, _, release_id = self.published()
+                (root / "pointers" / "active").write_text("old\n")
+                supervisor = FakeUnitSupervisor(); self.addCleanup(supervisor.close)
+                adapter = SupervisedAdapter(supervisor); self.addCleanup(adapter.close)
+                with self.assertRaises(RuntimeError) as raised:
+                    r.activate(root, release_id, adapter, step)
+                self.assertEqual(f"injected fault after {step}", str(raised.exception))
+                self.assertEqual("old", (root / "pointers" / "active").read_text().strip())
+                self.assertEqual("rollback", adapter.calls[-1])
+                self.assertTrue(supervisor.owns("host"), "previous release must own the host port again")
+                self.assertTrue(supervisor.owns("daemon"), "previous release must own the daemon port again")
+                self.assertEqual("active", supervisor.admission, "rollback left admission drained")
+                self.assertEqual({}, adapter.candidate)
+                self.assertEqual("clean", r.recover(root, adapter))
+
+    def test_stop_incumbent_releases_ports_from_the_supervisor_and_from_orphaned_candidates(self):
+        supervisor, root, control_path, _ = self.supervised_world()
+        adapter, runner = self.local_adapter(supervisor, root, control_path)
+        script = self.holder_script(root)
+        adapter.drain("old")
+        adapter.stop_incumbent("old")
+        self.assertEqual(["stop"], runner.verbs())
+        self.assertEqual([r.SUPERVISOR_UNIT], runner.units())
+        self.assertFalse(supervisor.owns("host")); self.assertFalse(supervisor.owns("daemon"))
+        self.wait_port(supervisor.ports["host"], False)
+        self.assertIn("incumbent-released", [row["event"] for row in r._events(root)])
+
+        # A previous activation's unsupervised candidate is the other possible port owner.
+        pid = self.start_candidate(adapter, "host", script, supervisor.ports["host"])
+        adapter.processes.clear()
+        next_adapter, next_runner = self.local_adapter(supervisor, root, control_path)
+        next_adapter.stop_incumbent("old")
+        self.assert_stopped(pid)
+        self.wait_port(supervisor.ports["host"], False)
+        self.assertEqual(["stop"], next_runner.verbs())
+
+    def test_rollback_readmits_a_still_running_incumbent_that_was_only_drained(self):
+        supervisor, root, control_path, control = self.supervised_world()
+        adapter, runner = self.local_adapter(supervisor, root, control_path)
+        backup = root / "backup.sqlite"; backup.write_bytes(b"previous")
+        adapter.drain("old")
+        self.assertEqual("drained", supervisor.admission)
+        adapter.rollback("old", str(backup))
+        self.assertEqual("active", supervisor.admission, "a drained incumbent was never re-admitted")
+        self.assertEqual(["drain", "activate"], control.commands)
+        self.assertTrue(supervisor.owns("host")); self.assertTrue(supervisor.owns("daemon"))
+        self.assertEqual(b"previous", (root / "review.db").read_bytes())
+
+    def test_rollback_stops_the_candidate_and_restarts_the_supervised_previous_release(self):
+        supervisor, root, control_path, control = self.supervised_world()
+        adapter, runner = self.local_adapter(supervisor, root, control_path)
+        script = self.holder_script(root)
+        adapter.drain("old")
+        adapter.stop_incumbent("old")
+        pid = self.start_candidate(adapter, "daemon", script, supervisor.ports["daemon"])
+        adapter.rollback("old", "")
+        self.assert_stopped(pid)
+        self.assertEqual(["stop", "start"], runner.verbs())
+        self.assertTrue(supervisor.owns("host")); self.assertTrue(supervisor.owns("daemon"))
+        self.assertEqual("active", supervisor.admission)
+        self.assertIn("activate", control.commands)
+
+    def test_rollback_without_a_previous_release_starts_nothing(self):
+        supervisor, root, control_path, control = self.supervised_world()
+        adapter, runner = self.local_adapter(supervisor, root, control_path)
+        adapter.rollback("", "")
+        self.assertEqual([], runner.verbs())
+        self.assertEqual([], control.commands)
+
+    def test_watchdog_recovery_uses_the_same_ownership_and_admission_protocol(self):
+        supervisor, root, control_path, control = self.supervised_world()
+        crashed, _ = self.local_adapter(supervisor, root, control_path)
+        script = self.holder_script(root)
+        r.journal(root, "begin", intended="new", previous="old")
+        crashed.drain("old")
+        crashed.stop_incumbent("old")
+        host_pid = self.start_candidate(crashed, "host", script, supervisor.ports["host"])
+        daemon_pid = self.start_candidate(crashed, "daemon", script, supervisor.ports["daemon"])
+        crashed.processes.clear()  # the activator died; nothing in-process knows these pids
+        atomic = root / "pointers" / "active"
+        atomic.parent.mkdir(parents=True, exist_ok=True)
+        atomic.write_text("new\n")
+
+        recovered, runner = self.local_adapter(supervisor, root, control_path)
+        self.assertEqual("rolled_back", r.recover(root, recovered))
+        self.assertEqual("old", atomic.read_text().strip())
+        self.assert_stopped(host_pid); self.assert_stopped(daemon_pid)
+        # The stop half was done by the activator that then died; recovery supplies the start half.
+        self.assertEqual(["start"], runner.verbs())
+        self.assertEqual([r.SUPERVISOR_UNIT], runner.units())
+        self.assertTrue(supervisor.owns("host")); self.assertTrue(supervisor.owns("daemon"))
+        self.assertEqual("active", supervisor.admission)
+        self.assertIn("activate", control.commands)
+        self.assertEqual("clean", r.recover(root, recovered))
+
+    def short_handover_timeout(self, seconds=0.5):
+        original = r.PORT_HANDOVER_TIMEOUT_SECONDS
+        r.PORT_HANDOVER_TIMEOUT_SECONDS = seconds
+        self.addCleanup(setattr, r, "PORT_HANDOVER_TIMEOUT_SECONDS", original)
+
+    def test_port_handover_gate_requires_a_real_bind_not_a_refused_connect(self):
+        supervisor, root, control_path, _ = self.supervised_world()
+        adapter, runner = self.local_adapter(supervisor, root, control_path)
+        supervisor.stop()
+        host, port = adapter._address("host")
+
+        # A socket that is bound but has not called listen() — a server mid-startup. It refuses
+        # connections, so a connect-based gate calls the port free, yet the candidate's bind fails.
+        squatter = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        squatter.bind((host, port))
+        self.addCleanup(squatter.close)
+        with self.assertRaises(OSError):
+            socket.create_connection((host, port), timeout=1).close()
+        with self.assertRaises(OSError) as bind_failure:
+            blocked = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            blocked.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                blocked.bind((host, port))
+            finally:
+                blocked.close()
+        self.assertEqual(98, bind_failure.exception.errno)
+
+        self.short_handover_timeout()
+        with self.assertRaisesRegex(RuntimeError, "still owned"):
+            adapter._wait_port_bindable("host")
+        with self.assertRaisesRegex(RuntimeError, "still owned"):
+            adapter.stop_incumbent("old")
+
+        # Positive control: once the address is genuinely released the same gate passes, and it
+        # leaves the port bindable rather than holding it open itself.
+        squatter.close()
+        adapter._wait_port_bindable("host")
+        released = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        released.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            released.bind((host, port))
+            released.listen(1)
+        finally:
+            released.close()
+
+    def test_stop_candidates_spares_an_unrelated_pid_and_clears_the_stale_record(self):
+        supervisor, root, control_path, _ = self.supervised_world()
+        adapter, _ = self.local_adapter(supervisor, root, control_path)
+        bystander = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(300)"], start_new_session=True
+        )
+        self.addCleanup(self.reap, bystander)
+
+        # The recorded pid was reused by an unrelated process, so the cmdline no longer matches.
+        r._record_candidate(root, "daemon", bystander.pid, "/gone/releases/old/daemon/CodeReviewDaemon.Sample")
+        record = root / r.CANDIDATE_PROCESSES
+        self.assertTrue(record.exists())
+        adapter._stop_candidates()
+        time.sleep(0.5)
+        self.assertIsNone(bystander.poll(), "an unrelated live process was signalled")
+        self.assertFalse(record.exists(), "stale candidate metadata was not cleared")
+
+        # Positive control: the same pid recorded with the executable it is actually running
+        # must still be stopped, so the sparing above is discrimination and not inaction.
+        r._record_candidate(root, "daemon", bystander.pid, sys.executable)
+        adapter._stop_candidates()
+        self.assert_stopped(bystander.pid)
+        self.assertFalse(record.exists())
+
+    def test_systemd_pair_target_is_the_ownership_handle_used_by_the_release_tool(self):
+        systemd = HERE / "systemd"
+        host = (systemd / "codereview-host.service").read_text()
+        daemon = (systemd / "codereview-daemon.service").read_text()
+        target = (systemd / "codereview-pair.target").read_text()
+        self.assertEqual("codereview-pair.target", r.SUPERVISOR_UNIT)
+        self.assertTrue((systemd / r.SUPERVISOR_UNIT).is_file())
+        for text in (host, daemon):
+            # PartOf is what makes `systemctl stop codereview-pair.target` actually release
+            # the listeners; without it the release tool's ownership transfer is a no-op.
+            self.assertIn("PartOf=codereview-pair.target", text)
+            self.assertIn("WantedBy=codereview-pair.target", text)
+        self.assertIn("WantedBy=default.target", target)
+        self.assertIn("Requires=codereview-host.service codereview-daemon.service", target)
 
 
 if __name__ == "__main__":

@@ -26,10 +26,15 @@ public class MultiTurnAgentBaseTests
         private readonly bool _stripReceiptIdsFromAssignment;
         private readonly TimeSpan _fallbackGracePeriod;
         private readonly Task? _startGate;
+        private readonly Task? _drainGate;
 
         public int ExecuteCallCount { get; private set; }
         public string? LastRunId { get; private set; }
         public string? LastGenerationId { get; private set; }
+
+        /// <summary>Completes once the loop has drained a non-empty batch and parked on
+        /// <c>drainGate</c> — i.e. the input has left the channel but no run names it yet.</summary>
+        public TaskCompletionSource DrainReached { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         /// <summary>Test-only window into the protected conversation history, used to assert recovery.</summary>
         public IReadOnlyList<IMessage> SnapshotHistoryForTest() => GetHistorySnapshot();
@@ -38,8 +43,7 @@ public class MultiTurnAgentBaseTests
         /// Test-only door onto the protected fan-out, so the publish path can be driven directly
         /// instead of through a run. Publishing IS the code under test in the subscriber-race test.
         /// </summary>
-        public ValueTask PublishForTest(IMessage message, CancellationToken ct) =>
-            PublishToAllAsync(message, ct);
+        public ValueTask PublishForTest(IMessage message, CancellationToken ct) => PublishToAllAsync(message, ct);
 
         /// <summary>Test-only window into the protected pending-input count, used to prove inputs are
         /// queued (not yet drained) while the run loop is deterministically stalled.</summary>
@@ -54,7 +58,9 @@ public class MultiTurnAgentBaseTests
             IConversationStore? store = null,
             bool stripReceiptIdsFromAssignment = false,
             TimeSpan? fallbackGracePeriod = null,
-            Task? startGate = null)
+            Task? startGate = null,
+            Task? drainGate = null
+        )
             : base(threadId, systemPrompt, store: store, logger: logger)
         {
             _messagesToReturn = messagesToReturn ?? [];
@@ -62,6 +68,7 @@ public class MultiTurnAgentBaseTests
             _fallbackGracePeriod = fallbackGracePeriod ?? TimeSpan.FromMilliseconds(100);
             _ = shouldFork; // No longer used but kept for API compatibility
             _startGate = startGate;
+            _drainGate = drainGate;
         }
 
         protected override TimeSpan FallbackGracePeriod => _fallbackGracePeriod;
@@ -92,6 +99,15 @@ public class MultiTurnAgentBaseTests
                     continue;
                 }
 
+                // Test-only deterministic stall in the OTHER half of the acknowledged-but-unassigned
+                // window: the batch has left the channel and StartRunAsync has not run, so nothing
+                // but the loop's own local variable is holding it.
+                if (_drainGate != null)
+                {
+                    _ = DrainReached.TrySetResult();
+                    await _drainGate.WaitAsync(ct);
+                }
+
                 // Start run
                 var assignment = await StartRunAsync(batch, ct: ct);
                 ExecuteCallCount++;
@@ -102,14 +118,16 @@ public class MultiTurnAgentBaseTests
                 // ClaudeAgentLoop's dequeue-deferred publisher) that may publish a
                 // RunAssignmentMessage that doesn't list the caller's receipt.
                 var publishedAssignment = _stripReceiptIdsFromAssignment
-                    ? assignment with { InputIds = [] }
+                    ? assignment with
+                    {
+                        InputIds = [],
+                    }
                     : assignment;
 
-                await PublishToAllAsync(new RunAssignmentMessage
-                {
-                    Assignment = publishedAssignment,
-                    ThreadId = ThreadId,
-                }, ct);
+                await PublishToAllAsync(
+                    new RunAssignmentMessage { Assignment = publishedAssignment, ThreadId = ThreadId },
+                    ct
+                );
 
                 try
                 {
@@ -151,13 +169,12 @@ public class MultiTurnAgentBaseTests
     {
         await using var agent = new TestMultiTurnAgent("thread-enforcement");
 
-        var receipt = await agent.TrySendAsync(new UserInput(
-            [new TextMessage { Text = "synthesize", Role = Role.User }],
-            SuppressSubAgentSpawning: true));
+        var receipt = await agent.TrySendAsync(
+            new UserInput([new TextMessage { Text = "synthesize", Role = Role.User }], SuppressSubAgentSpawning: true)
+        );
 
         receipt.Should().NotBeNull();
-        receipt!.SpawningSuppressed.Should().BeFalse(
-            "this agent accepts the flag but has nothing that will act on it");
+        receipt!.SpawningSuppressed.Should().BeFalse("this agent accepts the flag but has nothing that will act on it");
     }
 
     /// <summary>
@@ -170,12 +187,11 @@ public class MultiTurnAgentBaseTests
     {
         await using var agent = new TestMultiTurnAgent("thread-enforcement-send");
 
-        var receipt = await agent.SendAsync(new UserInput(
-            [new TextMessage { Text = "synthesize", Role = Role.User }],
-            SuppressSubAgentSpawning: true));
+        var receipt = await agent.SendAsync(
+            new UserInput([new TextMessage { Text = "synthesize", Role = Role.User }], SuppressSubAgentSpawning: true)
+        );
 
-        receipt.SpawningSuppressed.Should().BeFalse(
-            "SendAsync must state enforcement exactly as TrySendAsync does");
+        receipt.SpawningSuppressed.Should().BeFalse("SendAsync must state enforcement exactly as TrySendAsync does");
     }
 
     [Fact]
@@ -212,9 +228,7 @@ public class MultiTurnAgentBaseTests
     {
         // Arrange
         var testMessage = new TextMessage { Text = "Test response", Role = Role.Assistant };
-        var agent = new TestMultiTurnAgent(
-            "test-thread",
-            messagesToReturn: [testMessage]);
+        var agent = new TestMultiTurnAgent("test-thread", messagesToReturn: [testMessage]);
 
         var receivedMessages = new List<IMessage>();
 
@@ -260,17 +274,13 @@ public class MultiTurnAgentBaseTests
     {
         // Arrange
         var testMessage = new TextMessage { Text = "Response", Role = Role.Assistant };
-        var agent = new TestMultiTurnAgent(
-            "test-thread",
-            messagesToReturn: [testMessage]);
+        var agent = new TestMultiTurnAgent("test-thread", messagesToReturn: [testMessage]);
 
         using var cts = new CancellationTokenSource();
         var runTask = agent.RunAsync(cts.Token);
 
         // Act
-        var userInput = new UserInput(
-            [new TextMessage { Text = "Hello", Role = Role.User }],
-            InputId: "test-input");
+        var userInput = new UserInput([new TextMessage { Text = "Hello", Role = Role.User }], InputId: "test-input");
 
         var receivedMessages = new List<IMessage>();
         await foreach (var msg in agent.ExecuteRunAsync(userInput, cts.Token))
@@ -301,14 +311,16 @@ public class MultiTurnAgentBaseTests
             "test-thread",
             messagesToReturn: [testMessage],
             stripReceiptIdsFromAssignment: true,
-            fallbackGracePeriod: TimeSpan.FromMilliseconds(100));
+            fallbackGracePeriod: TimeSpan.FromMilliseconds(100)
+        );
 
         using var cts = new CancellationTokenSource();
         var runTask = agent.RunAsync(cts.Token);
 
         var userInput = new UserInput(
             [new TextMessage { Text = "Hello", Role = Role.User }],
-            InputId: "fallback-test-input");
+            InputId: "fallback-test-input"
+        );
 
         // Act: enumerate ExecuteRunAsync. Wraps in WaitAsync so a hang fails the
         // test cleanly with TimeoutException instead of bleeding into xUnit's
@@ -351,7 +363,8 @@ public class MultiTurnAgentBaseTests
             firstRunMessages: [firstResponse],
             secondRunMessages: [secondResponse],
             stripReceiptOnFirstRun: true,
-            fallbackGracePeriod: TimeSpan.FromMilliseconds(200));
+            fallbackGracePeriod: TimeSpan.FromMilliseconds(200)
+        );
 
         using var cts = new CancellationTokenSource();
         var runTask = agent.RunAsync(cts.Token);
@@ -359,16 +372,12 @@ public class MultiTurnAgentBaseTests
         // Pre-queue an input that will become run #1 BEFORE we subscribe via
         // ExecuteRunAsync. This input belongs to a different caller (us, here,
         // simulating concurrent callers).
-        await agent.SendAsync(
-            [new TextMessage { Text = "First", Role = Role.User }],
-            inputId: "prior-input");
+        await agent.SendAsync([new TextMessage { Text = "First", Role = Role.User }], inputId: "prior-input");
 
         // Brief delay so run #1 starts and its assignment is published.
         await Task.Delay(50);
 
-        var userInput = new UserInput(
-            [new TextMessage { Text = "Second", Role = Role.User }],
-            InputId: "our-input");
+        var userInput = new UserInput([new TextMessage { Text = "Second", Role = Role.User }], InputId: "our-input");
 
         var receivedMessages = new List<IMessage>();
         var executeTask = Task.Run(async () =>
@@ -383,8 +392,13 @@ public class MultiTurnAgentBaseTests
 
         // Must have observed BOTH responses — the iterator should not have
         // terminated on run #1's completion.
-        receivedMessages.OfType<TextMessage>().Should().Contain(m => m.Text == "Second run response",
-            "ExecuteRunAsync must wait for our actual run, not yield-break on a prior run's completion");
+        receivedMessages
+            .OfType<TextMessage>()
+            .Should()
+            .Contain(
+                m => m.Text == "Second run response",
+                "ExecuteRunAsync must wait for our actual run, not yield-break on a prior run's completion"
+            );
 
         await cts.CancelAsync();
         await agent.StopAsync();
@@ -408,7 +422,8 @@ public class MultiTurnAgentBaseTests
             List<IMessage> firstRunMessages,
             List<IMessage> secondRunMessages,
             bool stripReceiptOnFirstRun,
-            TimeSpan fallbackGracePeriod)
+            TimeSpan fallbackGracePeriod
+        )
             : base(threadId)
         {
             _firstRunMessages = firstRunMessages;
@@ -437,15 +452,12 @@ public class MultiTurnAgentBaseTests
                 _runIndex++;
                 var assignment = await StartRunAsync(batch, ct: ct);
                 var stripReceipts = _stripReceiptOnFirstRun && _runIndex == 1;
-                var publishedAssignment = stripReceipts
-                    ? assignment with { InputIds = [] }
-                    : assignment;
+                var publishedAssignment = stripReceipts ? assignment with { InputIds = [] } : assignment;
 
-                await PublishToAllAsync(new RunAssignmentMessage
-                {
-                    Assignment = publishedAssignment,
-                    ThreadId = ThreadId,
-                }, ct);
+                await PublishToAllAsync(
+                    new RunAssignmentMessage { Assignment = publishedAssignment, ThreadId = ThreadId },
+                    ct
+                );
 
                 var messagesForThisRun = _runIndex == 1 ? _firstRunMessages : _secondRunMessages;
                 try
@@ -492,7 +504,8 @@ public class MultiTurnAgentBaseTests
         // Long-lived readers, so every snapshot has real entries to copy. They re-subscribe after a
         // drop because the publisher is entitled to evict a slow one, and an empty map races nothing.
         using var drainerLife = CancellationTokenSource.CreateLinkedTokenSource(life.Token);
-        var drainers = Enumerable.Range(0, Drainers)
+        var drainers = Enumerable
+            .Range(0, Drainers)
             .Select(_ => Task.Run(() => DrainUntilCancelledAsync(agent, drainerLife.Token)))
             .ToArray();
 
@@ -521,8 +534,9 @@ public class MultiTurnAgentBaseTests
             }
         };
 
-        await publish.Should().NotThrowAsync(
-            "a subscriber leaving mid-copy must never leave a null channel in the publisher's snapshot");
+        await publish
+            .Should()
+            .NotThrowAsync("a subscriber leaving mid-copy must never leave a null channel in the publisher's snapshot");
 
         await churnLife.CancelAsync();
         await churn;
@@ -534,16 +548,13 @@ public class MultiTurnAgentBaseTests
     /// Reads until cancelled, re-subscribing if the publisher drops the subscriber for being slow.
     /// Consuming is all that matters — the values are the test's noise, the churn is its signal.
     /// </summary>
-    private static async Task DrainUntilCancelledAsync(
-        TestMultiTurnAgent agent, CancellationToken ct)
+    private static async Task DrainUntilCancelledAsync(TestMultiTurnAgent agent, CancellationToken ct)
     {
         try
         {
             while (!ct.IsCancellationRequested)
             {
-                await foreach (var _ in agent.SubscribeAsync(ct))
-                {
-                }
+                await foreach (var _ in agent.SubscribeAsync(ct)) { }
             }
         }
         catch (OperationCanceledException)
@@ -600,8 +611,7 @@ public class MultiTurnAgentBaseTests
 
         // Act & Assert
         var act = () => agent.RunAsync(cts.Token);
-        await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*already running*");
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*already running*");
 
         // Cleanup
         await cts.CancelAsync();
@@ -672,10 +682,12 @@ public class MultiTurnAgentBaseTests
         // Assert - deterministic proof: all three sends completed while the run loop has
         // made zero progress (it never even started draining the channel), so SendAsync
         // cannot have waited on any processing to complete.
-        agent.ExecuteCallCount.Should().Be(0,
-            "SendAsync must return before the run loop even begins processing, not merely quickly");
-        agent.PendingInputCountForTest.Should().Be(3,
-            "all three inputs must be sitting in the channel, unread, while the run loop is stalled");
+        agent
+            .ExecuteCallCount.Should()
+            .Be(0, "SendAsync must return before the run loop even begins processing, not merely quickly");
+        agent
+            .PendingInputCountForTest.Should()
+            .Be(3, "all three inputs must be sitting in the channel, unread, while the run loop is stalled");
 
         receipt1.ReceiptId.Should().NotBe(receipt2.ReceiptId);
         receipt2.ReceiptId.Should().NotBe(receipt3.ReceiptId);
@@ -684,6 +696,77 @@ public class MultiTurnAgentBaseTests
         startGate.SetResult();
         await cts.CancelAsync();
         await agent.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task HasUnassignedInput_CoversBothHalvesOfTheWindowBeforeCurrentRunIdExists()
+    {
+        // A pooled host decides whether it may tear an agent down from CurrentRunId, which is null
+        // for the whole span between a send being acknowledged and the loop naming a run for it.
+        // This walks that span in two deterministic stops and asserts the property that closes it
+        // stays true throughout — including the stop where PendingInputCount has already gone to
+        // zero, which is the half a channel-depth check alone cannot see.
+        var startGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var drainGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var agent = new TestMultiTurnAgent(
+            "thread-unassigned-window",
+            startGate: startGate.Task,
+            drainGate: drainGate.Task
+        );
+        using var cts = new CancellationTokenSource();
+        _ = agent.RunAsync(cts.Token);
+
+        agent.HasUnassignedInput.Should().BeFalse("nothing has been acknowledged yet");
+
+        // Acknowledged. The caller now holds a receipt for work this agent owes.
+        var receipt = await agent.SendAsync([new TextMessage { Text = "hello", Role = Role.User }], "input-1");
+        receipt.ReceiptId.Should().NotBeNullOrEmpty();
+
+        // Stop 1 — still in the channel, run loop stalled before it can even read.
+        agent.PendingInputCountForTest.Should().Be(1);
+        agent.CurrentRunId.Should().BeNull();
+        agent.HasUnassignedInput.Should().BeTrue("an acknowledged input is sitting in the channel");
+
+        // Stop 2 — drained, but no run named yet.
+        startGate.SetResult();
+        await agent.DrainReached.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        agent.PendingInputCountForTest.Should().Be(0, "the input has left the channel");
+        agent.CurrentRunId.Should().BeNull("StartRunAsync has not run yet");
+        agent
+            .HasUnassignedInput.Should()
+            .BeTrue("the loop holds the input in hand, where the channel depth can no longer see it");
+
+        // Release: the run takes ownership, and the signal has to drop or it would wedge the host's
+        // refresh permanently.
+        drainGate.SetResult();
+        await WaitForAsync(() => agent.ExecuteCallCount == 1, TimeSpan.FromSeconds(30));
+        await WaitForAsync(() => !agent.HasUnassignedInput, TimeSpan.FromSeconds(30));
+
+        agent.HasUnassignedInput.Should().BeFalse("the run owns the input now, and CurrentRunId reports it");
+
+        await cts.CancelAsync();
+        await agent.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Polls <paramref name="condition"/> until it holds or <paramref name="timeout"/> elapses.
+    /// The timeout is a failure bound, never a sleep: the loop exits the moment the condition is met.
+    /// </summary>
+    private static async Task WaitForAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (condition())
+            {
+                return;
+            }
+
+            await Task.Delay(10);
+        }
+
+        condition().Should().BeTrue("the condition must hold within {0}", timeout);
     }
 
     [Fact]
@@ -710,7 +793,8 @@ public class MultiTurnAgentBaseTests
         // Act
         var receipt = await agent.SendAsync(
             [new TextMessage { Text = "Hello", Role = Role.User }],
-            "correlation-test-input");
+            "correlation-test-input"
+        );
 
         // Wait for processing
         await Task.Delay(500);
@@ -721,8 +805,9 @@ public class MultiTurnAgentBaseTests
 
         var assignment = runAssignments.First();
         assignment.Assignment.InputIds.Should().NotBeNull();
-        assignment.Assignment.InputIds.Should().Contain(receipt.ReceiptId,
-            "RunAssignment.InputIds should include the ReceiptId from SendReceipt");
+        assignment
+            .Assignment.InputIds.Should()
+            .Contain(receipt.ReceiptId, "RunAssignment.InputIds should include the ReceiptId from SendReceipt");
 
         // Cleanup
         await cts.CancelAsync();
@@ -781,11 +866,10 @@ public class MultiTurnAgentBaseTests
         // Act
         var receipt1 = await agent.SendAsync(
             [new TextMessage { Text = "Test", Role = Role.User }],
-            inputId: "my-custom-id");
+            inputId: "my-custom-id"
+        );
 
-        var receipt2 = await agent.SendAsync(
-            [new TextMessage { Text = "Test", Role = Role.User }],
-            inputId: null);
+        var receipt2 = await agent.SendAsync([new TextMessage { Text = "Test", Role = Role.User }], inputId: null);
 
         // Assert
         receipt1.InputId.Should().Be("my-custom-id");
@@ -831,7 +915,13 @@ public class MultiTurnAgentBaseTests
 
         var priorMessages = new List<IMessage>
         {
-            new TextMessage { Text = "My name is Alice.", Role = Role.User, GenerationId = "g1", RunId = runId },
+            new TextMessage
+            {
+                Text = "My name is Alice.",
+                Role = Role.User,
+                GenerationId = "g1",
+                RunId = runId,
+            },
             new TextMessage
             {
                 Text = "Nice to meet you, Alice.",
@@ -842,7 +932,8 @@ public class MultiTurnAgentBaseTests
         };
         await store.AppendMessagesAsync(
             threadId,
-            MessagePersistenceConverter.ToPersistedMessages(priorMessages, threadId, runId));
+            MessagePersistenceConverter.ToPersistedMessages(priorMessages, threadId, runId)
+        );
         await store.SaveMetadataAsync(
             threadId,
             new ThreadMetadata
@@ -850,7 +941,8 @@ public class MultiTurnAgentBaseTests
                 ThreadId = threadId,
                 LatestRunId = runId,
                 LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            });
+            }
+        );
 
         var agent = new TestMultiTurnAgent(threadId, store: store);
         using var cts = new CancellationTokenSource();
@@ -868,7 +960,9 @@ public class MultiTurnAgentBaseTests
         // Assert: the prior conversation is back in the loop's history, so the next turn resends
         // it to the LLM.
         var history = agent.SnapshotHistoryForTest();
-        history.OfType<TextMessage>().Select(m => m.Text)
+        history
+            .OfType<TextMessage>()
+            .Select(m => m.Text)
             .Should()
             .Contain("My name is Alice.")
             .And.Contain("Nice to meet you, Alice.");
@@ -890,7 +984,13 @@ public class MultiTurnAgentBaseTests
 
         var priorMessages = new List<IMessage>
         {
-            new TextMessage { Text = "My name is Alice.", Role = Role.User, GenerationId = "g1", RunId = runId },
+            new TextMessage
+            {
+                Text = "My name is Alice.",
+                Role = Role.User,
+                GenerationId = "g1",
+                RunId = runId,
+            },
             new TextMessage
             {
                 Text = "Nice to meet you, Alice.",
@@ -901,7 +1001,8 @@ public class MultiTurnAgentBaseTests
         };
         await store.AppendMessagesAsync(
             threadId,
-            MessagePersistenceConverter.ToPersistedMessages(priorMessages, threadId, runId));
+            MessagePersistenceConverter.ToPersistedMessages(priorMessages, threadId, runId)
+        );
         await store.SaveMetadataAsync(
             threadId,
             new ThreadMetadata
@@ -909,7 +1010,8 @@ public class MultiTurnAgentBaseTests
                 ThreadId = threadId,
                 LatestRunId = runId,
                 LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            });
+            }
+        );
 
         var agent = new TestMultiTurnAgent(threadId, store: store);
         using var cts = new CancellationTokenSource();
@@ -1054,10 +1156,7 @@ public class MultiTurnAgentBaseTests
             ThreadId = threadId,
             LatestRunId = "old-run-id",
             LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            Properties = new Dictionary<string, object>
-            {
-                ["title"] = "Preserved Title",
-            }.ToImmutableDictionary(),
+            Properties = new Dictionary<string, object> { ["title"] = "Preserved Title" }.ToImmutableDictionary(),
         };
         await store.SaveMetadataAsync(threadId, initialMetadata);
 

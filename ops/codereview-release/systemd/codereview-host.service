@@ -1,6 +1,10 @@
 [Unit]
 Description=Verified CodeReview host
 After=network.target
+# The pair target is the single ownership handle for 127.0.0.1:5080 and :5081. PartOf makes
+# `systemctl --user stop codereview-pair.target` actually release this listener, which is how
+# release.py hands the port to a candidate and hands it back on rollback.
+PartOf=codereview-pair.target
 
 [Service]
 Type=simple
@@ -14,4 +18,4 @@ RestartSec=10
 NoNewPrivileges=true
 
 [Install]
-WantedBy=default.target
+WantedBy=codereview-pair.target

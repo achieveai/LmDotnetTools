@@ -79,8 +79,34 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     /// <summary>
     /// Local queue for messages that arrive while we're waiting for dequeue.
     /// Stores both messages AND their source inputs for correlation with RunAssignment.
+    /// <c>Retained</c> is the additive claim <see cref="MultiTurnAgentBase.RetainInputs"/> took for
+    /// the batch when it was parked here; it is handed back verbatim once a run owns the batch.
+    /// Without it a parked batch's claim would live in <c>_inputsInHand</c>, which the very next
+    /// drain overwrites — and the agent would report itself idle with acknowledged input parked.
     /// </summary>
-    private readonly Queue<(List<IMessage> Messages, List<QueuedInput> Inputs)> _localMessageQueue = new();
+    /// <remarks>
+    /// Not a concurrent collection, and it does not need to be: the only writer is the input watcher
+    /// started by <see cref="ExecuteInteractiveModeAsync"/>, and that method now awaits the watcher
+    /// before returning, so the run loop's <see cref="SendQueuedMessagesBeforeNewInputAsync"/> drain
+    /// cannot overlap it.
+    /// </remarks>
+    private readonly Queue<(List<IMessage> Messages, List<QueuedInput> Inputs, int Retained)> _localMessageQueue =
+        new();
+
+    /// <summary>
+    /// Number of batches parked in <see cref="_localMessageQueue"/>. Internal so tests can wait for
+    /// a park to have happened instead of sleeping.
+    /// </summary>
+    internal int ParkedInputBatchCountForTest => _localMessageQueue.Count;
+
+    /// <summary>
+    /// Test seam, null in production. Awaited by <see cref="WatchAndInjectInputsAsync"/> as the very
+    /// last thing it does, so a test can hold the watcher past its cancellation and prove that
+    /// <see cref="ExecuteInteractiveModeAsync"/> WAITS for it rather than merely signalling it.
+    /// Cancelling only asks; without the wait the watcher can still be draining the input channel
+    /// while the run loop's next iteration drains the same channel.
+    /// </summary>
+    internal Func<Task>? InputWatcherExitHookForTest;
 
     /// <summary>
     /// Track pending tool calls to prevent message loss.
@@ -147,7 +173,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         Func<ClaudeAgentSdkOptions, ILogger?, IClaudeAgentSdkClient>? clientFactory = null,
         string? initialSessionId = null,
         bool persistRunLedger = false,
-        MultiTurnLifecycleServices? lifecycleServices = null)
+        MultiTurnLifecycleServices? lifecycleServices = null
+    )
         : base(
             threadId,
             systemPrompt,
@@ -161,19 +188,21 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             lifecycleServices: MultiTurnLifecycleServices.ForAgent(
                 lifecycleServices,
                 LifecycleAgentKinds.Claude,
-                defaultOptions?.ModelId))
+                defaultOptions?.ModelId
+            )
+        )
     {
         ArgumentNullException.ThrowIfNull(claudeOptions);
 
-        if (!string.IsNullOrEmpty(initialSessionId)
-            && !string.IsNullOrEmpty(claudeOptions.AssignSessionId))
+        if (!string.IsNullOrEmpty(initialSessionId) && !string.IsNullOrEmpty(claudeOptions.AssignSessionId))
         {
             throw new ArgumentException(
                 "initialSessionId drives --resume against an existing on-disk session, while "
-                + nameof(ClaudeAgentSdkOptions.AssignSessionId)
-                + " drives --session-id to create a new session under a host-chosen id. "
-                + "Set at most one.",
-                nameof(initialSessionId));
+                    + nameof(ClaudeAgentSdkOptions.AssignSessionId)
+                    + " drives --session-id to create a new session under a host-chosen id. "
+                    + "Set at most one.",
+                nameof(initialSessionId)
+            );
         }
 
         _claudeOptions = claudeOptions;
@@ -211,13 +240,12 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             Logger.LogInformation(
                 "Cleaning up existing client. Mode: {Mode}, IsRunning: {IsRunning}",
                 _claudeOptions.Mode,
-                _client.IsRunning);
+                _client.IsRunning
+            );
             await DisposeClientResourcesAsync();
         }
 
-        Logger.LogInformation(
-            "Initializing ClaudeAgentSdk with {Count} MCP servers",
-            _mcpServers.Count);
+        Logger.LogInformation("Initializing ClaudeAgentSdk with {Count} MCP servers", _mcpServers.Count);
 
         foreach (var (name, config) in _mcpServers)
         {
@@ -226,7 +254,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 name,
                 config.Type,
                 config.Command,
-                config.Url);
+                config.Url
+            );
         }
 
         CreateClientResources();
@@ -275,9 +304,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             var sessionMappings = existing?.SessionMappings;
             if (!string.IsNullOrEmpty(CurrentSessionId) && !string.IsNullOrEmpty(latestRun))
             {
-                var merged = sessionMappings == null
-                    ? []
-                    : new Dictionary<string, string>(sessionMappings);
+                var merged = sessionMappings == null ? [] : new Dictionary<string, string>(sessionMappings);
                 merged[$"claude-sdk:{CurrentSessionId}"] = latestRun;
                 sessionMappings = merged;
             }
@@ -309,8 +336,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         {
             try
             {
-                await _activeSubscription.DisposeAsync().AsTask()
-                    .WaitAsync(TimeSpan.FromSeconds(2));
+                await _activeSubscription.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
             }
             catch (TimeoutException)
             {
@@ -371,10 +397,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
 
         if (previous == null)
         {
-            Logger.LogInformation(
-                "Captured Claude SDK SessionId: {SessionId} (seeded: {Seeded})",
-                sessionId,
-                isSeed);
+            Logger.LogInformation("Captured Claude SDK SessionId: {SessionId} (seeded: {Seeded})", sessionId, isSeed);
         }
         else if (previousWasSeeded && !isSeed)
         {
@@ -383,14 +406,12 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             Logger.LogWarning(
                 "Claude SDK SessionId replaced caller-seeded value: {Seeded} -> {Live}",
                 previous,
-                sessionId);
+                sessionId
+            );
         }
         else
         {
-            Logger.LogInformation(
-                "Claude SDK SessionId changed: {Old} -> {New}",
-                previous,
-                sessionId);
+            Logger.LogInformation("Claude SDK SessionId changed: {Old} -> {New}", previous, sessionId);
         }
     }
 
@@ -401,9 +422,10 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     {
         var clientLogger = _loggerFactory?.CreateLogger<ClaudeAgentSdkClient>();
 
-        _client = _clientFactory != null
-            ? _clientFactory(_claudeOptions, clientLogger)
-            : new ClaudeAgentSdkClient(_claudeOptions, clientLogger);
+        _client =
+            _clientFactory != null
+                ? _clientFactory(_claudeOptions, clientLogger)
+                : new ClaudeAgentSdkClient(_claudeOptions, clientLogger);
     }
 
     /// <summary>
@@ -441,19 +463,18 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     /// single enqueue core every send path funnels through — the list overload delegates to it, so this
     /// restart guard still covers list-based callers.
     /// </remarks>
-    public override async ValueTask<SendReceipt> SendAsync(
-        UserInput input,
-        CancellationToken ct = default)
+    public override async ValueTask<SendReceipt> SendAsync(UserInput input, CancellationToken ct = default)
     {
         await _restartLock.WaitAsync(ct);
         try
         {
             // Auto-restart only in Interactive mode when client died unexpectedly
-            if (_claudeOptions.Mode == ClaudeAgentSdkMode.Interactive
-                && _client is { IsRunning: false, LastRequest: not null })
+            if (
+                _claudeOptions.Mode == ClaudeAgentSdkMode.Interactive
+                && _client is { IsRunning: false, LastRequest: not null }
+            )
             {
-                Logger.LogInformation(
-                    "Interactive mode: Client stopped unexpectedly, restarting process...");
+                Logger.LogInformation("Interactive mode: Client stopped unexpectedly, restarting process...");
                 await _client.StartAsync(_client.LastRequest, ct);
             }
 
@@ -538,8 +559,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                     // Read the discovered context out of the batch that is about to be handed to
                     // the CLI. What the CLI already holds from its own session start is its to
                     // report; this reports what this process is sending it.
-                    await ReportContextLoadedAsync(
-                        assignment.RunId, assignment.GenerationId, messagesToSend, ct);
+                    await ReportContextLoadedAsync(assignment.RunId, assignment.GenerationId, messagesToSend, ct);
 
                     if (_claudeOptions.Mode == ClaudeAgentSdkMode.Interactive)
                     {
@@ -567,7 +587,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                         wasForked: isExplicitFork,
                         forkedToRunId: isExplicitFork ? assignment.RunId : null,
                         pendingMessageCount: _localMessageQueue.Count,
-                        ct: ct);
+                        ct: ct
+                    );
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -583,7 +604,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                         pendingMessageCount: _localMessageQueue.Count,
                         isError: true,
                         errorMessage: ex.Message,
-                        ct: ct);
+                        ct: ct
+                    );
 
                     // Rethrown deliberately: this loop has always surfaced a run failure to its
                     // caller rather than swallowing it and waiting for the next input.
@@ -616,7 +638,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     private async Task ExecuteInteractiveModeAsync(
         RunAssignment assignment,
         List<IMessage> initialMessages,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         await EnsureClientStartedAsync(ct);
 
@@ -668,7 +691,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                     {
                         Logger.LogDebug(
                             "Resetting pendingToolCalls from {Count} to 0 on turn complete",
-                            _pendingToolCalls);
+                            _pendingToolCalls
+                        );
                         _pendingToolCalls = 0;
                     }
 
@@ -685,8 +709,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 }
 
                 // HEURISTIC 3: If generationId changes unexpectedly, assume dequeue happened
-                if (!string.IsNullOrEmpty(msg.GenerationId) &&
-                    msg.GenerationId != _lastObservedGenerationId)
+                if (!string.IsNullOrEmpty(msg.GenerationId) && msg.GenerationId != _lastObservedGenerationId)
                 {
                     // Only trigger if we were actually waiting
                     if (_awaitingDequeue)
@@ -694,7 +717,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                         Logger.LogInformation(
                             "GenerationId changed from {Old} to {New} while awaiting dequeue.",
                             _lastObservedGenerationId,
-                            msg.GenerationId);
+                            msg.GenerationId
+                        );
                         await OnDequeueDetectedAsync("GenerationId change", ct);
                     }
 
@@ -709,7 +733,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                     Logger.LogDebug(
                         "Tool call started: {ToolName}, pending: {Count}",
                         toolCall.FunctionName,
-                        _pendingToolCalls);
+                        _pendingToolCalls
+                    );
                 }
                 else if (msg is ToolCallResultMessage toolResult)
                 {
@@ -722,7 +747,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                     Logger.LogDebug(
                         "Tool call completed: {ToolId}, pending: {Count}",
                         toolResult.ToolCallId,
-                        _pendingToolCalls);
+                        _pendingToolCalls
+                    );
 
                     // Note: We don't try to send queued messages here because _runInProgress
                     // is still true. Messages will be sent when the run completes (ResultEventMessage).
@@ -738,8 +764,33 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         }
         finally
         {
-            // Stop input watcher
+            // Stop input watcher — and WAIT for it, do not merely ask it to stop. Cancellation is a
+            // request: the watcher can be inside TryDrainInputs, or mid-injection, when this token
+            // is cancelled. Returning at that point puts a second reader of the input channel in
+            // flight against RunLoopAsync's next iteration, which drains the same channel — two
+            // concurrent drains split one acknowledged batch between them, and each settles
+            // _inputsInHand by assignment, so one clobbers the other's claim. It also lets the
+            // watcher enqueue into the (non-concurrent) local message queue while the run loop is
+            // dequeuing from it. Awaiting here is bounded by the cancellation we just requested:
+            // every await inside the watcher takes this token. A timeout is deliberately NOT used —
+            // it would silently reopen the very window this closes.
             await linkedCts.CancelAsync();
+
+            try
+            {
+                await inputWatchTask;
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected: the watcher observed the cancellation requested one line above.
+            }
+            catch (Exception ex)
+            {
+                // Logged, not rethrown. The watcher was fire-and-forget before, so its faults never
+                // reached this method's caller; surfacing one here would change which error a run
+                // reports and could mask the exception that actually ended the message loop.
+                Logger.LogWarning(ex, "Input watcher faulted while shutting down");
+            }
         }
     }
 
@@ -768,13 +819,26 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                     // period when messages would be removed.
                     if (_runInProgress)
                     {
-                        // Queue locally - run is in progress (would get removed)
-                        _localMessageQueue.Enqueue((messagesToSend, newInputs));
+                        // Queue locally - run is in progress (would get removed).
+                        //
+                        // Convert the drain's in-hand claim into a RETAINED one first. TryDrainInputs
+                        // settles _inputsInHand by assignment, so the next trip round this loop
+                        // republishes only ITS batch's count: a second park would silently drop the
+                        // first batch's claim, and a drain that carries no work at all would settle
+                        // the field to zero and drop every parked batch's claim at once. The agent
+                        // would then report itself idle while holding input it has already
+                        // acknowledged to a caller — exactly the state its host reads before
+                        // disposing it. The claim is handed back in
+                        // SendQueuedMessagesBeforeNewInputAsync once a run owns the batch.
+                        var retained = RetainInputs(newInputs);
+                        _localMessageQueue.Enqueue((messagesToSend, newInputs, retained));
                         Logger.LogDebug(
-                            "Queued {MessageCount} messages locally (run in progress, tools pending: {PendingTools}). InputCount: {InputCount}",
+                            "Queued {MessageCount} messages locally (run in progress, tools pending: {PendingTools}). InputCount: {InputCount}, Retained: {Retained}",
                             messagesToSend.Count,
                             _pendingToolCalls,
-                            newInputs.Count);
+                            newInputs.Count,
+                            retained
+                        );
                     }
                     else
                     {
@@ -795,8 +859,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                             }
                         }
 
-                        await ReportContextLoadedAsync(
-                            assignment.RunId, assignment.GenerationId, messagesToSend, ct);
+                        await ReportContextLoadedAsync(assignment.RunId, assignment.GenerationId, messagesToSend, ct);
 
                         // Set flags BEFORE SendAsync to prevent race condition
                         _runInProgress = true;
@@ -811,6 +874,13 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             // Expected when run completes
+        }
+        finally
+        {
+            if (InputWatcherExitHookForTest is { } exitHook)
+            {
+                await exitHook();
+            }
         }
     }
 
@@ -830,23 +900,39 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         // Merge ALL queued batches into a single batch
         var mergedMessages = new List<IMessage>();
         var mergedInputs = new List<QueuedInput>();
+        var retainedTotal = 0;
 
         while (_localMessageQueue.TryDequeue(out var nextBatch))
         {
             mergedMessages.AddRange(nextBatch.Messages);
             mergedInputs.AddRange(nextBatch.Inputs);
+            retainedTotal += nextBatch.Retained;
         }
 
         Logger.LogInformation(
             "Merged {BatchCount} queued batches into single run. Total messages: {MessageCount}, Total inputs: {InputCount}",
             mergedInputs.Count,
             mergedMessages.Count,
-            mergedInputs.Count);
+            mergedInputs.Count
+        );
 
         // Start a SINGLE run for ALL merged inputs. Caller-supplied ParentRunId on
         // any merged input promotes this to an explicit fork.
         var (mergedParent, isExplicitFork) = ResolveBatchParent(mergedInputs);
-        var assignment = await StartRunAsync(mergedInputs, mergedParent, ct, wasForked: isExplicitFork);
+        RunAssignment assignment;
+        try
+        {
+            assignment = await StartRunAsync(mergedInputs, mergedParent, ct, wasForked: isExplicitFork);
+        }
+        finally
+        {
+            // Give back exactly what the parks took. In the success case the run now owns these
+            // inputs and CurrentRunId reports them, so the retained claim has nothing left to
+            // protect. In the failure case nothing else will ever release it, and a permanently
+            // retained claim would leave this agent reading "busy" for the rest of its life — the
+            // one failure mode the claim's own contract says to avoid.
+            ReleaseRetainedInputs(retainedTotal);
+        }
 
         // Track ALL inputs for dequeue correlation with the SAME assignment
         foreach (var input in mergedInputs)
@@ -870,8 +956,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             // Context that was locally queued while a run was in progress reaches the model here,
             // not when it was queued — which is why the report sits on the dispatch and not on the
             // enqueue.
-            await ReportContextLoadedAsync(
-                assignment.RunId, assignment.GenerationId, mergedMessages, ct);
+            await ReportContextLoadedAsync(assignment.RunId, assignment.GenerationId, mergedMessages, ct);
 
             // Execute the merged batch as a full interactive run (waits for ResultEvent)
             await ExecuteInteractiveModeAsync(assignment, mergedMessages, ct);
@@ -885,7 +970,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 wasForked: isExplicitFork,
                 forkedToRunId: isExplicitFork ? assignment.RunId : null,
                 pendingMessageCount: 0,
-                ct: ct);
+                ct: ct
+            );
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -901,7 +987,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 pendingMessageCount: 0,
                 isError: true,
                 errorMessage: ex.Message,
-                ct: ct);
+                ct: ct
+            );
 
             throw;
         }
@@ -951,13 +1038,13 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 pending.Assignment.RunId,
                 pending.Input.ReceiptId,
                 firstText ?? "(none)",
-                lastText ?? "(same as first)");
+                lastText ?? "(same as first)"
+            );
 
-            await PublishToAllAsync(new RunAssignmentMessage
-            {
-                Assignment = pending.Assignment,
-                ThreadId = ThreadId,
-            }, ct);
+            await PublishToAllAsync(
+                new RunAssignmentMessage { Assignment = pending.Assignment, ThreadId = ThreadId },
+                ct
+            );
         }
 
         // Note: Local queue draining is now handled in RunLoopAsync via SendQueuedMessagesBeforeNewInputAsync
@@ -966,7 +1053,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         {
             Logger.LogDebug(
                 "OnDequeueDetected: {QueueSize} messages in local queue, will be processed in RunLoopAsync",
-                _localMessageQueue.Count);
+                _localMessageQueue.Count
+            );
         }
     }
 
@@ -981,8 +1069,10 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     internal async Task FlushPendingRunAssignmentsAsync(string runId, CancellationToken ct)
     {
         // Only drain inputs belonging to this run; later runs' inputs stay queued.
-        while (_pendingCliInputs.TryPeek(out var peeked) &&
-               string.Equals(peeked.Assignment.RunId, runId, StringComparison.Ordinal))
+        while (
+            _pendingCliInputs.TryPeek(out var peeked)
+            && string.Equals(peeked.Assignment.RunId, runId, StringComparison.Ordinal)
+        )
         {
             if (!_pendingCliInputs.TryDequeue(out var pending))
             {
@@ -992,13 +1082,13 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             Logger.LogWarning(
                 "Publishing deferred RunAssignmentMessage at run completion (dequeue heuristic missed) - RunId: {RunId}, ReceiptId: {ReceiptId}",
                 pending.Assignment.RunId,
-                pending.Input.ReceiptId);
+                pending.Input.ReceiptId
+            );
 
-            await PublishToAllAsync(new RunAssignmentMessage
-            {
-                Assignment = pending.Assignment,
-                ThreadId = ThreadId,
-            }, ct);
+            await PublishToAllAsync(
+                new RunAssignmentMessage { Assignment = pending.Assignment, ThreadId = ThreadId },
+                ct
+            );
         }
 
         // We've published whatever we owed; clear awaiting flag so subsequent runs
@@ -1011,7 +1101,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     /// </summary>
     private static (string? First, string? Last) GetFirstLastTextMessages(
         IEnumerable<IMessage> messages,
-        int maxLength = 100)
+        int maxLength = 100
+    )
     {
         var textMessages = messages.OfType<TextMessage>().ToList();
         if (textMessages.Count == 0)
@@ -1020,9 +1111,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         }
 
         var first = TruncateForLog(textMessages[0].Text, maxLength);
-        var last = textMessages.Count > 1
-            ? TruncateForLog(textMessages[^1].Text, maxLength)
-            : null;
+        var last = textMessages.Count > 1 ? TruncateForLog(textMessages[^1].Text, maxLength) : null;
         return (first, last);
     }
 
@@ -1039,9 +1128,9 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         // Collapse all whitespace and newlines to single spaces for preview
         var preview = text.Replace("\r\n", " ").Replace("\n", " ").Replace("\r", " ").Trim();
 
-        return string.IsNullOrEmpty(preview)
-            ? "(whitespace only)"
-            : preview.Length <= maxLength ? preview : preview[..maxLength] + "...";
+        return string.IsNullOrEmpty(preview) ? "(whitespace only)"
+            : preview.Length <= maxLength ? preview
+            : preview[..maxLength] + "...";
     }
 
     /// <summary>
@@ -1050,7 +1139,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     private async Task ExecuteOneShotModeAsync(
         RunAssignment assignment,
         List<IMessage> messagesToSend,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         await EnsureClientStartedAsync(ct);
 
@@ -1096,7 +1186,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 "Starting claude-agent-sdk client with model {Model}, maxTurns {MaxTurns}, sessionId {SessionId}",
                 request.ModelId,
                 request.MaxTurns,
-                request.SessionId ?? "(new session)");
+                request.SessionId ?? "(new session)"
+            );
 
             await _client.StartAsync(request, ct);
         }
@@ -1146,21 +1237,19 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         // captured yet, so the first run materialises the chosen id and
         // subsequent runs flip back to --resume automatically.
         string? assignedSessionId = null;
-        if (string.IsNullOrEmpty(sessionId)
-            && !string.IsNullOrEmpty(_claudeOptions.AssignSessionId))
+        if (string.IsNullOrEmpty(sessionId) && !string.IsNullOrEmpty(_claudeOptions.AssignSessionId))
         {
             assignedSessionId = _claudeOptions.AssignSessionId;
             if (_claudeOptions.DisableSessionPersistence)
             {
                 Logger.LogWarning(
                     "AssignSessionId {SessionId} is being emitted to --session-id even though DisableSessionPersistence=true; the assigned session will not be persisted to disk so subsequent --resume attempts will fail",
-                    assignedSessionId);
+                    assignedSessionId
+                );
             }
         }
 
-        if (_sessionIdWasSeeded
-            && !string.IsNullOrEmpty(sessionId)
-            && _claudeOptions.DisableSessionPersistence)
+        if (_sessionIdWasSeeded && !string.IsNullOrEmpty(sessionId) && _claudeOptions.DisableSessionPersistence)
         {
             // The CLI is unlikely to find the seeded session on disk when the
             // SDK is told to skip session persistence. We preserve the value
@@ -1168,7 +1257,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             // externally), but surface the conflict.
             Logger.LogWarning(
                 "Seeded Claude SDK SessionId {SessionId} is being emitted to --resume even though DisableSessionPersistence=true; the CLI may reject the resume if the session is not persisted on disk",
-                sessionId);
+                sessionId
+            );
         }
 
         // Build MCP server configuration
@@ -1185,7 +1275,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 Logger.LogDebug(
                     "Loaded {Count} MCP servers from file: {Path}",
                     mcpServers?.Count ?? 0,
-                    _claudeOptions.McpConfigPath);
+                    _claudeOptions.McpConfigPath
+                );
             }
             catch (Exception ex)
             {
@@ -1221,13 +1312,11 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             }
         }
 
-        Logger.LogInformation(
-            "Final MCP server configuration: {Count} servers configured",
-            mcpServers?.Count ?? 0);
+        Logger.LogInformation("Final MCP server configuration: {Count} servers configured", mcpServers?.Count ?? 0);
 
         // Build tools list (controls which built-in tools are available via --tools flag)
-        var allowedTools = _claudeOptions.AllowedTools
-            ?? "Read,Write,Edit,Bash,Grep,Glob,TodoWrite,Task,WebSearch,WebFetch";
+        var allowedTools =
+            _claudeOptions.AllowedTools ?? "Read,Write,Edit,Bash,Grep,Glob,TodoWrite,Task,WebSearch,WebFetch";
 
         return new ClaudeAgentSdkRequest
         {

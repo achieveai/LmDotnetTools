@@ -1330,6 +1330,12 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             count
         );
 
+        // This is the one path that consumes a drained batch without ever calling StartRunAsync, so
+        // it owes the release itself. The messages are in history (and persisted under the parked
+        // run) — they cannot be lost with the agent any more, and the loop is about to park on an
+        // empty channel, where a claim left raised would block a host's refresh until the next send.
+        ReleaseInputsInHand();
+
         return true;
     }
 

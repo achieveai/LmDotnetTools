@@ -29,6 +29,22 @@ public record SubAgentOptions
     public int MaxQueuedSubAgents { get; init; } = 100;
 
     /// <summary>
+    /// Ceiling on how long any teardown path waits for one sub-agent's already-cancelled background work
+    /// — its <c>RunTask</c>, its monitor task, or its loop's own <c>DisposeAsync</c> — before abandoning
+    /// the wait and moving on. Applies uniformly to the restart transition, failed-spawn rollback, the
+    /// monitor's fault teardown, and manager disposal.
+    /// </summary>
+    /// <remarks>
+    /// A cooperative child finishes far inside this, so the ceiling only ever binds on work that ignores
+    /// its cancellation token. Without it a single wedged child blocks the caller forever: a restart
+    /// never returns, a spawn rollback never releases its permit, and <c>SubAgentManager.DisposeAsync</c>
+    /// never completes — turning one stuck sub-agent into an unshutdownable host. When the ceiling is hit
+    /// the wait is abandoned with a warning and a fault-only observer is attached to the abandoned task,
+    /// so a fault it raises later is never surfaced as an <c>UnobservedTaskException</c>.
+    /// </remarks>
+    public TimeSpan TeardownObservationTimeout { get; init; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
     /// Fallback conversation store factory when a template doesn't specify one.
     /// Null = no persistence for sub-agents.
     /// </summary>
