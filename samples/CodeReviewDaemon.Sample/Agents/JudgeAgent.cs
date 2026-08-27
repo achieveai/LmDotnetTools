@@ -364,7 +364,7 @@ internal sealed record JudgeVerdict(int? Score, string Rationale, string Variant
 /// <para>
 /// It is therefore deliberately NOT the value <see cref="Eval.DaemonCorpusReader"/> stamps on a
 /// candidate. That answers a different question — which model wrote this text — and so prefers the
-/// escalated id recorded on the <c>review-provisional</c> checkpoint. Two fields, two questions.
+/// id recorded on the <c>review-provisional</c> checkpoint. Two fields, two questions.
 /// </para>
 /// </param>
 /// <param name="SelfGraded">

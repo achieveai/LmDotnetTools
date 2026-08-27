@@ -322,11 +322,9 @@ internal sealed class DaemonCorpusReader : ICorpusReader
     /// <c>IReviewAgentLoopFactory.HonoursRequestedModelId</c> with <c>false</c>, and the executor
     /// stamps an escalation target only where the answer is <c>true</c>: an escalated S2S run records
     /// the run's own seeded id, so this preference returns exactly what the fallback below would have.
-    /// The value is therefore a request the transport <i>did</i> carry, not one it may not have.
     /// </para>
     /// <para>
-    /// Which makes the preference INERT on today's only bootable transport — the right outcome, not a
-    /// hollow one. The two ids differ on escalated runs and nowhere else, and on those runs an
+    /// The two ids differ on escalated runs and nowhere else, and on those runs an
     /// unforwarded escalation target would name a model the review host was never asked for, while the
     /// seeded id still names the configuration the run was launched under. The gate sits on the write
     /// side because only the executor knows which transport carried a given attempt; this reader walks

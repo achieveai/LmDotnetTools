@@ -36,7 +36,7 @@ namespace CodeReviewDaemon.Sample.Eval;
 /// <b>The honest limit.</b> A <i>two-segment</i> id is answered positionally like any other, so a
 /// <c>router/model</c> id would yield the router. (Shorter ids are not: <see cref="Of"/>
 /// short-circuits to null below two segments, and again when either of the two segments flanking the
-/// FINAL slash is blank — a leading empty segment is not one of them, so <c>/anthropic/claude-4</c>
+/// FINAL slash is blank — <c>/anthropic/claude-4</c>
 /// resolves to <c>anthropic</c> rather than to null.)
 /// Closing that would need per-request provider metadata the daemon does not carry. Stated here
 /// rather than papered over with a vendor list nobody maintains.

@@ -2952,13 +2952,11 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // WHICH model this checkpoint claims ran, gated on whether the transport can actually be told. The
         // escalation ladder passes a modelOverride, but only a factory that FORWARDS a per-call id runs it:
         // the S2S provision request carries no model field, so its hosted conversation resolves the model from
-        // the configured provider and the override never leaves this process. The claim is not idle — this is
+        // the configured provider. The claim is not idle — this is
         // the field DaemonCorpusReader prefers over review_run.model_id when attributing an eval candidate — so
         // stamping an unforwarded override would credit every escalated candidate to a model nothing ran, and
         // do it silently, a wrong id being indistinguishable from a right one downstream. Where the override is
-        // not honoured the run's own seeded id is kept instead: the reader's preference then resolves to the
-        // same value it would have read anyway, so the attribution is exactly what it was before the field
-        // existed, and it starts moving on its own the day a transport carries the model.
+        // not honoured the run's own seeded id is kept instead.
         var identity = BuildLifecycleIdentity(
             run,
             threadId,
