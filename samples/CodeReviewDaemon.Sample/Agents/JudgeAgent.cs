@@ -348,22 +348,23 @@ internal sealed record JudgeVerdict(int? Score, string Rationale, string Variant
 /// <param name="GeneratorModelId">
 /// The model that wrote what was graded. Null in a v1 row.
 /// <para>
-/// Both ids here are <b>provisioning identities</b> — the judge stage passes each through
-/// <c>IReviewAgentLoopFactory.ResolveEffectiveModelId</c> before recording it, and on the S2S path
-/// that discards the per-call id and answers the selector <c>lmstreaming:&lt;providerId&gt;</c>. That
-/// is what <see cref="JudgeArtifactPayload.SelfGraded"/> needs, because it is an ordinal comparison
-/// of these two strings and nothing else: two conversations provisioned under one selector run one
-/// model, which is exactly the question that flag asks.
+/// Both ids here are <b>provisioning identities</b>: the judge stage passes each through
+/// <c>IReviewAgentLoopFactory.ResolveEffectiveModelId</c> before recording it. What that resolution
+/// means on the S2S path — and why the per-call model id is discarded there — is argued once, at
+/// <c>S2SReviewAgentLoopFactory.ResolveEffectiveModelId</c>.
 /// </para>
 /// <para>
-/// It is deliberately NOT the value <see cref="Eval.DaemonCorpusReader"/> stamps on a candidate. That
-/// answers a different question — which model wrote this text — and so prefers the escalated id
-/// recorded on the <c>review-provisional</c> checkpoint. Two fields, two questions. Do not
-/// "reconcile" them by making this one read the other: on the S2S path the judge id would stay
-/// <c>lmstreaming:&lt;providerId&gt;</c> while this one became a bare model slug, the two would never
-/// compare equal, and <see cref="JudgeArtifactPayload.SelfGraded"/> would report an independence the
-/// transport never delivered — the same hazard the judge stage already guards against by resolving
-/// both sides through the factory.
+/// The invariant this field carries is that <b>both</b> sides of
+/// <see cref="JudgeArtifactPayload.SelfGraded"/> are resolved through that same factory call. That
+/// flag is an ordinal comparison of the two recorded strings, so comparing a factory-resolved id
+/// against a raw model slug would report an independence the transport never delivered — two
+/// conversations provisioned under one selector run one model, which is exactly the question the flag
+/// asks. Resolving both sides is what makes the comparison mean anything, on either transport.
+/// </para>
+/// <para>
+/// It is therefore deliberately NOT the value <see cref="Eval.DaemonCorpusReader"/> stamps on a
+/// candidate. That answers a different question — which model wrote this text — and so prefers the
+/// escalated id recorded on the <c>review-provisional</c> checkpoint. Two fields, two questions.
 /// </para>
 /// </param>
 /// <param name="SelfGraded">

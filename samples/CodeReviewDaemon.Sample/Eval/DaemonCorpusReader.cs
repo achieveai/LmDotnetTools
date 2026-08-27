@@ -309,8 +309,22 @@ internal sealed class DaemonCorpusReader : ICorpusReader
     }
 
     /// <summary>
-    /// The model that actually produced the primary arm's review, which is not always the model the
-    /// run was seeded with.
+    /// The model the daemon <b>selected for</b> the primary arm's review, which is not always the
+    /// model the run was seeded with.
+    /// <para>
+    /// Selected for, not demonstrably run. On the S2S path — which <c>Program</c> makes a boot
+    /// invariant, refusing to start without <c>UseS2SReviewAgent</c> — the review host owns model
+    /// selection: <c>S2SReviewAgentLoopFactory.Create</c> takes a per-call <c>modelId</c> and never
+    /// forwards it, building the agent from <c>LmStreamingProviderId</c> alone (the
+    /// <c>_KnowledgeModelId_comment</c> in <c>appsettings.s2s.json</c> states the same fact from the
+    /// other side: provision carries no model field). So an escalated run stamps
+    /// <c>OverflowEscalationModelId</c> on a candidate the host produced under whatever that provider
+    /// resolved. That makes this value a <b>request</b> the transport may not honour — and still the
+    /// best answer available, because it is the only id that moves when escalation moves what ran,
+    /// and the seeded id is wrong on strictly more runs than this one is. The blast radius is
+    /// aggregates keyed on <c>ModelId</c>; <c>GeneratorFamily</c> is unaffected, since
+    /// <see cref="ModelFamilies.Of"/> answers null for a bare slug either way.
+    /// </para>
     /// <para>
     /// <c>review_run.model_id</c> is written once, on INSERT, and no <c>UPDATE</c> in
     /// <see cref="ReviewStore"/> touches it — so a run that escalated to
@@ -320,11 +334,14 @@ internal sealed class DaemonCorpusReader : ICorpusReader
     /// indistinguishable from a right one at this layer.
     /// </para>
     /// <para>
-    /// The executor already records what ran: it writes <c>modelOverride ?? run.ModelId</c> into the
+    /// The executor already records that selection: it writes <c>modelOverride ?? run.ModelId</c> into the
     /// lifecycle identity on the <c>review-provisional</c> checkpoint, which sits in the very
     /// artifact list this reader has already fetched. Preferring it needs no new column. Latest wins,
-    /// as everywhere else here: the escalation ladder writes one checkpoint per attempt, so the last
-    /// one recorded belongs to the rung whose output was kept.
+    /// as everywhere else here: every checkpoint an attempt writes carries that attempt's model, and
+    /// the ladder runs its rungs in order — so the last row recorded belongs to the rung whose output
+    /// was kept. The invariant is the ORDERING, not a count: an attempt may record more than one
+    /// checkpoint (the S2S path writes one when the conversation is minted and one when the turn
+    /// returns), and the answer is the same either way because they name the same model.
     /// </para>
     /// <para>
     /// It FALLS BACK rather than overrides. A run with no checkpoint, or one whose

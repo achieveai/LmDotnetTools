@@ -238,8 +238,8 @@ public sealed class DaemonCorpusReaderTests : IDisposable
 
     /// <summary>
     /// A <c>review-provisional</c> checkpoint carrying <paramref name="modelId"/> in its lifecycle
-    /// identity — the shape the executor writes, with <c>modelOverride ?? run.ModelId</c> in that
-    /// slot. Only the model varies here; the rest of the identity is inert for this reader.
+    /// identity — the shape the executor writes, with the model the attempt actually ran under in
+    /// that slot. Only the model varies here; the rest of the identity is inert for this reader.
     /// </summary>
     private void AddLifecycleCheckpoint(long runId, string? modelId) =>
         AddArtifact(
@@ -263,12 +263,9 @@ public sealed class DaemonCorpusReaderTests : IDisposable
     [Fact]
     public async Task An_escalated_run_is_attributed_to_the_model_that_actually_ran()
     {
-        // review_run.model_id is written once, on INSERT: no UPDATE in ReviewStore touches it. So a
-        // run that escalated to OverflowEscalationModelId mid-review still carries the model it was
-        // SEEDED with, and crediting that model attributes the review to a generator that did not
-        // write it. The model that actually ran is already recorded — the executor writes
-        // `modelOverride ?? run.ModelId` into the lifecycle identity on the review-provisional
-        // checkpoint, which sits in the very artifact list this reader already fetches.
+        // The preference itself: a run seeded with one model whose lifecycle checkpoint names
+        // another is attributed to the checkpoint's. Why the seeded id is the wrong answer, and why
+        // the checkpoint is the right one, is argued at DaemonCorpusReader.EffectiveGeneratorModelId.
         var runId = CreateRun("118", modelId: "gpt-5.6-luna");
         AddContext(runId, "a diff");
         AddReview(runId, "a review");
@@ -325,6 +322,29 @@ public sealed class DaemonCorpusReaderTests : IDisposable
     }
 
     [Fact]
+    public async Task A_checkpoint_with_no_lifecycle_block_at_all_keeps_the_seeded_model()
+    {
+        // The hop BETWEEN the two pinned above: the checkpoint exists, but carries no lifecycle
+        // identity. ReviewArtifactPayload.Lifecycle is an appended, defaulted field, so every
+        // review-provisional row the daemon wrote before it existed deserializes with a null there —
+        // and this reader is explicitly built to walk that older history. Without this case the
+        // null-conditional on the second hop is unpinned, and dropping it turns a legacy row into an
+        // NRE thrown from LoadAsync's loop, outside the only handler here, which costs the whole
+        // corpus window rather than one item.
+        var runId = CreateRun("118", modelId: "gpt-5.6-luna");
+        AddContext(runId, "a diff");
+        AddReview(runId, "a review");
+        AddArtifact(
+            runId,
+            DaemonReviewStageExecutor.ProvisionalReviewArtifactKind,
+            new ReviewArtifactPayload(string.Empty, "run-1", "primary")
+        );
+
+        var candidate = Assert.Single((await SnapshotAsync(Reader())).Items);
+        candidate.ModelId.Should().Be("gpt-5.6-luna");
+    }
+
+    [Fact]
     public async Task A_lifecycle_checkpoint_whose_model_is_blank_does_not_erase_the_seeded_one()
     {
         // Blank is NOT "present". A whitespace-only id reading as a recorded model is the failure
@@ -343,11 +363,11 @@ public sealed class DaemonCorpusReaderTests : IDisposable
     }
 
     [Fact]
-    public async Task The_latest_lifecycle_checkpoint_wins_because_each_escalation_rung_writes_one()
+    public async Task The_latest_lifecycle_checkpoint_wins_over_an_earlier_rungs()
     {
-        // The escalation ladder runs up to three attempts and each writes its own checkpoint, so the
-        // rung that produced the review is the LAST one recorded. Reading the first would credit the
-        // attempt that overflowed — the one whose output was thrown away.
+        // The ladder runs its rungs in order and every checkpoint an attempt writes carries that
+        // attempt's model, so the rung that produced the review is the LAST one recorded. Reading an
+        // earlier one would credit an attempt that overflowed — one whose output was thrown away.
         var runId = CreateRun("118", modelId: "gpt-5.6-luna");
         AddContext(runId, "a diff");
         AddReview(runId, "a review");
