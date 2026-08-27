@@ -1108,26 +1108,30 @@ public class TaskManagerTests
     #region Concurrency Tests
 
     /// <summary>
-    ///     Pins the lock coverage of the four read paths that walk <em>nested</em> SubTasks
-    ///     lists after taking <c>_sync</c>: ListTasks, the GetMarkdown that delegates to it,
-    ///     SearchTasks, and the GetTaskCounts branch of SearchTasks.
+    ///     Pins the <c>lock (_sync)</c> on every read path that touches a <em>nested</em>
+    ///     SubTasks list: ListTasks (and the GetMarkdown that delegates to it), SearchTasks,
+    ///     the GetTaskCounts branch of SearchTasks, and GetTask.
     ///     <para>
     ///         It discriminates by construction, and each of the three requirements matters:
     ///         the writer nests (<c>AddTask(title, "1")</c>) so it appends to a nested list
     ///         rather than to the root list; that same nested list is pre-seeded so a reader
     ///         spends real time inside it; and the readers are exactly the methods that
-    ///         traverse it. Widen or drop any of those three <c>lock (_sync)</c> blocks and
-    ///         this test fails within a handful of iterations — <c>GetAllTasksFlat</c>'s bare
-    ///         <c>foreach</c> throws <see cref="InvalidOperationException" /> off the list's
-    ///         version stamp, and a <c>[.. list]</c> copy of a concurrently grown list throws
+    ///         traverse it. Drop any one of those four locks and this test fails within a
+    ///         handful of iterations — <c>GetAllTasksFlat</c>'s bare <c>foreach</c> throws
+    ///         <see cref="InvalidOperationException" /> off the list's version stamp, and a
+    ///         <c>[.. list]</c> copy of a concurrently grown list throws
     ///         <see cref="ArgumentException" /> from a Count that no longer matches the CopyTo.
     ///     </para>
     ///     <para>
-    ///         GetTask is not driven here: its own <c>lock (_sync)</c> is redundant, because
-    ///         the traversal it delegates to — <c>FindTaskByStringId</c> — takes <c>_sync</c>
-    ///         itself, so removing GetTask's lock changes nothing to observe. The two JSON
-    ///         serializers are not driven here either. Their locks are real and their removal
-    ///         is observable, but not as an exception: see
+    ///         GetTask is driven too, but for its own lock rather than its lookup: the lookup
+    ///         is already covered because <c>FindTaskByStringId</c> takes <c>_sync</c> itself,
+    ///         while <c>FormatTaskDetails</c> runs inside GetTask's lock and copies the target's
+    ///         SubTasks list. Reading task "1" — the one the writer is growing — is what makes
+    ///         that copy race.
+    ///     </para>
+    ///     <para>
+    ///         The two JSON serializers are not driven here. Their locks are real and their
+    ///         removal is observable, but not as an exception: see
     ///         <see cref="JsonSerializers_ConcurrentWithNestedAdds_ShouldEmitAConsistentSnapshot" />,
     ///         which pins them on a snapshot invariant instead.
     ///     </para>
@@ -1182,6 +1186,7 @@ public class TaskManagerTests
                             _ = _taskManager.ListTasks();
                             _ = _taskManager.SearchTasks("Nested");
                             _ = _taskManager.SearchTasks(countType: "total");
+                            _ = _taskManager.GetTask("1");
                         }
                         catch (Exception ex)
                         {
