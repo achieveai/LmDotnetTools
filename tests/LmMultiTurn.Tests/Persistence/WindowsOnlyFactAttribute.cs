@@ -14,9 +14,15 @@ namespace LmMultiTurn.Tests.Persistence;
 /// </para>
 /// <para>
 /// xunit 2 has no <c>Assert.Skip</c>, and <c>Skip</c> on the attribute is a compile-time constant, so the
-/// decision is made here in the constructor where the platform is knowable. Mirrors
-/// <c>CodeReviewDaemon.Sample.Tests.Infrastructure.WindowsOnlyFactAttribute</c>, which lives in a different
-/// assembly with no shared test-infrastructure project between them.
+/// decision is made here in the constructor where the platform is knowable.
+/// </para>
+/// <para>
+/// This duplicates <c>CodeReviewDaemon.Sample.Tests.Infrastructure.WindowsOnlyFactAttribute</c>, which is
+/// <c>public</c> but sits in a test assembly this one does not reference. The duplication is deliberate
+/// scope control, not a missing shared home: <c>src/LmTestUtils</c> is referenced by both and could hold
+/// one copy, but it is a shipped library, so hoisting an xunit attribute into its public surface is a
+/// separate decision from this PR. Deduplicating the two belongs with the same follow-up that moves
+/// <see cref="DetachedStoreTeardown"/>.
 /// </para>
 /// </summary>
 [AttributeUsage(AttributeTargets.Method)]

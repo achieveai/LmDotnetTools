@@ -55,9 +55,9 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
         // #477: this suite's file-backed stores are exactly the exclusive-create retry loop the window is
         // about — and AReserveWhoseDirectoryVanishes_KeepsYieldingRatherThanSpinningUncancellably, further
         // down this file, deliberately pins a reserve in that loop — so the root is detached before deleting
-        // rather than recursive-deleted in place. Purge's own retry replaces the fixed settle sleep this
-        // kind of teardown otherwise needs: it waits for the pooled handle the clear above just released to
-        // actually close, rather than guessing how long that takes.
+        // rather than recursive-deleted in place. No settle delay is needed between the clear above and the
+        // purge: Purge's own retry waits for the pooled handle to actually close, rather than guessing how
+        // long that takes the way a flat delay would.
         DetachedStoreTeardown.Purge(_root);
     }
 

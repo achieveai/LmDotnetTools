@@ -53,19 +53,27 @@ namespace LmMultiTurn.Tests.Persistence;
 /// </para>
 /// <para>
 /// <b>NOT swept, and why.</b> Five further <c>FileConversationStore</c> roots live in OTHER test
-/// assemblies and cannot reach this helper at all: it is <c>internal</c> to <c>LmMultiTurn.Tests</c>,
-/// no <c>InternalsVisibleTo</c> exists between test assemblies, and there is no shared
-/// test-infrastructure project to host it. Hardening them needs that shared home first, so it is a
-/// follow-up rather than something this file can fix. They are
+/// assemblies and cannot reach this helper as it stands: it is <c>internal</c> to
+/// <c>LmMultiTurn.Tests</c> and no <c>InternalsVisibleTo</c> exists between test assemblies. A shared
+/// home DOES exist — <c>src/LmTestUtils</c>, already referenced by <c>LmMultiTurn.Tests</c>,
+/// <c>LmStreaming.Sample.Tests</c> and <c>LmStreaming.Sample.Browser.E2E.Tests</c>, i.e. by every
+/// assembly holding one of these roots — so sweeping them is a matter of MOVING this helper there, not
+/// of inventing somewhere to put it. That move is the follow-up and not this PR: <c>LmTestUtils</c> is a
+/// shipped library (it multi-targets net8.0/net9.0 and carries <c>PackageId</c>/<c>Description</c>
+/// package metadata), so promoting an internal test-teardown helper into it is a public-surface
+/// decision rather than a file move. They are
 /// <c>LmStreaming.Sample.Tests</c>' <c>NotifyWaitDurableRestoreTests</c>,
 /// <c>SubAgentScanCoverageCacheCompositionTests</c>, <c>WorkspaceThreadRegistrationCompositionTests</c>
 /// and <c>WorkspaceTranscriptMirrorAttachCompositionTests</c>, plus
 /// <c>LmStreaming.Sample.Browser.E2E.Tests</c>' <c>BrowserWebAppFactory</c>. Two of those are LIVE
 /// writers rather than latent ones, so they are the ones that matter: <c>NotifyWaitDurableRestoreTests</c>
-/// (the pool's agent run task is stored but never awaited by any disposal path, and <c>StopAsync</c>
-/// both no-ops during pre-loop recovery and only logs on timeout, so store I/O can outlive teardown),
-/// and <c>BrowserWebAppFactory</c> (whose own remarks document the race and answer it with a retrying
-/// recursive delete, an answer explicitly scoped to "the writer is finishing, not restarting").
+/// (<c>MultiTurnAgentPool</c> keeps the agent run task in a field no disposal path awaits, and
+/// <c>StopAsync</c> both no-ops during pre-loop recovery and only logs on timeout — so the loop, and
+/// every store write inside it, can still be running at teardown; separately the pool discards
+/// <c>PersistThreadBindingsIfNeededAsync</c> with <c>_ =</c>, and that task writes the conversation store
+/// with nothing draining it at disposal), and <c>BrowserWebAppFactory</c> (whose own remarks document the
+/// race and answer it with a retrying recursive delete, an answer explicitly scoped to "the writer is
+/// finishing, not restarting").
 /// </para>
 /// </summary>
 internal static class DetachedStoreTeardown
@@ -80,8 +88,9 @@ internal static class DetachedStoreTeardown
     /// The retry exists because not every held handle belongs to a store writer: a virus scanner or a
     /// search indexer touching a freshly written temp file holds one briefly, and so does a pooled SQLite
     /// connection between <c>ClearAllPools</c> and the handle actually closing. Those are the transients
-    /// worth absorbing, and waiting for the condition beats the fixed sleeps some suites used to use.
-    /// A genuinely leaked store handle outlives the budget and is reported.
+    /// worth absorbing, and waiting for the condition is what a fixed sleep cannot do — see
+    /// <c>ConversationOwnershipTests.DisposeAsync</c>, which still guesses with a flat 50 ms delay before
+    /// purging. A genuinely leaked store handle outlives the budget and is reported.
     /// </para>
     /// </summary>
     private const int DetachRetryDelayMs = 25;
