@@ -84,8 +84,7 @@ public sealed class InboundS2SAuthAttribute : Attribute, IAsyncActionFilter, IOr
     private static int s_disabledWarningLogged;
 
     /// <summary>
-    /// Runs ahead of MVC's model-state validation filter so an unauthenticated S2S caller is refused
-    /// before model binding, validation or JSON deserialization can answer on the route's behalf.
+    /// Runs ahead of MVC's model-state validation filter so an unauthenticated S2S caller is refused.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -95,14 +94,14 @@ public sealed class InboundS2SAuthAttribute : Attribute, IAsyncActionFilter, IOr
     /// <c>POST</c>/<c>PUT /api/workspaces</c>, the file-browser writes, and now the chat-mode
     /// mutations — a caller presenting a forged S2S credential and a malformed body was answered
     /// <c>400</c> by validation and never reached the guard. A <c>400</c> is not a refusal: it
-    /// confirms the route exists, discloses its request schema, and reaches the JSON deserializer,
-    /// all for a caller this filter exists to turn away.
+    /// confirms the route exists, discloses its request schema, all for a caller this filter exists
+    /// to turn away.
     /// </para>
     /// <para>
     /// <c>-2100</c> is not a fresh number: it is exactly what
-    /// <see cref="OperatorSecretAuthAttribute.Order"/> uses, for exactly this reason. Ordering ahead
-    /// of model binding costs this guard nothing — it reads request headers and configuration only,
-    /// never <see cref="ActionExecutingContext.ActionArguments"/>.
+    /// <see cref="OperatorSecretAuthAttribute.Order"/> uses, for exactly this reason. It reads
+    /// request headers and configuration only, never
+    /// <see cref="ActionExecutingContext.ActionArguments"/>.
     /// </para>
     /// </remarks>
     public int Order => -2100;

@@ -150,6 +150,8 @@ public sealed class ChatModesControllerS2SPipelineTests
         using var host = await StartHostAsync(Secret);
         using var client = host.GetTestClient();
 
+        _ = AllRoutes().Should().HaveCount(6);
+
         foreach (var (name, build, allowed) in AllRoutes())
         {
             var (status, _) = await SendAsync(client, build());
@@ -164,6 +166,8 @@ public sealed class ChatModesControllerS2SPipelineTests
     {
         using var host = await StartHostAsync(Secret);
         using var client = host.GetTestClient();
+
+        _ = AllRoutes().Should().HaveCount(6);
 
         foreach (var (name, build, _) in AllRoutes())
         {
@@ -183,6 +187,8 @@ public sealed class ChatModesControllerS2SPipelineTests
     {
         using var host = await StartHostAsync(Secret);
         using var client = host.GetTestClient();
+
+        _ = AllRoutes().Should().HaveCount(6);
 
         foreach (var (name, build, _) in AllRoutes())
         {
@@ -205,6 +211,8 @@ public sealed class ChatModesControllerS2SPipelineTests
         using var host = await StartHostAsync(Secret);
         using var client = host.GetTestClient();
 
+        _ = AllRoutes().Should().HaveCount(6);
+
         foreach (var (name, build, allowed) in AllRoutes())
         {
             var (status, _) = await SendAsync(client, build(), CorrectlySigned);
@@ -219,9 +227,11 @@ public sealed class ChatModesControllerS2SPipelineTests
     {
         // [ApiController] installs model-state validation at Order = -2000. While the guard sat at
         // the default Order = 0, this returned 400: the forged caller learned the route exists and
-        // what its schema is, and reached the JSON deserializer, without ever holding the secret.
+        // what its schema is, without ever holding the secret.
         using var host = await StartHostAsync(Secret);
         using var client = host.GetTestClient();
+
+        _ = BodyRoutes().Should().HaveCount(3);
 
         foreach (var (name, build) in BodyRoutes())
         {
@@ -240,11 +250,12 @@ public sealed class ChatModesControllerS2SPipelineTests
     [Fact]
     public async Task AMalformedBody_FromASignedS2SCaller_StillGetsIts400()
     {
-        // The other half of the ordering change: running the guard ahead of model binding must not
-        // disable model binding. Without this, ordering the guard to -2100 and breaking validation
-        // outright would look identical to the test above.
+        // Without this, ordering the guard to -2100 and breaking validation outright would look
+        // identical to the test above.
         using var host = await StartHostAsync(Secret);
         using var client = host.GetTestClient();
+
+        _ = BodyRoutes().Should().HaveCount(3);
 
         foreach (var (name, build) in BodyRoutes())
         {
@@ -265,6 +276,8 @@ public sealed class ChatModesControllerS2SPipelineTests
         // Keyless dev path: with no secret the guard is off, matching every sibling controller.
         using var host = await StartHostAsync(configuredSecret: null);
         using var client = host.GetTestClient();
+
+        _ = AllRoutes().Should().HaveCount(6);
 
         foreach (var (name, build, allowed) in AllRoutes())
         {

@@ -167,8 +167,8 @@ Failure is `401` with `{ "error": "unauthorized", "code": "s2s_auth_failed" }` (
 in constant time over SHA-256 digests (`:150-160`).
 
 It is applied to `ConversationsController` (`:165`), `WorkspacesController`
-(`samples/LmStreaming.Sample/Controllers/WorkspacesController.cs:11`), and `FileBrowserController`.
-**It is not applied to `ChatModesController`** - that controller has no inbound guard at all.
+(`samples/LmStreaming.Sample/Controllers/WorkspacesController.cs:11`), `FileBrowserController`, and
+`ChatModesController` (`samples/LmStreaming.Sample/Controllers/ChatModesController.cs:38`, #519).
 
 ### 2.4 Listing endpoints are unscoped
 
@@ -619,9 +619,8 @@ carrying neither `X-S2S-Auth` nor `X-Sbx-App-Id` is still the interactive path a
 Step 3 is the fail-closed rule that makes the whole design safe. It is the one place where a
 tolerant implementation would create a privilege-escalation path.
 
-**One gap to close in the same slice.** `ChatModesController` carries no `[InboundS2SAuth]`
-attribute today (2.3). It must be added, or `/api/chat-modes` becomes an unauthenticated way to
-read and write every tenant's modes once modes become per-user (#304).
+**Gap closed.** `ChatModesController` now carries `[InboundS2SAuth]` (2.3, #519). Per-user scoping
+of modes remains its own open item, tracked separately as #304.
 
 ### 4.3 Convergence point
 
