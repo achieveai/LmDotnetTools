@@ -237,6 +237,139 @@ public sealed class DaemonCorpusReaderTests : IDisposable
     }
 
     [Fact]
+    public async Task An_escalated_run_is_attributed_to_the_model_that_actually_ran()
+    {
+        // review_run.model_id is INSERT-only: no UPDATE statement in the store touches it, so a run
+        // that escalated mid-review still carries the model it was SEEDED with. Attributing the
+        // review to that model credits the wrong generator, and every aggregate keyed on model or
+        // family inherits the error.
+        //
+        // The model that actually ran is already recorded — the executor writes
+        // `modelOverride ?? run.ModelId` into the lifecycle identity on the review-provisional
+        // checkpoint, which sits in the very artifact list this reader already fetches.
+        var runId = CreateRun("118", modelId: "openai/gpt-5");
+        AddContext(runId, "a diff");
+        AddReview(runId, "a review");
+        AddArtifact(
+            runId,
+            DaemonReviewStageExecutor.ProvisionalReviewArtifactKind,
+            new ReviewArtifactPayload(
+                string.Empty,
+                "run-1",
+                "primary",
+                Lifecycle: new ReviewLifecycleIdentity(
+                    "s2s",
+                    "thread-1",
+                    "ws-1",
+                    "anthropic/claude-escalated",
+                    ToolAssisted: true,
+                    ContextGeneration: 1
+                )
+            )
+        );
+
+        var snapshot = await SnapshotAsync(Reader(ModelFamilies.Of));
+
+        var candidate = Assert.Single(snapshot.Items);
+        candidate.ModelId.Should().Be("anthropic/claude-escalated");
+
+        // The family follows the corrected id, or the fix would stop at the label and leave the
+        // exclusion still keyed on the seeded model.
+        candidate.GeneratorFamily.Should().Be("anthropic");
+    }
+
+    [Fact]
+    public async Task A_run_that_never_escalated_is_still_attributed_to_its_seeded_model()
+    {
+        // The fallback, pinned separately: most runs record no lifecycle checkpoint at all, and
+        // preferring a missing one must not erase the only model id such a run has.
+        var runId = CreateRun("118", modelId: "openai/gpt-5");
+        AddContext(runId, "a diff");
+        AddReview(runId, "a review");
+
+        var snapshot = await SnapshotAsync(Reader(ModelFamilies.Of));
+
+        var candidate = Assert.Single(snapshot.Items);
+        candidate.ModelId.Should().Be("openai/gpt-5");
+        candidate.GeneratorFamily.Should().Be("openai");
+    }
+
+    [Fact]
+    public async Task A_lifecycle_checkpoint_that_names_no_model_does_not_erase_the_seeded_one()
+    {
+        // ReviewLifecycleIdentity.ModelId is nullable. A checkpoint written by a run that recorded
+        // no model must fall through to the run's own id rather than blanking it — otherwise adding
+        // a checkpoint would LOSE attribution that was previously correct.
+        var runId = CreateRun("118", modelId: "openai/gpt-5");
+        AddContext(runId, "a diff");
+        AddReview(runId, "a review");
+        AddArtifact(
+            runId,
+            DaemonReviewStageExecutor.ProvisionalReviewArtifactKind,
+            new ReviewArtifactPayload(
+                string.Empty,
+                "run-1",
+                "primary",
+                Lifecycle: new ReviewLifecycleIdentity(
+                    "s2s",
+                    "thread-1",
+                    "ws-1",
+                    ModelId: null,
+                    ToolAssisted: true,
+                    ContextGeneration: 1
+                )
+            )
+        );
+
+        Assert.Single((await SnapshotAsync(Reader(ModelFamilies.Of))).Items)
+            .ModelId.Should()
+            .Be("openai/gpt-5");
+    }
+
+    [Fact]
+    public async Task The_b_arm_keeps_its_own_model_and_is_not_reattributed_by_the_escalation()
+    {
+        // The lifecycle checkpoint describes the PRIMARY arm's conversation. The B arm records its
+        // own model on its own artifact, and must not inherit the primary's escalation.
+        var runId = CreateRun("118", modelId: "openai/gpt-5");
+        AddContext(runId, "the shared diff");
+        AddReview(runId, "the A review");
+        AddArtifact(
+            runId,
+            VariantReviewer.VariantReviewArtifactKind,
+            new VariantReviewArtifactPayload("b", "anthropic/claude-haiku", "the B review", "run-2")
+        );
+        AddArtifact(
+            runId,
+            DaemonReviewStageExecutor.ProvisionalReviewArtifactKind,
+            new ReviewArtifactPayload(
+                string.Empty,
+                "run-1",
+                "primary",
+                Lifecycle: new ReviewLifecycleIdentity(
+                    "s2s",
+                    "thread-1",
+                    "ws-1",
+                    "openai/gpt-5-escalated",
+                    ToolAssisted: true,
+                    ContextGeneration: 1
+                )
+            )
+        );
+
+        var snapshot = await SnapshotAsync(Reader(ModelFamilies.Of));
+
+        snapshot
+            .Items.Single(c => c.VariantId == "primary")
+            .ModelId.Should()
+            .Be("openai/gpt-5-escalated");
+        snapshot
+            .Items.Single(c => c.VariantId == "b")
+            .ModelId.Should()
+            .Be("anthropic/claude-haiku");
+    }
+
+    [Fact]
     public async Task No_candidate_carries_a_reference_because_the_store_holds_no_accepted_output()
     {
         // Reference-guided grading is the largest accuracy lever a judge has, and its absence here

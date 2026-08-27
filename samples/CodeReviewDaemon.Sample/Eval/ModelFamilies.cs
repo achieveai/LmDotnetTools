@@ -34,10 +34,26 @@ namespace CodeReviewDaemon.Sample.Eval;
 /// </para>
 /// <para>
 /// <b>The honest limit.</b> An id that is not shaped <c>[router/]vendor/model</c> is answered
-/// positionally too, so a two-segment <c>router/model</c> id would yield the router. Nothing in the
-/// daemon writes that shape — its own ids are <c>vendor/model</c>, and a routed id carries the router
-/// in front — and closing it would need per-request provider metadata the daemon does not carry.
-/// Stated here rather than papered over with a vendor list nobody maintains.
+/// positionally too, so a two-segment <c>router/model</c> id would yield the router. Closing that
+/// would need per-request provider metadata the daemon does not carry. Stated here rather than
+/// papered over with a vendor list nobody maintains.
+/// </para>
+/// <para>
+/// <b>What this actually resolves to today.</b> Nothing configured in this daemon is even two
+/// segments. Every live model id is a bare Copilot slug — <c>gpt-5.6-luna</c>,
+/// <c>claude-haiku-4.5</c> — and the effective judge id on the S2S path is
+/// <c>lmstreaming:&lt;providerId&gt;</c>, colon-delimited and deliberately not a path. Slash-shaped
+/// ids appear only in this comment and in tests; the Copilot backend rejects them outright with
+/// <c>model_not_supported</c>. So <see cref="Of"/> returns null for the judge AND the generator on
+/// every profile that ships, the judge falls back to <see cref="Unresolved"/>, the candidate carries
+/// a null generator family, and §7.1(2)'s exclusion never arms.
+/// </para>
+/// <para>
+/// That is this rule working, not failing: nothing is misclassified because nothing is classified,
+/// and self-preference is still recorded — by <c>JudgeArtifactPayload.SelfGraded</c>, which compares
+/// the two effective ids directly and does not consult a family at all. The two-segment hazard above
+/// is therefore second-order, and this rule is scaffolding for the two-family panel of #322 rather
+/// than a live guard. It starts costing something the moment a second judge family is configured.
 /// </para>
 /// </summary>
 internal static class ModelFamilies

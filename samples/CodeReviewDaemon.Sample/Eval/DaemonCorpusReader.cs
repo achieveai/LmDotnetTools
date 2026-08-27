@@ -158,7 +158,7 @@ internal sealed class DaemonCorpusReader : ICorpusReader
                         context.Diff,
                         variantId: Blank(review.VariantId) ?? Blank(run.VariantId)
                             ?? PrimaryVariantFallback,
-                        modelId: run.ModelId,
+                        modelId: EffectiveGeneratorModelId(artifacts, run),
                         content: review.ReviewText
                     )
                 );
@@ -306,6 +306,44 @@ internal sealed class DaemonCorpusReader : ICorpusReader
         }
 
         return payload;
+    }
+
+    /// <summary>
+    /// The model that actually produced the primary arm's review, which is not always the model the
+    /// run was seeded with.
+    /// <para>
+    /// <c>review_run.model_id</c> is written once, on INSERT, and no UPDATE in
+    /// <see cref="ReviewStore"/> touches it — so a run that escalated mid-review still carries the
+    /// model it STARTED with. Crediting that model attributes the review to a generator that did not
+    /// write it, and every aggregate keyed on model or family inherits the error silently, because a
+    /// wrong id is indistinguishable from a right one at this layer.
+    /// </para>
+    /// <para>
+    /// The executor already records what ran: it writes <c>modelOverride ?? run.ModelId</c> into the
+    /// lifecycle identity on the <c>review-provisional</c> checkpoint, in the same artifact list this
+    /// reader has already fetched. Preferring it costs nothing and needs no new column.
+    /// </para>
+    /// <para>
+    /// Falling back rather than overriding, in both directions: a run with no checkpoint, or a
+    /// checkpoint whose <see cref="ReviewLifecycleIdentity.ModelId"/> is null, keeps the run's own
+    /// id. Adding a checkpoint must never LOSE attribution that was already correct.
+    /// </para>
+    /// <para>
+    /// Scoped to the primary arm on purpose. The checkpoint describes that arm's conversation; the B
+    /// arm records its own model on its own artifact and is read from there.
+    /// </para>
+    /// </summary>
+    private string? EffectiveGeneratorModelId(
+        IReadOnlyList<ReviewArtifact> artifacts,
+        ReviewRun run
+    )
+    {
+        var provisional = Latest<ReviewArtifactPayload>(
+            artifacts,
+            DaemonReviewStageExecutor.ProvisionalReviewArtifactKind
+        );
+
+        return Blank(provisional?.Lifecycle?.ModelId) ?? run.ModelId;
     }
 
     private static string? Blank(string? value) =>

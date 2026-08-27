@@ -345,7 +345,20 @@ internal sealed record JudgeVerdict(int? Score, string Rationale, string Variant
 /// <param name="Rationale">The judge's reasoning, or the raw reply when it could not be scored.</param>
 /// <param name="VariantId">Which review variant was graded.</param>
 /// <param name="JudgeModelId">The model that issued the grade. Null in a v1 row.</param>
-/// <param name="GeneratorModelId">The model that wrote what was graded. Null in a v1 row.</param>
+/// <param name="GeneratorModelId">
+/// The model that wrote what was graded. Null in a v1 row.
+/// <para>
+/// Both ids here are <b>provisioning identities</b> — whatever
+/// <c>IReviewAgentLoopFactory.ResolveEffectiveModelId</c> answered — and on the S2S path that is the
+/// selector <c>lmstreaming:&lt;providerId&gt;</c> rather than a per-call model. That is what
+/// <see cref="JudgeArtifactPayload.SelfGraded"/> needs: two conversations provisioned under one
+/// selector run one model, which is exactly the question that flag asks. It is deliberately NOT the
+/// same value <see cref="Eval.DaemonCorpusReader"/> stamps on a candidate, which answers a different
+/// question — which model wrote this text — and therefore prefers the escalated id recorded on the
+/// review-provisional checkpoint. Two fields, two questions; do not "reconcile" them by making one
+/// read the other, or the self-preference comparison starts reporting independence that is not there.
+/// </para>
+/// </param>
 /// <param name="SelfGraded">
 /// Whether those two are the same model — the self-preference axis of §3.2, stated rather than left
 /// to be derived. Null when either side is unrecorded, which is unknown and never "no".
