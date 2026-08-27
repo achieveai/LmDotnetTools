@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.TestDoubles;
 using Microsoft.AspNetCore.Hosting;
@@ -109,47 +110,30 @@ public sealed class WorkspaceTranscriptMirrorAttachCompositionTests
         var root = Path.Combine(
             Path.GetTempPath(), "lmstreaming-mirror-attach-composition-test", Guid.NewGuid().ToString("N"));
         _ = Directory.CreateDirectory(root);
-        try
-        {
-            await using var host = new MirrorAttachWebAppFactory(Path.Combine(root, "conversations"));
+        await using var host = new MirrorAttachWebAppFactory(Path.Combine(root, "conversations"));
 
-            var registry = host.Services.GetRequiredService<ProviderRegistry>();
-            registry.IsAvailable(providerId).Should().BeTrue(
-                "the faked CLI probe and the host's own in-process mock provider host must make "
-                    + "{0} selectable, otherwise this test would silently stop covering that branch",
-                providerId);
+        var registry = host.Services.GetRequiredService<ProviderRegistry>();
+        registry.IsAvailable(providerId).Should().BeTrue(
+            "the faked CLI probe and the host's own in-process mock provider host must make "
+                + "{0} selectable, otherwise this test would silently stop covering that branch",
+            providerId);
 
-            var mirror = host.Services.GetRequiredService<WorkspaceTranscriptMirror>();
-            var pool = host.Services.GetRequiredService<MultiTurnAgentPool>();
+        var mirror = host.Services.GetRequiredService<WorkspaceTranscriptMirror>();
+        var pool = host.Services.GetRequiredService<MultiTurnAgentPool>();
 
-            var threadId = $"mirror-attach-{providerId}-{Guid.NewGuid():N}";
-            var agent = pool.GetOrCreateAgent(threadId, Mode, providerId, requestResponseDumpFileName: null);
+        var threadId = $"mirror-attach-{providerId}-{Guid.NewGuid():N}";
+        var agent = pool.GetOrCreateAgent(threadId, Mode, providerId, requestResponseDumpFileName: null);
 
-            agent.Should().NotBeNull("the provider branch under test must actually build an agent");
-            mirror.IsMirroring(threadId).Should().BeTrue(
-                "every agent the pool factory returns must be registered with the transcript mirror; "
-                    + "{0} builds and returns from its own branch, so an attach that lives inside one "
-                    + "other branch never runs for it and the conversation is mirrored nowhere",
-                providerId);
-        }
-        finally
-        {
-            TryDeleteDir(root);
-        }
-    }
-
-    private static void TryDeleteDir(string root)
-    {
-        try
-        {
-            if (Directory.Exists(root))
-            {
-                Directory.Delete(root, recursive: true);
-            }
-        }
-        catch
-        {
-            // Best-effort cleanup; a leftover temp dir must not fail the test.
-        }
+        agent.Should().NotBeNull("the provider branch under test must actually build an agent");
+        mirror.IsMirroring(threadId).Should().BeTrue(
+            "every agent the pool factory returns must be registered with the transcript mirror; "
+                + "{0} builds and returns from its own branch, so an attach that lives inside one "
+                + "other branch never runs for it and the conversation is mirrored nowhere",
+            providerId);
+        // #477: detach-then-delete rather than recursive-delete in place - see DetachedStoreTeardown.
+        // Deliberately NOT in a finally: Purge throws when it cannot detach, and a throw from a finally
+        // REPLACES the assertion failure that is unwinding through it. A leaked temp directory is a far
+        // cheaper outcome than losing the reason the test failed.
+        DetachedStoreTeardown.Purge(root);
     }
 }

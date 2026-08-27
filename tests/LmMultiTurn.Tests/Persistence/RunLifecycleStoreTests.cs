@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
+using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Xunit;

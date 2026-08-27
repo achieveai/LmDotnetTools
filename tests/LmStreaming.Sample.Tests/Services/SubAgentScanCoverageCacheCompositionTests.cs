@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 using LmStreaming.Sample.Configuration;
 using LmStreaming.Sample.Services;
 using Microsoft.AspNetCore.Hosting;
@@ -82,67 +83,50 @@ public sealed class SubAgentScanCoverageCacheCompositionTests
         var root = Path.Combine(
             Path.GetTempPath(), "lmstreaming-collab-cache-composition-test", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
-        try
+        await using var host = new CollaborationCacheWebAppFactory(Path.Combine(root, "conversations"));
+
+        var options = host.Services.GetRequiredService<AgentCollaborationHostOptions>();
+        options.MaxPersistedHierarchyEntries.Should().Be(
+            ConfiguredCapacity,
+            "the test-supplied AgentCollaboration:MaxPersistedHierarchyEntries setting must bind onto the host options");
+
+        var cache = host.Services.GetRequiredService<SubAgentScanCoverageCache>();
+
+        // Record one more distinct thread than the configured capacity: if the DI factory had
+        // silently used SubAgentScanCoverageCache.DefaultCapacity (much larger than 2) instead of
+        // the bound option, every one of these would still be retrievable and the assertion below
+        // would fail — that failure is exactly what would expose a composition-root regression.
+        const int distinctThreads = ConfiguredCapacity + 1;
+        var owners = new object[distinctThreads];
+        for (var i = 0; i < distinctThreads; i++)
         {
-            await using var host = new CollaborationCacheWebAppFactory(Path.Combine(root, "conversations"));
-
-            var options = host.Services.GetRequiredService<AgentCollaborationHostOptions>();
-            options.MaxPersistedHierarchyEntries.Should().Be(
-                ConfiguredCapacity,
-                "the test-supplied AgentCollaboration:MaxPersistedHierarchyEntries setting must bind onto the host options");
-
-            var cache = host.Services.GetRequiredService<SubAgentScanCoverageCache>();
-
-            // Record one more distinct thread than the configured capacity: if the DI factory had
-            // silently used SubAgentScanCoverageCache.DefaultCapacity (much larger than 2) instead of
-            // the bound option, every one of these would still be retrievable and the assertion below
-            // would fail — that failure is exactly what would expose a composition-root regression.
-            const int distinctThreads = ConfiguredCapacity + 1;
-            var owners = new object[distinctThreads];
-            for (var i = 0; i < distinctThreads; i++)
-            {
-                owners[i] = new object();
-                cache.RecordRecovered(
-                    $"thread-{i}",
-                    owners[i],
-                    [new SubAgentSummary
-                    {
-                        AgentId = $"child-{i}",
-                        Template = "worker",
-                        Task = "task",
-                        Status = "completed",
-                        ThreadId = $"subagent-child-{i}",
-                    }]);
-            }
-
-            var survivorCount = Enumerable.Range(0, distinctThreads)
-                .Count(i => cache.TryGetRecovered($"thread-{i}", owners[i], out _));
-
-            survivorCount.Should().Be(
-                ConfiguredCapacity,
-                "the singleton resolved from DI must evict down to the CONFIGURED capacity "
-                    + $"({ConfiguredCapacity}), not {SubAgentScanCoverageCache.DefaultCapacity} (the "
-                    + "library default) — proving Program.cs actually threads "
-                    + "AgentCollaboration:MaxPersistedHierarchyEntries into this singleton");
+            owners[i] = new object();
+            cache.RecordRecovered(
+                $"thread-{i}",
+                owners[i],
+                [new SubAgentSummary
+                {
+                    AgentId = $"child-{i}",
+                    Template = "worker",
+                    Task = "task",
+                    Status = "completed",
+                    ThreadId = $"subagent-child-{i}",
+                }]);
         }
-        finally
-        {
-            TryDeleteDir(root);
-        }
-    }
 
-    private static void TryDeleteDir(string root)
-    {
-        try
-        {
-            if (Directory.Exists(root))
-            {
-                Directory.Delete(root, recursive: true);
-            }
-        }
-        catch
-        {
-            // Best-effort cleanup; a leftover temp dir must not fail the test.
-        }
+        var survivorCount = Enumerable.Range(0, distinctThreads)
+            .Count(i => cache.TryGetRecovered($"thread-{i}", owners[i], out _));
+
+        survivorCount.Should().Be(
+            ConfiguredCapacity,
+            "the singleton resolved from DI must evict down to the CONFIGURED capacity "
+                + $"({ConfiguredCapacity}), not {SubAgentScanCoverageCache.DefaultCapacity} (the "
+                + "library default) — proving Program.cs actually threads "
+                + "AgentCollaboration:MaxPersistedHierarchyEntries into this singleton");
+        // #477: detach-then-delete rather than recursive-delete in place - see DetachedStoreTeardown.
+        // Deliberately NOT in a finally: Purge throws when it cannot detach, and a throw from a finally
+        // REPLACES the assertion failure that is unwinding through it. A leaked temp directory is a far
+        // cheaper outcome than losing the reason the test failed.
+        DetachedStoreTeardown.Purge(root);
     }
 }

@@ -1,7 +1,7 @@
-namespace LmMultiTurn.Tests.Persistence;
+namespace AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 
 /// <summary>
-/// Teardown for a <see cref="AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.FileConversationStore"/>
+/// Teardown for a <c>AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.FileConversationStore</c>
 /// backing directory that closes the #477 legal-success-window class.
 /// <para>
 /// The store's reserve/append path retries an exclusive <c>FileMode.CreateNew</c> in a loop. A plain
@@ -17,8 +17,8 @@ namespace LmMultiTurn.Tests.Persistence;
 /// moves the whole root to a sibling <c>-detached-{guid}</c> name before deleting, and a moved root's
 /// parent chain is either whole or gone — never half — so a future in-flight creator fails fast with
 /// <see cref="DirectoryNotFoundException"/> instead of succeeding into a half-deleted tree. The same
-/// atomic-rename mechanism is used inside <c>InputAcceptanceStoreTests</c>' vanishing-directory test to
-/// arrange that fail-fast deliberately.
+/// atomic-rename mechanism is used inside <c>LmMultiTurn.Tests</c>' <c>InputAcceptanceStoreTests</c>'
+/// vanishing-directory test to arrange that fail-fast deliberately.
 /// </para>
 /// <para>
 /// <b>The root is NEVER deleted in place.</b> An earlier revision fell back to a recursive delete of the
@@ -40,43 +40,44 @@ namespace LmMultiTurn.Tests.Persistence;
 /// detached name a CHILD rather than a sibling.
 /// </para>
 /// <para>
-/// <b>Coverage — what this helper does and does not reach.</b> Every
-/// <c>FileConversationStore</c> root in THIS assembly is purged through here:
-/// <c>FileConversationStoreTests</c> (the fixture root and
-/// <c>Constructor_CreatesBaseDirectory</c>'s own), <c>FileRunLedgerStoreTests</c>,
-/// <c>ConversationOwnershipTests</c>, <c>FileRunLifecycleStoreTests</c>,
-/// <c>InputAcceptanceStoreTests</c>, and <c>ConversationUsageProjectionTests</c>. The one remaining
-/// recursive delete of a STORE root in the assembly — <c>SqliteConnectionFactoryTests</c> — backs
-/// SQLite, which has no exclusive-create loop, so the window class cannot apply to it. (Two other
-/// recursive deletes exist and are not store roots: the detached copy below, and
-/// <c>DetachedStoreTeardownTests</c>' own teardown, which must not depend on the helper it tests.)
+/// <b>Why public, not <c>internal</c> + <c>InternalsVisibleTo</c>.</b> <c>LmTestUtils</c> is a shipped
+/// test-utility package whose entire existing surface is public. An <c>internal</c> helper here would
+/// need an <c>InternalsVisibleTo</c> grant edited every time another test assembly picks up a
+/// <c>FileConversationStore</c> root — exactly the friction that kept this helper pinned to a single
+/// test assembly before this move. A public static helper with no mutable state carries none of the
+/// encapsulation risk a grant list exists to contain, so there is nothing to buy by keeping it internal.
 /// </para>
 /// <para>
-/// <b>NOT swept, and why.</b> Five further <c>FileConversationStore</c> roots live in OTHER test
-/// assemblies and cannot reach this helper as it stands: it is <c>internal</c> to
-/// <c>LmMultiTurn.Tests</c> and no <c>InternalsVisibleTo</c> exists between test assemblies. A shared
-/// home DOES exist — <c>src/LmTestUtils</c>, already referenced by <c>LmMultiTurn.Tests</c>,
-/// <c>LmStreaming.Sample.Tests</c> and <c>LmStreaming.Sample.Browser.E2E.Tests</c>, i.e. by every
-/// assembly holding one of these roots — so sweeping them is a matter of MOVING this helper there, not
-/// of inventing somewhere to put it. That move is the follow-up and not this PR: <c>LmTestUtils</c> is a
-/// shipped library (it multi-targets net8.0/net9.0 and carries <c>PackageId</c>/<c>Description</c>
-/// package metadata), so promoting an internal test-teardown helper into it is a public-surface
-/// decision rather than a file move. They are
-/// <c>LmStreaming.Sample.Tests</c>' <c>NotifyWaitDurableRestoreTests</c>,
-/// <c>SubAgentScanCoverageCacheCompositionTests</c>, <c>WorkspaceThreadRegistrationCompositionTests</c>
-/// and <c>WorkspaceTranscriptMirrorAttachCompositionTests</c>, plus
-/// <c>LmStreaming.Sample.Browser.E2E.Tests</c>' <c>BrowserWebAppFactory</c>. Two of those are LIVE
-/// writers rather than latent ones, so they are the ones that matter: <c>NotifyWaitDurableRestoreTests</c>
-/// (<c>MultiTurnAgentPool</c> keeps the agent run task in a field no disposal path awaits, and
-/// <c>StopAsync</c> both no-ops during pre-loop recovery and only logs on timeout — so the loop, and
-/// every store write inside it, can still be running at teardown; separately the pool discards
-/// <c>PersistThreadBindingsIfNeededAsync</c> with <c>_ =</c>, and that task writes the conversation store
-/// with nothing draining it at disposal), and <c>BrowserWebAppFactory</c> (whose own remarks document the
-/// race and answer it with a retrying recursive delete, an answer explicitly scoped to "the writer is
-/// finishing, not restarting").
+/// <b>Coverage — what this helper reaches.</b> Every <c>FileConversationStore</c>-shaped test root
+/// across the solution is purged through here. In <c>LmMultiTurn.Tests</c>:
+/// <c>FileConversationStoreTests</c> (the fixture root and <c>Constructor_CreatesBaseDirectory</c>'s
+/// own), <c>FileRunLedgerStoreTests</c>, <c>ConversationOwnershipTests</c>,
+/// <c>FileRunLifecycleStoreTests</c>, <c>InputAcceptanceStoreTests</c>, and
+/// <c>ConversationUsageProjectionTests</c>. The one remaining recursive delete of a STORE root in that
+/// assembly — <c>SqliteConnectionFactoryTests</c> — backs SQLite, which has no exclusive-create loop, so
+/// the window class cannot apply to it. In <c>LmStreaming.Sample.Tests</c>:
+/// <c>NotifyWaitDurableRestoreTests</c>, <c>SubAgentScanCoverageCacheCompositionTests</c>,
+/// <c>WorkspaceThreadRegistrationCompositionTests</c>, and
+/// <c>WorkspaceTranscriptMirrorAttachCompositionTests</c>. In
+/// <c>LmStreaming.Sample.Browser.E2E.Tests</c>: <c>BrowserWebAppFactory</c>'s temp-directory teardown —
+/// its default delete delegate now calls <see cref="Purge"/>, while its own bounded retry and
+/// swallow-and-log-on-final-attempt wrapper (pinned by <c>BrowserWebAppFactoryTempCleanupTests</c>) is
+/// unchanged, because that wrapper runs in <c>Dispose</c> after a test's assertions already passed and
+/// must not turn a green run red. Two of the swept roots are LIVE writers rather than latent ones:
+/// <c>NotifyWaitDurableRestoreTests</c> (<c>MultiTurnAgentPool</c> keeps the agent run task in a field no
+/// disposal path awaits, and <c>StopAsync</c> both no-ops during pre-loop recovery and only logs on
+/// timeout — so the loop, and every store write inside it, can still be running at teardown; separately
+/// the pool discards <c>PersistThreadBindingsIfNeededAsync</c> with <c>_ =</c>, and that task writes the
+/// conversation store with nothing draining it at disposal), and <c>BrowserWebAppFactory</c> (whose own
+/// remarks document the race and answer it with a retrying delete, an answer explicitly scoped to "the
+/// writer is finishing, not restarting" — which is why its wrapper still retries and swallows around
+/// <see cref="Purge"/> rather than letting <see cref="Purge"/>'s own throw reach <c>Dispose</c>
+/// directly). Two other recursive deletes are NOT store roots and are unaffected: the detached copy
+/// below, and <c>DetachedStoreTeardownTests</c>' own teardown, which must not depend on the helper it
+/// tests.
 /// </para>
 /// </summary>
-internal static class DetachedStoreTeardown
+public static class DetachedStoreTeardown
 {
     /// <summary>How many times the detach is attempted before the lock is reported as a failure.</summary>
     private const int DetachAttempts = 10;

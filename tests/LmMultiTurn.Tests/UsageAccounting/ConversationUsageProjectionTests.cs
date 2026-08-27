@@ -4,8 +4,8 @@ using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
+using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 using FluentAssertions;
-using LmMultiTurn.Tests.Persistence;
 using Microsoft.Data.Sqlite;
 using Xunit;
 

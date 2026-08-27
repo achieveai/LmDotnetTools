@@ -1,14 +1,16 @@
 using System.Runtime.InteropServices;
+using Xunit;
 
-namespace CodeReviewDaemon.Sample.Tests.Infrastructure;
+namespace AchieveAi.LmDotnetTools.LmTestUtils;
 
 /// <summary>
 /// A <see cref="FactAttribute"/> that reports itself skipped off Windows, with the reason stated in the run.
 /// <para>
-/// For a regression that only exists on Windows, running the same body elsewhere is worse than not running it:
-/// the setup succeeds, the assertion holds for a reason that has nothing to do with the defect, and the test
-/// reports green while proving nothing. A green-but-vacuous test is what lets the fix be reverted unnoticed.
-/// Skipping says so out loud instead, in the one place anyone reads — the test run itself.
+/// For an arrangement that only holds on Windows, running the same body elsewhere is worse than not running
+/// it: the setup "succeeds", the assertions fail (or a green-but-vacuous pass reports nothing) for a reason
+/// that has nothing to do with the defect the test targets. Skipping says so out loud instead, in the one
+/// place anyone reads — the test run itself. The .NET suite's CI job is <c>windows-latest</c>, so a
+/// Windows-gated fact still runs on every PR.
 /// </para>
 /// <para>
 /// xunit 2 has no <c>Assert.Skip</c>, and <c>Skip</c> on the attribute is a compile-time constant, so the
