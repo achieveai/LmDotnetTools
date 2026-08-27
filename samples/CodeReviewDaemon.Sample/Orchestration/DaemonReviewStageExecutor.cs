@@ -1470,6 +1470,33 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         string RepoPath(string urlFormName) =>
             GitRemoteUrl.RepoPathForUrlSegment(repo.Provider, repo.OrgOrOwner, repo.Project, urlFormName);
 
+        // ...and because those names go in VERBATIM, a raw character the URL form must percent-encode — a
+        // space above all — builds a rule that can never match the (never-decoded) path the parser hands the
+        // matcher. That failure is SILENT: the submodule is simply never allowed, exactly as if it had not
+        // been configured. Say so, or the only symptom is a dependency that mysteriously never initializes.
+        void WarnIfNotUrlForm(string setting, string configuredName)
+        {
+            foreach (var segment in configuredName.Split('/', StringSplitOptions.RemoveEmptyEntries))
+            {
+                // Escaping the segment must be a no-op once the escape INTRODUCER is discounted, so an
+                // already-correct "Microsoft%20Orleans" (which would otherwise round-trip to %2520) is quiet.
+                var urlForm = Uri.EscapeDataString(segment).Replace("%25", "%", StringComparison.Ordinal);
+                if (!string.Equals(urlForm, segment, StringComparison.Ordinal))
+                {
+                    _logger.LogWarning(
+                        "{Setting} entry '{Name}' is not in URL form: segment '{Segment}' contains a character "
+                            + "that must be percent-encoded ('{UrlForm}'). Configured names are matched verbatim "
+                            + "against the undecoded request path, so this entry will never match and the "
+                            + "submodule stays denied.",
+                        setting,
+                        configuredName,
+                        segment,
+                        urlForm);
+                    return;
+                }
+            }
+        }
+
         var rules = new List<SubmoduleAllowRule>
         {
             new(host, GitRemoteUrl.RepoPathFor(repo.Provider, repo.OrgOrOwner, repo.Project, repo.RepoName)),
@@ -1483,6 +1510,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // attacker adds or repoints to any other name/host is denied.
         foreach (var submodule in _options.ReviewedRepoSubmodules)
         {
+            WarnIfNotUrlForm(nameof(CodeReviewDaemonOptions.ReviewedRepoSubmodules), submodule);
             rules.Add(new SubmoduleAllowRule(host, RepoPath(submodule)));
         }
 
@@ -1492,6 +1520,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             {
                 // GitHub siblings are configured as owner/repo (an absolute path, in the URL's own spelling);
                 // ADO siblings are a bare name resolving under the same org/project as the reviewed repo.
+                WarnIfNotUrlForm(nameof(CodeReviewDaemonOptions.CrossRepoSiblings), sibling);
                 rules.Add(new SubmoduleAllowRule(host, isAdo ? RepoPath(sibling) : $"/{sibling}"));
             }
         }

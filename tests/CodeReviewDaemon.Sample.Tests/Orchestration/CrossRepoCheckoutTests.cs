@@ -5,6 +5,7 @@ using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace;
 using CodeReviewDaemon.Sample.Workspace.Git;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Orchestration;
@@ -170,6 +171,37 @@ public sealed class CrossRepoCheckoutTests
             .IsAllowed.Should().BeFalse("the allow-list is still explicit — no same-org wildcard");
     }
 
+    /// <summary>
+    /// A configured submodule/sibling name goes into the allow rule VERBATIM (its documented contract is the
+    /// URL's own spelling). Configure a RAW space and the rule is built from a path the parser — which never
+    /// decodes — can never produce, so the submodule is silently never allowed: indistinguishable from having
+    /// left it out. The warning is the only thing that tells the two apart, so it is the deliverable here.
+    /// </summary>
+    [Fact]
+    public void StoreSubmoduleAllowList_WarnsWhenAConfiguredNameIsNotInUrlForm()
+    {
+        using var db = new TempSqliteDatabase();
+        using var loggers = new CapturingLoggerFactory();
+        var options = new CodeReviewDaemonOptions
+        {
+            EnableToolAssistedReview = true,
+            // The correct spelling and the foot-gun side by side: only the raw-space one may be reported.
+            ReviewedRepoSubmodules = ["Microsoft%20Orleans", "Microsoft Orleans", "LibProfiler"],
+        };
+        var executor = BuildExecutor(db, options, loggers);
+
+        var rules = executor.BuildStoreSubmoduleAllowList(SeedRun(), McqdbDev);
+
+        loggers.Capturing.CountAtLevel(LogLevel.Warning, "is not in URL form").Should().Be(
+            1,
+            "the raw-space entry never matches, and only the log can distinguish that from an unconfigured one");
+        loggers.Capturing.CountAtLevel(LogLevel.Warning, "Microsoft Orleans").Should().Be(
+            1, "the warning must name the offending entry");
+        rules.Should().Contain(
+            r => r.RepoPath.EndsWith("/Microsoft%20Orleans", StringComparison.Ordinal),
+            "the already-correct URL-form entry is left alone and must not be reported");
+    }
+
     [Fact]
     public void StoreSubmoduleAllowList_NotToolAssisted_IsEmpty()
     {
@@ -187,7 +219,10 @@ public sealed class CrossRepoCheckoutTests
     private static PolicyDecision FetchAdo(OperationPolicy policy, string path) =>
         policy.Decide(new OperationRequest(SandboxOperation.FetchSubmodule, "ado", "dev.azure.com", "GET", path));
 
-    private static DaemonReviewStageExecutor BuildExecutor(TempSqliteDatabase db, CodeReviewDaemonOptions options) =>
+    private static DaemonReviewStageExecutor BuildExecutor(
+        TempSqliteDatabase db,
+        CodeReviewDaemonOptions options,
+        ILoggerFactory? loggerFactory = null) =>
         new(
             new ReviewStore(db.ConnectionString),
             new FakeReviewAgentLoopFactory(),
@@ -195,7 +230,7 @@ public sealed class CrossRepoCheckoutTests
             new FakeSandboxFileSystem(),
             options,
             [new FakeReviewCommentPublisher("github")],
-            NullLoggerFactory.Instance);
+            loggerFactory ?? NullLoggerFactory.Instance);
 
     private static ReviewRun SeedRun() => new()
     {

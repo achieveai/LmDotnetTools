@@ -67,8 +67,12 @@ internal sealed record GitRemoteUrl(GitUrlKind Kind, string Host, string RepoPat
     /// <para>
     /// Nothing DECODES here, and <see cref="Parse"/> deliberately does not either. Submodule URLs are
     /// attacker-controlled; normalizing them before comparison is how <c>%2F</c> becomes a separator after
-    /// the check that was supposed to catch it. Both sides of the comparison are built by this method from
-    /// operator config, so they agree without anyone decoding anything.
+    /// the check that was supposed to catch it. The no-decode stance is what makes the OPERATOR-built side
+    /// agree byte-for-byte with the clone URL — but only that side is built here. The attacker's
+    /// <c>.gitmodules</c> side is not, so agreement is not enough on its own: it is compared byte-exactly
+    /// against this prefix, and <c>OperationPolicy.PathUnderRepo</c> additionally refuses any percent-escape
+    /// in the path SUFFIX beyond it, because that is the part the upstream server would decode back into a
+    /// separator after the check.
     /// </para>
     /// </summary>
     public static string RepoPathFor(string provider, string orgOrOwner, string? project, string repoName) =>

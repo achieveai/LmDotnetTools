@@ -321,6 +321,96 @@ public sealed class SubmoduleInitializerTests : LoggingTestBase
         outcome.Denied.Should().BeEmpty();
     }
 
+    /// <summary>
+    /// The exploit PR #485's review proved live. <c>BuildStoreSubmoduleAllowList</c> always allow-lists the
+    /// reviewed repo itself (it IS a submodule of the cross-repo store), so an attacker who controls
+    /// <c>.gitmodules</c> can spell that allow-listed prefix byte-exactly and then walk out of it with a
+    /// PERCENT-ENCODED traversal. Nothing in this process decodes — deliberately, because decoding before the
+    /// comparison is the hazard — but <c>dev.azure.com</c> DOES decode, so the request that leaves with the
+    /// daemon's credential attached addresses a repo the allow-list never granted.
+    /// </summary>
+    private static OperationPolicy CreateAdoStorePolicy() =>
+        new(
+            new ReviewScope(
+                Provider: "ado",
+                TargetHost: "dev.azure.com",
+                TargetRepoPath: "/mcqdbdev/MCQdb_Development/_git/MCQdbDEV",
+                ForkHost: null,
+                ForkRepoPath: null,
+                ReviewBotHost: "dev.azure.com",
+                ReviewBotRepoPath: "/mcqdbdev/MCQdb_Development/_git/MCQdbReview",
+                ApiHost: "dev.azure.com",
+                AllowedSubmodules:
+                [
+                    new SubmoduleAllowRule("dev.azure.com", "/mcqdbdev/MCQdb_Development/_git/MCQdbDEV"),
+                ]));
+
+    private const string EncodedTraversalPrefix =
+        "https://dev.azure.com/mcqdbdev/MCQdb_Development/_git/MCQdbDEV.git/";
+
+    private const string EncodedTraversalSuffix =
+        "/mcqdbdev/MCQdb_Development/_git/SecretRepo";
+
+    /// <summary>The reviewer's verbatim attack URL.</summary>
+    private const string EncodedTraversalUrl =
+        EncodedTraversalPrefix + "%2e%2e/%2e%2e/%2e%2e" + EncodedTraversalSuffix;
+
+    [Theory]
+    // The reviewer's exact URL, then the spellings a single-escape blocklist would miss.
+    [InlineData("%2e%2e/%2e%2e/%2e%2e")]
+    [InlineData("%2E%2e/%2E%2e/%2E%2e")]
+    [InlineData("%252e%252e/%252e%252e/%252e%252e")]
+    [InlineData("%2f%2e%2e%2f%2e%2e%2f%2e%2e")]
+    [InlineData("%5c%2e%2e%5c%2e%2e%5c%2e%2e")]
+    public async Task Denies_a_percent_encoded_traversal_out_of_an_allow_listed_submodule(string escapes)
+    {
+        var runner = new FakeSandboxCommandRunner();
+        var fs = new FakeSandboxFileSystem();
+        fs.Files[$"{RepoRoot}/.gitmodules"] = $"""
+            [submodule "libs/escape"]
+            	path = libs/escape
+            	url = {EncodedTraversalPrefix + escapes + EncodedTraversalSuffix}
+            """;
+
+        var outcome = await new SubmoduleInitializer(
+                new GitRunner(runner),
+                fs,
+                CreateAdoStorePolicy(),
+                "ado",
+                LoggerFactory.CreateLogger<SubmoduleInitializer>())
+            .InitializeAsync(RepoRoot, AdoRepoRemote, CancellationToken.None);
+
+        outcome.InitializedPaths.Should().BeEmpty(
+            "a percent-escape in the path beyond the allow-listed repo is what the upstream server decodes "
+                + "back into a separator, so it can never be treated as data inside that repo");
+        outcome.Denied.Should().ContainSingle();
+        Argv(runner).Should().NotContain(
+            argv => argv.Contains("--init", StringComparison.Ordinal),
+            "a denied submodule must never be init'd");
+    }
+
+    /// <summary>
+    /// The other half of the fail-closed-both-ways guarantee: the SAME request must also be refused the
+    /// credential. <c>ShouldInjectCredential</c> mirrors <c>Decide</c>, so an allow here is not merely a
+    /// reachable repo — it is a reachable repo with the daemon's ADO token on the request.
+    /// </summary>
+    [Fact]
+    public void Withholds_the_credential_from_a_percent_encoded_traversal()
+    {
+        var url = GitRemoteUrl.CanonicalizeAdoLegacyHost(GitRemoteUrl.Parse(EncodedTraversalUrl));
+        var request = new OperationRequest(
+            SandboxOperation.FetchSubmodule,
+            "ado",
+            url.Host,
+            "GET",
+            $"{url.RepoPath}.git/info/refs?service=git-upload-pack");
+
+        var policy = CreateAdoStorePolicy();
+        policy.Decide(request).IsAllowed.Should().BeFalse();
+        policy.ShouldInjectCredential(request).Should().BeFalse(
+            "a denied operation must never be credential-injected");
+    }
+
     [Fact]
     public async Task Returns_empty_when_there_are_no_submodules()
     {
