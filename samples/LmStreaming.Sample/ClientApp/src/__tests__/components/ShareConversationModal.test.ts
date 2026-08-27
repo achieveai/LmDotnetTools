@@ -172,6 +172,100 @@ describe('ShareConversationModal visibility (#375)', () => {
   });
 });
 
+// #482. The conversation listing now carries `canShare` — the server's own answer, from the same
+// authorizer call the share routes are gated on — so the modal no longer has to offer a mutation and
+// find out by being refused. `visibility` never could substitute: an owner and a grantee of one
+// shared conversation both read `shared`.
+//
+// The refusal path is NOT replaced by this, and the tests below the fold prove it still fires: the
+// flag is a hint about one viewer, and a client hint decides nothing on its own.
+describe('ShareConversationModal canShare (#482)', () => {
+  it('withdraws the mutation controls before any attempt when the viewer may not share', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    fetchSpy.mockResolvedValueOnce(jsonResponse([viewerGrant]));
+    const wrapper = mount(ShareConversationModal, {
+      props: { threadId: 'thread-1', canShare: false },
+      attachTo: document.body,
+    });
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="share-add-form"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="share-remove-tid-1:oid-a"]').exists()).toBe(false);
+
+    // The roster this caller IS entitled to read stays on screen: `canShare` is about `Share`, and
+    // reading who a conversation is shared with only ever needed `Read`.
+    expect(wrapper.find('[data-testid="share-row-tid-1:oid-a"]').exists()).toBe(true);
+
+    // BEFORE any attempt, which is the whole point of the field. One call — the roster read — and
+    // no refusal, so nothing here was learned by being told no.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(wrapper.find('[data-testid="share-refusal"]').exists()).toBe(false);
+  });
+
+  it('says what the viewer can still do rather than silently removing the controls', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    fetchSpy.mockResolvedValueOnce(jsonResponse([viewerGrant]));
+    const wrapper = mount(ShareConversationModal, {
+      props: { threadId: 'thread-1', canShare: false },
+      attachTo: document.body,
+    });
+    await flushPromises();
+
+    // Phrased as this viewer's capability, never as a reason. The server sends a boolean, not a
+    // reason code, so "only the owner can" would be a guess — and a wrong one for the owner of a
+    // tenant-published conversation, who is also refused.
+    const note = wrapper.find('[data-testid="share-read-only"]');
+    expect(note.exists()).toBe(true);
+    expect(note.text()).toContain('not change');
+  });
+
+  it('offers the mutation controls when the viewer may share', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    fetchSpy.mockResolvedValueOnce(jsonResponse([viewerGrant]));
+    const wrapper = mount(ShareConversationModal, {
+      props: { threadId: 'thread-1', canShare: true },
+      attachTo: document.body,
+    });
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="share-add-form"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="share-remove-tid-1:oid-a"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="share-read-only"]').exists()).toBe(false);
+  });
+
+  it('keeps offering them when the host reports no canShare at all', async () => {
+    // A host predating the field says nothing, and silence is not a refusal. Reading it as one would
+    // hide the control from the OWNER of every conversation — and would quietly make every
+    // offer-attempt-withdraw test in this file unreachable, passing while proving nothing.
+    const { wrapper } = await mountModal([viewerGrant]);
+
+    expect(wrapper.find('[data-testid="share-add-form"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="share-remove-tid-1:oid-a"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="share-read-only"]').exists()).toBe(false);
+  });
+
+  it('follows the flag across a conversation switch', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    fetchSpy.mockResolvedValueOnce(jsonResponse([viewerGrant]));
+    const wrapper = mount(ShareConversationModal, {
+      props: { threadId: 'thread-1', canShare: false },
+      attachTo: document.body,
+    });
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="share-add-form"]').exists()).toBe(false);
+
+    // The verdict belongs to ONE conversation, exactly like the latched `readOnly` the thread
+    // watcher clears. Carrying it into a conversation the caller owns would withhold a control that
+    // is theirs — the same failure, arrived at from the other direction.
+    fetchSpy.mockResolvedValueOnce(jsonResponse([]));
+    await wrapper.setProps({ threadId: 'thread-2', canShare: true });
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="share-add-form"]').exists()).toBe(true);
+  });
+});
+
 describe('ShareConversationModal sharing_unavailable', () => {
   it('disables the add control and explains that sharing is off on this host', async () => {
     const { wrapper, fetchSpy } = await mountModal([]);

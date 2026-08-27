@@ -982,6 +982,123 @@ public sealed class ConversationScopingTests
     }
 
     /// <summary>
+    /// #482's first acceptance criterion. The listing says whether THIS viewer may change who the
+    /// conversation is shared with, so the share control can stop offering a mutation the server is
+    /// going to refuse. <c>visibility</c> cannot answer it: the owner and the grantee of one shared
+    /// conversation both read <c>"shared"</c>.
+    /// </summary>
+    /// <remarks>
+    /// Both halves are asserted from ONE seeded conversation listed twice, so a
+    /// <c>canShare</c> wired to something that happens to differ between the two rows (a title, an
+    /// id) cannot pass: the row is byte-identical and only the viewer changes.
+    /// </remarks>
+    [Fact]
+    public async Task List_SaysTheOwnerMayShare_AndAGranteeMayNot()
+    {
+        await using var pool = CreatePool();
+        await SeedAsync("alice-thread", TenantA, Alice);
+
+        var owner = CreateController(Signed(TenantA, Alice), pool);
+        _ = Assert.IsType<OkObjectResult>(await owner.AddShare(
+            "alice-thread",
+            new ConversationShareRequest { SubjectId = Bob, Role = "viewer" },
+            CancellationToken.None));
+
+        _ = (await ListedCanShareAsync(owner, "alice-thread")).Should().BeTrue();
+
+        var grantee = CreateController(Signed(TenantA, Bob), pool);
+        _ = (await ListedCanShareAsync(grantee, "alice-thread")).Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A tenant admin may READ every conversation in the tenant and may not re-share any of them
+    /// (<c>admin_may_not_reshare</c>). The flag is asserted against the refusal the share ROUTE
+    /// produces for the same principal, so the listing cannot answer one thing while the route
+    /// answers another - which is the whole failure mode of computing a permission twice.
+    /// </summary>
+    [Fact]
+    public async Task List_SaysATenantAdminMayNotShare_MatchingWhatTheShareRouteRefuses()
+    {
+        await using var pool = CreatePool();
+        await SeedAsync("alice-thread", TenantA, Alice);
+
+        var admin = CreateController(Signed(TenantA, Bob, ResourceAccessPolicy.AdminRole), pool);
+
+        _ = (await ListedCanShareAsync(admin, "alice-thread")).Should().BeFalse();
+
+        var refused = await admin.AddShare(
+            "alice-thread",
+            new ConversationShareRequest { SubjectId = "dir-a:carol", Role = "viewer" },
+            CancellationToken.None);
+
+        var objectResult = Assert.IsType<ObjectResult>(refused);
+        _ = objectResult.StatusCode.Should().Be(403);
+        _ = JsonSerializer.Serialize(objectResult.Value)
+            .Should().Contain("admin_may_not_reshare", Exactly.Once());
+    }
+
+    /// <summary>
+    /// The owner of a TENANT-PUBLISHED conversation may not share it
+    /// (<c>publication_supersedes_sharing</c>), so <c>canShare</c> is false for the very principal
+    /// that owns the row.
+    /// </summary>
+    /// <remarks>
+    /// This is the case that fails an owner-shaped shortcut. A controller that computed the flag as
+    /// "the row's <c>OwnerUserId</c> is me" - the obvious re-derivation, and the one this issue
+    /// exists to prevent - passes every other test in this file and fails only here.
+    /// </remarks>
+    [Fact]
+    public async Task List_SaysTheOwnerOfAPublishedConversationMayNotShare()
+    {
+        await using var pool = CreatePool();
+        await SeedAsync("alice-thread", TenantA, Alice, Visibility.TenantPublished);
+
+        var owner = CreateController(Signed(TenantA, Alice), pool);
+
+        _ = (await ListedCanShareAsync(owner, "alice-thread")).Should().BeFalse();
+    }
+
+    /// <summary>
+    /// With <c>Identity:Enforce</c> off the authorizer allows every action, so the listing must say
+    /// so too. A flag hard-wired to false, or one that quietly needs a principal, would hide the
+    /// share control throughout the pre-enforcement window that
+    /// <c>docs/deployment/AUTH_ENFORCE.md</c> exists to make survivable.
+    /// </summary>
+    [Fact]
+    public async Task List_WithEnforcementOff_SaysTheViewerMayShare()
+    {
+        await using var pool = CreatePool();
+        await SeedAsync("alice-thread", TenantA, Alice);
+
+        var unenforced = CreateController(principal: null, pool, enforce: false);
+
+        _ = (await ListedCanShareAsync(unenforced, "alice-thread")).Should().BeTrue();
+    }
+
+    /// <summary>
+    /// The <c>canShare</c> the listing puts on the wire for one conversation. Null when the payload
+    /// carries no such field, which is what makes these tests fail before the field exists rather
+    /// than reading a C# <c>default</c> as a deliberate <c>false</c>.
+    /// </summary>
+    /// <remarks>
+    /// The row itself is located by <c>threadId</c> and asserted to be present: a listing that
+    /// simply dropped the conversation would otherwise answer "no permission" and read as a pass.
+    /// </remarks>
+    private static async Task<bool?> ListedCanShareAsync(
+        ConversationsController controller,
+        string threadId)
+    {
+        var ok = Assert.IsType<OkObjectResult>(await controller.List());
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(ok.Value, WireOptions));
+        var summary = document.RootElement
+            .EnumerateArray()
+            .Single(e => e.GetProperty("threadId").GetString() == threadId);
+        return summary.TryGetProperty("canShare", out var canShare)
+            ? canShare.GetBoolean()
+            : null;
+    }
+
+    /// <summary>
     /// A stranger cannot revoke, and the grant survives the attempt. Asserting only on the status
     /// would pass against an implementation that revoked and then reported a refusal.
     /// </summary>

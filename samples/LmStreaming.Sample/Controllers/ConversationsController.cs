@@ -333,13 +333,43 @@ public class ConversationsController(
         var threads = scope is null
             ? await store.ListThreadsAsync(limit, offset, ct)
             : await store.ListThreadsAsync(scope, limit, offset, ct);
-        var result = threads
+        var listed = threads
             // Sub-agent and workflow-controller conversations use the sample's reserved agent-owned
             // thread-id space and are surfaced only through the sub-agent panel (GET .../subagents +
             // /ws/subagent). They must not leak into the primary conversation sidebar (nor be
             // auto-selected on load).
             .Where(t => !SubAgentSummary.IsAgentOwnedThreadId(t.ThreadId))
-            .Select(t => new ConversationSummary
+            .ToArray();
+
+        // Materialized here rather than projected lazily, as ListShares does at the end of its own
+        // projection. ToWireVisibility throws on a visibility it has no name for, and a lazy
+        // enumerable would defer that throw to response serialization - truncating a 200 mid-body
+        // rather than failing as a clean 500. Nothing produces that today; this decides how it fails
+        // if a fourth member is ever added without a wire name.
+        var result = new List<ConversationSummary>(listed.Length);
+
+        foreach (var t in listed)
+        {
+            // #482. A LOOP, unlike the scope above, and unavoidably so: the listing filter answers
+            // "may this viewer SEE the row", one question for the whole page, while canShare answers
+            // "may this viewer SHARE this row", which the rights table decides per row from the row's
+            // own owner and visibility (an owner may share a private conversation and not a published
+            // one). The row loaded for the listing is the same ThreadMetadata the point read would
+            // load, so this costs no extra store round trip - only the authorizer's own grant lookup.
+            //
+            // Through the authorizer rather than by comparing OwnerUserId here. Re-deriving it would
+            // put a second, drifting copy of spec 7.4.1 in a controller, and the copy would be wrong
+            // immediately: an owner may not re-share a tenant-published conversation, and a tenant
+            // admin - who can see every row on this page - may not share any of them.
+            //
+            // KNOWN COST, named rather than hidden: every decision is audited, so a page now writes
+            // one authorization record per row where it previously wrote none, and the refusals land
+            // at Security/Warning level (LoggingAuditSink). The records are accurate - these decisions
+            // really are made - but they are display-time evaluations, not attempts, and there is no
+            // non-auditing seam on IResourceAccessPolicy to reach for instead.
+            var share = await authorizer.AuthorizeAsync(t.ThreadId, t, AccessAction.Share, ct);
+
+            result.Add(new ConversationSummary
             {
                 ThreadId = t.ThreadId,
                 Title = t.Properties?.TryGetValue("title", out var titleObj) == true
@@ -361,13 +391,10 @@ public class ConversationsController(
                 // Read straight off the row rather than out of Properties: visibility is a
                 // first-class stamped field (spec 8.3), and it is what the share control reflects.
                 Visibility = ConversationSummary.ToWireVisibility(t.Visibility),
-            })
-            // Materialized inside the action, as ListShares does at the end of its own projection.
-            // ToWireVisibility throws on a visibility it has no name for, and a lazy enumerable
-            // would defer that throw to response serialization - truncating a 200 mid-body rather
-            // than failing as a clean 500. Nothing produces that today; this decides how it fails
-            // if a fourth member is ever added without a wire name.
-            .ToArray();
+                CanShare = share.Allowed,
+            });
+        }
+
         return Ok(result);
     }
 
