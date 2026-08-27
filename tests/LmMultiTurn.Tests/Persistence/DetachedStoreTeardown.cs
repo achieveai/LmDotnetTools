@@ -23,12 +23,21 @@ namespace LmMultiTurn.Tests.Persistence;
 /// <para>
 /// <b>The root is NEVER deleted in place.</b> An earlier revision fell back to a recursive delete of the
 /// still-attached root whenever the rename failed, which voided the invariant in exactly the case it
-/// exists for: the roots are GUID-unique, so the destination can never already exist, and a held handle
-/// is therefore the ONLY reachable rename failure — i.e. a writer still working in the tree, the very
-/// scenario the detach protects against. <see cref="Purge"/> now retries the detach and then THROWS,
-/// naming the root, so the suite leaving a store operation in flight is findable instead of silently
-/// getting the unsafe delete. Moving the root somewhere else is not an escape: on Windows any
-/// <see cref="Directory.Move(string, string)"/> fails while a descendant handle is open.
+/// exists for: the roots are GUID-unique, so the destination can never already exist, which leaves a
+/// HELD HANDLE as the reachable rename failure — and the handle that matters is a writer still working
+/// in the tree, the very scenario the detach protects against. <see cref="Purge"/> now retries the
+/// detach and then THROWS, naming the root, so the suite holding it is findable instead of silently
+/// getting the unsafe delete. Moving the root somewhere else is not an escape: on Windows a
+/// <see cref="Directory.Move(string, string)"/> of an ancestor fails while a descendant handle is open,
+/// unless that handle was opened with <see cref="FileShare.Delete"/> — which the store does not do, and
+/// which is why the regression test opens with <see cref="FileShare.None"/>.
+/// </para>
+/// <para>
+/// This whole design is Windows-shaped, which is where the .NET suite runs. On POSIX a rename succeeds
+/// with descendant handles open, so the refusal below is simply unreachable there rather than wrong.
+/// The <c>root</c> is expected to be a normalized path with no trailing separator (every caller
+/// passes a <see cref="Path.Combine(string, string)"/> result); a trailing separator would make the
+/// detached name a CHILD rather than a sibling.
 /// </para>
 /// <para>
 /// <b>Coverage — what this helper does and does not reach.</b> Every
@@ -37,8 +46,10 @@ namespace LmMultiTurn.Tests.Persistence;
 /// <c>Constructor_CreatesBaseDirectory</c>'s own), <c>FileRunLedgerStoreTests</c>,
 /// <c>ConversationOwnershipTests</c>, <c>FileRunLifecycleStoreTests</c>,
 /// <c>InputAcceptanceStoreTests</c>, and <c>ConversationUsageProjectionTests</c>. The one remaining
-/// recursive delete in the assembly — <c>SqliteConnectionFactoryTests</c> — backs SQLite, which has no
-/// exclusive-create loop, so the window class cannot apply to it.
+/// recursive delete of a STORE root in the assembly — <c>SqliteConnectionFactoryTests</c> — backs
+/// SQLite, which has no exclusive-create loop, so the window class cannot apply to it. (Two other
+/// recursive deletes exist and are not store roots: the detached copy below, and
+/// <c>DetachedStoreTeardownTests</c>' own teardown, which must not depend on the helper it tests.)
 /// </para>
 /// <para>
 /// <b>NOT swept, and why.</b> Five further <c>FileConversationStore</c> roots live in OTHER test
@@ -64,9 +75,14 @@ internal static class DetachedStoreTeardown
 
     /// <summary>
     /// Backoff step, multiplied by the attempt number: ~1.1 s in total across
-    /// <see cref="DetachAttempts"/>. Enough to ride out a virus scanner or search indexer momentarily
-    /// holding a freshly written temp file — the transient that is worth absorbing — without turning a
-    /// genuinely leaked store handle into a long stall.
+    /// <see cref="DetachAttempts"/> (the sleep fires on attempts 1-9; the tenth throws first).
+    /// <para>
+    /// The retry exists because not every held handle belongs to a store writer: a virus scanner or a
+    /// search indexer touching a freshly written temp file holds one briefly, and so does a pooled SQLite
+    /// connection between <c>ClearAllPools</c> and the handle actually closing. Those are the transients
+    /// worth absorbing, and waiting for the condition beats the fixed sleeps some suites used to use.
+    /// A genuinely leaked store handle outlives the budget and is reported.
+    /// </para>
     /// </summary>
     private const int DetachRetryDelayMs = 25;
 
@@ -117,11 +133,16 @@ internal static class DetachedStoreTeardown
             {
                 if (attempt >= DetachAttempts)
                 {
+                    // The message names candidate causes rather than asserting one: a leaked store
+                    // handle is the cause worth finding, but a pooled SQLite connection, a scanner, or
+                    // an ACL/path-length problem land in this same arm and must not be misdiagnosed.
                     throw new IOException(
-                        $"Teardown could not detach the store root '{root}' after {DetachAttempts} attempts: "
-                            + "something is still holding the tree. Deleting it in place would reopen the "
-                            + "#477 legal-success-window, so teardown refuses instead. Find the test leaving "
-                            + "a store operation in flight, or a handle undisposed, under this root.",
+                        $"Teardown could not detach the store root '{root}' after {DetachAttempts} attempts "
+                            + $"(~{DetachRetryDelayMs * DetachAttempts * (DetachAttempts - 1) / 2} ms). "
+                            + "Deleting it in place would reopen the #477 legal-success-window, so teardown "
+                            + "refuses instead. Most likely a test left a store operation in flight or a "
+                            + "handle undisposed under this root; see the inner exception, which also covers "
+                            + "a pooled connection not yet released and a plain access failure.",
                         ex);
                 }
 

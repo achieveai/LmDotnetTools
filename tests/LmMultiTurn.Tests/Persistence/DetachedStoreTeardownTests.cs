@@ -67,9 +67,14 @@ public sealed class DetachedStoreTeardownTests : IDisposable
     }
 
     /// <summary>
-    /// The ordinary path: nothing holds the tree, so the root is detached and the detached copy removed. The
-    /// second assertion is the one with teeth — a helper that renamed and then failed to delete would leave a
-    /// growing pile of <c>-detached</c> siblings in the temp directory and still look like it worked.
+    /// The ordinary path: nothing holds the tree, so the root is detached and the detached copy removed.
+    /// <para>
+    /// Scope, stated honestly: both assertions here would also be satisfied by a plain recursive delete that
+    /// never detached at all, so this case does NOT pin the rename — the held-handle case above is the only
+    /// one that discriminates. What this pins is that the detached copy is actually deleted rather than
+    /// merely renamed out of the way, which would otherwise leave a growing pile of <c>-detached</c>
+    /// siblings in the temp directory and still look like it worked.
+    /// </para>
     /// </summary>
     [Fact]
     public void Purge_OnAQuiescentRoot_RemovesItAndLeavesNoDetachedResidue()
@@ -92,18 +97,39 @@ public sealed class DetachedStoreTeardownTests : IDisposable
     {
         Directory.Exists(_root).Should().BeFalse("precondition: nothing created this root");
 
-        var purge = () => DetachedStoreTeardown.Purge(_root);
+        var purgeNeverCreated = () => DetachedStoreTeardown.Purge(_root);
+        _ = purgeNeverCreated.Should().NotThrow();
 
-        _ = purge.Should().NotThrow();
+        // The second half of the claim: a root a previous purge already took is equally not a failure.
+        _ = Directory.CreateDirectory(_root);
+        DetachedStoreTeardown.Purge(_root);
+        var purgeAgain = () => DetachedStoreTeardown.Purge(_root);
+        _ = purgeAgain.Should().NotThrow("teardown runs per test, and the second call must be inert");
     }
 
     public void Dispose()
     {
         // Deliberately NOT DetachedStoreTeardown.Purge: this suite's whole job is to decide whether that
-        // helper behaves, so its teardown must not depend on the thing under test.
-        foreach (var directory in Directory.EnumerateDirectories(
-            Path.GetDirectoryName(_root)!,
-            Path.GetFileName(_root) + "*"))
+        // helper behaves, so its teardown must not depend on the thing under test. A plain recursive
+        // delete is safe HERE for the reason the helper cannot assume anywhere else — the only handles
+        // ever opened under these roots are this suite's own, and they are disposed by now.
+        string[] leftovers;
+        try
+        {
+            // Materialized before deleting: the loop mutates the directory being walked, and a lazy
+            // enumerator over a changing directory may silently skip entries. The enumeration can also
+            // throw on its own if another process removes a temp entry mid-walk, which must not fail
+            // teardown either.
+            leftovers = Directory.GetDirectories(
+                Path.GetDirectoryName(_root)!,
+                Path.GetFileName(_root) + "*");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return;
+        }
+
+        foreach (var directory in leftovers)
         {
             try
             {
@@ -111,7 +137,6 @@ public sealed class DetachedStoreTeardownTests : IDisposable
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                // No store writer exists here — only this suite's own handles, already disposed by now.
                 // A temp directory the OS has not finished releasing must not fail a green run.
             }
         }
