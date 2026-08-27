@@ -673,7 +673,15 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                     await _provisioner.DestroyAsync(runId, CancellationToken.None).ConfigureAwait(false);
                 }
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            // Catches OperationCanceledException too (issue #472 item 4). The usual reason to re-throw one is
+            // that it reports the CALLER's cancellation — but nothing here is cancellable: DestroyAsync is
+            // handed CancellationToken.None above, so an OCE arriving from it was raised against some token
+            // inside the provisioner and says nothing about this call. Letting it out is worse than useless,
+            // because this method runs in the orchestrator's TERMINAL finally: an exception thrown there
+            // REPLACES the one already in flight, so a cancelled teardown erases the run's actual cause of
+            // death and every log and retry decision downstream reads a cancellation instead. The slot was
+            // never at risk either way — the finally below returns it before anything propagates.
+            catch (Exception ex)
             {
                 _logger.LogError(
                     ex,
@@ -1601,7 +1609,15 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             // or repository name may contain a space; raw, curl rejects the argument (exit 3) and the review
             // is never posted while the run still completes. Encoding also keeps each value ONE path segment,
             // so a name carrying a separator stays data instead of re-pointing the URL (issue #218 item 9).
-            // The C# HTTP callers need no equivalent: Uri escapes the path when the request is built.
+            // The C# HTTP callers are unaffected, but not because escaping there is total — it is not.
+            // Uri.AbsoluteUri escapes the ESCAPED character classes (space, non-ASCII, most punctuation) and
+            // deliberately leaves the DELIMITERS alone: a '#' in a name truncates the path into the fragment,
+            // a '?' into the query, and a '/' opens a new path segment — each silently addressing a different
+            // resource. What makes that safe is the input, not the escaping: GitHub and Azure DevOps both
+            // forbid all three in owner, project and repository names, so the only characters that can reach
+            // a Uri here are ones it does escape. The prompt seam cannot lean on that: curl gets a bare
+            // string with no
+            // escaping step at all, so a legal ADO name with a space is already enough to break it.
             ["gh_owner"] = Uri.EscapeDataString(repo.OrgOrOwner),
             ["gh_repo"] = Uri.EscapeDataString(repo.RepoName),
             ["ado_org"] = Uri.EscapeDataString(repo.OrgOrOwner),

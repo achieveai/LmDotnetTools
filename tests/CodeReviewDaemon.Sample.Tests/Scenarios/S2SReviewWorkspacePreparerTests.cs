@@ -119,6 +119,47 @@ public sealed class S2SReviewWorkspacePreparerTests
             "ADO clones from dev.azure.com/{org}/{project}/_git/{repo}");
     }
 
+    /// <summary>
+    /// Issue #472 item 2. The ADO clone URL is built by raw interpolation and handed onward as a STRING —
+    /// it never becomes a <see cref="Uri"/> in this process, so the "C# callers are safe because
+    /// <see cref="Uri.AbsoluteUri"/> escapes the path" argument that narrowed issue #218 item 9 does not
+    /// reach here. Azure DevOps org and project names may contain spaces, and a raw space in a clone remote
+    /// is a malformed URL: git resolves it against no host it can reach. Encoding also keeps each value ONE
+    /// path segment, so a name carrying a separator stays data instead of re-pointing the clone.
+    /// </summary>
+    [Fact]
+    public async Task PrepareAsync_url_encodes_each_ado_remote_segment_so_a_spaced_org_still_clones()
+    {
+        var git = new FakeSandboxCommandRunner()
+            .OnArgvContains("rev-parse --is-inside-work-tree", new SandboxCommandResult(1, string.Empty, "not a repo"));
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "api/workspaces", "[]")
+            .OnJson(
+                HttpMethod.Post,
+                "api/workspaces",
+                "{\"id\":\"ws-ado-spaced\",\"name\":\"Review PR #201\","
+                    + "\"directoryRelPath\":\"review-ado-contoso-org-my-repo-pr-201\",\"marketplaces\":[]}");
+        using var http = NewHttp(handler);
+        var preparer = NewPreparer(http, git);
+        var spaced = new RepoIdentity
+        {
+            Provider = "ado",
+            OrgOrOwner = "contoso org",
+            Project = "MCQdb Development",
+            RepoName = "My Repo",
+            RepoStableId = "repo-stable-spaced",
+        };
+
+        _ = await preparer.PrepareAsync(MakeRun("201"), spaced, "ado", CancellationToken.None);
+
+        var clone = git.Commands.Single(c => c.Argv.Contains("clone"));
+        clone
+            .Argv.Should()
+            .Contain(
+                "https://dev.azure.com/contoso%20org/MCQdb%20Development/_git/My%20Repo",
+                "each segment is encoded, so the remote stays a well-formed URL and one segment per name");
+    }
+
     [Fact]
     public async Task PrepareAsync_preserves_a_failed_probe_for_an_existing_nonempty_checkout()
     {
