@@ -77,6 +77,152 @@ public class DirectFileTransferTests
         stored.Should().Equal(Encoding.UTF8.GetBytes(content));
     }
 
+    /// <summary>
+    /// The line-ending and boundary shapes #190 calls out by name. Under the shipped direct-files design
+    /// the SDK sends the file's exact bytes in one PUT and decodes exactly what the GET returns, so the
+    /// only way these could be corrupted is a normalizing encode/decode — which is precisely what a
+    /// strict, no-BOM UTF-8 codec must never do. Each case round-trips through the captured PUT body, so
+    /// a passing assertion proves byte-exactness on the wire, not just string equality after the fact.
+    /// </summary>
+    [Theory]
+    // CRLF must survive verbatim — never normalized to LF.
+    [InlineData("line one\r\nline two\r\n")]
+    // A lone CR (classic-Mac ending) is neither expanded nor swallowed.
+    [InlineData("alpha\rbeta\rgamma")]
+    // No final newline: the last line must NOT gain one.
+    [InlineData("no trailing newline")]
+    // A trailing newline must NOT be stripped.
+    [InlineData("has trailing newline\n")]
+    // A file that is nothing but line endings.
+    [InlineData("\r\n\n\r")]
+    // The empty file: zero bytes out, empty string back — not a null, not a failure.
+    [InlineData("")]
+    // Mixed endings in one document stay exactly as authored.
+    [InlineData("crlf\r\nlf\ncr\rend")]
+    public async Task WriteThenRead_PreservesExactLineEndingsAndBoundaries(string content)
+    {
+        var (client, handler) = CreateClient();
+        using var _ = client;
+        byte[]? stored = null;
+
+        handler.On(
+            req => req.Method == HttpMethod.Put && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            req =>
+            {
+                stored = req.Content!.ReadAsByteArrayAsync().GetAwaiter().GetResult();
+                return JsonResponse($$"""{"bytes_written":{{stored.Length}}}""");
+            }
+        );
+        handler.On(
+            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(stored!) }
+        );
+
+        await client.WriteTextFileAsync(Session, "endings.txt", content);
+        var roundTripped = await client.ReadTextFileAsync(Session, "endings.txt");
+
+        // The bytes on the wire are the caller's exact UTF-8 — no BOM prefixed, no ending rewritten.
+        stored.Should().Equal(Encoding.UTF8.GetBytes(content));
+        roundTripped.Should().Be(content);
+    }
+
+    [Fact]
+    public async Task WriteThenRead_LargeDocument_RoundTripsExactly_InOneRequestEach()
+    {
+        var (client, handler) = CreateClient();
+        using var _ = client;
+        byte[]? stored = null;
+
+        handler.On(
+            req => req.Method == HttpMethod.Put && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            req =>
+            {
+                stored = req.Content!.ReadAsByteArrayAsync().GetAwaiter().GetResult();
+                return JsonResponse($$"""{"bytes_written":{{stored.Length}}}""");
+            }
+        );
+        handler.On(
+            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(stored!) }
+        );
+
+        // ~1.6 MiB of mixed-width UTF-8: every multibyte sequence lands at a different byte offset in each
+        // line, so any framing that split the payload on a fixed boundary without re-joining the code
+        // points would corrupt it. The predecessor design chunked base64 at ~12 KiB; this proves the
+        // shipped single-request design carries the same content intact.
+        var builder = new StringBuilder();
+        for (var i = 0; i < 20_000; i++)
+        {
+            builder.Append("行 ").Append(i).Append(" — naïve café 🌐 payload\r\n");
+        }
+
+        var content = builder.ToString();
+
+        await client.WriteTextFileAsync(Session, "big.txt", content);
+        var roundTripped = await client.ReadTextFileAsync(Session, "big.txt");
+
+        roundTripped.Should().Be(content);
+        stored.Should().Equal(Encoding.UTF8.GetBytes(content));
+        // Exactly one PUT and one GET: the direct files API transfers a whole file per request, so a
+        // repeated write would mean the SDK re-sent a side-effecting request it must only send once.
+        handler.Requests.Count(r => r.Method == HttpMethod.Put).Should().Be(1);
+        handler
+            .Requests.Count(r => r.Method == HttpMethod.Get && r.Uri.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal))
+            .Should()
+            .Be(1);
+    }
+
+    [Fact]
+    public async Task WriteTextFileAsync_UnpairedSurrogate_ThrowsArgumentExceptionNamingContent_AndSendsNothing()
+    {
+        var (client, handler) = CreateClient();
+        using var _ = client;
+
+        // A lone high surrogate has no UTF-8 encoding. The strict (throwing) encoder refuses it — and that
+        // refusal must reach the caller as a NAMED argument failure about `content`, not as a raw
+        // EncoderFallbackException whose ParamName is null and whose message names only a character index.
+        var content = "before " + (char)0xD83C + " after";
+
+        Func<Task> act = () => client.WriteTextFileAsync(Session, "bad.txt", content);
+
+        var thrown = await act.Should().ThrowAsync<ArgumentException>();
+        thrown.And.ParamName.Should().Be("content");
+        // The original encoder failure is preserved, not swallowed: the CHANGELOG promises callers can still
+        // reach the character index the strict encoder objected to, which lives only on the inner exception.
+        thrown.And.InnerException.Should().BeOfType<EncoderFallbackException>();
+        // Refused before anything left the process: the target file is untouched and no PUT was issued.
+        handler.Requests.Should().NotContain(r => r.Method == HttpMethod.Put);
+    }
+
+    [Fact]
+    public async Task ListDirectoryAsync_NamesBearingCarriageReturnLineFeedAndTab_SurviveVerbatim()
+    {
+        var (client, handler) = CreateClient();
+        using var _ = client;
+
+        // POSIX permits every byte except '/' and NUL in a filename, so CR, LF and TAB are all legal.
+        // The predecessor design framed listings as newline-delimited text, where such a name would split
+        // into two bogus entries; the shipped JSON listing must return each name as one exact string.
+        handler.On(
+            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/directories/{MountId}", StringComparison.Ordinal),
+            _ =>
+                JsonResponse(
+                    """
+                    {"entries":[
+                      {"name":"two\nlines.txt","type":"file","size":1},
+                      {"name":"carriage\rreturn.txt","type":"file","size":1},
+                      {"name":"tab\there.txt","type":"file","size":1},
+                      {"name":"crlf\r\nboth.txt","type":"file","size":1}
+                    ]}
+                    """
+                )
+        );
+
+        var names = await client.ListDirectoryAsync(Session, "");
+
+        names.Should().Equal("two\nlines.txt", "carriage\rreturn.txt", "tab\there.txt", "crlf\r\nboth.txt");
+    }
+
     [Fact]
     public async Task WriteTextFileAsync_PostsExactByteCount_AndAcceptsMatchingBytesWritten()
     {

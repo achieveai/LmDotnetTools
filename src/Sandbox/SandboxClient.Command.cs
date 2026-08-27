@@ -118,18 +118,24 @@ public sealed partial class SandboxClient
         CancellationToken ct
     )
     {
+        // The operation id rides along so EVERY failure exit of the submit — a lost response, an
+        // unreachable gateway, or a gateway-reported error — carries the recovery handle. A submit whose
+        // response is lost is precisely the case where the caller cannot tell whether the command ran, and
+        // when the SDK generated the id this exception is the only place it is ever surfaced.
         using var response = await SendDirectAsync(
                 HttpMethod.Post,
                 $"api/v1/sandboxes/{Uri.EscapeDataString(sessionId)}/operations",
                 JsonContent.Create(requestDto, options: SandboxJson.RestOptions),
                 sessionId,
-                ct
+                ct,
+                operationId
             )
             .ConfigureAwait(false);
 
         if (!response.IsSuccessStatusCode)
         {
-            throw await MapDirectErrorAsync(response, $"submitting operation '{operationId}'", sessionId, ct).ConfigureAwait(false);
+            throw await MapDirectErrorAsync(response, $"submitting operation '{operationId}'", sessionId, ct, operationId: operationId)
+                .ConfigureAwait(false);
         }
 
         return await ReadOperationStatusOrThrowAsync(response, $"submitting operation '{operationId}'", operationId, ct)
@@ -176,13 +182,15 @@ public sealed partial class SandboxClient
                 $"api/v1/sandboxes/{Uri.EscapeDataString(sessionId)}/operations/{Uri.EscapeDataString(operationId)}",
                 null,
                 sessionId,
-                ct
+                ct,
+                operationId
             )
             .ConfigureAwait(false);
 
         if (!response.IsSuccessStatusCode)
         {
-            throw await MapDirectErrorAsync(response, $"polling operation '{operationId}'", sessionId, ct).ConfigureAwait(false);
+            throw await MapDirectErrorAsync(response, $"polling operation '{operationId}'", sessionId, ct, operationId: operationId)
+                .ConfigureAwait(false);
         }
 
         return await ReadOperationStatusOrThrowAsync(response, $"polling operation '{operationId}'", operationId, ct)

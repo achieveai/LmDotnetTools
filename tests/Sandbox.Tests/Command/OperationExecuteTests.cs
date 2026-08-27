@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using FluentAssertions;
 using Xunit;
 
@@ -351,6 +352,239 @@ public sealed class OperationExecuteTests
         var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"], operationId: operationId));
 
         (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_HostileArgvTokens_AreSentVerbatimAsSeparateArgs_NeverConcatenated()
+    {
+        const string sessionId = "sess-argv";
+        const string operationId = "op-argv";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 2);
+        RegisterSubmit(
+            handler,
+            "{\"operation_id\":\"" + operationId + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":2,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
+            HttpStatusCode.OK
+        );
+        RegisterDownload(handler, "path=out", "");
+        RegisterDownload(handler, "path=err", "");
+
+        // Every metacharacter a shell would act on, in ONE argument. The predecessor design POSIX-quoted
+        // argv into a `sh -c` string, where a quoting bug meant command injection; the shipped design
+        // sends a structured argv vector to the gateway's operations API and never builds a command line
+        // at all. That is what makes this token harmless — so assert the STRUCTURE, which is the actual
+        // safety property, rather than the quoting of a string that is no longer produced.
+        const string hostile = "'; rm -rf / #$(whoami)`id`\n&& echo pwned || true |cat";
+
+        var result = await client.ExecuteAsync(
+            sessionId,
+            new SandboxCommand(["git", "commit", "-m", hostile], operationId: operationId)
+        );
+
+        result.ExitCode.Should().Be(0);
+
+        var submit = handler.Requests.Single(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal));
+        using var body = JsonDocument.Parse(submit.Body!);
+        // The executable is its own field; the remaining tokens are a JSON array, each one an exact,
+        // independently-delimited element. Nothing is joined with a space, and no shell is named.
+        body.RootElement.GetProperty("executable").GetString().Should().Be("git");
+        var args = body.RootElement.GetProperty("args").EnumerateArray().Select(e => e.GetString()).ToArray();
+        args.Should().Equal("commit", "-m", hostile);
+        // Belt and braces: no flattened command line anywhere in the request — had the SDK joined the
+        // argv into one string (the predecessor's `sh -c` shape), the hostile token would appear glued
+        // to its neighbours rather than standing alone as its own array element.
+        submit.Body!.Contains("-m '", StringComparison.Ordinal).Should().BeFalse();
+        submit.Body.Contains("commit -m", StringComparison.Ordinal).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_CallerCancelsDuringPoll_ThrowsOperationCanceled_NotSandboxException()
+    {
+        const string sessionId = "sess-cancel";
+        const string operationId = "op-cancel";
+        // A long execution ceiling so the SDK's own poll deadline can never be what ends this wait —
+        // only the caller's cancellation can, which is exactly the distinction under test.
+        var (client, handler) = TestSupport.CreateBorrowedClient(executionTimeout: TimeSpan.FromMinutes(10));
+        using var cts = new CancellationTokenSource();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        RegisterSubmit(handler, "{\"operation_id\":\"" + operationId + "\",\"status\":\"running\"}");
+        // The operation never terminalizes; the first poll trips the caller's cancellation.
+        handler.On(
+            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/operations/{operationId}", StringComparison.Ordinal),
+            _ =>
+            {
+                cts.Cancel();
+                return Json("{\"operation_id\":\"" + operationId + "\",\"status\":\"running\"}");
+            }
+        );
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["sleep", "999"], operationId: operationId), cts.Token);
+
+        // ExecuteAsync runs its OWN poll loop (its own Task.Delay and deadline), a different code path
+        // from the lifecycle calls — caller cancellation must still surface unwrapped here.
+        var thrown = await act.Should().ThrowAsync<OperationCanceledException>();
+        thrown.Which.Should().NotBeOfType<SandboxException>();
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_TransportTimeoutDuringPoll_IsTransportTimeout_AndNeverResubmitsTheCommand()
+    {
+        const string sessionId = "sess-lost";
+        const string operationId = "op-lost";
+        // Transport budget far shorter than the execution ceiling: the poll's HTTP request wedges and
+        // blows the transport deadline while the gateway is still (as far as anyone knows) running the
+        // command. This is the "long execution / short transport" outcome.
+        var (client, handler) = TestSupport.CreateBorrowedClient(
+            transportTimeout: TimeSpan.FromMilliseconds(150),
+            executionTimeout: TimeSpan.FromMinutes(10)
+        );
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        RegisterSubmit(handler, "{\"operation_id\":\"" + operationId + "\",\"status\":\"running\"}");
+        handler.OnHang(req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/operations/{operationId}", StringComparison.Ordinal));
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["make", "release"], operationId: operationId));
+
+        var thrown = await act.Should().ThrowAsync<SandboxException>();
+        thrown.Which.Kind.Should().Be(SandboxErrorKind.TransportTimeout);
+        // The recovery key is on the exception, so the caller can re-poll the SAME operation instead of
+        // running a side-effecting command a second time.
+        thrown.Which.OperationId.Should().Be(operationId);
+        // The load-bearing assertion: a lost poll must never make the SDK re-send the submit. Exactly one
+        // POST .../operations left the client, so the command was submitted once.
+        handler.Requests.Count(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal))
+            .Should()
+            .Be(1);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SubmitResponseLost_CarriesTheGeneratedOperationId_SoTheCommandStaysRecoverable()
+    {
+        const string sessionId = "sess-lostsubmit";
+        var (client, handler) = TestSupport.CreateBorrowedClient(transportTimeout: TimeSpan.FromMilliseconds(150));
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        // The submit reaches the gateway but its response never comes back — the genuinely ambiguous case:
+        // the command may already be running.
+        handler.OnHang(req => req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal));
+
+        // Deliberately NO caller-supplied operation id: the SDK generated one and put it on the wire, so the
+        // exception is the ONLY place that id is ever surfaced. Without it the caller cannot re-poll and is
+        // left with a side-effecting command it can neither observe nor safely re-run.
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["git", "push"]));
+
+        var thrown = await act.Should().ThrowAsync<SandboxException>();
+        thrown.Which.Kind.Should().Be(SandboxErrorKind.TransportTimeout);
+        thrown.Which.OperationId.Should().NotBeNullOrEmpty();
+        // And it is the SAME id that went out on the wire, not a fresh one minted for the message.
+        var submit = handler.Requests.Single(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal));
+        submit.Body!.Contains($"\"operation_id\":\"{thrown.Which.OperationId}\"", StringComparison.Ordinal).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SubmitRejectedByGateway_CarriesTheOperationId()
+    {
+        const string sessionId = "sess-rejected";
+        const string operationId = "op-rejected";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        // A gateway 5xx on submit is ambiguous in the same way a lost response is (the operation may or may
+        // not have been created), so it must carry the recovery handle on the SAME exception type.
+        RegisterSubmit(handler, """{"error":"boom","error_code":"internal"}""", HttpStatusCode.InternalServerError);
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["git", "push"], operationId: operationId));
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.OperationId.Should().Be(operationId);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SubmitCannotReachGateway_CarriesTheOperationId()
+    {
+        const string sessionId = "sess-unreachable";
+        const string operationId = "op-unreachable";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 2);
+        // A submit that never reaches the gateway is the MOST ambiguous exit of all: the SDK cannot know
+        // whether the connection died before or after the operation was created, so the recovery handle is
+        // the caller's only way to find out. A transport fault is not a response, so this arrives as an
+        // HttpRequestException rather than a status code.
+        handler.On(
+            req => req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
+            _ => throw new HttpRequestException("connection reset by peer")
+        );
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["git", "push"], operationId: operationId));
+
+        var thrown = await act.Should().ThrowAsync<SandboxException>();
+        thrown.Which.Kind.Should().Be(SandboxErrorKind.TransportTimeout);
+        thrown.Which.OperationId.Should().Be(operationId);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_PollRejectedByGateway_CarriesTheOperationId()
+    {
+        const string sessionId = "sess-poll-rejected";
+        const string operationId = "op-poll-rejected";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 4);
+        RegisterSubmit(handler, $$"""{"operation_id":"{{operationId}}","status":"running"}""");
+        // The command IS running by now, so a 5xx on the poll leaves it strictly in flight — losing the id
+        // here would strand a command the caller knows exists but can no longer address.
+        handler.On(
+            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/operations/{operationId}", StringComparison.Ordinal),
+            _ => Json("""{"error":"boom","error_code":"internal"}""", HttpStatusCode.InternalServerError)
+        );
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["git", "push"], operationId: operationId));
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.OperationId.Should().Be(operationId);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ArtifactDownloadRejectedByGateway_CarriesTheOperationId()
+    {
+        const string sessionId = "sess-artifact-rejected";
+        const string operationId = "op-artifact-rejected";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 9);
+        RegisterSubmit(
+            handler,
+            "{\"operation_id\":\""
+                + operationId
+                + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":9,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
+            HttpStatusCode.OK
+        );
+        // The command has already RUN — only fetching its recorded stdout failed. The caller must still be
+        // able to re-address the operation to collect the output it cannot see, so this exit carries the id
+        // exactly like the submit and poll exits do.
+        handler.On(
+            req => req.Method == HttpMethod.Get && req.RequestUri!.Query.Contains("path=out", StringComparison.Ordinal),
+            _ => Json("""{"error":"artifact unavailable","error_code":"internal"}""", HttpStatusCode.ServiceUnavailable)
+        );
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["make"], operationId: operationId));
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.OperationId.Should().Be(operationId);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_CombinedOutput_IsStandardOutputThenStandardError()
+    {
+        const string sessionId = "sess-combined";
+        const string operationId = "op-combined";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 6);
+        RegisterSubmit(
+            handler,
+            "{\"operation_id\":\"" + operationId + "\",\"status\":\"failed\",\"exit_code\":1,\"artifacts\":{\"mount_id\":6,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
+            HttpStatusCode.OK
+        );
+        RegisterDownload(handler, "path=out", "compiling...\n");
+        RegisterDownload(handler, "path=err", "error: boom\n");
+
+        var result = await client.ExecuteAsync(sessionId, new SandboxCommand(["make"], operationId: operationId));
+
+        // Documented as stdout THEN stderr, plainly concatenated with no separator, ordering marker, or
+        // real-time interleaving — a caller that prints CombinedOutput must get exactly this.
+        result.CombinedOutput.Should().Be("compiling...\nerror: boom\n");
     }
 
     [Fact]

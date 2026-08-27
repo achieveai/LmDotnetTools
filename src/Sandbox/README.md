@@ -11,6 +11,46 @@ OAuth/network/discovery policy remain the caller's responsibility.
 > enforces authentication, transport hardening, credential-replay protection, and the typed error
 > taxonomy.
 
+## Everything here is remote — the SDK never touches your host filesystem
+
+Every path this SDK accepts is **workspace-relative inside the sandbox**, and every operation is an
+HTTP call to the gateway. Nothing in this package opens, creates, resolves, or deletes a file or
+directory on the machine running your code:
+
+- `SandboxCreateRequest.Workspace` is a **logical** workspace identifier, not a host path. A value
+  that *looks* like one (`/srv/data`, `C:\work`) is passed through as an opaque label — it does not
+  resolve to, and does not create, anything on your disk.
+- `ReadTextFileAsync`/`WriteTextFileAsync`/`ListDirectoryAsync`/`ExecuteAsync` paths are resolved by
+  the **gateway**, under the sandbox's workspace mount.
+- Command stdout/stderr artifacts live in the sandbox and are fetched over HTTP; no temp file is
+  written locally at any point.
+
+**Everything returned is materialized in process memory.** `ReadTextFileAsync` returns one `string`
+and `ReadFileBytesAsync` one `byte[]`, each holding the whole file; `SandboxCommandResult` holds the
+whole stdout and stderr. There is no streaming or range-read surface — the gateway's files API has no
+range read — so a caller's working set scales with the largest file or output it asks for. The
+64&#160;MiB direct-read cap below is a defensive ceiling, not a memory budget: sizing that is the
+caller's job, and `ReadTextFileAsync(sessionId, path, maxBytes)` / `ReadFileBytesAsync(…, maxBytes)`
+exist so a caller can impose a much tighter one.
+
+## Gateway contract baseline
+
+The SDK speaks the gateway's **direct** operations/files/directories REST API (ADR 0031 /
+`achieveai/SandboxedOstoolsMcpServer#119` — that ADR and its issue live in the **gateway** repo, not
+this one, so a bare `#119` elsewhere in these docs is a cross-repo citation and not this repo's issue
+119) for commands and file transfer, plus the REST control plane for lifecycle, marketplace preview, and
+session discovery. Its effective minimum gateway is a release carrying that direct API — pinned in CI
+by image tag in
+[`.github/workflows/sandbox-contract.yml`](../../.github/workflows/sandbox-contract.yml), which runs
+`tests/Sandbox.Integration.Tests` against the real gateway with `AUTH_ENFORCE=true` and fails (never
+silently skips) when that gateway is unavailable.
+
+Issue #187 named `SandboxedOstoolsMcpServer@c0dc9cfee3e3aeafd4c3d203ef7153255a990bb6` as the original
+baseline; it remains the pinned reference for the **catalog and session-discovery** wire shapes, which
+this SDK still speaks unchanged. It is *not* a runnable floor: the direct API did not exist at that
+commit, so a gateway pinned there cannot serve this SDK's command or file operations. The image tag in
+the workflow is the operative pin.
+
 ## What this release covers
 
 - **Lifecycle:** `CreateAsync`, `GetAsync`, `ListAsync`, `DeleteAsync` — explicit sandbox
@@ -97,6 +137,12 @@ finally
 }
 ```
 
+That block is transcribed into a compiled sample,
+[`tests/Sandbox.Tests/ReadmeUsageSample.cs`](../../tests/Sandbox.Tests/ReadmeUsageSample.cs), so a
+rename or signature change breaks the build rather than quietly rotting this page. Change both in the
+same commit. The same flow runs end-to-end against a real gateway in
+`tests/Sandbox.Integration.Tests/SandboxLiveContractTests.cs`.
+
 To share a caller-managed `HttpClient` (e.g. from `IHttpClientFactory`) instead of letting the
 client own its own transport, use the two-argument constructor: `new SandboxClient(options,
 httpClient)`. The SDK never mutates a borrowed client's `DefaultRequestHeaders` or `Timeout`. Every
@@ -181,6 +227,75 @@ cleanup.
 Because the gateway may rematerialize a lost container and retry the underlying invocation, command
 execution is **at-least-once**: a non-idempotent command can run more than once even though the SDK
 returns a single result.
+
+### Recovering a command whose response was lost
+
+Every failure of a command that has an operation id raises a `SandboxException` carrying `OperationId`
+— the submit and every poll, whether lost to a transport timeout, refused by an unreachable gateway, or
+rejected by the gateway; and the stdout/stderr artifact fetch that follows a command which already ran.
+That id is the recovery handle: call `ExecuteAsync` again with
+`new SandboxCommand(argv, operationId: thatId)` and the gateway answers with the existing operation's
+status instead of running the command a second time (subject to the gateway-scoped, non-durable
+retention above).
+
+**A present `OperationId` is not a licence to retry.** It identifies the operation; it does not promise
+the failure is transient. The id is stamped on deterministic failures too — a `401`/`403`, a refused
+redirect — where re-issuing simply fails the same way. Gate on `Kind` and re-issue only for the
+**ambiguous** failures, where the response was lost and the command may or may not have run:
+
+```csharp
+string[] argv = ["git", "push"];
+try
+{
+    return await client.ExecuteAsync(sessionId, new SandboxCommand(argv));
+}
+catch (SandboxException ex)
+    when (ex.OperationId is { } operationId
+        && ex.Kind is SandboxErrorKind.TransportTimeout or SandboxErrorKind.Unavailable
+    )
+{
+    // Re-poll the SAME operation rather than running a side-effecting command a second time.
+    return await client.ExecuteAsync(sessionId, new SandboxCommand(argv, operationId: operationId));
+}
+```
+
+This matters most when you did **not** supply an operation id: the SDK generated one and put it on the
+wire, so the exception is the only place that id is ever surfaced. Read it off the exception before
+discarding it, or a side-effecting command becomes one you can neither observe nor safely re-run.
+
+### Artifact retention and cleanup
+
+A command's stdout/stderr artifacts are created, retained, and deleted **by the gateway**, inside the
+sandbox, under the reserved `.mcp-gateway/operations/<operation_id>/<generation>/` prefix. This SDK
+writes no artifact, keeps no manifest, lease, or bookkeeping of its own, and runs no cleanup pass — so
+there is no SDK-side retention window to configure, and no stale-artifact sweep that a caller could
+trigger or tune.
+
+**Artifact files are not time-expired.** ADR 0031 §5's reaper prunes terminal **in-memory operation
+records** after `OPERATION_TERMINAL_TTL_SECS` (default 3600); it does **not** delete the on-disk files.
+Those persist under the workspace until one of two things happens: the operation is explicitly deleted,
+or the sandbox is. A practical consequence: once the TTL has pruned the record, a later poll of that
+operation returns `operation_not_found` **while its output files are still sitting on disk** — the
+record and the bytes expire on completely different schedules. A gateway restart has the same effect
+immediately, since records are process-local.
+
+The gateway does offer the per-operation primitive —
+`DELETE /api/v1/sandboxes/{session_id}/operations/{operation_id}`, which removes a terminal or reserved
+operation and best-effort deletes its generation-scoped artifact directory (a still-running operation is
+refused with `409 operation_running`). **This SDK does not expose it.** So through `SandboxClient` the
+only way to reclaim artifact disk space is `DeleteAsync` — tearing down the whole sandbox. For a
+long-lived sandbox running many commands, that is the one cleanup boundary you have, and artifacts
+accumulate until you reach it.
+
+Two consequences worth stating plainly:
+
+- Artifacts are ordinary workspace files, so `ListDirectoryAsync` does **not** filter them out — the SDK
+  has no reserved directory of its own to exclude, and the prefix is reserved from *writes*, never
+  hidden from *reads*.
+- Conversely, `WriteTextFileAsync` and `WriteFileBytesAsync` are **refused** under that prefix: the
+  gateway rejects a write below `.mcp-gateway/operations` with `403 reserved_path` before touching disk,
+  which reaches you as `SandboxErrorKind.Authorization`. It is gateway-owned bookkeeping — readable, not
+  writable. Pick any other path for your own files.
 
 
 ## Errors

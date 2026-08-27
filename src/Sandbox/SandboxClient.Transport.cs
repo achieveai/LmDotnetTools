@@ -73,8 +73,11 @@ public sealed partial class SandboxClient
                 // Pass the CALLER's ct (so genuine caller cancellation still surfaces as OCE) AND this
                 // call's already-running whole-call CTS as the read budget, so the error-body parse shares
                 // the SAME single TransportTimeout the headers consumed — the whole download is bounded by
-                // one deadline, never two composed back-to-back.
-                throw await MapDirectErrorAsync(response, operation, sessionId, ct, timeoutCts.Token).ConfigureAwait(false);
+                // one deadline, never two composed back-to-back. The operationId rides along for the same
+                // reason the sibling exits below stamp it: by this point the command has already RUN, and a
+                // gateway rejection on its stdout/stderr artifact leaves the caller holding output it cannot
+                // see — the id is what lets it re-address the operation and collect that output.
+                throw await MapDirectErrorAsync(response, operation, sessionId, ct, timeoutCts.Token, operationId).ConfigureAwait(false);
             }
 
             var declaredLength = response.Content.Headers.ContentLength;
@@ -376,12 +379,20 @@ public sealed partial class SandboxClient
     /// caller's token alone. <paramref name="content"/>, when supplied, is the request body (JSON for
     /// <c>operations</c>, octet bytes for a file <c>PUT</c>).
     /// </summary>
+    /// <remarks>
+    /// <paramref name="operationId"/>, when supplied by the operations submit/poll callers, is stamped onto
+    /// every <see cref="SandboxException"/> this method raises. That id is the ONLY way a caller can re-poll
+    /// a command whose response was lost — and when the SDK generated it (the caller passed no
+    /// <see cref="SandboxCommand.OperationId"/>) the exception is the only place it is ever surfaced, so
+    /// dropping it here would strand a side-effecting command with no recovery handle at all.
+    /// </remarks>
     private async Task<HttpResponseMessage> SendDirectAsync(
         HttpMethod method,
         string relativeUri,
         HttpContent? content,
         string sessionId,
-        CancellationToken ct
+        CancellationToken ct,
+        string? operationId = null
     )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -415,7 +426,8 @@ public sealed partial class SandboxClient
             throw new SandboxException(
                 SandboxErrorKind.TransportTimeout,
                 $"Sandbox gateway request to '{relativeUri}' did not complete within the configured "
-                    + $"transport timeout ({_options.TransportTimeout})."
+                    + $"transport timeout ({_options.TransportTimeout}).",
+                operationId: operationId
             );
         }
         catch (HttpRequestException ex)
@@ -425,7 +437,8 @@ public sealed partial class SandboxClient
                 SandboxErrorKind.TransportTimeout,
                 $"Could not reach the sandbox gateway at '{_options.ServerAddress}'.",
                 statusCode: null,
-                ex
+                ex,
+                operationId
             );
         }
     }
@@ -466,7 +479,8 @@ public sealed partial class SandboxClient
         string operation,
         string sessionId,
         CancellationToken callerToken,
-        CancellationToken? readBudget = null
+        CancellationToken? readBudget = null,
+        string? operationId = null
     )
     {
         var statusCode = (int)response.StatusCode;
@@ -477,13 +491,19 @@ public sealed partial class SandboxClient
                 $"Sandbox gateway returned redirect status {statusCode} for {operation}; this SDK never "
                     + "follows redirects (following one would replay the X-Sbx-* credential headers to the "
                     + "redirect target). Point ServerAddress directly at the gateway's canonical origin.",
-                statusCode
+                statusCode,
+                operationId: operationId
             );
         }
 
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
         {
-            return new SandboxException(SandboxErrorKind.Authorization, $"Sandbox gateway returned {statusCode} for {operation}.", statusCode);
+            return new SandboxException(
+                SandboxErrorKind.Authorization,
+                $"Sandbox gateway returned {statusCode} for {operation}.",
+                statusCode,
+                operationId: operationId
+            );
         }
 
         string? errorCode = null;
@@ -521,7 +541,7 @@ public sealed partial class SandboxClient
 
         var kind = MapDirectErrorKind(response.StatusCode, errorCode);
         var codeSuffix = string.IsNullOrEmpty(errorCode) ? string.Empty : $" (error_code {errorCode})";
-        return new SandboxException(kind, $"Sandbox gateway returned {statusCode} for {operation}{codeSuffix}.", statusCode)
+        return new SandboxException(kind, $"Sandbox gateway returned {statusCode} for {operation}{codeSuffix}.", statusCode, operationId: operationId)
         {
             ErrorCode = errorCode,
         };

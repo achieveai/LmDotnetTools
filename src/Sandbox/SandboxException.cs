@@ -27,12 +27,21 @@ public sealed class SandboxException : Exception
     public int? StatusCode { get; }
 
     /// <summary>
-    /// The resolved operation id of a command execution, when this failure is recoverable by re-issuing
-    /// the same command with the same operation id (e.g. a <see cref="SandboxErrorKind.TransportTimeout"/>
-    /// on a submitted-but-unconfirmed command). <c>null</c> for failures with no recoverable operation
-    /// (control-plane calls, or failures that occur before an operation id is resolved). It is a
-    /// caller-supplied or SDK-generated identifier, never secret-bearing.
+    /// The resolved operation id of a command execution — the handle that IDENTIFIES which operation
+    /// failed. <c>null</c> for failures with no operation at all (control-plane calls, or failures that
+    /// occur before an operation id is resolved). It is a caller-supplied or SDK-generated identifier,
+    /// never secret-bearing.
     /// </summary>
+    /// <remarks>
+    /// A non-null id does NOT by itself mean the failure is recoverable — recoverability depends on
+    /// <see cref="Kind"/>. The id is stamped on every failure of a command that has one, INCLUDING
+    /// deterministic ones such as <see cref="SandboxErrorKind.Authorization"/> (a <c>401</c>/<c>403</c>)
+    /// and a refused redirect, where re-issuing the same command would simply fail the same way. Branch on
+    /// <see cref="Kind"/> first and re-issue only for the AMBIGUOUS failures — chiefly
+    /// <see cref="SandboxErrorKind.TransportTimeout"/> (the response was lost, so the command may or may
+    /// not have run) and <see cref="SandboxErrorKind.Unavailable"/> — then use this id so the gateway
+    /// replays the existing operation instead of running a side-effecting command a second time.
+    /// </remarks>
     public string? OperationId { get; }
 
     /// <summary>

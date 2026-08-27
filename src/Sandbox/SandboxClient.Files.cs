@@ -152,6 +152,10 @@ public sealed partial class SandboxClient
     /// (<see cref="SandboxErrorKind.TransportTimeout"/>); or the gateway otherwise rejected or malformed
     /// the request (<see cref="SandboxErrorKind.Protocol"/>).
     /// </exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="content"/> is not encodable as UTF-8 because it contains an unpaired surrogate.
+    /// Refused locally, before anything is sent: the target file is left untouched.
+    /// </exception>
     /// <exception cref="OperationCanceledException"><paramref name="ct"/> was cancelled.</exception>
     public async Task WriteTextFileAsync(
       string sessionId,
@@ -164,7 +168,27 @@ public sealed partial class SandboxClient
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         ArgumentNullException.ThrowIfNull(content);
 
-        var bytes = S_strictUtf8.GetBytes(content);
+        byte[] bytes;
+        try
+        {
+            bytes = S_strictUtf8.GetBytes(content);
+        }
+        catch (EncoderFallbackException ex)
+        {
+            // A lone (unpaired) surrogate has no UTF-8 encoding, and the strict encoder refuses it rather
+            // than substituting U+FFFD — the write-side mirror of DecodeFileUtf8OrThrow. Surface it as a
+            // NAMED argument failure: the raw EncoderFallbackException carries a null ParamName and a
+            // message that names only a character index, so a caller cannot tell which argument was at
+            // fault. This is bad CALLER input (nothing has been sent, and no sandbox state is involved),
+            // which is why it is an ArgumentException and not a SandboxException(Integrity) — that kind
+            // means the REMOTE bytes were malformed, and claiming it here would misdirect the reader.
+            throw new ArgumentException(
+                "Content is not encodable as UTF-8: it contains an unpaired surrogate.",
+                nameof(content),
+                ex
+            );
+        }
+
         await WriteFileBytesAsync(sessionId, path, bytes, ct).ConfigureAwait(false);
     }
 
