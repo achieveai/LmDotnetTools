@@ -119,4 +119,52 @@ public sealed class PrPollTargetBuilderTests : LoggingTestBase
 
         targets.Should().ContainSingle().Which.MaxPrAgeDays.Should().Be(0, "the filter is off unless an operator sets it");
     }
+
+    [Fact]
+    public void ValidateEnabledRepos_refuses_an_embedded_slash_entry_naming_it()
+    {
+        // "owner//repo" carries an embedded '/' that collapses to an empty middle segment. Build's
+        // RemoveEmptyEntries split would silently read it as the 2-segment "owner/repo" and poll a different
+        // repo than the operator wrote; validation must refuse startup and name the entry instead.
+        var options = new CodeReviewDaemonOptions { EnabledRepos = ["owner//repo"] };
+
+        var act = () => PrPollTargetBuilder.ValidateEnabledRepos(options);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*owner//repo*");
+    }
+
+    [Fact]
+    public void ValidateEnabledRepos_refuses_a_wrong_segment_count_naming_it()
+    {
+        var options = new CodeReviewDaemonOptions { EnabledRepos = ["a/b/c/d"] };
+
+        var act = () => PrPollTargetBuilder.ValidateEnabledRepos(options);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*a/b/c/d*");
+    }
+
+    [Fact]
+    public void ValidateEnabledRepos_refuses_a_url_delimiter_in_a_segment_naming_it()
+    {
+        var options = new CodeReviewDaemonOptions { EnabledRepos = ["owner/re?po"] };
+
+        var act = () => PrPollTargetBuilder.ValidateEnabledRepos(options);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*owner/re?po*");
+    }
+
+    [Fact]
+    public void ValidateEnabledRepos_accepts_a_spaced_ado_org_and_project()
+    {
+        // Azure DevOps org/project/repo names may legitimately contain spaces; validation must NOT reject them
+        // (Build percent-encodes them). This is the false-positive guard for the character rule.
+        var options = new CodeReviewDaemonOptions
+        {
+            EnabledRepos = ["Fabrikam Fiber/Contoso Project/Widgets", "achieveai/LmDotnetTools"],
+        };
+
+        var act = () => PrPollTargetBuilder.ValidateEnabledRepos(options);
+
+        act.Should().NotThrow();
+    }
 }

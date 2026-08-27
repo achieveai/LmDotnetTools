@@ -14,6 +14,64 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// </summary>
 internal static class PrPollTargetBuilder
 {
+    /// <summary>
+    /// Refuses daemon startup, naming the offending entry, when any <see cref="CodeReviewDaemonOptions.EnabledRepos"/>
+    /// entry is malformed. <see cref="Build"/> encodes segments consistently (issue #478/#485), but encoding is
+    /// not validation: a value with an empty segment or an embedded <c>/ ? # %</c> still yields a syntactically
+    /// valid URL that silently polls the wrong repo (or nothing). Config is operator-controlled, so this is a
+    /// loud-at-load gap, not a security hole — this method makes it loud at the same point every other daemon
+    /// option is validated, rather than logged-and-skipped after the daemon is already up.
+    /// <para>
+    /// An entry must split into exactly 2 (<c>owner/repo</c>) or 3 (<c>org/project/repo</c>) segments, each
+    /// non-empty and free of <c>? # %</c>. A <c>/</c> inside a name cannot survive the split, so it surfaces
+    /// here as an empty segment or a wrong segment count. Spaces are allowed — a legitimate Azure DevOps org or
+    /// project name may contain them, and <see cref="Build"/> percent-encodes them.
+    /// </para>
+    /// </summary>
+    public static void ValidateEnabledRepos(CodeReviewDaemonOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        foreach (var entry in options.EnabledRepos)
+        {
+            if (string.IsNullOrWhiteSpace(entry))
+            {
+                throw new InvalidOperationException(
+                    "CodeReviewDaemon:EnabledRepos contains an empty entry; expected 'owner/repo' or "
+                    + "'org/project/repo'.");
+            }
+
+            // Split WITHOUT RemoveEmptyEntries so an embedded '/' (an empty segment) is caught here rather than
+            // being silently collapsed by Build's lenient split and re-pointed at a different repo.
+            var segments = entry.Split('/');
+
+            if (segments.Length is not (2 or 3))
+            {
+                throw new InvalidOperationException(
+                    $"CodeReviewDaemon:EnabledRepos entry '{entry}' has {segments.Length} segment(s); expected "
+                    + "'owner/repo' (2) or 'org/project/repo' (3).");
+            }
+
+            foreach (var segment in segments)
+            {
+                if (string.IsNullOrWhiteSpace(segment))
+                {
+                    throw new InvalidOperationException(
+                        $"CodeReviewDaemon:EnabledRepos entry '{entry}' has an empty segment; every "
+                        + "owner/org/project/repo name must be non-empty.");
+                }
+
+                var bad = segment.IndexOfAny(['?', '#', '%']);
+                if (bad >= 0)
+                {
+                    throw new InvalidOperationException(
+                        $"CodeReviewDaemon:EnabledRepos entry '{entry}' has a segment containing '{segment[bad]}'; "
+                        + "owner/org/project/repo names may not contain '? # %' (a '/' is the segment separator).");
+                }
+            }
+        }
+    }
+
     public static IReadOnlyList<PrPollTarget> Build(CodeReviewDaemonOptions options, ILogger logger)
     {
         ArgumentNullException.ThrowIfNull(options);

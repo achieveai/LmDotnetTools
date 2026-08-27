@@ -57,6 +57,11 @@ if (maxPrAgeDaysOverride is int maxPrAgeDaysFlag)
 var daemonOptions =
     builder.Configuration.GetSection(CodeReviewDaemonOptions.SectionName).Get<CodeReviewDaemonOptions>()
     ?? new CodeReviewDaemonOptions();
+
+// Refuse startup on a malformed EnabledRepos entry, naming it — encoding the segments consistently (issue
+// #485) is not the same as validating them, and a bad entry otherwise polls the wrong repo or nothing at all.
+PrPollTargetBuilder.ValidateEnabledRepos(daemonOptions);
+
 builder.Services.AddSingleton(daemonOptions);
 
 // The ADO org(s) whose legacy {org}.visualstudio.com submodule URLs the host-side git rewrites to
