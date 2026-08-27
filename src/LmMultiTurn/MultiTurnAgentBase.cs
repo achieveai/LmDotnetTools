@@ -1046,6 +1046,18 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// because it cannot be matched either way and inventing a verdict would delete history on a
     /// guess. Duplicate results for one call are fine — pairing asks whether a partner EXISTS, not
     /// how many.
+    /// <para>
+    /// DEPENDENCY, stated because it lives in another assembly and nothing else links the two:
+    /// <c>ToolsCallAggregateMessage</c> is deliberately NOT handled below, and that is only safe
+    /// because <c>MessageTransformationMiddleware</c> (LmCore, MessageTransformationMiddleware.cs:411)
+    /// throws <see cref="NotSupportedException"/> rather than let an aggregate through message-order
+    /// assignment, so one can never reach persistence. An aggregate carries its call and its result by
+    /// COMPOSITION: it matches neither arm of <see cref="ToolCallIdsOf"/> nor
+    /// <see cref="ToolResultIdsOf"/>, would contribute zero ids, and would therefore look like a
+    /// message that takes no part in pairing while the separate row answering it got dropped as
+    /// unpaired. If that guard is ever relaxed, this sweep needs an aggregate arm on BOTH extractors
+    /// before the aggregate can reach a store.
+    /// </para>
     /// </remarks>
     private static List<IMessage> DropUnpairedToolMessages(IReadOnlyList<IMessage> messages)
     {
@@ -1115,7 +1127,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             // Checked before ICanGetToolCalls-style plural shapes: ToolCallMessage IS-A ToolCall and
             // carries its id directly rather than through a collection.
             ToolCallMessage single => WithId(single.ToolCallId),
-            ICanGetToolCalls many => NonEmpty((many.GetToolCalls() ?? []).Select(tc => tc.ToolCallId)),
+            ICanGetToolCalls many => Usable((many.GetToolCalls() ?? []).Select(tc => tc.ToolCallId)),
             _ => [],
         };
     }
@@ -1126,16 +1138,31 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         return message switch
         {
             ToolCallResultMessage single => WithId(single.ToolCallId),
-            ToolsCallResultMessage many => NonEmpty(many.ToolCallResults.Select(r => r.ToolCallId)),
+            ToolsCallResultMessage many => Usable(many.ToolCallResults.Select(r => r.ToolCallId)),
             _ => [],
         };
     }
 
+    /// <summary>
+    /// A single id, or nothing when there is no USABLE id to pair on.
+    /// </summary>
+    /// <remarks>
+    /// <c>IsNullOrWhiteSpace</c>, not <c>IsNullOrEmpty</c>, and the difference is load-bearing:
+    /// <c>AnthropicRequest.IsExpectedMissingToolCallId</c> (AnthropicRequest.cs:593) uses
+    /// <c>string.IsNullOrWhiteSpace(toolCallId)</c> to decide that a provider-server tool call is
+    /// LEGITIMATELY id-less and must not be treated as an error. If this sweep called a
+    /// whitespace-only id "present" while Anthropic calls it "absent", the sweep would look for a
+    /// partner that by Anthropic's own rules is never written, and delete a message the provider was
+    /// perfectly happy to receive. The two predicates have to agree, and they now do.
+    /// Keeping is always the safe direction here: an unpairable message is passed through untouched
+    /// rather than deleted on a guess.
+    /// </remarks>
     private static IEnumerable<string> WithId(string? id) =>
-        string.IsNullOrEmpty(id) ? [] : [id];
+        string.IsNullOrWhiteSpace(id) ? [] : [id];
 
-    private static IEnumerable<string> NonEmpty(IEnumerable<string?> ids) =>
-        ids.Where(id => !string.IsNullOrEmpty(id)).Select(id => id!);
+    /// <summary>The usable ids among <paramref name="ids"/>. See <see cref="WithId"/> on the predicate.</summary>
+    private static IEnumerable<string> Usable(IEnumerable<string?> ids) =>
+        ids.Where(id => !string.IsNullOrWhiteSpace(id)).Select(id => id!);
 
     /// <summary>
     /// Marks conversation-history recovery as already satisfied so <see cref="RunAsync"/> will NOT

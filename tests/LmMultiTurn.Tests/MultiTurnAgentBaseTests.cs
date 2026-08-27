@@ -1217,6 +1217,235 @@ public class MultiTurnAgentBaseTests
         await agent.DisposeAsync();
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")] // whitespace-only: what AnthropicRequest.cs:593 calls a legitimately id-less call
+    public async Task RecoverAsync_KeepsASingularToolCall_ThatHasNoUsableIdToPairOn(string? unusableId)
+    {
+        // SAFETY rule, the counterweight to every deleting test above. A message with no usable tool
+        // call id cannot be matched either way, so the sweep must pass it through rather than invent a
+        // verdict — deleting on a guess is exactly the silent history loss this sweep exists to avoid.
+        // The whitespace case is not hypothetical: AnthropicRequest.IsExpectedMissingToolCallId uses
+        // string.IsNullOrWhiteSpace to declare a provider-server tool call legitimately id-less, so a
+        // sweep using IsNullOrEmpty would hunt for a partner Anthropic's own rules never write, and
+        // delete a call the provider was happy to receive.
+        var store = new InMemoryConversationStore();
+        var threadId = $"test-thread-unusable-id-{unusableId?.Trim().Length ?? -1}-{unusableId is null}";
+        const string runId = "prior-run";
+
+        var text =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new TextMessage { Text = "healthy text", Role = Role.User, RunId = runId },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 1,
+            };
+        // Deliberately ALONE: no result row anywhere. If the sweep treated this id as usable it would
+        // look for a partner, find none, and drop the message.
+        var idLessCall =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new ToolCallMessage
+                {
+                    Role = Role.Assistant,
+                    RunId = runId,
+                    ToolCallId = unusableId,
+                    FunctionName = "web_search",
+                    FunctionArgs = "{}",
+                    ExecutionTarget = ExecutionTarget.ProviderServer,
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 2,
+            };
+
+        await store.AppendMessagesAsync(threadId, [text, idLessCall]);
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+
+        await agent.RecoverAsync();
+
+        agent.SnapshotHistoryForTest().OfType<ToolCallMessage>().Should().ContainSingle(
+            "a call with no usable id takes no part in pairing and must never be deleted");
+        agent.SnapshotHistoryForTest().Should().HaveCount(2);
+
+        await agent.DisposeAsync();
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task RecoverAsync_KeepsAPluralToolCall_ThatHasNoUsableIdToPairOn(string? unusableId)
+    {
+        // Same safety rule on the OTHER extractor arm. The plural shape filters its ids through a
+        // different code path than the singular one, so a guard removed there fails silently unless
+        // this case exists.
+        var store = new InMemoryConversationStore();
+        var threadId = $"test-thread-plural-unusable-{unusableId?.Trim().Length ?? -1}-{unusableId is null}";
+        const string runId = "prior-run";
+
+        var text =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new TextMessage { Text = "healthy text", Role = Role.User, RunId = runId },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 1,
+            };
+        var idLessCall =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new ToolsCallMessage
+                {
+                    Role = Role.Assistant,
+                    RunId = runId,
+                    ToolCalls =
+                    [
+                        new ToolCall
+                        {
+                            ToolCallId = unusableId,
+                            FunctionName = "web_search",
+                            FunctionArgs = "{}",
+                            ExecutionTarget = ExecutionTarget.ProviderServer,
+                        },
+                    ],
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 2,
+            };
+
+        await store.AppendMessagesAsync(threadId, [text, idLessCall]);
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+
+        await agent.RecoverAsync();
+
+        agent.SnapshotHistoryForTest().OfType<ToolsCallMessage>().Should().ContainSingle(
+            "a call with no usable id takes no part in pairing and must never be deleted");
+        agent.SnapshotHistoryForTest().Should().HaveCount(2);
+
+        await agent.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task RecoverAsync_KeepsEveryResult_WhenOneCallIsAnsweredTwice()
+    {
+        // SAFETY rule: pairing asks whether a partner EXISTS, not how many. A refactor to 1:1
+        // matching — consuming an id once it has been matched — would silently drop the second answer,
+        // and nothing else in the suite would notice. Two answers to one call is reachable in a real
+        // store because the two result shapes take different persisted ids: the singular one gets the
+        // deterministic tcr:{threadId}:{toolCallId}, the plural one a random Guid, so they coexist as
+        // separate rows rather than one replacing the other.
+        var store = new InMemoryConversationStore();
+        var threadId = "test-thread-answered-twice";
+        const string runId = "prior-run";
+        const string toolCallId = "call-answered-twice";
+
+        var text =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new TextMessage { Text = "healthy text", Role = Role.User, RunId = runId },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 1,
+            };
+        var callRow =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new ToolCallMessage
+                {
+                    Role = Role.Assistant,
+                    RunId = runId,
+                    ToolCallId = toolCallId,
+                    FunctionName = "do_thing",
+                    FunctionArgs = "{}",
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 2,
+            };
+        var singularResult =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new ToolCallResultMessage
+                {
+                    ToolCallId = toolCallId,
+                    ToolName = "do_thing",
+                    Result = "ok",
+                    RunId = runId,
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 3,
+            };
+        var pluralResult =
+            MessagePersistenceConverter.ToPersistedMessage(
+                new ToolsCallResultMessage
+                {
+                    RunId = runId,
+                    ToolCallResults = [new ToolCallResult(toolCallId, "ok again")],
+                },
+                threadId,
+                runId
+            ) with
+            {
+                Timestamp = 4,
+            };
+
+        singularResult.Id.Should().NotBe(pluralResult.Id, "otherwise the store holds only one row");
+
+        await store.AppendMessagesAsync(threadId, [text, callRow, singularResult, pluralResult]);
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+
+        await agent.RecoverAsync();
+
+        var history = agent.SnapshotHistoryForTest();
+        history.OfType<ToolCallMessage>().Should().ContainSingle();
+        history.OfType<ToolCallResultMessage>().Should().ContainSingle(
+            "the first answer is still an answer");
+        history.OfType<ToolsCallResultMessage>().Should().ContainSingle(
+            "a second answer to the same call must not be consumed away");
+        history.Should().HaveCount(4);
+
+        await agent.DisposeAsync();
+    }
+
     [Fact]
     public async Task RecoverAsync_CascadesTheDrop_WhenLosingOneCallOrphansAnAnsweredSibling()
     {
