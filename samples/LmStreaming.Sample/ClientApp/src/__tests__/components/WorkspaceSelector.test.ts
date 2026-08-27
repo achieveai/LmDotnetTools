@@ -1594,3 +1594,61 @@ describe('WorkspaceSelector concurrent catalog load ordering', () => {
     expect(wrapper.find('[data-testid="workspace-create-plugin-demo-toolkit"]').exists()).toBe(true);
   });
 });
+
+/**
+ * #459. A row the catalog could not check (`unavailable`, or the retired `unknown` an older backend
+ * still sends) stays clickable and carries a visible caveat. Only `incompatible` — checked, and
+ * refused — takes the row out of play.
+ *
+ * The enabled/disabled pair is asserted in one test on purpose: asserting only that the unverified
+ * row is enabled would also pass if the component had simply stopped disabling anything at all.
+ */
+describe('WorkspaceSelector unverified rows stay selectable (#459)', () => {
+  const rows: Workspace[] = [
+    { ...workspaces[0], id: 'unavailable-ws', name: 'Unavailable', compatibility: 'unavailable' },
+    { ...workspaces[1], id: 'legacy-ws', name: 'Legacy', compatibility: 'unknown' },
+    {
+      ...workspaces[1],
+      id: 'refused-ws',
+      name: 'Refused',
+      compatibility: 'incompatible',
+      unsupportedMarketplaces: ['gone'],
+    },
+  ];
+
+  it('enables unavailable and unknown rows and disables only the incompatible one', async () => {
+    const wrapper = mountSelector({ workspaces: rows, selectedWorkspaceId: null });
+    await openDropdown(wrapper);
+
+    const option = (id: string) =>
+      wrapper.get<HTMLButtonElement>(`[data-testid="workspace-option-${id}"]`).element;
+
+    expect(option('unavailable-ws').disabled).toBe(false);
+    expect(option('legacy-ws').disabled).toBe(false);
+    expect(option('refused-ws').disabled).toBe(true);
+  });
+
+  it('marks the unchecked rows unverified and says why, without marking the checked refusal so', async () => {
+    const wrapper = mountSelector({ workspaces: rows, selectedWorkspaceId: null });
+    await openDropdown(wrapper);
+
+    expect(wrapper.find('[data-testid="workspace-unverified-unavailable-ws"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="workspace-unverified-legacy-ws"]').exists()).toBe(true);
+    // A checked refusal is not "unverified" — it was verified, and it failed.
+    expect(wrapper.find('[data-testid="workspace-unverified-refused-ws"]').exists()).toBe(false);
+
+    const title = (id: string) =>
+      wrapper.get(`[data-testid="workspace-option-${id}"]`).attributes('title');
+    expect(title('unavailable-ws')).toContain('could not be checked');
+    expect(title('refused-ws')).toContain('gone');
+  });
+
+  it('emits select-workspace for an unavailable row', async () => {
+    const wrapper = mountSelector({ workspaces: rows, selectedWorkspaceId: null });
+    await openDropdown(wrapper);
+
+    await wrapper.get('[data-testid="workspace-option-unavailable-ws"]').trigger('click');
+
+    expect(wrapper.emitted('select-workspace')?.[0]).toEqual(['unavailable-ws']);
+  });
+});

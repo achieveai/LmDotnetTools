@@ -8,7 +8,23 @@ import type {
   WorkspaceGateway,
   PluginRef,
 } from '@/types/workspace';
+import { isWorkspaceUnverified, isWorkspaceWithheld } from '@/types/workspace';
 import { listMarketplaces, MarketplaceGatewayUnavailableError } from '@/api/marketplacesApi';
+
+/**
+ * Tooltip for one workspace row. Three distinct sentences for three distinct states, because the
+ * row's `disabled` binding alone cannot tell the user WHY: `incompatible` is a checked refusal and
+ * names what failed; `unavailable`/`unknown` is selectable but unverified, and says so rather than
+ * implying the workspace is fine.
+ */
+function workspaceRowTitle(workspace: Workspace): string {
+  if (isWorkspaceWithheld(workspace)) {
+    return `Unsupported: ${workspace.unsupportedMarketplaces.join(', ')}`;
+  }
+  return isWorkspaceUnverified(workspace)
+    ? 'Gateway catalog unavailable, so this workspace could not be checked. Selectable, but unverified.'
+    : '';
+}
 
 const props = defineProps<{
   workspaces: Workspace[];
@@ -273,7 +289,9 @@ const lockedWorkspace = computed<Workspace | null>(() => {
       isSystemDefined: false,
       createdAt: 0,
       updatedAt: 0,
-      compatibility: 'unknown',
+      // The thread named a workspace the catalog does not list, so nothing about it was checked.
+      // `unavailable` says exactly that; `incompatible` would assert a verdict nobody reached.
+      compatibility: 'unavailable',
       unsupportedMarketplaces: [],
     }
   );
@@ -623,13 +641,16 @@ watch(
                 class="menu-item"
                 :class="{ active: workspace.id === selectedWorkspaceId }"
                 :data-testid="`workspace-option-${workspace.id}`"
-                :disabled="interactionBlocked || workspace.compatibility !== 'compatible'"
-                :title="workspace.compatibility === 'incompatible'
-                  ? `Unsupported: ${workspace.unsupportedMarketplaces.join(', ')}`
-                  : workspace.compatibility === 'unknown' ? 'Gateway compatibility unavailable' : ''"
+                :disabled="interactionBlocked || isWorkspaceWithheld(workspace)"
+                :title="workspaceRowTitle(workspace)"
                 @click="handleSelect(workspace.id)"
               >
                 <span class="item-name">{{ workspace.name }}</span>
+                <span
+                  v-if="isWorkspaceUnverified(workspace)"
+                  class="item-caveat"
+                  :data-testid="`workspace-unverified-${workspace.id}`"
+                >unverified</span>
                 <span v-if="workspace.id === selectedWorkspaceId" class="check-mark">✓</span>
               </button>
             </div>
@@ -646,13 +667,16 @@ watch(
                 class="menu-item"
                 :class="{ active: workspace.id === selectedWorkspaceId }"
                 :data-testid="`workspace-option-${workspace.id}`"
-                :disabled="interactionBlocked || workspace.compatibility !== 'compatible'"
-                :title="workspace.compatibility === 'incompatible'
-                  ? `Unsupported: ${workspace.unsupportedMarketplaces.join(', ')}`
-                  : workspace.compatibility === 'unknown' ? 'Gateway compatibility unavailable' : ''"
+                :disabled="interactionBlocked || isWorkspaceWithheld(workspace)"
+                :title="workspaceRowTitle(workspace)"
                 @click="handleSelect(workspace.id)"
               >
                 <span class="item-name">{{ workspace.name }}</span>
+                <span
+                  v-if="isWorkspaceUnverified(workspace)"
+                  class="item-caveat"
+                  :data-testid="`workspace-unverified-${workspace.id}`"
+                >unverified</span>
                 <span v-if="workspace.id === selectedWorkspaceId" class="check-mark">✓</span>
               </button>
               <button
@@ -1047,6 +1071,15 @@ watch(
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Caveat on a row the catalog could not check. Muted, not alarming: the row IS selectable — it just
+   has not been vouched for — so it must not read like the error styling used for real failures. */
+.item-caveat {
+  color: #9aa0a6;
+  font-size: 11px;
+  flex-shrink: 0;
+  margin-left: 8px;
 }
 
 .check-mark {

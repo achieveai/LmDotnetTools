@@ -32,8 +32,19 @@ public sealed class WorkspaceCatalogCompatibilityServiceTests
             .Should().Be(WorkspaceCompatibility.Compatible);
     }
 
+    /// <summary>
+    /// The split this type exists for (#459): an unreadable catalog reports
+    /// <see cref="WorkspaceCompatibility.Unavailable"/> — "could not check" — and specifically NOT
+    /// <see cref="WorkspaceCompatibility.Incompatible"/>, which is the checked refusal that callers
+    /// are entitled to act on by withholding the workspace.
+    /// </summary>
+    /// <remarks>
+    /// The <c>NotBe(Incompatible)</c> assertion is not redundant with the <c>Be(Unavailable)</c> one
+    /// for a reader: it is the sentence that says WHY the value matters, and it is what fails loudly
+    /// if a later change decides an unreachable gateway should simply refuse everything.
+    /// </remarks>
     [Fact]
-    public async Task EvaluateAsync_UnavailableGatewayIsUnknown()
+    public async Task EvaluateAsync_UnreadableCatalogIsUnavailableNotIncompatible()
     {
         var service = new WorkspaceCatalogCompatibilityService(
             new StubCatalogClient(new MarketplaceCatalogUnavailableException("offline")),
@@ -42,8 +53,36 @@ public sealed class WorkspaceCatalogCompatibilityServiceTests
 
         var result = await service.EvaluateAsync(Workspace(["one"]));
 
-        result.Compatibility.Should().Be(WorkspaceCompatibility.Unknown);
+        result.Compatibility.Should().Be(WorkspaceCompatibility.Unavailable);
+        result.Compatibility.Should().NotBe(WorkspaceCompatibility.Incompatible);
         result.Error.Should().Contain("offline");
+
+        // Nothing was compared, so nothing may be reported as having failed. An `Unavailable` result
+        // that also listed unsupported aliases would hand a caller the very evidence it would use to
+        // treat this as a refusal.
+        result.UnsupportedMarketplaces.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The other half of the split, on the same input shape: a catalog that CAN be read and does not
+    /// offer the alias is <see cref="WorkspaceCompatibility.Incompatible"/>. Paired with the test
+    /// above deliberately — each alone would pass under an implementation that collapsed both cases
+    /// into whichever single value it asserted.
+    /// </summary>
+    [Fact]
+    public async Task EvaluateAsync_ReadableCatalogMissingTheAliasIsIncompatibleNotUnavailable()
+    {
+        var service = new WorkspaceCatalogCompatibilityService(
+            new StubCatalogClient(Catalog("other")),
+            Options()
+        );
+
+        var result = await service.EvaluateAsync(Workspace(["one"]));
+
+        result.Compatibility.Should().Be(WorkspaceCompatibility.Incompatible);
+        result.Compatibility.Should().NotBe(WorkspaceCompatibility.Unavailable);
+        result.UnsupportedMarketplaces.Should().Equal("one");
+        result.Error.Should().BeNull();
     }
 
     [Fact]

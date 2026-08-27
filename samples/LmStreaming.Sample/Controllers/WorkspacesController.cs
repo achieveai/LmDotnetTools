@@ -30,7 +30,11 @@ public sealed class WorkspacesController(
                 views.Add(workspace.ToView(result));
             }
 
-            var available = gatewayProbe?.Compatibility is not WorkspaceCompatibility.Unknown;
+            // Only "the catalog could not be read" makes the gateway unavailable. An Incompatible
+            // probe means the catalog answered — the gateway is up, this workspace just names
+            // marketplaces it does not offer — so reporting it as unavailable would blame the
+            // gateway for a per-workspace verdict and blank the whole picker on one bad row.
+            var available = gatewayProbe?.Compatibility is not WorkspaceCompatibility.Unavailable;
             return Ok(
                 new WorkspaceListResponse(
                     new WorkspaceGatewayView(

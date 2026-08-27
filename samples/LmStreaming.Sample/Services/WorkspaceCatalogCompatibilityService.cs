@@ -3,11 +3,46 @@ using LmStreaming.Sample.Models;
 
 namespace LmStreaming.Sample.Services;
 
+/// <summary>
+/// Outcome of checking a workspace's marketplace selection against the gateway catalog.
+/// </summary>
+/// <remarks>
+/// The three members are deliberately about WHETHER THE CHECK RAN as much as about its answer, and
+/// that separation is the whole point of the type.
+/// <para>
+/// A single <c>Unknown</c> member used to carry both "the catalog could not be read" and, by the way
+/// every consumer read it, "not vouched for — withhold it". On a host with no sandbox gateway
+/// <c>/api/marketplaces</c> answers 503 permanently, so EVERY workspace came back <c>Unknown</c> and
+/// the SPA's picker had nothing selectable — an artifact nobody intended, and one no caller could
+/// diagnose because the value it read could not tell "no" apart from "don't know".
+/// </para>
+/// <para>
+/// So: <see cref="Incompatible"/> is the only value that means the check ran and the workspace
+/// failed it, and it is therefore the only value that is a reason to withhold a row from a picker.
+/// <see cref="Unavailable"/> means no check happened at all, and a caller must decide for itself
+/// whether that is fatal — the picker shows such rows (unverified), while anything that actually
+/// STARTS a sandbox session still fails closed, because running is where an unchecked marketplace
+/// would really bite.
+/// </para>
+/// </remarks>
 public enum WorkspaceCompatibility
 {
+    /// <summary>The catalog was read and every selected marketplace is in it.</summary>
     Compatible,
+
+    /// <summary>
+    /// The catalog was read and the workspace names marketplaces it does not offer. A checked "no":
+    /// the only value that justifies withholding the workspace from a selection UI.
+    /// </summary>
     Incompatible,
-    Unknown,
+
+    /// <summary>
+    /// The catalog could not be read, so nothing was checked. NOT a "no" — see the remarks on
+    /// <see cref="WorkspaceCompatibility"/>. Serialized to clients as <c>"unavailable"</c>; a client
+    /// old enough to expect the retired <c>"unknown"</c> simply falls through its cases and treats
+    /// the row as it treated <c>unknown</c> before, which is the behaviour it already had.
+    /// </summary>
+    Unavailable,
 }
 
 public sealed record WorkspaceCompatibilityResult(
@@ -54,8 +89,10 @@ public sealed class WorkspaceCatalogCompatibilityService
         var catalog = await GetCatalogAsync(ct);
         if (!catalog.Available)
         {
+            // Unavailable, never Incompatible: no marketplace was compared against anything, so the
+            // empty UnsupportedMarketplaces below is "nothing was checked", not "nothing failed".
             return new WorkspaceCompatibilityResult(
-                WorkspaceCompatibility.Unknown,
+                WorkspaceCompatibility.Unavailable,
                 [],
                 [],
                 catalog.Error
@@ -202,6 +239,13 @@ public sealed class WorkspaceCatalogCompatibilityService
         }
     }
 
+    /// <summary>
+    /// Fails closed on <see cref="WorkspaceCompatibility.Unavailable"/>, deliberately, even though the
+    /// picker treats that value as selectable. The two answers are not in tension: showing a row is a
+    /// statement about what the user may CHOOSE, while this method guards a mutation or a live sandbox
+    /// session, where acting on an unchecked marketplace set is what actually breaks. Distinguishing
+    /// the values is what lets those two callers disagree without either of them guessing.
+    /// </summary>
     private static Task ValidateResultAsync(WorkspaceCompatibilityResult result)
     {
         return result.Compatibility switch

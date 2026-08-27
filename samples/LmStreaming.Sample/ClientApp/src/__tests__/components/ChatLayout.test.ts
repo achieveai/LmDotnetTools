@@ -1583,10 +1583,15 @@ describe('ChatLayout new-chat provisioning (#435)', () => {
     }
   });
 
-  // A host with no reachable marketplace catalog reports every workspace as `unknown`, so
-  // `useWorkspaces` keeps no selection — the state a gateway-less deployment is permanently in.
-  // Provisioning must not be stricter than the socket it replaced, which sent whatever it had and
-  // let the backend resolve its own default.
+  // A null selection means the catalog listed nothing this client could choose — an empty list, or
+  // one whose every entry the gateway checked and refused. Provisioning must not be stricter than
+  // the socket it replaced, which sent whatever it had and let the backend resolve its own default.
+  //
+  // Since #459 an UNREADABLE catalog no longer lands here: it reports `unavailable` rather than
+  // `unknown`, and `useWorkspaces` keeps the user's selection through it (see
+  // "empty picker cannot clobber a stored workspace binding" in useWorkspaces.test.ts) precisely so
+  // this default-substitution cannot silently rewrite a binding the user had already made. The
+  // 'ws-1' case above is the other half: a selection that survives is the one that reaches the write.
   it('falls back to the default workspace when the catalog can vouch for none', async () => {
     sharedMocks.selectedWorkspaceId = null;
 

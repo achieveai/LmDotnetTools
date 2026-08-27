@@ -20,7 +20,21 @@ export interface Workspace {
   isSystemDefined: boolean;
   createdAt: number;
   updatedAt: number;
-  compatibility: 'compatible' | 'incompatible' | 'unknown';
+  /**
+   * Whether the gateway catalog vouches for this workspace's marketplaces — and, just as
+   * importantly, whether it was consulted at all:
+   * - `compatible` — checked, and every selected marketplace exists;
+   * - `incompatible` — checked, and it names marketplaces the gateway does not offer. The ONLY
+   *   value that is a reason to withhold the row (see {@link isWorkspaceWithheld});
+   * - `unavailable` — the catalog could not be read, so nothing was checked. Not a "no".
+   * - `unknown` — the retired value a server predating the split emits for what is now
+   *   `unavailable`. Kept in the union so an older backend is read correctly rather than falling
+   *   into whatever the last `else` happens to be; treated identically to `unavailable` everywhere.
+   *
+   * Do not re-conflate these by testing `!== 'compatible'`: that is exactly the read that left a
+   * gateway-less host with a permanently unselectable picker.
+   */
+  compatibility: 'compatible' | 'incompatible' | 'unavailable' | 'unknown';
   unsupportedMarketplaces: string[];
   /**
    * Explicit per-plugin selection. **TRI-STATE — never coerce with `?? []` or `|| []`:**
@@ -38,6 +52,31 @@ export interface Workspace {
    * {@link WorkspaceUpdate.pluginsRevision}); a stale value is rejected with HTTP 409.
    */
   pluginsRevision?: number;
+}
+
+/**
+ * True only when the catalog was actually consulted and REFUSED this workspace.
+ *
+ * The one definition of "withhold this row", shared by the picker's `disabled` binding and by
+ * `useWorkspaces`' selection reconciliation, so the two can never drift into disagreeing about what
+ * is choosable. `unavailable`/`unknown` are deliberately NOT withheld: the check did not run, and a
+ * check that did not run is not a rejection.
+ */
+export function isWorkspaceWithheld(workspace: Workspace): boolean {
+  return workspace.compatibility === 'incompatible';
+}
+
+/** Negation of {@link isWorkspaceWithheld}, for call sites that read better in the positive. */
+export function isWorkspaceSelectable(workspace: Workspace): boolean {
+  return !isWorkspaceWithheld(workspace);
+}
+
+/**
+ * True when the catalog could not be consulted, so the row is shown with a caveat rather than
+ * silently presented as verified. Covers the retired `unknown` spelling as well as `unavailable`.
+ */
+export function isWorkspaceUnverified(workspace: Workspace): boolean {
+  return workspace.compatibility === 'unavailable' || workspace.compatibility === 'unknown';
 }
 
 export interface WorkspaceGateway {
