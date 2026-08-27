@@ -318,6 +318,12 @@ Three behaviours to code against:
   operation whose record has already expired by TTL can no longer be deleted through this route *at all* —
   and its artifacts then live until the sandbox does.
 
+What it reclaims is the **bytes**, not every inode: the gateway's cleanup is generation-scoped, so it
+removes `.mcp-gateway/operations/<operation_id>/<generation>/` and leaves the now-empty
+`.mcp-gateway/operations/<operation_id>/` directory behind until the sandbox is deleted. That scoping is
+deliberate — it is what stops a delayed delete of one reservation from reaping a later re-reservation's
+artifacts — and the residue is an empty directory per deleted operation, not accumulating output.
+
 Two further consequences worth stating plainly:
 
 - Artifacts are ordinary workspace files, so `ListDirectoryAsync` does **not** filter them out — the SDK

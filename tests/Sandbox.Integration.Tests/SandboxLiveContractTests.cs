@@ -249,8 +249,16 @@ public sealed class SandboxLiveContractTests
 
             await Client.DeleteOperationAsync(sessionId, opId);
 
-            // The footprint is actually reclaimed — the whole point of the call.
-            (await Client.ListDirectoryAsync(sessionId, ".mcp-gateway/operations")).Should().NotContain(opId);
+            // The footprint is actually reclaimed — the whole point of the call. The gateway's cleanup is
+            // GENERATION-scoped (it removes `.mcp-gateway/operations/<id>/<generation>/`, which is what
+            // closes the ABA hazard of a delayed delete reaping a re-reservation's artifacts), so the empty
+            // `<id>` directory itself SURVIVES. That residue is asserted rather than ignored: the bytes are
+            // gone, one empty directory per deleted operation is not, and a reader of this test should see
+            // which of the two this call actually promises.
+            (await Client.ListDirectoryAsync(sessionId, $".mcp-gateway/operations/{opId}"))
+                .Should().BeEmpty("the generation directory holding the artifacts must be gone");
+            (await Client.ListDirectoryAsync(sessionId, ".mcp-gateway/operations"))
+                .Should().Contain(opId, "cleanup is generation-scoped: the empty per-operation directory is left behind");
 
             // PIN the artifact-GET refusal, and pin it BY COMPARISON: a path under a never-executed
             // operation id is the "never existed" control. Whatever shape the gateway chooses, the deleted
