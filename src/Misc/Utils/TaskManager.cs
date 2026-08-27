@@ -43,6 +43,18 @@ public class TaskManager
         Removed,
     }
 
+    /// <summary>
+    ///     Stable, machine-readable reasons a tool call failed. They are part of these tools'
+    ///     contract — a host may count or branch on them — so they follow the lower_snake_case
+    ///     convention every other error code in this repository uses.
+    /// </summary>
+    private const string InvalidArgumentsCode = "invalid_args";
+    private const string TaskNotFoundCode = "task_not_found";
+    private const string InvalidTaskIdCode = "invalid_task_id";
+    private const string InvalidStatusCode = "invalid_status";
+    private const string NoteIndexOutOfRangeCode = "note_index_out_of_range";
+    private const string InvalidActionCode = "invalid_action";
+
     private readonly ManagerState _state;
     private readonly object _sync = new();
 
@@ -78,7 +90,7 @@ Examples:
 - Discovered task: {""title"": ""Add rate limiting"", ""parentId"": ""1""}  // Added after learning
 - Deep detail: {""title"": ""Validate JWT tokens"", ""parentId"": ""1.2.3""}"
     )]
-    public string AddTask(
+    public FunctionResult AddTask(
         [Description("Task title/description")] string title,
         [Description("Parent task ID for nesting (e.g., '1', '1.2', '1.2.3'). Omit for main task")]
             string? parentId = null
@@ -86,7 +98,7 @@ Examples:
     {
         if (string.IsNullOrWhiteSpace(title))
         {
-            return "Error: Title cannot be empty.";
+            return FunctionResult.Error(InvalidArgumentsCode, "Error: Title cannot be empty.");
         }
 
         // An omitted parentId means "make this a main task". A supplied-but-blank one is a
@@ -94,7 +106,10 @@ Examples:
         // a success message.
         if (parentId != null && string.IsNullOrWhiteSpace(parentId))
         {
-            return "Error: Parent task ID cannot be blank. Omit parentId to add a main task.";
+            return FunctionResult.Error(
+                InvalidArgumentsCode,
+                "Error: Parent task ID cannot be blank. Omit parentId to add a main task."
+            );
         }
 
         lock (_sync)
@@ -121,7 +136,7 @@ Examples:
             var (parentTask, error) = FindTaskByStringId(parentId);
             if (parentTask == null)
             {
-                return error ?? $"Error: Parent task '{parentId}' not found.";
+                return error ?? FunctionResult.Error(TaskNotFoundCode, $"Error: Parent task '{parentId}' not found.");
             }
 
             // Create subtask with hierarchical ID
@@ -140,7 +155,7 @@ Examples:
         }
     }
 
-    public string AddTask(string title, int parentId)
+    public FunctionResult AddTask(string title, int parentId)
     {
         return AddTask(title, parentId.ToString());
     }
@@ -171,14 +186,14 @@ Examples:
 - Project start: {""tasks"": [{""task"": ""Research"", ""subTasks"": [""Review docs"", ""Analyze codebase""], ""notes"": [""2-day timebox""]}], ""clearExisting"": true}
 - Add phase: {""tasks"": [{""task"": ""Testing"", ""subTasks"": [""Unit tests"", ""Integration tests""]}], ""clearExisting"": false}"
     )]
-    public string BulkInitialize(
+    public FunctionResult BulkInitialize(
         [Description("List of tasks with their subtasks and notes")] List<BulkTaskItem> tasks,
         [Description("Clear all existing tasks before adding new ones")] bool clearExisting = false
     )
     {
         if (tasks == null || tasks.Count == 0)
         {
-            return "Error: No tasks provided for initialization.";
+            return FunctionResult.Error(InvalidArgumentsCode, "Error: No tasks provided for initialization.");
         }
 
         lock (_sync)
@@ -311,7 +326,7 @@ Examples:
 - Finish task: {""taskId"": ""1.3"", ""status"": ""completed""}
 - Abandon approach: {""taskId"": ""2.1"", ""status"": ""removed""}"
     )]
-    public string UpdateTask(
+    public FunctionResult UpdateTask(
         [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
         [Description("New status: not started|in progress|completed|removed")] string status = "not started"
     )
@@ -322,13 +337,16 @@ Examples:
             var (targetTask, error) = FindTaskByStringId(taskId);
             if (targetTask == null)
             {
-                return error!;
+                return error!.Value;
             }
 
             // Update status
             if (!TryParseStatus(status, out var newStatus))
             {
-                return "Error: Invalid status. Use: not started, in progress, completed, removed.";
+                return FunctionResult.Error(
+                    InvalidStatusCode,
+                    "Error: Invalid status. Use: not started, in progress, completed, removed."
+                );
             }
 
             targetTask.Status = newStatus;
@@ -337,12 +355,12 @@ Examples:
         }
     }
 
-    public string UpdateTask(int taskId, string status = "not started")
+    public FunctionResult UpdateTask(int taskId, string status = "not started")
     {
         return UpdateTask(taskId.ToString(), status);
     }
 
-    public string UpdateTask(int taskId, int subtaskId, string status = "not started")
+    public FunctionResult UpdateTask(int taskId, int subtaskId, string status = "not started")
     {
         return UpdateTask($"{taskId}.{subtaskId}", status);
     }
@@ -374,7 +392,7 @@ Examples:
 - Scope change: {""taskId"": ""4""}  // Entire feature removed
 - Already done: {""taskId"": ""1.5""}  // Discovered existing implementation"
     )]
-    public string DeleteTask(
+    public FunctionResult DeleteTask(
         [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
         [Description("Subtask ID to delete specific subtask")] int? subtaskId = null
     )
@@ -388,7 +406,7 @@ Examples:
                 // Delete subtask
                 if (task == null)
                 {
-                    return $"Error: Parent task {taskId} not found.";
+                    return FunctionResult.Error(TaskNotFoundCode, $"Error: Parent task {taskId} not found.");
                 }
 
                 PrivateTaskItem? subtask;
@@ -397,7 +415,10 @@ Examples:
                     subtask = task.SubTasks.FirstOrDefault(st => st.Id == subtaskId.Value);
                     if (subtask == null)
                     {
-                        return $"Error: Subtask {subtaskId.Value} not found under task {taskId}.";
+                        return FunctionResult.Error(
+                            TaskNotFoundCode,
+                            $"Error: Subtask {subtaskId.Value} not found under task {taskId}."
+                        );
                     }
 
                     _ = task.SubTasks.Remove(subtask);
@@ -409,7 +430,7 @@ Examples:
             // Delete main task and all subtasks
             if (task == null)
             {
-                return $"Error: Task {taskId} not found.";
+                return FunctionResult.Error(TaskNotFoundCode, $"Error: Task {taskId} not found.");
             }
 
             _ = RemoveTaskAndSubtasks(task);
@@ -417,7 +438,7 @@ Examples:
         }
     }
 
-    public string DeleteTask(int taskId, int? subtaskId = null)
+    public FunctionResult DeleteTask(int taskId, int? subtaskId = null)
     {
         return DeleteTask(taskId.ToString(), subtaskId);
     }
@@ -431,7 +452,7 @@ Examples:
 - Task: {""taskId"": 1}
 - Subtask: {""taskId"": 1, ""subtaskId"": 3}"
     )]
-    public string GetTask(
+    public FunctionResult GetTask(
         [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
         [Description("Subtask ID for specific subtask")] int? subtaskId = null
     )
@@ -439,11 +460,11 @@ Examples:
         lock (_sync)
         {
             var (task, taskRef, error) = FindTaskWithReference(taskId, subtaskId);
-            return task == null ? error! : FormatTaskDetails(task, taskRef);
+            return task == null ? error!.Value : FormatTaskDetails(task, taskRef);
         }
     }
 
-    public string GetTask(int taskId, int? subtaskId = null)
+    public FunctionResult GetTask(int taskId, int? subtaskId = null)
     {
         return GetTask(taskId.ToString(), subtaskId);
     }
@@ -470,7 +491,7 @@ Examples:
 - Constraint: {""taskId"": ""1.2"", ""noteText"": ""Must complete before 3pm due to maintenance window""}
 - Insight: {""taskId"": ""2.1"", ""noteText"": ""Similar pattern worked in auth module - see commit abc123""}"
     )]
-    public string AddNote(
+    public FunctionResult AddNote(
         [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
         [Description("Subtask ID if adding note to subtask (optional)")] int? subtaskId = null,
         [Description("Note text to add")] string noteText = ""
@@ -478,7 +499,7 @@ Examples:
     {
         if (string.IsNullOrWhiteSpace(noteText))
         {
-            return "Error: Note text cannot be empty.";
+            return FunctionResult.Error(InvalidArgumentsCode, "Error: Note text cannot be empty.");
         }
 
         lock (_sync)
@@ -486,7 +507,7 @@ Examples:
             var (targetTask, taskRef, error) = FindTaskWithReference(taskId, subtaskId);
             if (targetTask == null)
             {
-                return error!;
+                return error!.Value;
             }
 
             lock (targetTask.Notes)
@@ -498,7 +519,7 @@ Examples:
         }
     }
 
-    public string AddNote(int taskId, int? subtaskId = null, string noteText = "")
+    public FunctionResult AddNote(int taskId, int? subtaskId = null, string noteText = "")
     {
         return AddNote(taskId.ToString(), subtaskId, noteText);
     }
@@ -512,7 +533,7 @@ Examples:
 - Edit note #2 on task 1: {""taskId"": 1, ""noteIndex"": 2, ""noteText"": ""Updated requirement""}
 - Edit note #1 on subtask: {""taskId"": 1, ""subtaskId"": 3, ""noteIndex"": 1, ""noteText"": ""Changed approach""}"
     )]
-    public string EditNote(
+    public FunctionResult EditNote(
         [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
         [Description("Subtask ID if editing subtask note (optional)")] int? subtaskId = null,
         [Description("Note index to edit (1-based: 1 for first note, 2 for second, etc.)")] int noteIndex = 1,
@@ -521,7 +542,7 @@ Examples:
     {
         if (string.IsNullOrWhiteSpace(noteText))
         {
-            return "Error: Note text cannot be empty.";
+            return FunctionResult.Error(InvalidArgumentsCode, "Error: Note text cannot be empty.");
         }
 
         lock (_sync)
@@ -529,14 +550,17 @@ Examples:
             var (targetTask, taskRef, error) = FindTaskWithReference(taskId, subtaskId);
             if (targetTask == null)
             {
-                return error!;
+                return error!.Value;
             }
 
             lock (targetTask.Notes)
             {
                 if (noteIndex < 1 || noteIndex > targetTask.Notes.Count)
                 {
-                    return $"Error: Note index {noteIndex} out of range. {taskRef} has {targetTask.Notes.Count} note(s).";
+                    return FunctionResult.Error(
+                        NoteIndexOutOfRangeCode,
+                        $"Error: Note index {noteIndex} out of range. {taskRef} has {targetTask.Notes.Count} note(s)."
+                    );
                 }
 
                 targetTask.Notes[noteIndex - 1] = noteText.Trim();
@@ -546,7 +570,7 @@ Examples:
         }
     }
 
-    public string EditNote(int taskId, int? subtaskId = null, int noteIndex = 1, string noteText = "")
+    public FunctionResult EditNote(int taskId, int? subtaskId = null, int noteIndex = 1, string noteText = "")
     {
         return EditNote(taskId.ToString(), subtaskId, noteIndex, noteText);
     }
@@ -560,7 +584,7 @@ Examples:
 - Delete note #1 from task 2: {""taskId"": 2, ""noteIndex"": 1}
 - Delete note #3 from subtask: {""taskId"": 1, ""subtaskId"": 2, ""noteIndex"": 3}"
     )]
-    public string DeleteNote(
+    public FunctionResult DeleteNote(
         [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
         [Description("Subtask ID if deleting subtask note (optional)")] int? subtaskId = null,
         [Description("Note index to delete (1-based: 1 for first note, 2 for second, etc.)")] int noteIndex = 1
@@ -571,14 +595,17 @@ Examples:
             var (targetTask, taskRef, error) = FindTaskWithReference(taskId, subtaskId);
             if (targetTask == null)
             {
-                return error!;
+                return error!.Value;
             }
 
             lock (targetTask.Notes)
             {
                 if (noteIndex < 1 || noteIndex > targetTask.Notes.Count)
                 {
-                    return $"Error: Note index {noteIndex} out of range. {taskRef} has {targetTask.Notes.Count} note(s).";
+                    return FunctionResult.Error(
+                        NoteIndexOutOfRangeCode,
+                        $"Error: Note index {noteIndex} out of range. {taskRef} has {targetTask.Notes.Count} note(s)."
+                    );
                 }
 
                 var deletedNote = targetTask.Notes[noteIndex - 1];
@@ -588,12 +615,12 @@ Examples:
         }
     }
 
-    public string DeleteNote(int taskId, int? subtaskId = null, int noteIndex = 1)
+    public FunctionResult DeleteNote(int taskId, int? subtaskId = null, int noteIndex = 1)
     {
         return DeleteNote(taskId.ToString(), subtaskId, noteIndex);
     }
 
-    public string ManageNotes(
+    public FunctionResult ManageNotes(
         string taskId,
         int? subtaskId = null,
         string noteText = "",
@@ -604,15 +631,21 @@ Examples:
         return action.Trim().ToLowerInvariant() switch
         {
             "add" => AddNote(taskId, subtaskId, noteText),
-            "edit" => EditNote(taskId, subtaskId, noteIndex, noteText)
-                .Replace($"Updated note #{noteIndex} on", $"Edited note {noteIndex} on", StringComparison.Ordinal),
-            "delete" => DeleteNote(taskId, subtaskId, noteIndex)
-                .Replace($"Deleted note #{noteIndex} from", $"Deleted note {noteIndex} from", StringComparison.Ordinal),
-            _ => "Error: Invalid action. Use: add, edit, delete.",
+            "edit" => Rephrase(
+                EditNote(taskId, subtaskId, noteIndex, noteText),
+                $"Updated note #{noteIndex} on",
+                $"Edited note {noteIndex} on"
+            ),
+            "delete" => Rephrase(
+                DeleteNote(taskId, subtaskId, noteIndex),
+                $"Deleted note #{noteIndex} from",
+                $"Deleted note {noteIndex} from"
+            ),
+            _ => FunctionResult.Error(InvalidActionCode, "Error: Invalid action. Use: add, edit, delete."),
         };
     }
 
-    public string ManageNotes(
+    public FunctionResult ManageNotes(
         int taskId,
         int? subtaskId = null,
         string noteText = "",
@@ -631,7 +664,7 @@ Examples:
 - Task notes: {""taskId"": 1}
 - Subtask notes: {""taskId"": 1, ""subtaskId"": 3}"
     )]
-    public string ListNotes(
+    public FunctionResult ListNotes(
         [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
         [Description("Subtask ID for subtask notes")] int? subtaskId = null
     )
@@ -645,7 +678,7 @@ Examples:
             var (targetTask, foundRef, error) = FindTaskWithReference(taskId, subtaskId);
             if (targetTask == null)
             {
-                return error!;
+                return error!.Value;
             }
 
             taskRef = foundRef;
@@ -672,7 +705,7 @@ Examples:
         return sb.ToString().TrimEnd();
     }
 
-    public string ListNotes(int taskId, int? subtaskId = null)
+    public FunctionResult ListNotes(int taskId, int? subtaskId = null)
     {
         return ListNotes(taskId.ToString(), subtaskId);
     }
@@ -705,7 +738,7 @@ Examples:
 - WIP check: {""status"": ""in progress""}
 - Overview: {""mainOnly"": true}"
     )]
-    public string ListTasks(
+    public FunctionResult ListTasks(
         [Description("Filter by status: not started|in progress|completed|removed")] string? status = null,
         [Description("Show only main tasks (exclude subtasks)")] bool mainOnly = false
     )
@@ -715,7 +748,10 @@ Examples:
         {
             if (!TryParseStatus(status, out var parsedStatus))
             {
-                return "Error: Invalid status filter. Use: not started, in progress, completed, removed.";
+                return FunctionResult.Error(
+                    InvalidStatusCode,
+                    "Error: Invalid status filter. Use: not started, in progress, completed, removed."
+                );
             }
 
             filterStatus = parsedStatus;
@@ -784,7 +820,7 @@ Examples:
 - Completed count: {""countType"": ""completed""}
 - Pending count: {""countType"": ""pending""}"
     )]
-    public string SearchTasks(
+    public FunctionResult SearchTasks(
         [Description("Search term for title")] string? searchTerm = null,
         [Description("Get counts: total|completed|pending|removed")] string? countType = null
     )
@@ -796,7 +832,7 @@ Examples:
 
         if (string.IsNullOrWhiteSpace(searchTerm))
         {
-            return "Error: Provide searchTerm or countType.";
+            return FunctionResult.Error(InvalidArgumentsCode, "Error: Provide searchTerm or countType.");
         }
 
         var matches = new List<(PrivateTaskItem task, string path)>();
@@ -834,10 +870,20 @@ Examples:
     /// </summary>
     public string GetMarkdown()
     {
-        return ListTasks();
+        return ListTasks().Text;
     }
 
     // Helper methods
+
+    /// <summary>
+    ///     Rewrites a result's wording while preserving whether it succeeded. Rewriting the text
+    ///     alone would drop the error code and turn a reported failure back into a success.
+    /// </summary>
+    private static FunctionResult Rephrase(FunctionResult result, string oldText, string newText)
+    {
+        var text = result.Text.Replace(oldText, newText, StringComparison.Ordinal);
+        return result.ErrorCode is { } errorCode ? FunctionResult.Error(errorCode, text) : FunctionResult.Ok(text);
+    }
 
     /// <summary>
     ///     Appends a line terminated by a literal LF. <see cref="StringBuilder.AppendLine()" />
@@ -860,7 +906,10 @@ Examples:
     ///     The task ID accepts the same dotted paths <c>add-task</c> produces, so every task the
     ///     hierarchy can hold is addressable — not just the first two levels.
     /// </summary>
-    private (PrivateTaskItem? task, string taskRef, string? error) FindTaskWithReference(string taskId, int? subtaskId)
+    private (PrivateTaskItem? task, string taskRef, FunctionResult? error) FindTaskWithReference(
+        string taskId,
+        int? subtaskId
+    )
     {
         lock (_sync)
         {
@@ -868,7 +917,11 @@ Examples:
 
             if (task == null)
             {
-                return (null, string.Empty, error ?? $"Error: Task {taskId} not found.");
+                return (
+                    null,
+                    string.Empty,
+                    error ?? FunctionResult.Error(TaskNotFoundCode, $"Error: Task {taskId} not found.")
+                );
             }
 
             if (subtaskId.HasValue)
@@ -881,7 +934,14 @@ Examples:
 
                 if (subtask == null)
                 {
-                    return (null, string.Empty, $"Error: Subtask {subtaskId.Value} not found under task {taskId}.");
+                    return (
+                        null,
+                        string.Empty,
+                        FunctionResult.Error(
+                            TaskNotFoundCode,
+                            $"Error: Subtask {subtaskId.Value} not found under task {taskId}."
+                        )
+                    );
                 }
 
                 return (subtask, $"subtask {subtaskId.Value} of task {taskId}", null);
@@ -891,7 +951,7 @@ Examples:
         }
     }
 
-    private (PrivateTaskItem? task, string? error) FindTaskByStringId(string taskId)
+    private (PrivateTaskItem? task, FunctionResult? error) FindTaskByStringId(string taskId)
     {
         lock (_sync)
         {
@@ -899,14 +959,14 @@ Examples:
             var parts = (taskId ?? string.Empty).Split('.');
             if (parts.Length == 0 || !int.TryParse(parts[0], out var rootId))
             {
-                return (null, $"Error: Invalid task ID format '{taskId}'.");
+                return (null, FunctionResult.Error(InvalidTaskIdCode, $"Error: Invalid task ID format '{taskId}'."));
             }
 
             // Find root task
             var currentTask = _state.RootTasks.FirstOrDefault(t => t.Id == rootId);
             if (currentTask == null)
             {
-                return (null, $"Error: Task '{parts[0]}' not found.");
+                return (null, FunctionResult.Error(TaskNotFoundCode, $"Error: Task '{parts[0]}' not found."));
             }
 
             // Navigate through subtask hierarchy
@@ -914,7 +974,13 @@ Examples:
             {
                 if (!int.TryParse(parts[i], out var subId))
                 {
-                    return (null, $"Error: Invalid subtask ID '{parts[i]}' in '{taskId}'.");
+                    return (
+                        null,
+                        FunctionResult.Error(
+                            InvalidTaskIdCode,
+                            $"Error: Invalid subtask ID '{parts[i]}' in '{taskId}'."
+                        )
+                    );
                 }
 
                 PrivateTaskItem? nextTask = null;
@@ -926,7 +992,7 @@ Examples:
                 if (nextTask == null)
                 {
                     var path = string.Join(".", parts.Take(i + 1));
-                    return (null, $"Error: Task '{path}' not found.");
+                    return (null, FunctionResult.Error(TaskNotFoundCode, $"Error: Task '{path}' not found."));
                 }
 
                 currentTask = nextTask;
