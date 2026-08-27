@@ -293,10 +293,23 @@ internal sealed class S2SReviewWorkspacePreparer
 
     /// <summary>Builds the HTTPS clone URL for the target repo from its identity + provider (mirrors the
     /// daemon's own <c>TargetRemoteUrl</c>): ADO is <c>/{org}/{project}/_git/{repo}</c> on dev.azure.com;
-    /// GitHub is <c>/{owner}/{repo}.git</c> on github.com.</summary>
+    /// GitHub is <c>/{owner}/{repo}.git</c> on github.com.
+    /// <para>
+    /// The ADO segments are URL-encoded (issue #472 item 2). This string is handed to <c>git clone</c> as an
+    /// argv element and never becomes a <see cref="Uri"/> in this process, so the reasoning that let the C#
+    /// HTTP callers skip encoding — <see cref="Uri.AbsoluteUri"/> escapes the path when the request is built
+    /// — has nothing to apply to. Azure DevOps org and project names may contain spaces, which raw make the
+    /// remote a malformed URL; encoding also keeps each name ONE path segment, so a separator inside a name
+    /// stays data rather than re-pointing the clone. The GitHub arm is left as-is deliberately: its owner and
+    /// repository names are restricted to <c>[A-Za-z0-9-_.]</c>, every character of which
+    /// <see cref="Uri.EscapeDataString(string)"/> passes through unchanged, so encoding there would be a
+    /// no-op that only obscured the asymmetry.
+    /// </para></summary>
     private static string TargetRemoteUrl(RepoIdentity repo, string provider) =>
         string.Equals(provider, "ado", StringComparison.Ordinal)
-            ? $"https://dev.azure.com/{repo.OrgOrOwner}/{repo.Project}/_git/{repo.RepoName}"
+            ? $"https://dev.azure.com/{Uri.EscapeDataString(repo.OrgOrOwner)}"
+                + $"/{Uri.EscapeDataString(repo.Project ?? string.Empty)}"
+                + $"/_git/{Uri.EscapeDataString(repo.RepoName)}"
             : $"https://github.com/{repo.OrgOrOwner}/{repo.RepoName}.git";
 }
 

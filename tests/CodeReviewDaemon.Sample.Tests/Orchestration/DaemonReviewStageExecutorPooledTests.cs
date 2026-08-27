@@ -1573,6 +1573,34 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     /// <summary>
+    /// Issue #472 item 4. The containment above excluded <see cref="OperationCanceledException"/>, so a
+    /// teardown that observed an ambient token threw straight out of this method. The slot is still safe —
+    /// the <c>finally</c> returns it before the throw propagates — but this method is called from the
+    /// orchestrator's TERMINAL <c>finally</c>, and an exception raised there REPLACES the one already in
+    /// flight. The run's actual failure is then lost and every log and retry decision downstream reads a
+    /// cancellation that only ever described the teardown. A best-effort teardown must not be able to
+    /// rewrite the run's cause of death, whatever it happens to throw.
+    /// </summary>
+    [Fact]
+    public async Task ReleaseReviewLease_absorbs_a_cancelled_teardown_instead_of_masking_the_runs_failure()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        fixture.Provisioner.DestroyFailure = new OperationCanceledException("the gateway call was cancelled");
+
+        // CancellationToken.None: nothing HERE is cancelled. The OCE is the teardown's own, raised against a
+        // token this method never passed it — which is exactly why it must not read as "the caller cancelled".
+        var act = async () => await fixture.Executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
+
+        await act.Should().NotThrowAsync();
+        fixture.Pool.ReturnCount.Should().Be(1);
+        fixture.CleanupOrder.Should().ContainInOrder(
+            ["destroy", "return"], "the teardown is still attempted first; only its failure is contained");
+    }
+
+    /// <summary>
     /// The containment must not cost idempotency: the atomic removal is what stops a concurrent release (or
     /// the Posted stage) from double-returning the slot, and the pool's semaphore throws on an over-return.
     /// </summary>
