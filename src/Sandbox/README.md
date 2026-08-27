@@ -66,6 +66,10 @@ the workflow is the operative pin.
 - **Command execution:** `ExecuteAsync(sessionId, command)` — run a non-interactive native command
   (an executable plus argv, no shell) in the sandbox via the gateway's direct operations API and get
   its exact captured output back. See [Command execution](#command-execution) below.
+- **Operation cleanup:** `DeleteOperationAsync(sessionId, operationId)` — reclaim one finished command's
+  gateway-side record and its on-disk stdout/stderr artifacts, so a long-lived sandbox can bound its
+  artifact footprint without being torn down. See
+  [Artifact retention and cleanup](#artifact-retention-and-cleanup) below.
 - **Exact file transfer:** `ReadTextFileAsync`, `WriteTextFileAsync`, `ListDirectoryAsync` — exact,
   integrity-verified UTF-8 file round-trips and directory listing over a workspace-relative POSIX
   path. See [File transfer](#file-transfer) below.
@@ -269,7 +273,8 @@ A command's stdout/stderr artifacts are created, retained, and deleted **by the 
 sandbox, under the reserved `.mcp-gateway/operations/<operation_id>/<generation>/` prefix. This SDK
 writes no artifact, keeps no manifest, lease, or bookkeeping of its own, and runs no cleanup pass — so
 there is no SDK-side retention window to configure, and no stale-artifact sweep that a caller could
-trigger or tune.
+trigger or tune. Cleanup is per-operation and caller-driven: you name the operation to reclaim
+(`DeleteOperationAsync`, below) and the gateway does the deleting.
 
 **Artifact files are not time-expired.** ADR 0031 §5's reaper prunes terminal **in-memory operation
 records** after `OPERATION_TERMINAL_TTL_SECS` (default 3600); it does **not** delete the on-disk files.
@@ -279,15 +284,47 @@ operation returns `operation_not_found` **while its output files are still sitti
 record and the bytes expire on completely different schedules. A gateway restart has the same effect
 immediately, since records are process-local.
 
-The gateway does offer the per-operation primitive —
-`DELETE /api/v1/sandboxes/{session_id}/operations/{operation_id}`, which removes a terminal or reserved
-operation and best-effort deletes its generation-scoped artifact directory (a still-running operation is
-refused with `409 operation_running`). **This SDK does not expose it.** So through `SandboxClient` the
-only way to reclaim artifact disk space is `DeleteAsync` — tearing down the whole sandbox. For a
-long-lived sandbox running many commands, that is the one cleanup boundary you have, and artifacts
-accumulate until you reach it.
+**Reclaiming one command's footprint: `DeleteOperationAsync`.** It wraps the gateway's per-operation
+primitive — `DELETE /api/v1/sandboxes/{session_id}/operations/{operation_id}` — which removes a terminal
+or reserved operation's record and best-effort deletes its generation-scoped artifact directory:
 
-Two consequences worth stating plainly:
+```csharp
+var result = await client.ExecuteAsync(sessionId, new SandboxCommand(["git", "status"]));
+Console.WriteLine(result.StandardOutput);
+
+// The output has been consumed; reclaim the stdout/stderr files it left behind.
+await client.DeleteOperationAsync(sessionId, result.OperationId);
+```
+
+**When to call it: once you have read a command's output, on any sandbox that outlives the commands it
+runs.** A long-lived sandbox executing many commands otherwise accumulates one artifact directory per
+command for its entire life. `DeleteAsync` remains the **bulk** cleanup — tearing down the whole sandbox
+removes every artifact with it — and nothing about it changes; `DeleteOperationAsync` is what lets you
+bound the footprint *without* reaching for that boundary.
+
+Three behaviours to code against:
+
+- **It is not cancellation.** ADR 0031 puts cancellation out of scope, so a still-**running** operation is
+  refused with `409 operation_running` → `SandboxErrorKind.Conflict` with `ErrorCode ==
+  "operation_running"`. Branch on the **error code**, not the kind: `idempotency_conflict` and
+  `target_locked` are also `Conflict`, and unlike this one they are not cleared by waiting. Wait for the
+  operation to go terminal, then delete.
+- **It is not idempotent.** The gateway answers `204 No Content` for a record it removed and a uniform
+  `404 operation_not_found` for one it does not hold — an already-deleted operation, a TTL-pruned record,
+  a record dropped by a gateway restart, and an id that never existed are all the same answer (the
+  no-existence-oracle boundary). Best-effort cleanup should treat `SandboxErrorKind.NotFound` as
+  "nothing left to reclaim" rather than as a failure.
+- **Delete promptly, not in a nightly sweep.** Because the reaper drops records without touching files, an
+  operation whose record has already expired by TTL can no longer be deleted through this route *at all* —
+  and its artifacts then live until the sandbox does.
+
+What it reclaims is the **bytes**, not every inode: the gateway's cleanup is generation-scoped, so it
+removes `.mcp-gateway/operations/<operation_id>/<generation>/` and leaves the now-empty
+`.mcp-gateway/operations/<operation_id>/` directory behind until the sandbox is deleted. That scoping is
+deliberate — it is what stops a delayed delete of one reservation from reaping a later re-reservation's
+artifacts — and the residue is an empty directory per deleted operation, not accumulating output.
+
+Two further consequences worth stating plainly:
 
 - Artifacts are ordinary workspace files, so `ListDirectoryAsync` does **not** filter them out — the SDK
   has no reserved directory of its own to exclude, and the prefix is reserved from *writes*, never

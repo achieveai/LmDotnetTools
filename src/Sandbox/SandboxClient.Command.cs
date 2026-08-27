@@ -107,6 +107,87 @@ public sealed partial class SandboxClient
         return await ResolveResultAsync(sessionId, operationId, status, ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Deletes ONE completed command operation from the gateway — its in-memory record AND, best-effort,
+    /// its generation-scoped stdout/stderr artifact directory under the session's writable workspace
+    /// (<c>DELETE .../operations/{operation_id}</c>, ADR 0031 §5 / issue #464).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why this exists.</b> Every <see cref="ExecuteAsync"/> leaves
+    /// <c>.mcp-gateway/operations/&lt;operation_id&gt;/&lt;generation&gt;/{stdout,stderr}</c> on disk in
+    /// the caller's writable workspace, and ADR 0031 §5's reaper prunes the terminal <b>in-memory record
+    /// only</b> — it never deletes those files. They persist for the sandbox's lifetime unless this call
+    /// removes them. A long-lived sandbox running many commands should call this once each command's
+    /// output has been consumed; <see cref="DeleteAsync"/> (tearing down the whole sandbox) remains the
+    /// bulk cleanup and is unaffected.
+    /// </para>
+    /// <para>
+    /// <b>This is not cancellation.</b> ADR 0031 puts cancellation explicitly out of scope: a still-RUNNING
+    /// operation is refused with <c>409 operation_running</c>, which surfaces here as
+    /// <see cref="SandboxErrorKind.Conflict"/> with <see cref="SandboxException.ErrorCode"/> set to
+    /// <c>operation_running</c>. That code is the discriminator — the status alone is not, since
+    /// <c>idempotency_conflict</c> and <c>target_locked</c> are also <c>409</c>/<see cref="SandboxErrorKind.Conflict"/>
+    /// and are NOT cleared by waiting. Branch on the code, wait for the operation to reach a terminal
+    /// state, and delete then.
+    /// </para>
+    /// <para>
+    /// <b>It is not idempotent.</b> The gateway answers <c>204 No Content</c> for a record it removed and a
+    /// uniform <c>404 operation_not_found</c> for one it does not hold — which covers an already-deleted
+    /// operation, a TTL-pruned record, a record dropped by a gateway restart, and an id that never existed
+    /// alike (ADR 0031 §6's no-existence-oracle boundary). A best-effort cleanup caller should therefore
+    /// treat <see cref="SandboxErrorKind.NotFound"/> as "nothing left to reclaim" rather than as an error.
+    /// Note the converse too: because the reaper drops records without touching files, a record already
+    /// pruned by TTL can no longer be deleted through this route at all, and its artifacts then live until
+    /// the sandbox does — so delete promptly rather than in a nightly sweep.
+    /// </para>
+    /// </remarks>
+    /// <param name="sessionId">The sandbox session that ran the operation.</param>
+    /// <param name="operationId">
+    /// The operation to remove — <see cref="SandboxCommandResult.OperationId"/> from the command's result,
+    /// or <see cref="SandboxException.OperationId"/> from a failure that carried one.
+    /// </param>
+    /// <param name="ct">Cancels the local wait only; a cancelled delete may still have been applied.</param>
+    /// <exception cref="SandboxException">
+    /// The operation is still running (<see cref="SandboxErrorKind.Conflict"/>, <c>operation_running</c>),
+    /// no such session/operation (<see cref="SandboxErrorKind.NotFound"/>), the credential was refused
+    /// (<see cref="SandboxErrorKind.Authorization"/>), the gateway was busy
+    /// (<see cref="SandboxErrorKind.Unavailable"/>), or the transport deadline elapsed
+    /// (<see cref="SandboxErrorKind.TransportTimeout"/>). Every one of these carries
+    /// <see cref="SandboxException.OperationId"/>.
+    /// </exception>
+    /// <exception cref="OperationCanceledException"><paramref name="ct"/> was cancelled.</exception>
+    public async Task DeleteOperationAsync(string sessionId, string operationId, CancellationToken ct = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(operationId);
+
+        // The operation id rides along on every failure exit, exactly as it does on submit/poll: a delete
+        // whose response was lost leaves the caller unable to tell whether the artifacts were reclaimed,
+        // and the id is the only handle for re-issuing it.
+        using var response = await SendDirectAsync(
+                HttpMethod.Delete,
+                $"api/v1/sandboxes/{Uri.EscapeDataString(sessionId)}/operations/{Uri.EscapeDataString(operationId)}",
+                null,
+                sessionId,
+                ct,
+                operationId
+            )
+            .ConfigureAwait(false);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw await MapDirectErrorAsync(response, $"deleting operation '{operationId}'", sessionId, ct, operationId: operationId)
+                .ConfigureAwait(false);
+        }
+
+        // Any success status is a completed delete, not just the 204 the gateway sends today: there is no
+        // body worth parsing either way, and nothing to return — the caller learns the outcome from the
+        // absence of an exception. Narrowing this to exactly-204 would turn a successful cleanup into a
+        // reported failure the moment the gateway answered 200.
+    }
+
     /// <summary>The gateway execution timeout, in whole seconds (at least 1), sent as the operation's <c>timeout_secs</c>.</summary>
     private long GatewayExecutionTimeoutSeconds() => Math.Max(1, (long)Math.Ceiling(_options.ExecutionTimeout.TotalSeconds));
 

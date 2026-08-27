@@ -210,6 +210,183 @@ public sealed class SandboxLiveContractTests
         }
     }
 
+    /// <summary>
+    /// The one acceptance criterion issue #464 exists for: a long-lived sandbox can reclaim a finished
+    /// command's on-disk artifacts WITHOUT deleting itself. Executes a command, proves its artifacts are
+    /// really on disk (reading the stdout file back through the files API — otherwise "they are gone
+    /// afterwards" would prove nothing), deletes the operation, and then PINS the refusal the gateway
+    /// actually gives for the deleted operation against the refusal it gives for one that never existed.
+    /// ADR 0031 §6 claims those are uniform; this asserts the claim on the real gateway rather than
+    /// assuming it.
+    /// </summary>
+    [SkippableFact]
+    public async Task Operation_Delete_ReclaimsArtifacts_AndRefusesExactlyLikeANeverExistentOperation()
+    {
+        var sessionId = await CreateSandboxAsync();
+        try
+        {
+            var opId = Guid.NewGuid().ToString("N");
+            var result = await Client.ExecuteAsync(
+                sessionId,
+                new SandboxCommand(["echo", "-n", "artifact-probe"], operationId: opId)
+            );
+            result.ExitCode.Should().Be(0);
+            result.StandardOutput.Should().Be("artifact-probe");
+
+            // Locate the real artifact file. The reserved prefix is gateway-owned bookkeeping that is
+            // readable (only WRITES below it are refused), so the SDK's ordinary listing walks it. The
+            // generation directory name is chosen by the gateway, so it is read rather than guessed.
+            var operations = await Client.ListDirectoryAsync(sessionId, ".mcp-gateway/operations");
+            operations.Should().Contain(opId, "the executed operation must have left an artifact directory");
+            var generation = (await Client.ListDirectoryAsync(sessionId, $".mcp-gateway/operations/{opId}"))
+                .Should().ContainSingle("a single execution produces a single generation").Subject;
+            var stdoutPath = $".mcp-gateway/operations/{opId}/{generation}/stdout";
+
+            // Non-vacuity: the artifact is genuinely there and genuinely this command's output BEFORE the
+            // delete, so every "it is gone" assertion below is about the delete and not about a path that
+            // was never right.
+            (await Client.ReadTextFileAsync(sessionId, stdoutPath)).Should().Be("artifact-probe");
+
+            await Client.DeleteOperationAsync(sessionId, opId);
+
+            // The footprint is actually reclaimed — the whole point of the call. The gateway's cleanup is
+            // GENERATION-scoped (it removes `.mcp-gateway/operations/<id>/<generation>/`, which is what
+            // closes the ABA hazard of a delayed delete reaping a re-reservation's artifacts), so the empty
+            // `<id>` directory itself SURVIVES. That residue is asserted rather than ignored: the bytes are
+            // gone, one empty directory per deleted operation is not, and a reader of this test should see
+            // which of the two this call actually promises.
+            (await Client.ListDirectoryAsync(sessionId, $".mcp-gateway/operations/{opId}"))
+                .Should().BeEmpty("the generation directory holding the artifacts must be gone");
+            (await Client.ListDirectoryAsync(sessionId, ".mcp-gateway/operations"))
+                .Should().Contain(opId, "cleanup is generation-scoped: the empty per-operation directory is left behind");
+
+            // PIN the artifact-GET refusal, and pin it BY COMPARISON: a path under a never-executed
+            // operation id is the "never existed" control. Whatever shape the gateway chooses, the deleted
+            // operation's artifact must answer identically — if it ever stopped doing so, the difference
+            // would be an existence oracle for another app's operation ids.
+            var neverExistentOpId = Guid.NewGuid().ToString("N");
+            var deletedArtifact = await CaptureAsync(() => Client.ReadTextFileAsync(sessionId, stdoutPath));
+            var neverExistentArtifact = await CaptureAsync(() =>
+                Client.ReadTextFileAsync(sessionId, $".mcp-gateway/operations/{neverExistentOpId}/{generation}/stdout")
+            );
+
+            deletedArtifact.Should().NotBeNull("the artifact file must be gone after the operation is deleted");
+            neverExistentArtifact.Should().NotBeNull();
+            deletedArtifact!.Kind.Should().Be(SandboxErrorKind.NotFound);
+            deletedArtifact.Kind.Should().Be(neverExistentArtifact!.Kind);
+            deletedArtifact.ErrorCode.Should().Be(neverExistentArtifact.ErrorCode);
+
+            // Same pinning for the operation RECORD, through the delete route itself (the SDK's poll is
+            // internal to ExecuteAsync, so DELETE is the reachable probe of record existence). A second
+            // delete of the same id must be indistinguishable from a delete of an id that never existed.
+            var secondDelete = await CaptureAsync(() => Client.DeleteOperationAsync(sessionId, opId));
+            var neverExistentDelete = await CaptureAsync(() => Client.DeleteOperationAsync(sessionId, neverExistentOpId));
+
+            secondDelete.Should().NotBeNull("deleting an already-deleted operation is not silently a no-op");
+            neverExistentDelete.Should().NotBeNull();
+            secondDelete!.Kind.Should().Be(SandboxErrorKind.NotFound);
+            secondDelete.Kind.Should().Be(neverExistentDelete!.Kind);
+            secondDelete.ErrorCode.Should().Be(neverExistentDelete.ErrorCode);
+            secondDelete.OperationId.Should().Be(opId);
+        }
+        finally
+        {
+            await Client.DeleteAsync(sessionId);
+        }
+    }
+
+    /// <summary>
+    /// ADR 0031 §5 puts cancellation out of scope: deleting a STILL-RUNNING operation is refused with
+    /// <c>409 operation_running</c>. Held open by submitting a long-running command through a task that is
+    /// deliberately not awaited, then attempting the delete while it runs.
+    /// </summary>
+    [SkippableFact]
+    public async Task Operation_DeleteWhileRunning_IsRefusedAsOperationRunningConflict()
+    {
+        var sessionId = await CreateSandboxAsync();
+        var opId = Guid.NewGuid().ToString("N");
+        // Long enough that the delete lands well inside the run, short enough that the awaited completion
+        // below is not a meaningful cost even when the delete is refused on the first attempt.
+        var running = Client.ExecuteAsync(sessionId, new SandboxCommand(["sh", "-c", "sleep 20"], operationId: opId));
+        try
+        {
+            // Poll for the refusal rather than sleeping a fixed amount: before the gateway has reserved the
+            // record the delete is a 404, which is a "not yet", not the answer under test. The loop FAILS
+            // LOUDLY if it never observes the conflict — a silent give-up would make every assertion below
+            // vacuous.
+            SandboxException? refusal = null;
+            var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
+            while (DateTimeOffset.UtcNow < deadline)
+            {
+                var captured = await CaptureAsync(() => Client.DeleteOperationAsync(sessionId, opId));
+                captured.Should()
+                    .NotBeNull("a RUNNING operation must never be deleted successfully — deletion is not cancellation");
+                if (captured!.Kind == SandboxErrorKind.Conflict)
+                {
+                    refusal = captured;
+                    break;
+                }
+
+                // The only other tolerable answer is "no such record yet" — the submit is still in flight.
+                captured.Kind.Should().Be(SandboxErrorKind.NotFound);
+                await Task.Delay(TimeSpan.FromMilliseconds(100));
+            }
+
+            refusal.Should().NotBeNull("the gateway must refuse the delete while the operation is running");
+            refusal!.ErrorCode.Should().Be("operation_running");
+            refusal.StatusCode.Should().Be(409);
+            refusal.OperationId.Should().Be(opId);
+
+            // Once terminal, the SAME delete succeeds — the refusal was about the operation's state, not a
+            // permanent bar, which is what makes "wait, then delete" a real cleanup strategy.
+            (await running).ExitCode.Should().Be(0);
+            await Client.DeleteOperationAsync(sessionId, opId);
+        }
+        finally
+        {
+            // Never leave the execute task unobserved, even when an assertion above threw.
+            try
+            {
+                _ = await running;
+            }
+            catch (SandboxException)
+            {
+                // The command's own outcome is asserted above; here we only drain the task.
+            }
+
+            await Client.DeleteAsync(sessionId);
+        }
+    }
+
+    /// <summary>
+    /// ADR 0031 §2: a write under the reserved <c>.mcp-gateway/operations</c> prefix is rejected by the
+    /// gateway before any I/O. The prefix is gateway-owned bookkeeping — readable (the delete test above
+    /// lists it), never writable — so this is a refusal a <c>WriteTextFileAsync</c> caller can actually hit.
+    /// </summary>
+    [SkippableFact]
+    public async Task Write_UnderTheReservedOperationsPrefix_IsRefused()
+    {
+        var sessionId = await CreateSandboxAsync();
+        try
+        {
+            var captured = await CaptureAsync(() =>
+                Client.WriteTextFileAsync(sessionId, ".mcp-gateway/operations/intruder.txt", "nope")
+            );
+
+            captured.Should().NotBeNull("the reserved prefix must refuse writes");
+            captured!.Kind.Should().Be(SandboxErrorKind.Authorization);
+
+            // The same content at an ordinary path is accepted, so the refusal is about the PREFIX and not
+            // about the write path being broken.
+            await Client.WriteTextFileAsync(sessionId, "intruder.txt", "nope");
+            (await Client.ReadTextFileAsync(sessionId, "intruder.txt")).Should().Be("nope");
+        }
+        finally
+        {
+            await Client.DeleteAsync(sessionId);
+        }
+    }
+
     [SkippableFact]
     public async Task File_WriteThenRead_RoundTripsExactUtf8()
     {
