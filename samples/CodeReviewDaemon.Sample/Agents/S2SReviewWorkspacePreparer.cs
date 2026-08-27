@@ -291,26 +291,21 @@ internal sealed class S2SReviewWorkspacePreparer
         return created.Id;
     }
 
-    /// <summary>Builds the HTTPS clone URL for the target repo from its identity + provider (mirrors the
-    /// daemon's own <c>TargetRemoteUrl</c>): ADO is <c>/{org}/{project}/_git/{repo}</c> on dev.azure.com;
-    /// GitHub is <c>/{owner}/{repo}.git</c> on github.com.
+    /// <summary>Builds the HTTPS clone URL for the target repo from its identity + provider: ADO is
+    /// <c>/{org}/{project}/_git/{repo}</c> on dev.azure.com; GitHub is <c>/{owner}/{repo}.git</c> on
+    /// github.com. Every name is percent-encoded (issue #472 item 2) — this string is handed to
+    /// <c>git clone</c> as an argv element and never becomes a <see cref="Uri"/> in this process, so the
+    /// reasoning that lets the C# HTTP callers skip encoding (<see cref="Uri.AbsoluteUri"/> escapes the path
+    /// when the request is built) has nothing to apply to, and an Azure DevOps org or project name with a
+    /// space raw makes the remote malformed.
     /// <para>
-    /// The ADO segments are URL-encoded (issue #472 item 2). This string is handed to <c>git clone</c> as an
-    /// argv element and never becomes a <see cref="Uri"/> in this process, so the reasoning that let the C#
-    /// HTTP callers skip encoding — <see cref="Uri.AbsoluteUri"/> escapes the path when the request is built
-    /// — has nothing to apply to. Azure DevOps org and project names may contain spaces, which raw make the
-    /// remote a malformed URL; encoding also keeps each name ONE path segment, so a separator inside a name
-    /// stays data rather than re-pointing the clone. The GitHub arm is left as-is deliberately: its owner and
-    /// repository names are restricted to <c>[A-Za-z0-9-_.]</c>, every character of which
-    /// <see cref="Uri.EscapeDataString(string)"/> passes through unchanged, so encoding there would be a
-    /// no-op that only obscured the asymmetry.
+    /// It delegates rather than spelling the URL itself (issue #478): the daemon's own <c>TargetRemoteUrl</c>
+    /// and the submodule ALLOW-LIST paths are built by the same <see cref="GitRemoteUrl"/> methods, and this
+    /// preparer clones the SAME repos. Two files that "mirror" each other's interpolation are exactly how the
+    /// encoded/raw split this issue exists to close was introduced — one of the two copies was fixed.
     /// </para></summary>
     private static string TargetRemoteUrl(RepoIdentity repo, string provider) =>
-        string.Equals(provider, "ado", StringComparison.Ordinal)
-            ? $"https://dev.azure.com/{Uri.EscapeDataString(repo.OrgOrOwner)}"
-                + $"/{Uri.EscapeDataString(repo.Project ?? string.Empty)}"
-                + $"/_git/{Uri.EscapeDataString(repo.RepoName)}"
-            : $"https://github.com/{repo.OrgOrOwner}/{repo.RepoName}.git";
+        GitRemoteUrl.CloneUrlFor(provider, repo.OrgOrOwner, repo.Project, repo.RepoName);
 }
 
 /// <summary>
