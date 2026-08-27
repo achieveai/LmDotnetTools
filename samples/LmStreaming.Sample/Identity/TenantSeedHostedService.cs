@@ -71,7 +71,33 @@ public sealed class TenantSeedHostedService : IHostedService
 
         foreach (var seed in options.SeedTenants)
         {
-            await ApplyAsync(seed, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await ApplyAsync(seed, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Caught for the same reason a malformed entry is skipped rather than thrown
+                // (see ApplyAsync): this runs inside StartAsync, so anything that escapes aborts
+                // the host. The seed list is a development convenience, and a convenience feature
+                // that can prevent boot is a liability - a transient SQLite lock on the identity
+                // database is enough.
+                //
+                // Inside the loop, not around it. A catch around the foreach would also stop the
+                // host aborting, and would silently drop every entry after the failing one, which
+                // is the "why did my tenant never appear" mystery the skip path above exists to
+                // prevent.
+                //
+                // OperationCanceledException is excluded because the token here is the host's own
+                // startup token: once it is cancelled the host is being torn down, and continuing
+                // to walk the list against a store that is going away turns an orderly shutdown
+                // into a run of failures.
+                _logger.LogError(
+                    ex,
+                    "Failed to apply the Identity:SeedTenants entry for {TenantId}; startup "
+                        + "continues without it.",
+                    seed.TenantId);
+            }
         }
     }
 

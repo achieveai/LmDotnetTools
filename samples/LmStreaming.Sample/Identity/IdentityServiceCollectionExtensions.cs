@@ -1,7 +1,9 @@
 using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using LmStreaming.Sample.Controllers;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.Extensions.Options;
 using Microsoft.Identity.Web;
 
 namespace LmStreaming.Sample.Identity;
@@ -9,6 +11,12 @@ namespace LmStreaming.Sample.Identity;
 /// <summary>Registers and wires the identity pipeline into the sample host.</summary>
 public static class IdentityServiceCollectionExtensions
 {
+    /// <summary>
+    /// The Entra app registration whose absence leaves no JWT bearer handler registered, and so no
+    /// interactive sign-in.
+    /// </summary>
+    public const string ClientIdConfigKey = $"{IdentityController.AzureAdSectionName}:ClientId";
+
     /// <summary>
     /// Registers the identity services: options, the tenant registry, the audit sink, the principal
     /// factory and accessor, the startup seed, and - only when an Entra app registration is
@@ -88,9 +96,14 @@ public static class IdentityServiceCollectionExtensions
     /// endpoints are mapped.
     /// </summary>
     /// <param name="app">The application pipeline.</param>
+    /// <exception cref="InvalidOperationException">
+    /// <c>Identity:Enforce</c> is on and no front door on this host can ever establish a principal.
+    /// </exception>
     public static IApplicationBuilder UseSampleIdentity(this IApplicationBuilder app)
     {
         ArgumentNullException.ThrowIfNull(app);
+
+        ValidateSomeFrontDoorExists(app.ApplicationServices);
 
         // Before authentication, and that ordering is the whole point (#342). A browser cannot put a
         // header on a WebSocket handshake, so the credential arrives in Sec-WebSocket-Protocol;
@@ -115,6 +128,85 @@ public static class IdentityServiceCollectionExtensions
     }
 
     /// <summary>
+    /// Refuses to build the pipeline when <c>Identity:Enforce</c> is on and nothing on this host can
+    /// ever produce a <see cref="Principal"/> (#350).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The failure being turned into a boot refusal is otherwise entirely silent. Enforcement with
+    /// no front door means <see cref="IdentityMiddleware"/> reaches its <c>principal is null</c>
+    /// branch on every guarded request and answers <c>401</c> - <c>403</c> on the <c>/ws</c>
+    /// transports - forever. Nothing logs a cause, and no credential a caller presents can change
+    /// the outcome, so the symptom an operator sees is a uniformly dead <c>/api</c> surface and a
+    /// client that cannot get past sign-in.
+    /// </para>
+    /// <para>
+    /// <b>The condition is "no front door", not "no <c>AzureAd:ClientId</c>".</b> An enforcing host
+    /// with no interactive sign-in at all is a legitimate deployment and is one the tests boot: a
+    /// service-only host authenticates through <see cref="ServiceCallerPrincipalSource"/>, and a host
+    /// with its own scheme registers an <see cref="IRequestPrincipalSource"/>. Refusing on the client
+    /// id alone would refuse both.
+    /// </para>
+    /// <para>
+    /// Read from the built container rather than from configuration, and here rather than in
+    /// <see cref="AddSampleIdentity"/>, because two of the three escapes are only visible once
+    /// registration has finished: an <see cref="IRequestPrincipalSource"/> the host adds AFTER
+    /// <c>AddSampleIdentity</c> returns, and the authentication scheme
+    /// <see cref="AddBearerAuthentication"/> registers conditionally. <c>SchemeMap</c> is the
+    /// discriminator for the latter: <c>AddAuthentication(scheme)</c> only sets a default scheme
+    /// NAME, and it is <c>AddMicrosoftIdentityWebApi</c> - reached only with a client id configured -
+    /// that adds the entry a handler is resolved from.
+    /// </para>
+    /// </remarks>
+    private static void ValidateSomeFrontDoorExists(IServiceProvider services)
+    {
+        var options = services.GetRequiredService<IOptions<IdentityOptions>>().Value;
+
+        // With enforcement off an unauthenticated request resolves to the development principal, so
+        // having no front door is the ordinary development path rather than a dead host.
+        if (!options.Enforce)
+        {
+            return;
+        }
+
+        if (services.GetRequiredService<IOptions<AuthenticationOptions>>().Value.SchemeMap.Count > 0)
+        {
+            return;
+        }
+
+        // Any source the host registered itself. ServiceCallerPrincipalSource is excluded because it
+        // is registered unconditionally, so counting it would make this test always true; whether IT
+        // can authenticate anyone is the configuration question asked below.
+        if (services.GetServices<IRequestPrincipalSource>().Any(source => source is not ServiceCallerPrincipalSource))
+        {
+            return;
+        }
+
+        // Both halves, because ServiceCallerPrincipalSource needs both: with no secret it returns
+        // null rather than admitting a caller on a header anyone can type, and with no registration
+        // carrying a TenantId it rejects the app id presented. A registration whose TenantId is blank
+        // is refused on the same branch as one that is absent, so it does not count as an onboarding.
+        var secretConfigured = !string.IsNullOrWhiteSpace(
+            services.GetRequiredService<IConfiguration>()[InboundS2SAuthAttribute.SecretConfigKey]);
+
+        if (secretConfigured
+            && options.Apps.Any(app => !string.IsNullOrWhiteSpace(app.Value?.TenantId)))
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            $"{IdentityOptions.SectionName}:Enforce is true, but no front door on this host can "
+                + "establish a principal, so every route inside the identity boundary would answer "
+                + "401 (403 on the /ws transports) and no credential a caller presents could change "
+                + $"that. Configure one of: {ClientIdConfigKey}, for interactive sign-in; "
+                + $"{InboundS2SAuthAttribute.SecretConfigKey} together with an "
+                + $"{IdentityOptions.SectionName}:Apps entry naming a TenantId, for service callers; "
+                + "or register an IRequestPrincipalSource of your own. Set "
+                + $"{IdentityOptions.SectionName}:Enforce to false to run without authentication.");
+    }
+
+    /// <summary>
     /// Registers the JWT bearer handler, but only when an Entra app registration is actually
     /// configured.
     /// </summary>
@@ -129,7 +221,7 @@ public static class IdentityServiceCollectionExtensions
     {
         var authenticationBuilder = services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme);
 
-        var clientId = configuration[$"{IdentityController.AzureAdSectionName}:ClientId"];
+        var clientId = configuration[ClientIdConfigKey];
         if (string.IsNullOrWhiteSpace(clientId))
         {
             return;

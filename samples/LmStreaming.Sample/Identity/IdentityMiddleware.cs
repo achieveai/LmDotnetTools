@@ -94,14 +94,21 @@ public sealed class IdentityMiddleware
     /// Endpoints under <see cref="ApiPathPrefix"/> that stay reachable while signed out. The
     /// identity config is here because the SPA must read it BEFORE it can sign in - gating it on
     /// being signed in is a deadlock. The tenant admin surface is here because it authenticates
-    /// with the operator secret instead of a user token, and health because a liveness probe has no
-    /// user.
+    /// with the operator secret instead of a user token.
     /// </summary>
+    /// <remarks>
+    /// Every entry must name a route this host actually maps. <c>/api/health</c> was listed here and
+    /// matched nothing: the sample maps no health endpoint, so the exemption granted nothing that
+    /// could be observed and no test could distinguish it from its own absence (#350). That is what
+    /// made it worth removing rather than leaving: <see cref="IsGuardedApiPath"/> matches an entry
+    /// with <c>StartsWithSegments</c>, so a reserved prefix covers the whole subtree beneath it the
+    /// moment a route lands there - and it would land there anonymous, silently, with no edit to
+    /// this list to review. Add the endpoint first if one is wanted, then the exemption.
+    /// </remarks>
     private static readonly string[] AnonymousApiPaths =
     [
         "/api/identity/config",
         "/api/admin/tenants",
-        "/api/health",
     ];
 
     /// <summary>
@@ -405,9 +412,27 @@ public sealed class IdentityMiddleware
         // Same body shape the S2S guard already answers with: a lowercase `error` label plus a
         // stable machine-readable `code`. The SPA chooses between "not signed in", "organisation
         // not set up" and "organisation suspended" from `code` alone.
-        var body = statusCode == StatusCodes.Status401Unauthorized
-            ? new { error = "unauthorized", code }
-            : new { error = "forbidden", code };
+        //
+        // Switched on the status rather than on "is it a 401", which labelled everything else
+        // "forbidden" - including the 503 PrincipalFactory returns when the tenant DIRECTORY is
+        // unreadable (PrincipalResolution.IdentityUnavailable). That refusal says nothing about the
+        // caller's authorization, and describing an outage as one points a client at the one remedy
+        // that cannot work: 503 means retry the same credential later, "forbidden" means do not.
+        // `unavailable` is the label the sample's other 503 already uses
+        // (OperatorSecretAuthAttribute), so this adds no new vocabulary.
+        //
+        // The default is reached by no status this middleware emits today (401, 403 and 503 are the
+        // only three), and exists so that adding a fourth cannot silently borrow a label that
+        // misdescribes it.
+        var error = statusCode switch
+        {
+            StatusCodes.Status401Unauthorized => "unauthorized",
+            StatusCodes.Status403Forbidden => "forbidden",
+            StatusCodes.Status503ServiceUnavailable => "unavailable",
+            _ => "error",
+        };
+
+        var body = new { error, code };
 
         await context.Response
             .WriteAsync(JsonSerializer.Serialize(body))

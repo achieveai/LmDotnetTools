@@ -110,4 +110,64 @@ public sealed class TenantSeedHostedServiceTests
 
         _ = _store.Provisioned.Should().BeEmpty();
     }
+
+    [Fact]
+    public async Task AStoreFailure_DoesNotStopTheHostFromStarting()
+    {
+        // #350 item 6. The malformed-entry path above was already logged-and-skipped on the stated
+        // ground that "a malformed entry must not stop the host from starting" - but the store call
+        // itself sat outside any try, so a transient SQLite lock propagated out of StartAsync and
+        // aborted the host. The same seed feature, on the same startup path, had one failure mode it
+        // survived and one it did not. A convenience feature that can prevent boot is a liability
+        // whichever way the failure arrives.
+        _store.ProvisionFailure = _ => new InvalidOperationException("database is locked");
+        var service = CreateService(OptionsWith(enforce: false, ValidSeed()));
+
+        await service.StartAsync(CancellationToken.None);
+
+        _ = _store.Provisioned.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task AStoreFailureOnOneEntry_StillAppliesTheRest()
+    {
+        // The clause that distinguishes a catch INSIDE the loop from a catch around it. Both stop
+        // the host aborting and would pass the test above; only one still provisions the entries
+        // after the failing one. Silently dropping the tail of an operator's seed list is the same
+        // "your tenant never appeared" mystery the skip path exists to prevent.
+        _store.ProvisionFailure = tenant =>
+            tenant.TenantId == "tnt_first" ? new InvalidOperationException("database is locked") : null;
+
+        var service = CreateService(
+            OptionsWith(
+                enforce: false,
+                SeedFor("tnt_first"),
+                SeedFor("tnt_second")));
+
+        await service.StartAsync(CancellationToken.None);
+
+        _ = _store.Provisioned.Should().ContainSingle().Which.TenantId.Should().Be("tnt_second");
+    }
+
+    [Fact]
+    public async Task ACancelledStartup_StillStops()
+    {
+        // The catch must not be broad enough to swallow shutdown. StartAsync's token is cancelled
+        // when the host is being torn down, and continuing to walk the seed list against a store
+        // that is going away turns an orderly shutdown into a run of failures.
+        _store.ProvisionFailure = _ => new OperationCanceledException();
+        var service = CreateService(OptionsWith(enforce: false, ValidSeed()));
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => service.StartAsync(CancellationToken.None));
+    }
+
+    private static SeedTenantOptions SeedFor(string tenantId) =>
+        new()
+        {
+            TenantId = tenantId,
+            EntraTenantId = EntraTenant,
+            DisplayName = tenantId,
+            FirstAdminUpn = "ada@dev.example",
+        };
 }
