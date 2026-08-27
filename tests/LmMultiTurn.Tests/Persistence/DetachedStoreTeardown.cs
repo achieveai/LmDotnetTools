@@ -91,8 +91,9 @@ internal static class DetachedStoreTeardown
     /// in-flight creator), then recursively deletes the detached copy.
     /// <para>
     /// Returns quietly if the root is already gone. Throws <see cref="IOException"/> if the root cannot be
-    /// detached after <see cref="DetachAttempts"/> tries, because the only reachable cause is a writer
-    /// still holding the tree and deleting it in place would reopen the #477 window.
+    /// detached after <see cref="DetachAttempts"/> tries: the cause worth finding is a writer still
+    /// holding the tree, and deleting it in place would reopen the #477 window. The thrown message names
+    /// the root and defers to the inner exception rather than asserting which handle was to blame.
     /// </para>
     /// <para>
     /// The delete of the DETACHED copy is best-effort, and that swallow is safe for a reason the detach
