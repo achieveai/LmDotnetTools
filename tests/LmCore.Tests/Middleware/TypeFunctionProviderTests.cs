@@ -537,6 +537,24 @@ public class TypeFunctionProviderTests
         Assert.Equal(legacy.Contract.ReturnType, signalled.Contract.ReturnType);
     }
 
+    [Fact]
+    public async Task Handler_AsyncFunctionResultReturn_ReportsTheErrorAndAdvertisesString()
+    {
+        // Task<FunctionResult> unwraps to the same string on the wire as the sync form, so it
+        // must describe itself the same way and carry the same error code.
+        var provider = new TypeFunctionProvider(new TestHandlerErrorSignalling());
+        var function = provider.GetFunctions().First(f => f.Contract.Name == "signalled-async");
+
+        Assert.Equal(typeof(string), function.Contract.ReturnType);
+
+        var result = await function.Handler("{}", new ToolCallContext(), CancellationToken.None);
+
+        var resolved = Assert.IsType<ToolHandlerResult.Resolved>(result);
+        Assert.True(resolved.Payload.IsError);
+        Assert.Equal("async_thing_not_found", resolved.Payload.ErrorCode);
+        Assert.Equal("Error: not found.", JsonSerializer.Deserialize<string>(resolved.Payload.Text));
+    }
+
     #endregion
 
     #region Test Classes
@@ -569,6 +587,12 @@ public class TypeFunctionProviderTests
         public FunctionResult NeverAssigned()
         {
             return default;
+        }
+
+        [Function("signalled-async", "Reports a failed operation from an async method")]
+        public Task<FunctionResult> SignalledAsync()
+        {
+            return Task.FromResult(FunctionResult.Error("async_thing_not_found", "Error: not found."));
         }
     }
 
