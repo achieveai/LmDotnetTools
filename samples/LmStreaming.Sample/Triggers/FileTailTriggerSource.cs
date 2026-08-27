@@ -287,7 +287,7 @@ public sealed class FileTailTriggerSource : ITriggerSource
     /// <remarks>
     /// Named for what it does. It was called <c>Redact</c>, which implied a privacy guarantee it has
     /// never provided — escaping angle brackets does not remove a bearer token. Privacy redaction is
-    /// <see cref="TriggerContentRedactor.Redact"/>, applied separately in
+    /// <see cref="TriggerContentRedactor.Redact(string)"/>, applied separately in
     /// <see cref="BuildPayload"/> (#161).
     /// </remarks>
     internal static string SanitizeEnvelopeContent(string line)

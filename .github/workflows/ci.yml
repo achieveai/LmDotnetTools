@@ -121,6 +121,11 @@ jobs:
       # separate optional group. Without that, `FROM python:3.10 AS builder` matched nothing and the
       # job failed with an error that named the symptom but not the cause (#480).
       #
+      # The failure message's `grep` is DIAGNOSTIC ONLY and is deliberately looser than the parse
+      # above: case-insensitive and tolerant of leading whitespace, so a `from python:3.10` or an
+      # indented one appears in the output instead of an empty `got:` that reads as "no FROM line at
+      # all". Loosening the parse itself is a separate question and not this one.
+      #
       # `tail -n1` — not `head -n1` — because in a multi-stage Dockerfile the image that actually
       # ships is the LAST stage. Taking the first `FROM python:` would certify the builder stage's
       # interpreter while the runtime stage ran a different one.
@@ -129,7 +134,7 @@ jobs:
         run: |
           version="$(sed -nE 's/^FROM[[:space:]]+python:([0-9]+\.[0-9]+)([.-][^[:space:]]*)?([[:space:]].*)?$/\1/p' Dockerfile | tail -n1)"
           if [ -z "$version" ]; then
-            echo "::error::Could not parse a 'FROM python:<major>.<minor>...' line from Dockerfile. Expected a line like 'FROM python:3.10-slim' or 'FROM python:3.10 AS builder'; got: $(grep -n '^FROM' Dockerfile | tr '\n' ' ')" >&2
+            echo "::error::Could not parse a 'FROM python:<major>.<minor>...' line from Dockerfile. Expected a line like 'FROM python:3.10-slim' or 'FROM python:3.10 AS builder'; got: $(grep -in '^[[:space:]]*FROM' Dockerfile | tr '\n' ' ')" >&2
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
