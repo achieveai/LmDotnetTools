@@ -225,7 +225,13 @@ public sealed class DaemonCorpusReaderTests : IDisposable
         AddContext(runId, "a diff");
         AddReview(runId, "a review");
 
-        var snapshot = await SnapshotAsync(Reader(modelId => modelId?.Split('/')[0]));
+        // A literal family keyed off the id, NOT a parsing rule: this pins that whatever the injected
+        // resolver answers reaches the candidate, which is the reader's job. Re-deriving a family here
+        // would test the resolver instead — that lives in ModelFamilyTests — and would leave a second
+        // copy of a family rule in the tree, which is the defect #456 closed.
+        var snapshot = await SnapshotAsync(
+            Reader(modelId => modelId == "openai/gpt-5" ? "openai" : null)
+        );
 
         Assert.Single(snapshot.Items).GeneratorFamily.Should().Be("openai");
     }
@@ -491,27 +497,6 @@ public sealed class DaemonCorpusReaderTests : IDisposable
             .Should()
             .BeEquivalentTo([$"{second}:primary"], "the first load's rows are behind the cursor");
     }
-
-    /// <summary>
-    /// The family resolver the daemon actually wires in. Every unclassifiable shape resolves to
-    /// <b>null</b> rather than to the id itself: null is recorded as <i>unknown</i> and segmented
-    /// out of the aggregates, where a bare id returned as its own family would be recorded as a
-    /// family that is not the judge's — the answer generator-family exclusion acts on. Guessing
-    /// here turns "we cannot classify this model" into "this model is safe to grade".
-    /// </summary>
-    [Theory]
-    [InlineData("openai/gpt-5", "openai")]
-    [InlineData("anthropic/claude-opus-4.5", "anthropic")]
-    [InlineData("openrouter/meta/llama-4", "openrouter")]
-    [InlineData(null, null)]
-    [InlineData("", null)]
-    [InlineData("   ", null)]
-    [InlineData("gpt-5", null)]
-    [InlineData("/gpt-5", null)]
-    public void The_provider_prefix_is_the_family_and_anything_else_is_unknown(
-        string? modelId,
-        string? expected
-    ) => DaemonCorpusReader.ProviderFamily(modelId).Should().Be(expected);
 
     /// <summary>
     /// Records <paramref name="count"/> reviewed runs, each with an input and a review.

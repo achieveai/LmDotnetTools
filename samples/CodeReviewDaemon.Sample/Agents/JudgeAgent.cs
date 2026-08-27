@@ -3,6 +3,7 @@ using AchieveAi.LmDotnetTools.LmEval;
 using AchieveAi.LmDotnetTools.LmEval.Aggregation;
 using AchieveAi.LmDotnetTools.LmEval.Judges;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using CodeReviewDaemon.Sample.Eval;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 
@@ -205,14 +206,68 @@ internal sealed class JudgeAgent
             : null;
 
     /// <summary>
+    /// The judge's model family, under the daemon's one family rule (<see cref="ModelFamilies"/>).
+    /// <para>
+    /// This used to be <see cref="JudgeRequest.Provider"/>, which is not a model family and not even
+    /// an LLM vendor: it is the <b>repo hosting provider</b> — <c>github</c> or <c>ado</c> — carried
+    /// on the request so the artifact can name where the PR lives. Recorded as a family it read as
+    /// one for every judge the daemon ran, so §7.1(2)'s exclusion compared a repo host against a
+    /// model vendor and never fired; and had a host ever shared a name with a vendor it would have
+    /// fired for no reason at all. Named and extracted so the derivation is assertable without
+    /// standing up an agent turn (#456).
+    /// </para>
+    /// <para>
+    /// A judge whose model id was never recorded resolves to
+    /// <see cref="ModelFamilies.Unresolved"/> rather than to any stand-in that might match something:
+    /// the sentinel cannot equal a derived family, so it arms no exclusion. Refuse to guess.
+    /// </para>
+    /// </summary>
+    /// <param name="request">The judge request being graded.</param>
+    internal static string JudgeFamilyOf(JudgeRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        return ModelFamilies.Of(request.JudgeModelId) ?? ModelFamilies.Unresolved;
+    }
+
+    /// <summary>
+    /// Stand-in for a judge whose model id the run never recorded. <c>IJudge.ModelId</c> is
+    /// non-nullable, so something must be written; this says plainly that nothing was, rather than
+    /// naming a value — such as the repo hosting provider, which is what stood here — that a reader
+    /// would take for the model that issued the grade.
+    /// </summary>
+    internal const string UnrecordedModelId = "unrecorded/model";
+
+    /// <summary>
+    /// The judge's model id, or <see cref="UnrecordedModelId"/> when the run recorded none.
+    /// </summary>
+    /// <param name="request">The judge request being graded.</param>
+    internal static string JudgeModelIdOf(JudgeRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        return string.IsNullOrWhiteSpace(request.JudgeModelId)
+            ? UnrecordedModelId
+            : request.JudgeModelId;
+    }
+
+    /// <summary>
     /// Runs the already-collected reply through the harness: no gates (v1 grades whatever the
     /// review stage produced) and one judge, whose prompt renderer is the identity so the bytes the
     /// model actually saw are the bytes recorded, not a re-render of them.
     /// <para>
-    /// <see cref="Candidate.GeneratorFamily"/> is left null on purpose, and NOT derived from
-    /// <see cref="JudgeRequest.GeneratorModelId"/>: a family is not a model id, no production resolver
-    /// maps one to the other, and a guessed family would arm §7.1(2)'s exclusion rule against a value
-    /// nothing verified. Whether the judge is independent of the generator is recorded as
+    /// <see cref="Candidate.GeneratorFamily"/> is left null on purpose, and still NOT derived from
+    /// <see cref="JudgeRequest.GeneratorModelId"/> — but the reason has changed, so it is restated
+    /// rather than left standing (#456). It used to be that no production resolver mapped a model id
+    /// to a family; <see cref="ModelFamilies.Of"/> now does, and this agent calls it for the judge's
+    /// own side. The reason it is not called for the generator's is that arming §7.1(2)'s exclusion
+    /// here would break this recorder rather than protect it: this is a deliberately single-judge
+    /// harness, so any candidate whose generator matched the judge's family would leave zero eligible
+    /// judges and every self-graded run would come back <c>NoDecision</c> instead of a grade. The
+    /// exclusion belongs to the eval runner reading this corpus, where a panel exists to lose a member
+    /// from.
+    /// <br/>
+    /// Whether the judge is independent of the generator is therefore still recorded as
     /// <see cref="JudgeArtifactPayload.SelfGraded"/> — a statement of fact about this run — rather than
     /// asserted here as a property the harness would then act on (#322).
     /// </para>
@@ -236,8 +291,8 @@ internal sealed class JudgeAgent
             new RubricJudgeOptions
             {
                 JudgeId = "revobot-judge",
-                ModelId = request.Provider,
-                ModelFamily = request.Provider,
+                ModelId = JudgeModelIdOf(request),
+                ModelFamily = JudgeFamilyOf(request),
                 PromptRenderer = static (c, _, _) => c.Content,
             },
             (_, _) => Task.FromResult(reply)

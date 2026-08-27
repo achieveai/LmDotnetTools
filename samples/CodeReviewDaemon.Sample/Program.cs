@@ -952,18 +952,15 @@ if (daemonOptions.StrandedRunGraceHours > 0)
 // and advances a cursor in poll_cursor. It rides the poller's maintenance tick, behind its own
 // interval — that tick fires every thirty seconds, which is the right cadence for what it was built
 // for and far too hot for a pass over a window of recorded history.
-var evalSweepInterval = TimeSpan.FromMinutes(daemonOptions.EvalCorpusSweepIntervalMinutes);
-if (evalSweepInterval > TimeSpan.Zero)
+// Both refusals live in EvalSweepConfiguration, with the section and key named, rather than here:
+// this is a top-level program, so a refusal written inline runs for the first time in a real
+// deployment. They are also refusals EvalCorpusSweep's own guards cannot make — that one throws on
+// `limit`, an argument no operator ever passed.
+// Called unconditionally, so a configuration it refuses stops the host whether or not the sweep
+// would have been registered.
+if (EvalSweepConfiguration.Resolve(daemonOptions) is { } evalSweep)
 {
-    // Refused here, with the configuration key named, rather than left to EvalCorpusSweep's own
-    // guard: that one throws on `limit`, an argument no operator ever passed.
-    if (daemonOptions.EvalCorpusSweepWindow <= 0)
-    {
-        throw new InvalidOperationException(
-            $"{CodeReviewDaemonOptions.SectionName}:{nameof(CodeReviewDaemonOptions.EvalCorpusSweepWindow)} "
-            + "must be positive when a sweep interval is configured; a window of zero would make every "
-            + "sweep report an empty corpus while the store fills up.");
-    }
+    var (evalSweepInterval, evalSweepWindow) = evalSweep;
 
     builder.Services.AddSingleton(sp =>
     {
@@ -972,14 +969,16 @@ if (evalSweepInterval > TimeSpan.Zero)
 
         var sweep = new EvalCorpusSweep(
             // The read the grade lookup needs, and the whole of what this consumer wants from
-            // persistence. The sweep caches it per run for the length of one pass.
-            store.GetArtifacts,
+            // persistence: judge rows only, filtered in SQL, so the review-context diff this pass
+            // would discard is never materialised (#453). Memoised for the last run read, which is
+            // all the memory a window's worth of contiguous candidates needs.
+            EvalCorpusSweep.GradeArtifactReader(store),
             new DaemonCorpusReader(
                 store,
-                DaemonCorpusReader.ProviderFamily,
+                ModelFamilies.Of,
                 loggerFactory.CreateLogger<DaemonCorpusReader>()),
             new EvalCorpusWatermark(store, loggerFactory.CreateLogger<EvalCorpusWatermark>()),
-            daemonOptions.EvalCorpusSweepWindow,
+            evalSweepWindow,
             loggerFactory.CreateLogger<EvalCorpusSweep>());
 
         return new EvalCorpusSweepSchedule(
@@ -1006,29 +1005,44 @@ builder.Services.AddHostedService(sp => new PrPollingService(
     // so it observes the state this cycle's polls left behind, and the eval sweep runs last because it
     // only reads: nothing downstream of it depends on when in the cycle it happened.
     sweepAsync: ComposeMaintenanceSweep(
-        sp.GetService<PrLifecycleSweeper>() is { } lifecycleSweeper ? lifecycleSweeper.SweepAsync : null,
-        sp.GetService<DeepLinkRetentionSweeper>() is { } retentionSweeper ? retentionSweeper.SweepAsync : null,
-        sp.GetService<StrandedRunReconciler>() is { } strandedReconciler ? strandedReconciler.SweepAsync : null,
-        sp.GetService<EvalCorpusSweepSchedule>() is { } evalSweep ? evalSweep.SweepAsync : null)));
+        ("PR-lifecycle", sp.GetService<PrLifecycleSweeper>() is { } lifecycleSweeper ? lifecycleSweeper.SweepAsync : null),
+        ("deep-link retention", sp.GetService<DeepLinkRetentionSweeper>() is { } retentionSweeper ? retentionSweeper.SweepAsync : null),
+        ("stranded-run", sp.GetService<StrandedRunReconciler>() is { } strandedReconciler ? strandedReconciler.SweepAsync : null),
+        ("eval-corpus", sp.GetService<EvalCorpusSweepSchedule>() is { } evalCorpusSweep ? evalCorpusSweep.SweepAsync : null))));
 
 // Chains the optional maintenance sweeps into the poller's single seam, in the order they were introduced:
 // the lifecycle sweep first, so its today's-semantics timing is unchanged by the sweeps landing behind it.
 // The poller already wraps the whole seam in its own try/catch, so a throwing sweep skips the rest of THIS
 // cycle and all of them are retried on the next one — harmless against a 24-hour ceiling checked every
 // 30 seconds.
-static Func<CancellationToken, Task>? ComposeMaintenanceSweep(params Func<CancellationToken, Task>?[] sweeps)
+//
+// Each sweep is NAMED, and a failure is rethrown carrying its name (#455 item 5). The poller's log line
+// said "PR-lifecycle sweep failed" for whichever of the four threw, which was true when there was one and
+// now sends an operator to the wrong component three times out of four. The name is attached here because
+// this is the only place that knows which delegate is which. Wrapping is unconditional — a single
+// registered sweep is named too — and cancellation is passed through untouched, so a clean shutdown is
+// still told from a failure by type rather than logged as an error.
+static Func<CancellationToken, Task>? ComposeMaintenanceSweep(
+    params (string Name, Func<CancellationToken, Task>? Sweep)[] sweeps)
 {
-    var present = sweeps.Where(s => s is not null).Select(s => s!).ToArray();
-    if (present.Length <= 1)
+    var present = sweeps.Where(s => s.Sweep is not null).ToArray();
+    if (present.Length == 0)
     {
-        return present.FirstOrDefault();
+        return null;
     }
 
     return async ct =>
     {
-        foreach (var sweep in present)
+        foreach (var (name, sweep) in present)
         {
-            await sweep(ct).ConfigureAwait(false);
+            try
+            {
+                await sweep!(ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                throw new MaintenanceSweepException(name, ex);
+            }
         }
     };
 }

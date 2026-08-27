@@ -521,6 +521,99 @@ public sealed class ReviewStoreTests
         store.TryGetLatestArtifact(runId, "review-provisional").Should().BeNull();
     }
 
+    /// <summary>
+    /// The kind-filtered listing #453 asks for. <c>GetArtifacts</c> materialises every payload a run
+    /// holds, and the largest of them by far is <c>review-context</c> — the whole diff, as a .NET
+    /// string. The eval sweep wants judge rows and discards the rest, so it was paying for a diff per
+    /// run to find a grade; <c>TryGetLatestArtifact</c> could not serve it because the sweep needs
+    /// every judge row of a run, not the newest one.
+    /// </summary>
+    [Fact]
+    public void ListArtifacts_returns_only_the_kinds_asked_for_in_append_order()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var runId = SeedRun(store);
+
+        _ = store.AddArtifact(SampleArtifact(runId, "review-context", "{\"diff\":\"a very large diff\"}"));
+        _ = store.AddArtifact(SampleArtifact(runId, "judge", "{\"n\":1}"));
+        _ = store.AddArtifact(SampleArtifact(runId, "review", "{\"text\":\"a review\"}"));
+        _ = store.AddArtifact(SampleArtifact(runId, "judge", "{\"n\":2}"));
+
+        var judged = store.ListArtifacts(runId, "judge");
+
+        judged.Select(a => a.ArtifactKind).Should().AllBe("judge");
+        judged.Select(a => a.Payload).Should().ContainInOrder("{\"n\":1}", "{\"n\":2}");
+        judged.Should().HaveCount(2, "every judge row of the run, not just the newest");
+    }
+
+    [Fact]
+    public void ListArtifacts_takes_more_than_one_kind()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var runId = SeedRun(store);
+
+        _ = store.AddArtifact(SampleArtifact(runId, "review-context", "{\"diff\":\"big\"}"));
+        _ = store.AddArtifact(SampleArtifact(runId, "judge", "{\"n\":1}"));
+        _ = store.AddArtifact(SampleArtifact(runId, "b-variant-review", "{\"text\":\"b\"}"));
+
+        store
+            .ListArtifacts(runId, "judge", "b-variant-review")
+            .Select(a => a.ArtifactKind)
+            .Should()
+            .ContainInOrder("judge", "b-variant-review");
+    }
+
+    /// <summary>
+    /// The unfiltered listing is untouched by #453 — every other reader of this table still walks the
+    /// whole run, and the corpus reader genuinely wants the diff.
+    /// </summary>
+    [Fact]
+    public void ListArtifacts_does_not_change_what_the_unfiltered_listing_returns()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var runId = SeedRun(store);
+
+        _ = store.AddArtifact(SampleArtifact(runId, "review-context", "{\"diff\":\"big\"}"));
+        _ = store.AddArtifact(SampleArtifact(runId, "judge", "{\"n\":1}"));
+
+        _ = store.ListArtifacts(runId, "judge");
+
+        store.GetArtifacts(runId).Should().HaveCount(2);
+    }
+
+    /// <summary>
+    /// No kinds is refused rather than answered. An empty <c>IN ()</c> matches nothing, so the query
+    /// would return an empty list — indistinguishable from "this run recorded nothing", which for the
+    /// sweep means every candidate of the run silently counts as ungraded.
+    /// </summary>
+    [Fact]
+    public void ListArtifacts_refuses_an_empty_kind_list_rather_than_matching_nothing()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var runId = SeedRun(store);
+        _ = store.AddArtifact(SampleArtifact(runId, "judge", "{\"n\":1}"));
+
+        var list = () => store.ListArtifacts(runId);
+
+        list.Should().Throw<ArgumentException>().WithMessage("*at least one artifact kind*");
+    }
+
+    [Fact]
+    public void ListArtifacts_refuses_a_blank_kind()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var runId = SeedRun(store);
+
+        var list = () => store.ListArtifacts(runId, "judge", "   ");
+
+        list.Should().Throw<ArgumentException>();
+    }
+
     private static ReviewArtifact SampleArtifact(long runId, string kind, string payload) => new()
     {
         ReviewRunId = runId,

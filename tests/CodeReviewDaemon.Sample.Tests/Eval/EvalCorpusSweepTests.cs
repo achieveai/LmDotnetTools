@@ -1,4 +1,6 @@
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmEval;
+using AchieveAi.LmDotnetTools.LmEval.Corpus;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Eval;
@@ -169,8 +171,11 @@ public sealed class EvalCorpusSweepTests : IDisposable
         ILogger<EvalCorpusSweep>? logger = null
     ) =>
         new(
-            readArtifacts ?? _store.GetArtifacts,
-            new DaemonCorpusReader(_store, modelId => modelId?.Split('/')[0]),
+            // The production binding by default, so every case below runs over the rows the daemon
+            // actually hands the sweep — judge rows only (#453) — rather than over a listing no
+            // deployment uses.
+            readArtifacts ?? EvalCorpusSweep.GradeArtifactReader(_store),
+            new DaemonCorpusReader(_store, ModelFamilies.Of),
             new EvalCorpusWatermark(_store),
             limit,
             logger
@@ -477,6 +482,43 @@ public sealed class EvalCorpusSweepTests : IDisposable
     }
 
     /// <summary>
+    /// A judge row whose payload is the literal JSON <c>null</c> reaches the same branch by a
+    /// different route, and says so (#455 item 5).
+    /// <para>
+    /// It deserialised <b>successfully</b>, to nothing — the row was written empty. The behaviour is
+    /// right either way (no grade, and the search stops rather than promoting a superseded one), but
+    /// reporting it as "did not deserialize" with no exception beside it sends an operator looking
+    /// for a parser bug that is not there.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_judge_row_written_as_a_literal_null_is_reported_as_empty_not_as_unreadable()
+    {
+        var runId = Reviewed("118", "src/Foo.cs:1 is wrong.");
+
+        AddV2Judge(runId, score: 8);
+        AddRawArtifact(
+            runId,
+            JudgeAgent.JudgeArtifactSchemaVersion,
+            JudgeAgent.JudgeArtifactKind,
+            "null"
+        );
+
+        var logger = new CapturingLogger<EvalCorpusSweep>();
+        var report = await Sweep(logger: logger).SweepOnceAsync(CancellationToken.None);
+
+        report.UngradedCandidates.Should().Be(1, "the behaviour is unchanged: no grade, and the 8 is not resurrected");
+        logger
+            .WarningCount("literal JSON null")
+            .Should()
+            .Be(1, "the row parsed; what it carries is nothing");
+        logger
+            .WarningCount("did not deserialize")
+            .Should()
+            .Be(0, "there was no parse failure and no exception to name one");
+    }
+
+    /// <summary>
     /// The non-vacuity half: with no corrupt row in the way, the newest readable grade IS reported.
     /// Without this, "always ungraded" satisfies the case above.
     /// </summary>
@@ -538,6 +580,180 @@ public sealed class EvalCorpusSweepTests : IDisposable
         // whichever arm was judged last. Both arms keep their own grade.
         report.ScoredCandidates.Should().Be(2);
         report.MeanRecordedScore.Should().Be(6.5, "(9 + 4) / 2 — each arm on its own row");
+    }
+
+    /// <summary>
+    /// The sweep never sees a <c>review-context</c> payload (#453).
+    /// <para>
+    /// This defect is invisible in the report — the numbers are byte-identical whether the reader
+    /// filtered in SQL or in memory — so the only assertable fact is what the reader handed over.
+    /// The run below records every kind the daemon writes, including a diff, and the production
+    /// reader returns judge rows and nothing else. Reintroducing an unfiltered listing here fails
+    /// this and nothing else in the suite.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task The_grade_lookup_is_never_handed_a_review_context_diff()
+    {
+        var runId = Reviewed("118", "src/Foo.cs:1 is wrong.");
+        AddArtifact(
+            runId,
+            1,
+            VariantReviewer.VariantReviewArtifactKind,
+            new VariantReviewArtifactPayload("b", "anthropic/claude", "the B review", "run-2")
+        );
+        AddV2Judge(runId, score: 7);
+
+        var production = EvalCorpusSweep.GradeArtifactReader(_store);
+        var seen = new List<ReviewArtifact>();
+
+        var report = await Sweep(
+                readArtifacts: id =>
+                {
+                    var artifacts = production(id);
+                    seen.AddRange(artifacts);
+                    return artifacts;
+                }
+            )
+            .SweepOnceAsync(CancellationToken.None);
+
+        seen.Should().NotBeEmpty("a vacuous pass here would prove nothing about the filter");
+        seen.Select(a => a.ArtifactKind)
+            .Should()
+            .AllBe(
+                JudgeAgent.JudgeArtifactKind,
+                "the sweep grades judge rows; the diff it would discard stays in SQLite"
+            );
+
+        // Non-vacuity on the other side: the run really does hold the payloads that were filtered
+        // out, so an unfiltered read would have carried them.
+        _store
+            .GetArtifacts(runId)
+            .Select(a => a.ArtifactKind)
+            .Should()
+            .Contain(DaemonReviewStageExecutor.ContextArtifactKind);
+
+        report.ScoredCandidates.Should().Be(1, "filtering must not cost the sweep its grade");
+    }
+
+    /// <summary>
+    /// The memo remembers exactly ONE run, and this is the test that says so out loud (#455).
+    /// <para>
+    /// A map keyed by run id gives the same read count as a single-entry memo only because
+    /// <see cref="DaemonCorpusReader"/> adds both of a run's candidate arms inside one iteration of
+    /// its own loop, so a run's candidates are contiguous in the snapshot. That contiguity is what
+    /// makes the memo free, and it is a property of a different class — so it is asserted here from
+    /// the outside: hand the sweep a snapshot in which a run's candidates are <b>not</b> contiguous,
+    /// and the memo re-reads. A map would not, and would grow with the window instead: at the default
+    /// window of a thousand runs that is a thousand retained artifact lists, each carrying a
+    /// <c>review-context</c> diff.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task The_artifact_memo_holds_one_run_not_the_whole_window()
+    {
+        var reads = new List<long>();
+
+        var sweep = new EvalCorpusSweep(
+            runId =>
+            {
+                reads.Add(runId);
+                return [];
+            },
+            new InterleavedCorpusReader([(1L, "primary"), (2L, "primary"), (1L, "b")]),
+            new EvalCorpusWatermark(_store)
+        );
+
+        var report = await sweep.SweepOnceAsync(CancellationToken.None);
+
+        report.CandidateCount.Should().Be(3);
+        reads
+            .Should()
+            .Equal(
+                [1L, 2L, 1L],
+                "the memo holds the LAST run only, so a run revisited after another is read again"
+            );
+    }
+
+    /// <summary>
+    /// The memo is scoped to one sweep and not to the sweep object (#455 item 2).
+    /// <para>
+    /// The doc has always said the scoping matters — "a cached artifact list held across sweeps would
+    /// hide a re-judge recorded between them" — and nothing made it true: hoisting the memo to an
+    /// instance field went green on the whole suite. This is that sentence as an input. The window is
+    /// rewound between the two sweeps so the same run is genuinely inside both, which is the only
+    /// arrangement in which a per-instance memo is reachable at all.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_re_judge_recorded_between_two_sweeps_is_read_by_the_second()
+    {
+        var runId = Reviewed("118", "src/Foo.cs:1 is wrong.");
+        AddV2Judge(runId, score: 8);
+
+        var sweep = Sweep();
+
+        (await sweep.SweepOnceAsync(CancellationToken.None))
+            .MeanRecordedScore.Should()
+            .Be(8.0);
+
+        // Re-judged after the first sweep read this run's artifacts.
+        AddV2Judge(runId, score: 3);
+
+        // Rewind the window so the same run is inside the second sweep too. Written through the
+        // watermark rather than by reaching into the sweep, because the window living in the store
+        // is exactly what makes this reachable in production: a redeploy from a restored database
+        // resumes behind rows a long-lived sweep object has already read.
+        new EvalCorpusWatermark(_store).Save(EvalCorpusSweep.CorpusId, 0);
+
+        var second = await sweep.SweepOnceAsync(CancellationToken.None);
+
+        second
+            .MeanRecordedScore.Should()
+            .Be(3.0, "the re-judge supersedes the grade the first sweep read");
+    }
+
+    /// <summary>
+    /// A snapshot whose candidates are deliberately NOT grouped by run — the arrangement the memo's
+    /// single entry is measured against. It reads no store: the run ids are metadata, and the grade
+    /// lookup is what the test is watching.
+    /// </summary>
+    private sealed class InterleavedCorpusReader(IReadOnlyList<(long RunId, string VariantId)> items)
+        : ICorpusReader
+    {
+        public Task<CorpusPage> LoadAsync(
+            string corpusId,
+            long afterCursor,
+            int limit,
+            CancellationToken cancellationToken
+        ) =>
+            Task.FromResult(
+                new CorpusPage
+                {
+                    Snapshot = CorpusSnapshot.Create(
+                        corpusId,
+                        [
+                            .. items.Select(item => new Candidate
+                            {
+                                CandidateId = $"{item.RunId}:{item.VariantId}",
+                                TaskType = DaemonCorpusReader.CodeReviewTaskType,
+                                TaskInput = "a diff",
+                                Content = "a review",
+                                VariantId = item.VariantId,
+                                Metadata = new Dictionary<string, string>(StringComparer.Ordinal)
+                                {
+                                    [DaemonCorpusReader.ReviewRunIdMetadataKey] =
+                                        item.RunId.ToString(
+                                            System.Globalization.CultureInfo.InvariantCulture
+                                        ),
+                                },
+                            }),
+                        ]
+                    ),
+                    NextCursor = afterCursor,
+                    Truncated = false,
+                }
+            );
     }
 
     // ---- the finding-level signal ----------------------------------------------------------------

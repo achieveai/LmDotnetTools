@@ -291,7 +291,14 @@ public sealed record EvalBaseline
 
         // Ahead of the gate bound for the reason the comparer gives: a faulted item holds no verdict
         // at all where a gate-impaired item still produced one, so when both break the judge outage
-        // is the strictly larger loss and the cause worth naming. FaultRate is a plain double, never
+        // is the strictly larger loss and the cause worth naming.
+        //
+        // Ahead of the coverage floor for a sharper version of the same reason, and that pair is the
+        // one most likely to arise: a faulted item yields no score, so a run whose judges faulted is
+        // thin BY CONSTRUCTION and breaches the floor as a side effect of the outage. The floor would
+        // report it as thin without saying that a judge outage is why — infrastructure failure read
+        // as a property of the run, which is the misreading this machinery exists to prevent.
+        // FaultRate is a plain double, never
         // null — a run with no faults has a rate of 0.0, which is a measurement and not an absence,
         // because FaultedCount counts rows this run definitely holds no verdict for.
         if (run.FaultRate > maxFaultRate)

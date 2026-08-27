@@ -293,6 +293,38 @@ public class BaselineSourceBoundsTests
     }
 
     /// <summary>
+    /// Fault bound ahead of the coverage <b>floor</b> — the pair the three adjacent pins above cannot
+    /// speak to (#455).
+    /// <para>
+    /// Both fault tests set a floor the run clears, so the floor could not fire and a two-position
+    /// move of the fault check below the coverage check went green on the whole suite. A run whose
+    /// judges faulted is <i>also</i> thin by construction — a faulted item holds no verdict, so it
+    /// yields no score and leaves coverage — which makes the floor the check most likely to preempt
+    /// the fault refusal in practice, and the one whose ordering was least pinned.
+    /// </para>
+    /// <para>
+    /// The faults are the cause worth naming: the floor would report the run as thin without saying
+    /// that a judge outage is why it is thin, which is the exact misreading — infrastructure failure
+    /// read as a property of the run — this whole refusal machinery exists to prevent.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void A_run_that_faulted_below_its_coverage_floor_is_refused_for_the_faults()
+    {
+        var outage = FaultedRun(faulted: 10, size: 20);
+
+        outage.FaultRate.Should().Be(0.5, "both bounds must genuinely break or the order is untested");
+        outage.Coverage.Should().Be(0.5);
+        outage
+            .InconclusiveGateRate.Should()
+            .BeNull("nothing gates here, so the gate bound cannot be what refuses this");
+
+        var freeze = () => EvalBaseline.From("base-1", outage, minCoverage: 0.9);
+
+        freeze.Should().Throw<ArgumentException>().WithMessage("*fault rate*");
+    }
+
+    /// <summary>
     /// Gate bound ahead of the coverage floor, mirroring <see cref="BaselineComparer"/>: the floor
     /// names only the symptom, and it cannot see a gate outage at any severity — an inconclusive
     /// gate does not block, so every impaired item still scores and coverage never moves for that

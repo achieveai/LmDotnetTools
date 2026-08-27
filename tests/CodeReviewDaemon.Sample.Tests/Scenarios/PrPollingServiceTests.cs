@@ -259,6 +259,100 @@ public sealed class PrPollingServiceTests : LoggingTestBase
 
     // ── fixtures ──────────────────────────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Four sweeps share the poller's one maintenance seam, and its failure line named the first of
+    /// them for all four (#455 item 5). An operator reading "PR-lifecycle sweep failed" while the eval
+    /// corpus sweep was the one throwing looks in the wrong component first — and the wrong component
+    /// looks healthy, because it is.
+    /// </summary>
+    [Fact]
+    public async Task A_failing_maintenance_sweep_is_logged_by_name()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var logger = new CapturingLogger<PrPollingService>();
+        var poller = BuildPoller(
+            store,
+            new MockPrProvider(Provider, [], NextCursor()),
+            logger,
+            _ => throw new MaintenanceSweepException("eval-corpus", new IOException("the store is gone")));
+
+        var kept = await poller.RunMaintenanceSweepAsync(CancellationToken.None);
+
+        kept.Should().BeTrue("a failed sweep is logged, never a reason to stop the poller");
+        logger
+            .CountAtLevel(LogLevel.Error, "The eval-corpus maintenance sweep failed")
+            .Should()
+            .Be(1);
+        logger
+            .CountAtLevel(LogLevel.Error, "PR-lifecycle")
+            .Should()
+            .Be(0, "the sweep that threw is the one named, not the first one ever chained here");
+        logger
+            .CountAtLevelWithExceptionText(LogLevel.Error, "the store is gone")
+            .Should()
+            .Be(1, "the cause is still carried, not replaced by the name");
+    }
+
+    /// <summary>
+    /// A sweep that was never composed through the named seam — every hand-rolled one in this suite —
+    /// still logs, with the name honestly absent rather than guessed at.
+    /// </summary>
+    [Fact]
+    public async Task An_unnamed_sweep_failure_still_logs_rather_than_escaping()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var logger = new CapturingLogger<PrPollingService>();
+        var poller = BuildPoller(
+            store,
+            new MockPrProvider(Provider, [], NextCursor()),
+            logger,
+            _ => throw new InvalidOperationException("raw"));
+
+        (await poller.RunMaintenanceSweepAsync(CancellationToken.None)).Should().BeTrue();
+
+        logger.CountAtLevel(LogLevel.Error, "The unnamed maintenance sweep failed").Should().Be(1);
+    }
+
+    /// <summary>
+    /// Shutdown is told from failure by type: a cancelled sweep stops the loop and is not an error
+    /// line. Without this, wrapping every throw in a named exception would turn every clean stop into
+    /// a logged failure.
+    /// </summary>
+    [Fact]
+    public async Task A_sweep_cancelled_by_shutdown_stops_the_loop_without_an_error_line()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        using var stopping = new CancellationTokenSource();
+        await stopping.CancelAsync();
+
+        var logger = new CapturingLogger<PrPollingService>();
+        var poller = BuildPoller(
+            store,
+            new MockPrProvider(Provider, [], NextCursor()),
+            logger,
+            ct => throw new OperationCanceledException(ct));
+
+        var kept = await poller.RunMaintenanceSweepAsync(stopping.Token);
+
+        kept.Should().BeFalse("the caller's loop has to stop");
+        logger.CountAtLevel(LogLevel.Error, "maintenance sweep failed").Should().Be(0);
+    }
+
+    private PrPollingService BuildPoller(
+        ReviewStore store,
+        IPrProvider provider,
+        ILogger<PrPollingService> logger,
+        Func<CancellationToken, Task> sweepAsync)
+    {
+        var orchestrator = new PrOrchestrator(store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
+        var target = new PrPollTarget { Provider = Provider, Repo = SampleRepo(), Scope = Scope };
+        return new PrPollingService(
+            [target], [provider], store, orchestrator, logger, sweepAsync: sweepAsync);
+    }
+
     private PrPollingService BuildPoller(ReviewStore store, IPrProvider provider)
     {
         var orchestrator = new PrOrchestrator(store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());

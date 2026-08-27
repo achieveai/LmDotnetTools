@@ -2,6 +2,7 @@ using AchieveAi.LmDotnetTools.LmEval;
 using AchieveAi.LmDotnetTools.LmEval.Corpus;
 using AchieveAi.LmDotnetTools.LmEval.Findings;
 using CodeReviewDaemon.Sample.Agents;
+using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 
 namespace CodeReviewDaemon.Sample.Eval;
@@ -125,6 +126,38 @@ internal sealed class EvalCorpusSweep
     /// </summary>
     private const int LastAmbiguousJudgeSchemaVersion = 1;
 
+    /// <summary>
+    /// The artifact kinds one sweep actually grades. Named here rather than at the composition root
+    /// because this class is the only thing that knows the answer — <see cref="RecordedGrade"/> reads
+    /// judge rows and nothing else, and the finding-level signal comes off the candidate's own
+    /// content, not off an artifact.
+    /// </summary>
+    public static readonly string[] GradedArtifactKinds = [JudgeAgent.JudgeArtifactKind];
+
+    /// <summary>
+    /// The production <see cref="ReviewArtifactReader"/>: a kind-filtered listing over the store,
+    /// asking for <see cref="GradedArtifactKinds"/> only (#453).
+    /// <para>
+    /// <c>ReviewStore.GetArtifacts</c> returns every payload a run holds, and the largest of them by
+    /// far is <c>review-context</c> — the whole diff, as a .NET string. The sweep reads it, filters
+    /// it out and discards it, once per run, for every run in the window. Filtering in SQL means the
+    /// diff is never materialised on this path at all.
+    /// </para>
+    /// <para>
+    /// A named factory rather than a lambda at the composition root, so the binding a test exercises
+    /// and the binding the daemon runs are the same one. That matters here specifically: the defect
+    /// this closes is invisible in the sweep's output — the report is byte-identical either way — so
+    /// the only thing a test can assert is <i>what the reader handed over</i>.
+    /// </para>
+    /// </summary>
+    /// <param name="store">The daemon's review store.</param>
+    public static ReviewArtifactReader GradeArtifactReader(ReviewStore store)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+
+        return reviewRunId => store.ListArtifacts(reviewRunId, GradedArtifactKinds);
+    }
+
     private readonly ReviewArtifactReader _readArtifacts;
     private readonly ICorpusReader _reader;
     private readonly EvalCorpusWatermark _watermark;
@@ -133,7 +166,7 @@ internal sealed class EvalCorpusSweep
 
     /// <summary>Builds the sweep.</summary>
     /// <param name="readArtifacts">
-    /// Reads a run's recorded artifacts; in production <c>ReviewStore.GetArtifacts</c>.
+    /// Reads the artifacts this sweep grades; in production <see cref="GradeArtifactReader"/>.
     /// </param>
     /// <param name="reader">The corpus reader; in production <see cref="DaemonCorpusReader"/>.</param>
     /// <param name="watermark">Where the window edge is kept between sweeps.</param>
@@ -156,29 +189,44 @@ internal sealed class EvalCorpusSweep
     }
 
     /// <summary>
-    /// This sweep's read-through cache of <see cref="ReviewArtifactReader"/>, one entry per run.
+    /// This sweep's memo of <see cref="ReviewArtifactReader"/>, holding the <b>last</b> run read and
+    /// nothing else.
     /// <para>
     /// One run yields two candidates over the same input — the primary arm and the collect-only B
-    /// arm — and the grade lookup ran once per candidate against a read that returns the run's
-    /// <b>whole</b> artifact list, <c>review-context</c> diff included. At a window of a thousand
-    /// runs that is thousands of full diffs materialised out of SQLite to find a judge row already
-    /// in hand. Scoped to the sweep and not to the instance: a cached artifact list held across
-    /// sweeps would hide a re-judge recorded between them.
+    /// arm — and the grade lookup ran once per candidate against a read that returns the run's whole
+    /// artifact list. At a window of a thousand runs that was thousands of reads to find judge rows
+    /// already in hand.
+    /// </para>
+    /// <para>
+    /// <b>One entry, not a map.</b> <see cref="DaemonCorpusReader"/> adds both of a run's candidate
+    /// arms inside ONE iteration of its own loop, so a run's candidates are contiguous in the
+    /// snapshot and a single entry gives the identical read count — with memory that does not grow
+    /// with the window. A map keyed by run id would retain one artifact list per run in the window
+    /// for the length of the sweep, duplicating what <see cref="CorpusSnapshot"/> already holds; the
+    /// window is an operator knob whose comment describes a work bound, so a memory bound hiding
+    /// behind it is a bound nobody set. Contiguity is a property of another class, so it is asserted
+    /// from the outside rather than assumed: a snapshot that interleaves two runs re-reads, and a
+    /// test says so.
+    /// </para>
+    /// <para>
+    /// Scoped to the sweep and not to the instance: an artifact list held across sweeps would hide a
+    /// re-judge recorded between them, and the sweep object outlives every one of its passes.
     /// </para>
     /// </summary>
-    private sealed class ArtifactCache(ReviewArtifactReader read)
+    private sealed class ArtifactMemo(ReviewArtifactReader read)
     {
-        private readonly Dictionary<long, IReadOnlyList<ReviewArtifact>> _byRun = [];
+        private long _reviewRunId;
+        private IReadOnlyList<ReviewArtifact>? _artifacts;
 
         public IReadOnlyList<ReviewArtifact> For(long reviewRunId)
         {
-            if (!_byRun.TryGetValue(reviewRunId, out var artifacts))
+            if (_artifacts is null || _reviewRunId != reviewRunId)
             {
-                artifacts = read(reviewRunId);
-                _byRun[reviewRunId] = artifacts;
+                _artifacts = read(reviewRunId);
+                _reviewRunId = reviewRunId;
             }
 
-            return artifacts;
+            return _artifacts;
         }
     }
 
@@ -224,7 +272,7 @@ internal sealed class EvalCorpusSweep
     private EvalSweepReport Summarise(long from, CorpusPage page)
     {
         var candidates = page.Snapshot?.Items ?? [];
-        var artifacts = new ArtifactCache(_readArtifacts);
+        var artifacts = new ArtifactMemo(_readArtifacts);
 
         var findingCount = 0;
         var anchoredFindingCount = 0;
@@ -295,7 +343,7 @@ internal sealed class EvalCorpusSweep
     /// history the corpus covers. Marked here and excluded from the mean, never averaged.
     /// </para>
     /// </summary>
-    private RecordedJudgeGrade? RecordedGrade(Candidate candidate, ArtifactCache artifacts)
+    private RecordedJudgeGrade? RecordedGrade(Candidate candidate, ArtifactMemo artifacts)
     {
         if (
             !candidate.Metadata.TryGetValue(
@@ -346,14 +394,34 @@ internal sealed class EvalCorpusSweep
                 // Ungraded is the honest report. The three-way split below exists precisely so a
                 // missing grade is not read as a bad one, and one unreadable row still costs this
                 // candidate its grade rather than the sweep its window.
-                _logger?.LogWarning(
-                    failure,
-                    "Judge artifact {ArtifactId} for review run {ReviewRunId} did not deserialize; "
-                        + "its candidate counts as ungraded rather than inheriting the grade this "
-                        + "row superseded.",
-                    artifact.Id,
-                    reviewRunId
-                );
+                //
+                // TWO different inputs reach this branch and they are not the same event. A payload
+                // that threw carries a failure and is a row nothing can read; a payload of literal
+                // `null` deserialised perfectly, to nothing — the row was written empty. Reporting
+                // the second as "did not deserialize", with no exception beside it, sends an
+                // operator looking for a parser bug that is not there.
+                if (failure is null)
+                {
+                    _logger?.LogWarning(
+                        "Judge artifact {ArtifactId} for review run {ReviewRunId} holds a literal "
+                            + "JSON null, so it records no grade at all; its candidate counts as "
+                            + "ungraded rather than inheriting the grade this row superseded.",
+                        artifact.Id,
+                        reviewRunId
+                    );
+                }
+                else
+                {
+                    _logger?.LogWarning(
+                        failure,
+                        "Judge artifact {ArtifactId} for review run {ReviewRunId} did not "
+                            + "deserialize; its candidate counts as ungraded rather than inheriting "
+                            + "the grade this row superseded.",
+                        artifact.Id,
+                        reviewRunId
+                    );
+                }
+
                 return null;
             }
 
