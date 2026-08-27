@@ -153,6 +153,46 @@ public sealed class PrPollTargetBuilderTests : LoggingTestBase
         act.Should().Throw<InvalidOperationException>().WithMessage("*owner/re?po*");
     }
 
+    /// <summary>
+    /// Issue #491 requires the refusal to identify the offending configured element. A blank entry has no
+    /// content to quote back, so the INDEX is the only thing that can point an operator at it — with three
+    /// entries configured, a message that merely said "contains an empty entry" would leave them checking all
+    /// three. The whitespace case additionally needs its raw value QUOTED: unquoted, "   " renders as a gap and
+    /// the operator cannot tell a blank entry from a truncated message.
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("\t")]
+    public void ValidateEnabledRepos_refuses_a_blank_entry_naming_its_index_and_raw_value(string blank)
+    {
+        var options = new CodeReviewDaemonOptions
+        {
+            EnabledRepos = ["achieveai/LmDotnetTools", "contoso/Platform/widgets", blank],
+        };
+
+        var act = () => PrPollTargetBuilder.ValidateEnabledRepos(options);
+
+        var message = act.Should().Throw<InvalidOperationException>().Which.Message;
+        message.Should().Contain("EnabledRepos[2]", "the operator needs the index of the offending element");
+        message.Should().Contain($"'{blank}'", "the raw value must be quoted so whitespace is visible");
+    }
+
+    [Fact]
+    public void ValidateEnabledRepos_names_the_index_of_a_blank_segment_inside_an_entry()
+    {
+        // "owner/ /repo": three segments, the middle one whitespace-only. Quoting is what makes it legible.
+        var options = new CodeReviewDaemonOptions { EnabledRepos = ["owner/ /repo"] };
+
+        var act = () => PrPollTargetBuilder.ValidateEnabledRepos(options);
+
+        var message = act.Should().Throw<InvalidOperationException>().Which.Message;
+        message.Should().Contain("EnabledRepos[0]");
+        message.Should().Contain("owner/ /repo", "the entry itself must be named");
+        message.Should().Contain("position 1", "the operator needs which segment failed");
+        message.Should().Contain("' '", "the blank segment's raw value must be quoted");
+    }
+
     [Fact]
     public void ValidateEnabledRepos_accepts_a_spaced_ado_org_and_project()
     {

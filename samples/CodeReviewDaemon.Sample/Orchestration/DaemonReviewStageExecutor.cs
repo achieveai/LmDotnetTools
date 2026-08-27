@@ -403,8 +403,11 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         if (_options.UseS2SReviewAgent)
         {
             // Returning null here is also the reason there is no daemon-side write-scope filter to keep in step:
-            // on S2S the reviewer's ONLY writable surface is the review lease's sandbox mount (the leased slot),
-            // not any tool allow-list this method could build. The write-scope enforcement point is that mount.
+            // an in-process filter could not wrap the hosted agent's Write/Edit anyway. Note that the mount is
+            // NOT the substitute boundary — the design's R1 resolution records that a per-path read-only mount
+            // is unavailable, so repos/<Repo> stays writable. What bounds the reviewer is that such writes never
+            // persist: CommitPooledNotesAsync stages only stagePaths: [lease.NotesRelPath], no write credential
+            // enters the agent session, and SlotHygiene erases the rest of the slot before reuse.
             await EnsureGatewaySkillSupportAsync(run, cancellationToken).ConfigureAwait(false);
             return null;
         }
@@ -430,9 +433,11 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 return null;
             }
 
-            // The agent's tool set is bounded to the read-only allow-list. Write-scoping is not a tool-filter
-            // concern: where the reviewer may write is bounded by the review lease's sandbox mount, not by any
-            // allow-list carried on this context.
+            // ReadOnlyToolAllowList travels as DATA on this context; ReadOnlyToolFilter, which would apply it,
+            // has no production caller (see ReviewToolContext). Write-scoping is not carried here either, and
+            // not because a mount replaces it: writes outside the notes dir are simply ineffective — the commit
+            // gate stages only stagePaths: [lease.NotesRelPath], the write credential stays out of the agent
+            // session, and SlotHygiene wipes the remainder of the slot.
             return new ReviewToolContext(
                 GatewayBaseUrl: _gatewayBaseUrl
                     ?? Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY")

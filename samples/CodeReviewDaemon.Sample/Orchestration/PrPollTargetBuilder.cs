@@ -16,29 +16,40 @@ internal static class PrPollTargetBuilder
 {
     /// <summary>
     /// Refuses daemon startup, naming the offending entry, when any <see cref="CodeReviewDaemonOptions.EnabledRepos"/>
-    /// entry is malformed. <see cref="Build"/> encodes segments consistently (issue #478/#485), but encoding is
-    /// not validation: a value with an empty segment or an embedded <c>/ ? # %</c> still yields a syntactically
-    /// valid URL that silently polls the wrong repo (or nothing). Config is operator-controlled, so this is a
-    /// loud-at-load gap, not a security hole — this method makes it loud at the same point every other daemon
-    /// option is validated, rather than logged-and-skipped after the daemon is already up.
+    /// entry is malformed. <see cref="Build"/> does NOT encode anything — it splits an entry and stores the raw
+    /// segments on <see cref="RepoIdentity"/>; encoding happens downstream, in
+    /// <c>GitRemoteUrl.RepoPathFor</c> (the clone URL + the submodule allow rule, issue #478/#485) and in
+    /// <c>DaemonReviewStageExecutor.BuildPromptVariables</c> (<c>Uri.EscapeDataString</c> for the REST URLs the
+    /// agent runs through <c>curl</c>). Encoding downstream is not validation either way: a value with an empty
+    /// segment or an embedded <c>/ ? # %</c> still yields a syntactically valid URL that silently polls the
+    /// wrong repo (or nothing). Config is operator-controlled, so this is a loud-at-load gap, not a security
+    /// hole — this method makes it loud at the same point every other daemon option is validated, rather than
+    /// logged-and-skipped after the daemon is already up.
     /// <para>
     /// An entry must split into exactly 2 (<c>owner/repo</c>) or 3 (<c>org/project/repo</c>) segments, each
     /// non-empty and free of <c>? # %</c>. A <c>/</c> inside a name cannot survive the split, so it surfaces
     /// here as an empty segment or a wrong segment count. Spaces are allowed — a legitimate Azure DevOps org or
-    /// project name may contain them, and <see cref="Build"/> percent-encodes them.
+    /// project name may contain them, and every downstream consumer escapes them (<c>GitRemoteUrl.RepoPathFor</c>
+    /// percent-encodes each segment; <c>System.Uri</c> escapes a space in the <c>AdoPrProvider</c> REST path).
+    /// </para>
+    /// <para>
+    /// Every diagnostic names the offending element by its configuration INDEX and quotes its raw value, so an
+    /// operator can go straight to <c>CodeReviewDaemon:EnabledRepos:{i}</c>. The quotes matter for the blank
+    /// case: a whitespace-only entry is invisible unrendered, and an unquoted message would just show a gap.
     /// </para>
     /// </summary>
     public static void ValidateEnabledRepos(CodeReviewDaemonOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
 
-        foreach (var entry in options.EnabledRepos)
+        for (var i = 0; i < options.EnabledRepos.Count; i++)
         {
+            var entry = options.EnabledRepos[i];
             if (string.IsNullOrWhiteSpace(entry))
             {
                 throw new InvalidOperationException(
-                    "CodeReviewDaemon:EnabledRepos contains an empty entry; expected 'owner/repo' or "
-                    + "'org/project/repo'.");
+                    $"CodeReviewDaemon:EnabledRepos[{i}] is blank or whitespace-only (raw value: {Render(entry)}); "
+                    + "expected 'owner/repo' or 'org/project/repo'.");
             }
 
             // Split WITHOUT RemoveEmptyEntries so an embedded '/' (an empty segment) is caught here rather than
@@ -48,29 +59,37 @@ internal static class PrPollTargetBuilder
             if (segments.Length is not (2 or 3))
             {
                 throw new InvalidOperationException(
-                    $"CodeReviewDaemon:EnabledRepos entry '{entry}' has {segments.Length} segment(s); expected "
+                    $"CodeReviewDaemon:EnabledRepos[{i}] '{entry}' has {segments.Length} segment(s); expected "
                     + "'owner/repo' (2) or 'org/project/repo' (3).");
             }
 
-            foreach (var segment in segments)
+            for (var s = 0; s < segments.Length; s++)
             {
+                var segment = segments[s];
                 if (string.IsNullOrWhiteSpace(segment))
                 {
                     throw new InvalidOperationException(
-                        $"CodeReviewDaemon:EnabledRepos entry '{entry}' has an empty segment; every "
-                        + "owner/org/project/repo name must be non-empty.");
+                        $"CodeReviewDaemon:EnabledRepos[{i}] '{entry}' has a blank segment at position {s} "
+                        + $"(raw value: {Render(segment)}); every owner/org/project/repo name must be non-empty.");
                 }
 
                 var bad = segment.IndexOfAny(['?', '#', '%']);
                 if (bad >= 0)
                 {
                     throw new InvalidOperationException(
-                        $"CodeReviewDaemon:EnabledRepos entry '{entry}' has a segment containing '{segment[bad]}'; "
+                        $"CodeReviewDaemon:EnabledRepos[{i}] '{entry}' has a segment containing '{segment[bad]}'; "
                         + "owner/org/project/repo names may not contain '? # %' (a '/' is the segment separator).");
                 }
             }
         }
     }
+
+    /// <summary>
+    /// Renders a rejected value so it is still legible when it is empty or pure whitespace: quoted, so the
+    /// operator sees the extent of a run of spaces, and an explicit <c>&lt;null&gt;</c> rather than empty
+    /// quotes when the configured element is absent entirely.
+    /// </summary>
+    private static string Render(string? value) => value is null ? "<null>" : $"'{value}'";
 
     public static IReadOnlyList<PrPollTarget> Build(CodeReviewDaemonOptions options, ILogger logger)
     {

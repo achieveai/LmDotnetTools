@@ -51,9 +51,16 @@ internal sealed class AdoPrProvider : IPrProvider
         // org/project/repo are interpolated into a URL that becomes a System.Uri when SendAsync runs it. Uri
         // escapes a space in a segment, but NOT the delimiters '/' '?' '#' inside one — a '/' would open a new
         // path segment, a '?' start the query, a '#' the fragment, each silently addressing a different resource.
-        // That is safe here only because Azure DevOps forbids '/' in org/project/repo names (issue #492 item 3);
-        // a future provider with laxer naming rules could not inherit this safety claim without encoding the
-        // segments up front (as GitRemoteUrl.RepoPathFor does for the git/allow-list side).
+        // All three are excluded before the value ever reaches here, and by two different mechanisms, so neither
+        // alone is the whole reason:
+        //   '/'      — cannot survive PrPollTargetBuilder's split; an embedded one shows up as an empty segment
+        //              or a wrong segment count, and ValidateEnabledRepos refuses startup on both (issue #491).
+        //   '?', '#' — carried through the split intact, so ValidateEnabledRepos rejects them explicitly by
+        //              character (alongside '%', which would otherwise smuggle any of the three back in).
+        // Azure DevOps also forbids these in org/project/repo names (issue #492 item 3), but that is a property
+        // of the upstream service, not something this code enforces — a future provider with laxer naming rules
+        // would still be covered by the validator, and would only need encoding here if it ALSO widened what
+        // ValidateEnabledRepos accepts (as GitRemoteUrl.RepoPathFor encodes for the git/allow-list side).
         var baseUrl =
             $"{BaseUrl}/{org}/{project}/_apis/git/repositories/{repo}/pullrequests"
             + $"?searchCriteria.status=active&api-version={ApiVersion}";
