@@ -2,17 +2,40 @@
 
 * Status: Accepted
 * Date: 2026-08-10
-* Related issues, PRs, or commits: `scratchPad/developer-learnings-spec.md` §6, §8
+* Related issues, PRs, or commits: epic #526 item 14 (issue #47); commit `448dfaa0` (#539, #560);
+  ported under issue #553 from PR #451
 
 > **Status note (2026-08-28, on porting into `main` under issue #553).** Accepted but not yet
-> implemented: `ResolutionConfidence`, `ExposureStalenessDays` and `CohortDropThreshold` do not exist
-> on `main`, and neither does any smoothing or resolution-probability code (epic #526 item 14, issue
-> #47). The exposure source named in the Decision — `ReviewSubAgentNode.Template` plus `Status` — has
-> no counterpart on `main`; the nearest live type is `ReviewFindingReconciler.ReviewFindingSource`,
-> which carries `Label`, `Template` and `OwnText` but no status. An implementation must re-derive its
-> exposure seam rather than assume the named one. Originally numbered ADR 0014 on
-> `daemon/review-reliability-and-pr-coverage`; renumbered to 0017 because `main` had already
-> allocated 0014.
+> implemented — though the split between what exists and what does not runs through the middle of
+> this record, so it is worth stating precisely.
+>
+> **The exposure seam the Decision names is live on `main` and already exercised.**
+> `ReviewSubAgentNode` carries both fields the Decision keys on — `Status` and `Template` —
+> at `samples/CodeReviewDaemon.Sample/Agents/ReviewSubAgentCompletion.cs:39` (`:44`, `:46`), and the
+> `ReviewSubAgentStatus` enum (`:22-29`) includes the `Completed` value the Decision reads exposure
+> from. The settled roster is reachable at review time: `ReviewSubAgentTreeSnapshot` (`:128`), its
+> `AllSettled`/`IsSettled` predicates (`:371`, `:379`), and
+> `DaemonReviewStageExecutor.AwaitSubAgentSettlementAsync`, which by contract returns the settled
+> roster itself rather than only its rendered inventory. An implementation should build on that seam,
+> not re-derive one.
+>
+> **What is absent is everything that would consume it as exposure — the arithmetic.**
+> `ResolutionConfidence`, `ExposureStalenessDays` and `CohortDropThreshold` do not exist on `main`,
+> and no smoothing, resolution-probability or cohort-guard code does either: `laplace`, `smooth`,
+> `cohort` and `unjudgeable` have zero `.cs` hits repository-wide. Nor does the `DeveloperLearnings`
+> subtree that would hold the per-pattern history these rates are computed over (epic #526 item 14,
+> issue #47).
+>
+> **Two citations were corrected on the way in, because as authored neither resolved from `main`.**
+> The reconciler commit in the Decision was cited by its sha on
+> `daemon/review-reliability-and-pr-coverage`, reachable only from that branch (PR #451); it now
+> reads `448dfaa0`, the sha the same work carries on `main` (#539, #560). The record's sole "Related"
+> reference was `scratchPad/developer-learnings-spec.md` §6, §8 — a local working file that was never
+> committed to any branch, `scratchPad/*` being git-ignored, so its §-references cannot be followed
+> by anyone; it is replaced above by references that resolve.
+>
+> Originally numbered ADR 0014 on `daemon/review-reliability-and-pr-coverage`; renumbered to 0017
+> because `main` had already allocated 0014.
 
 ## Context
 
@@ -50,12 +73,12 @@ overnight. Nothing in a single developer's history can distinguish that from rea
 **Every rate, window and streak in this system is measured in exposed PRs — never in calendar days
 and never in all PRs.** Exposure is the set of specialist templates that ran and reached `Completed`
 on a PR, taken from the settled roster (`ReviewSubAgentNode.Template` plus `Status`). It is
-code-derived, consistent with ADR 0015.
+code-derived, consistent with [ADR 0015](0015-model-classifies-daemon-counts.md).
 
 **Hits are deduplicated by `patternId` within a PR.** One occurrence per pattern per PR, mandatory.
 
 **Only findings that survived into the shipped review count.** Using the reconciler from
-`101f76c9`: `kept`, `severity-changed`, `reframed` and `merged-into` count; `dropped` does not. A
+`448dfaa0`: `kept`, `severity-changed`, `reframed` and `merged-into` count; `dropped` does not. A
 finding the lead reviewer threw out is not evidence of a developer mistake.
 
 **Rates are Laplace-smoothed**, over the window from a pattern's first hit to its last hit
@@ -106,7 +129,8 @@ is unnamed cannot be checked.
 
 The regression rate is this system's own quality check. A high rate of patterns returning after
 resolution means `ResolutionConfidence` is set too loose. That check only works because nothing is
-ever moved or deleted (ADR 0016); it is the concrete payoff of that decision.
+ever moved or deleted ([ADR 0016](0016-developer-learnings-append-only-ledger.md)); it is the
+concrete payoff of that decision.
 
 Thresholds are configuration, not constants, and every rendered view states the thresholds in force.
 Changing one silently would invalidate comparisons across the history it is applied to.

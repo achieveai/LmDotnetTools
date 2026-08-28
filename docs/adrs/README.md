@@ -82,7 +82,10 @@ together with their slugs.
 * [0018 — Route improvement feedback to the producer, never to the judge](0018-feedback-to-producer-not-judge.md)
 
 Records 0015–0018 are the first ADRs covering `samples/CodeReviewDaemon.Sample`'s own architecture.
-Earlier records name that component only where it consumes a host or gateway decision (0001, 0002,
-0005). They were authored on `daemon/review-reliability-and-pr-coverage` as 0012–0015 and renumbered
+Earlier records name that component only in passing: where it consumes a host or gateway decision
+(`0001-route-gateway-access-through-sandbox-sdk`, `0002-lifecycle-event-wire-contract`,
+`0005-service-to-service-lifecycle-delivery`), or as one row of a test inventory
+(`0012-wall-clock-discriminating-test-inventory`). They were authored on
+`daemon/review-reliability-and-pr-coverage` as 0012–0015 and renumbered
 on the way in, because `main` had allocated 0012–0014 meanwhile; each carries a status note saying so
 and saying how much of it `main` implements today.

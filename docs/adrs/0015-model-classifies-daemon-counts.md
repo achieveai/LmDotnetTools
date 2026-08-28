@@ -2,15 +2,27 @@
 
 * Status: Accepted
 * Date: 2026-08-10
-* Related issues, PRs, or commits: `scratchPad/developer-learnings-spec.md` §2, commit `101f76c9`
+* Related issues, PRs, or commits: epic #526 item 14 (issue #47); commit `448dfaa0` (#539, #560);
+  ported under issue #553 from PR #451
 
 > **Status note (2026-08-28, on porting into `main` under issue #553).** The repository-wide rule in
 > the Decision section is in force on `main` today: `ReviewFindingReconciler` computes every review
 > outcome (`Kept`, `SeverityChanged`, `Reframed`, `MergedInto`, `Dropped`) in code from text the
-> daemon already holds. The DeveloperLearnings specifics named below are forward-looking — that
-> subtree is not implemented on `main` (epic #526 item 14, issue #47). Originally numbered ADR 0012
-> on `daemon/review-reliability-and-pr-coverage`; renumbered to 0015 because `main` had already
-> allocated 0012.
+> daemon already holds, and the commit cited below for that corrective — `448dfaa0` — is on `main`.
+> The DeveloperLearnings specifics named below are forward-looking — that subtree is not implemented
+> on `main` (epic #526 item 14, issue #47).
+>
+> **Two citations were corrected on the way in, because as authored neither resolved from `main`.**
+> The reconciler commit was cited by its sha on `daemon/review-reliability-and-pr-coverage`, which is
+> reachable only from that branch (PR #451) and would resolve to nothing once it is deleted; every
+> occurrence now reads `448dfaa0`, the sha the same work carries on `main` (#539, #560). The record's
+> sole "Related" reference was `scratchPad/developer-learnings-spec.md` §2 — a local working file
+> that was never committed to any branch, `scratchPad/*` being git-ignored, so its §-references
+> cannot be followed by anyone; the reference is replaced above by ones that resolve, and this record
+> is meant to be read standalone.
+>
+> Originally numbered ADR 0012 on `daemon/review-reliability-and-pr-coverage`; renumbered to 0015
+> because `main` had already allocated 0012.
 
 ## Context
 
@@ -29,7 +41,7 @@ wrong. The record simply becomes fiction at a rate nobody can measure.
 This is not a hypothesis about models in general. It is the same shape this repository has now
 measured three times on this daemon: capability delivered to the model by prompt is used at
 approximately zero rate (0/422, 0/158, 0/26 across three separate capabilities), while every
-equivalent capability wired in code works. Commit `101f76c9` already applied the corrective to
+equivalent capability wired in code works. Commit `448dfaa0` already applied the corrective to
 review reconciliation — every outcome there is computed by the daemon from text it already holds,
 and nothing asks the model to self-report.
 
@@ -84,7 +96,7 @@ findings, so nothing is unrecoverable; but a run can legitimately produce fewer 
 That must be rendered, not hidden.
 
 This rule is stated here as a repository-wide record, not a DeveloperLearnings detail. It already
-governs review reconciliation (`101f76c9`) and it should govern the next accumulating artifact
+governs review reconciliation (`448dfaa0`) and it should govern the next accumulating artifact
 without being re-argued. A future feature that asks the model for a derived value is contradicting
 an accepted decision and needs a superseding ADR.
 

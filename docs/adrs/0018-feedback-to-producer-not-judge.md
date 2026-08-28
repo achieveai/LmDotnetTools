@@ -2,7 +2,8 @@
 
 * Status: Accepted
 * Date: 2026-08-10
-* Related issues, PRs, or commits: `scratchPad/developer-learnings-spec.md` §14
+* Related issues, PRs, or commits: epic #526 item 14 (issue #47); ported under issue #553 from
+  PR #451
 
 > **Status note (2026-08-28, on porting into `main` under issue #553).** The decision stands, but the
 > removal it records has **not** landed on `main`. All four things the Decision says are gone still
@@ -12,6 +13,12 @@
 > profiles, so the loop still has never run. `AtCloseExtractionSeam.Combine` is present with its
 > `Wrote > Failed > Declined` precedence unchanged. Read this as an accepted decision awaiting
 > execution alongside epic #526 item 14 (issue #47), not as a description of the current tree.
+>
+> One citation was corrected on the way in: this record's sole "Related" reference was
+> `scratchPad/developer-learnings-spec.md` §14 — a local working file that was never committed to any
+> branch, `scratchPad/*` being git-ignored, so its §-references cannot be followed by anyone; it is
+> replaced above by references that resolve from `main`.
+>
 > Originally numbered ADR 0015 on `daemon/review-reliability-and-pr-coverage`; renumbered to 0018
 > because `main` had already allocated 0012–0014 and this record's three companions shifted with it.
 
@@ -35,7 +42,8 @@ Reviewer-side injection creates a self-reinforcing loop:
 3. It therefore finds more null-guard issues on that author's PRs than on anyone else's.
 4. The count rises, which strengthens the instruction.
 
-Both consequences are fatal to the measurement in ADR 0017. Counts stop being comparable between
+Both consequences are fatal to the measurement in
+[ADR 0017](0017-resolution-from-absence-over-exposed-prs.md). Counts stop being comparable between
 developers, because each developer's reviewer was primed differently — the cohort baseline the
 guard depends on is no longer a baseline. And `Resolved` becomes nearly unreachable for any pattern
 already in the file, because the review is hunting for exactly the thing whose absence it is
@@ -58,7 +66,8 @@ needed. `PrependDeveloperFeedbackAsync` and `MaxDeveloperFeedbackChars` go with 
 
 **Reviewer-side injection is not to be re-added.** A future change that gives the reviewer a
 developer's history is contradicting an accepted decision and needs a superseding ADR that explains
-what it does to ADR 0017's comparability and resolution properties.
+what it does to [ADR 0017](0017-resolution-from-absence-over-exposed-prs.md)'s comparability and
+resolution properties.
 
 Phase 2 injects `checklist.md` into the **coding agent** instead. `checklist.md` is deliberately
 built in phase 1, under 40 lines, even though consumption is out of scope this round: a 400-line
@@ -84,7 +93,8 @@ rediscovered:
 
 ## Consequences
 
-The measurement in ADR 0017 stays sound. Counts remain comparable across developers because every
+The measurement in [ADR 0017](0017-resolution-from-absence-over-exposed-prs.md) stays sound. Counts
+remain comparable across developers because every
 developer's reviewer saw the same instructions, and `Resolved` remains reachable because nothing is
 searching for the absence it is meant to establish. This is the decision that makes the numbers mean
 anything.

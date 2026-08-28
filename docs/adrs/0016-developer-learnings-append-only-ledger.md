@@ -2,7 +2,8 @@
 
 * Status: Accepted
 * Date: 2026-08-10
-* Related issues, PRs, or commits: `scratchPad/developer-learnings-spec.md` §4, §5, §6, §9
+* Related issues, PRs, or commits: epic #526 item 14 (issue #47); ported under issue #553 from
+  PR #451
 
 > **Status note (2026-08-28, on porting into `main` under issue #553).** Accepted but not yet
 > implemented: no `DeveloperLearnings/` tree, `observations/`, `patterns/` or rendered views exist on
@@ -11,9 +12,15 @@
 > describes — it is `KnowledgeIndexRegenerator.IsDevelopersDirectory`, called from
 > `KnowledgeAgent.cs:467` and `:510`; and `MergeToDefaultAsync` lives on `ReviewBranchManager`, used
 > by `KnowledgeExtractionCommitter` for the existing `KnowledgeBase/` route. The shipping gate on the
-> `KnowledgeAgent` scope check therefore remains open. Originally numbered ADR 0013 on
-> `daemon/review-reliability-and-pr-coverage`; renumbered to 0016 because `main` had already
-> allocated 0013.
+> `KnowledgeAgent` scope check therefore remains open.
+>
+> A third citation was corrected on the way in: this record's sole "Related" reference was
+> `scratchPad/developer-learnings-spec.md` §4, §5, §6, §9 — a local working file that was never
+> committed to any branch, `scratchPad/*` being git-ignored, so its §-references cannot be followed
+> by anyone; it is replaced above by references that resolve from `main`.
+>
+> Originally numbered ADR 0013 on `daemon/review-reliability-and-pr-coverage`; renumbered to 0016
+> because `main` had already allocated 0013.
 
 ## Context
 
@@ -29,7 +36,7 @@ merge. Retries do not help; the conflict is structural.
 
 **Auditability.** A single rewritten or appended file makes it impossible to answer "which PR
 produced this count", which is the first question anyone asks when a number looks wrong. It is also
-the question ADR 0015 exists to keep answerable.
+the question [ADR 0015](0015-model-classifies-daemon-counts.md) exists to keep answerable.
 
 **Archival.** The intuitive way to show progress is to move resolved patterns into an archive
 directory. That is a trap. Regression — a resolved pattern that comes back — is the single
