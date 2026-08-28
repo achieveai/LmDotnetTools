@@ -455,6 +455,18 @@ if (daemonOptions.EnableAdoProvider)
         sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("ado"),
         sp.GetRequiredService<AdoOAuthProvider>(),
         sp.GetRequiredService<ILogger<AdoReviewCommentPublisher>>()));
+
+    // What the PR was ASKED to do — its linked work items, walked up to the Epic — injected into the review
+    // brief by DaemonReviewStageExecutor (ActivatorUtilities picks this up through the optional constructor
+    // parameter, so a GitHub-only daemon that never registers it simply gets null and renders no block).
+    // The reviewer had no route to this, and not by accident of model behaviour: the capability was offered
+    // in the PROMPT while across 644 observed review sub-agent spawns ZERO carried a tool that could reach
+    // ADO. Doing it here, in code, is what makes it happen at all. Same concrete AdoOAuthProvider as above,
+    // for the same reason.
+    builder.Services.AddSingleton(sp => new AdoWorkItemContextReader(
+        sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("ado"),
+        sp.GetRequiredService<AdoOAuthProvider>(),
+        sp.GetRequiredService<ILogger<AdoWorkItemContextReader>>()));
 }
 
 // Host-side git authenticates to every OAuth provider the daemon is signed in to — GitHub for github.com

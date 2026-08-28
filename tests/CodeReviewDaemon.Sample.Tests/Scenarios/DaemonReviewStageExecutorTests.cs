@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Net;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
@@ -10,6 +11,7 @@ using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
@@ -1684,6 +1686,194 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         JsonDocument.Parse(judge.Payload).RootElement.GetProperty("Score").GetInt32().Should().Be(8);
     }
 
+    /// <summary>
+    /// The acceptance case for issue #541, asserted on the brief AS COMPOSED — the exact text the review
+    /// agent is handed, read off the loop the executor actually created, not off the renderer that produced
+    /// one of its blocks. A renderer test proves the string is well formed; only this proves it is delivered.
+    /// <para>
+    /// The chain is walked UPWARD (<c>Hierarchy-Reverse</c>) and the fixture carries a downward link too, so
+    /// a walk that went the other way would put a sub-task in the brief instead of the Epic rather than
+    /// merely finding nothing.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_opens_the_agents_brief_with_the_linked_work_item_chain()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/pullRequests/118/workitems", WorkItemLinks(1234))
+            .OnJson(
+                HttpMethod.Get,
+                "ids=1234",
+                WorkItemBatch(WorkItem(1234, "Bug", "Tag cache returns stale entries", parent: 1200, child: 1299)))
+            .OnJson(
+                HttpMethod.Get,
+                "ids=1200",
+                WorkItemBatch(WorkItem(1200, "User Story", "Tag lookups are correct", parent: 1100)))
+            .OnJson(HttpMethod.Get, "ids=1100", WorkItemBatch(WorkItem(1100, "Epic", "Retail platform health")));
+        using var fixture = Fixture.Ado(LoggerFactory, workItemContextReader: WorkItemReader(handler));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var text = BriefSentToTheAgent(fixture);
+
+        text.Should().StartWith(
+            "## Work items linked to this pull request",
+            "the intent is the first thing the reviewer reads, ahead of every block that presumes it");
+        text.Should().Contain("Bug 1234").And.Contain("Tag cache returns stale entries");
+        text.Should().Contain("User Story 1200");
+        text.Should().Contain(
+            "Epic 1100",
+            "the top of the chain is what says why the change was wanted at all");
+        text.Should().NotContain(
+            "1299",
+            "1299 is the Bug's CHILD; walking Hierarchy-Forward instead of -Reverse would descend into "
+                + "sub-tasks and never reach the Epic");
+        text.Should().Contain(
+            "ASKED to do",
+            "the block has to tell the reviewer what to do with this, not just list identifiers");
+
+        // The rest of the brief is still there: this block is PREPENDED, never a replacement.
+        text.Should().Contain(
+            $"diff {run.BaseSha}...{run.HeadSha}", "the work-item block must not displace the diff instruction");
+    }
+
+    /// <summary>
+    /// Graceful absence. A GitHub daemon — or any deployment where the ADO provider was never registered —
+    /// hands the executor no reader at all, and the brief the agent receives is exactly today's: no block, no
+    /// apology for its absence, and no failure. The prompt teaches that a missing block means "this run has
+    /// no work-item reading available", so an empty or hedging block would be worse than nothing.
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_sends_todays_brief_unchanged_when_no_work_item_reader_is_wired()
+    {
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var text = BriefSentToTheAgent(fixture);
+
+        text.Should().NotContain("Work items linked to this pull request");
+        text.Should().NotContain("work-item lookup");
+        text.Should().Contain(
+            $"diff {run.BaseSha}...{run.HeadSha}",
+            "and the review still ran on the brief it has always had");
+    }
+
+    /// <summary>
+    /// THE distinction this feature turns on, pinned on what the agent receives. "This pull request has no
+    /// work items" and "we could not read this pull request's work items" are different facts — the first
+    /// licenses reviewing against the description alone, the second means nobody knows what was asked — and a
+    /// reviewer that cannot tell them apart will read the second as the first every time, because that is the
+    /// reassuring one.
+    /// <para>
+    /// Both arms are driven through the FULL stage, and the assertion is on the DIFFERENCE between the two
+    /// briefs rather than on a marker appearing in one. A marker can be added to both arms and still leave
+    /// them identical where it counts.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_distinguishes_a_pull_request_with_no_work_items_from_a_lookup_that_failed()
+    {
+        var noneLinked = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/pullRequests/118/workitems", """{ "count": 0, "value": [] }""");
+        using var linksNothing = Fixture.Ado(LoggerFactory, workItemContextReader: WorkItemReader(noneLinked));
+        var runA = linksNothing.SeedRun();
+        await linksNothing.Executor.ExecuteStageAsync(ReviewStage.ContextReady, runA, CancellationToken.None);
+        await linksNothing.Executor.ExecuteStageAsync(ReviewStage.Reviewed, runA, CancellationToken.None);
+        var noneText = BriefSentToTheAgent(linksNothing);
+
+        // A read that is DENIED must reach the Failed arm, not the NoneLinked one. A reader that reported "no
+        // work items" on a 403 would make every assertion below true and the feature still wrong.
+        var denied = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/pullRequests/118/workitems", "{}", HttpStatusCode.Forbidden);
+        using var lookupFails = Fixture.Ado(LoggerFactory, workItemContextReader: WorkItemReader(denied));
+        var runB = lookupFails.SeedRun();
+        await lookupFails.Executor.ExecuteStageAsync(ReviewStage.ContextReady, runB, CancellationToken.None);
+        await lookupFails.Executor.ExecuteStageAsync(ReviewStage.Reviewed, runB, CancellationToken.None);
+        var failedText = BriefSentToTheAgent(lookupFails);
+
+        noneText.Should().Contain(
+            "links NO work items", "the reviewer is told the absence outright rather than left to infer it");
+        noneText.Should().Contain(
+            "The lookup succeeded",
+            "the statement is only useful if the reviewer knows it rests on an answer rather than on silence");
+
+        failedText.Should().Contain("lookup FAILED", "the failure is named, not implied by a gap");
+        failedText.Should().Contain(
+            "NOT the same as the pull request having no work items",
+            "the reviewer is told the distinction outright, because it cannot check it from the sandbox");
+
+        failedText.Should().NotBe(
+            noneText,
+            "a failed lookup and a PR with no work items must not reach the agent as the same brief — that is "
+                + "exactly how 'nobody could read the intent' becomes 'there was no intent'");
+
+        // Neither arm is an error: both reviews completed and persisted their artifact.
+        linksNothing.Store.GetArtifacts(runA.Id)
+            .Should().Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+        lookupFails.Store.GetArtifacts(runB.Id)
+            .Should().Contain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+    }
+
+    /// <summary>The text the review loop was actually handed on its first turn.</summary>
+    private static string BriefSentToTheAgent(Fixture fixture) =>
+        fixture.Factory.CreatedAgents.Should().ContainSingle().Subject
+            .ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+
+    private static AdoWorkItemContextReader WorkItemReader(FakeHttpMessageHandler handler) =>
+        new(
+            new HttpClient(handler),
+            new FakeOAuthTokenProvider("ado", "ado-token-abc"),
+            NullLogger<AdoWorkItemContextReader>.Instance);
+
+    /// <summary>The PR-links response, whose ids ADO sends as STRINGS (the wit endpoint sends the same ids as
+    /// numbers — one parser has to take both).</summary>
+    private static string WorkItemLinks(params int[] ids) =>
+        $$"""
+        {
+          "count": {{ids.Length}},
+          "value": [ {{string.Join(", ", ids.Select(id => $$"""{ "id": "{{id}}" }"""))}} ]
+        }
+        """;
+
+    /// <summary>One work item, optionally naming a parent (Hierarchy-Reverse) and a child
+    /// (Hierarchy-Forward). Both directions are present on the fixture that tests the walk, so following the
+    /// wrong one produces a visibly wrong chain rather than an empty one.</summary>
+    private static string WorkItem(int id, string type, string title, int? parent = null, int? child = null)
+    {
+        var relations = new List<string>();
+        if (parent is { } p)
+        {
+            relations.Add(
+                $$"""{ "rel": "System.LinkTypes.Hierarchy-Reverse", "url": "https://dev.azure.com/achieveai/_apis/wit/workItems/{{p}}" }""");
+        }
+
+        if (child is { } c)
+        {
+            relations.Add(
+                $$"""{ "rel": "System.LinkTypes.Hierarchy-Forward", "url": "https://dev.azure.com/achieveai/_apis/wit/workItems/{{c}}" }""");
+        }
+
+        return $$"""
+            {
+              "id": {{id}},
+              "fields": {
+                "System.WorkItemType": "{{type}}",
+                "System.Title": "{{title}}",
+                "System.State": "Active"
+              },
+              "relations": [ {{string.Join(", ", relations)}} ]
+            }
+            """;
+    }
+
+    private static string WorkItemBatch(params string[] items) =>
+        $$"""{ "count": {{items.Length}}, "value": [ {{string.Join(", ", items)}} ] }""";
+
     [Fact]
     public async Task An_azure_devops_run_maps_to_the_ado_provider_and_publisher()
     {
@@ -2468,7 +2658,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             CodeReviewDaemonOptions? options,
             SandboxCommandResult? diffResult,
             IReviewCommentPublisher[]? publishersOverride,
-            IReviewSubAgentCompletionSource? completionSource)
+            IReviewSubAgentCompletionSource? completionSource,
+            AdoWorkItemContextReader? workItemContextReader = null)
         {
             _db = new TempSqliteDatabase();
             _repoProvider = repoProvider;
@@ -2499,7 +2690,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
                 options,
                 publishers,
                 loggerFactory,
-                completionSource: completionSource);
+                completionSource: completionSource,
+                workItemContextReader: workItemContextReader);
         }
 
         public ReviewStore Store { get; }
@@ -2521,8 +2713,16 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         public static Fixture Ado(
             ILoggerFactory loggerFactory,
             CodeReviewDaemonOptions? options = null,
-            IReviewCommentPublisher[]? publishersOverride = null) =>
-            new(loggerFactory, "azure-devops", options, diffResult: null, publishersOverride, completionSource: null);
+            IReviewCommentPublisher[]? publishersOverride = null,
+            AdoWorkItemContextReader? workItemContextReader = null) =>
+            new(
+                loggerFactory,
+                "azure-devops",
+                options,
+                diffResult: null,
+                publishersOverride,
+                completionSource: null,
+                workItemContextReader);
 
         public ReviewRun SeedRun(
             string watermark = "wm-1",
