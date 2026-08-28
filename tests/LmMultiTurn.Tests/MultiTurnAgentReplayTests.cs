@@ -289,9 +289,20 @@ public sealed class MultiTurnAgentReplayTests
     /// The invariant is exact rather than statistical, which is what lets a race be asserted without
     /// tolerances. Replay covers the whole in-flight run from its assignment, so a subscriber joining at ANY
     /// point must end up with every canonical message of the run exactly once: a replay prefix plus a live
-    /// suffix that meet without overlapping and without a gap. Registration outside the lock breaks it in
-    /// whichever direction the line moves — before the snapshot yields a DUPLICATE, after it yields a LOST
-    /// message — and both are caught here.
+    /// suffix that meet without overlapping and without a gap.
+    /// </para>
+    /// <para>
+    /// WHICH relocation this actually guards, because the two are not equally catchable. Moving the
+    /// registration BEFORE the lock is caught on every run: the subscriber is then registered for the whole
+    /// of its lock WAIT — microseconds apiece under this contention — and every publish landing in that wait
+    /// is appended to the buffer AND written live, so the snapshot below hands it over a second time and the
+    /// uniqueness assertion fires. Moving the registration to just AFTER the lock's closing brace is NOT
+    /// reliably caught here, and must not be assumed to be. It does lose a message, but its window is only
+    /// the gap between releasing the lock and writing the dictionary entry — a few instructions rather than
+    /// a whole lock wait, roughly three orders of magnitude narrower. Measured against this test, that
+    /// mutant went red once in eleven runs (~9% per run); and a slower or lower-core agent publishes LESS
+    /// often while that window does not shrink, so the rate gets worse there rather than better. Pinning
+    /// that direction reliably takes a different test than this one.
     /// </para>
     /// <para>
     /// The run is published as CANONICAL text messages, not streaming deltas: <c>ReplayMessagePolicy</c>
@@ -385,8 +396,11 @@ public sealed class MultiTurnAgentReplayTests
                     // subscriber has registered — otherwise a late one snapshots nothing and waits forever
                     // on a run that will never publish again, which is a timeout rather than an assertion. A
                     // subscriber that registers after the burst still replays the whole buffered run, so
-                    // this costs the test nothing.
-                    await Task.WhenAll(registered.Select(r => r.Task));
+                    // this costs the test nothing. WaitAsync because the token does not reach a
+                    // TaskCompletionSource on its own: a collector that faults before its first message
+                    // would otherwise park this wait forever, and the project sets no global test timeout,
+                    // so the failure mode would be a hung run rather than a reported one.
+                    await Task.WhenAll(registered.Select(r => r.Task)).WaitAsync(cts.Token);
                     await agent.PublishForTest(
                         new RunCompletedMessage { CompletedRunId = runId, ThreadId = "thread-1" });
                 },
@@ -395,7 +409,7 @@ public sealed class MultiTurnAgentReplayTests
                 TaskScheduler.Default)
             .Unwrap();
 
-        await publisher;
+        await publisher.WaitAsync(cts.Token);
         var results = await Task.WhenAll(collectors);
 
         registeredDuringBurst.Should()
