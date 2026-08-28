@@ -272,6 +272,182 @@ public sealed class MultiTurnAgentReplayTests
         received.Should().Contain(total - 1, "the subscriber must receive through the end of the run");
     }
 
+    /// <summary>
+    /// The register-AND-snapshot atomicity itself — the property <c>_replayLock</c> exists to provide, and
+    /// the one a single subscriber cannot reach.
+    /// <para>
+    /// Why one subscriber cannot see it and many can. The window sits between snapshotting
+    /// <c>_replayBuffer</c> and registering in <c>_outputSubscribers</c>, and it is a few instructions wide,
+    /// so nothing outside <c>SubscribeAsync</c> can schedule a publish into it. What CAN is lock contention:
+    /// once the registration moves outside the lock, a subscriber that has registered must still wait to
+    /// acquire <c>_replayLock</c>, and every publish that completes during that wait appends to the buffer
+    /// AND writes to the already-registered channel. The subscriber then snapshots a buffer that already
+    /// contains what it was just sent live. So the window is not widened artificially here — it is entered
+    /// by making many subscribers contend with a publisher taking and releasing the lock without pause.
+    /// </para>
+    /// <para>
+    /// The invariant is exact rather than statistical, which is what lets a race be asserted without
+    /// tolerances. Replay covers the whole in-flight run from its assignment, so a subscriber joining at ANY
+    /// point must end up with every canonical message of the run exactly once: a replay prefix plus a live
+    /// suffix that meet without overlapping and without a gap. Registration outside the lock breaks it in
+    /// whichever direction the line moves — before the snapshot yields a DUPLICATE, after it yields a LOST
+    /// message — and both are caught here.
+    /// </para>
+    /// <para>
+    /// The run is published as CANONICAL text messages, not streaming deltas: <c>ReplayMessagePolicy</c>
+    /// keeps fragments out of the bridge entirely, so a run made of deltas would leave every mid-run joiner
+    /// legitimately short and the count assertion below would say nothing about the lock.
+    /// </para>
+    /// <para>
+    /// The overlap is CONSTRUCTED, not hoped for, and that is what the <c>registeredDuringBurst</c>
+    /// assertion exists to keep honest. <c>PublishToAllAsync</c> completes synchronously, so a publisher
+    /// started with <c>Task.Run</c> runs its whole burst without ever yielding — and subscribers queued
+    /// behind it on the same thread pool were measured to register only AFTER it had finished, every one of
+    /// them against an idle lock, which killed the mutation 0 times. So each subscriber gets a DEDICATED
+    /// thread, every one of them is parked on a gate before the first publish, and the publisher opens that
+    /// gate itself as its first act. A run in which the subscribers still all arrived late is a test that
+    /// proved nothing, and it fails rather than passing quietly.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Subscribers_registering_against_a_contended_publisher_still_get_each_message_once()
+    {
+        const string runId = "run-1";
+        const string genId = "gen-1";
+        const int total = 30_000;
+        const int subscriberCount = 32;
+
+        // Every bound is sized out of the way so a failure here is attributable to the lock and nothing
+        // else: a bounded channel that fills makes PublishToSubscriber DROP the subscriber (ending its
+        // enumeration early, which reads exactly like the lost-message defect), and a replay buffer that
+        // hits either cap is withheld wholesale in favour of a resync advisory (which reads exactly like
+        // the same defect from the other side).
+        await using var agent = new ReplayTestAgent(
+            "thread-1",
+            outputChannelCapacity: 100_000,
+            maxReplayBufferSize: 100_000,
+            maxReplayBufferBytes: 64L * 1024 * 1024);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+
+        await agent.PublishForTest(Assignment("thread-1", runId, genId));
+
+        var registered = new TaskCompletionSource[subscriberCount];
+        for (var s = 0; s < subscriberCount; s++)
+        {
+            registered[s] = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        using var subscribersReady = new CountdownEvent(subscriberCount);
+        using var go = new ManualResetEventSlim(false);
+
+        // LongRunning, so each subscriber owns a real thread rather than a thread-pool slot the publisher's
+        // non-yielding burst can starve it out of. Registration happens synchronously inside the first
+        // MoveNextAsync, i.e. on this very thread, so all 32 registrations race the burst directly.
+        var collectors = new Task<List<int>>[subscriberCount];
+        for (var s = 0; s < subscriberCount; s++)
+        {
+            var slot = s;
+            collectors[s] = Task.Factory.StartNew(
+                    () =>
+                    {
+                        subscribersReady.Signal();
+                        go.Wait(cts.Token);
+                        return CollectRunAsync(agent, registered[slot], cts.Token);
+                    },
+                    cts.Token,
+                    TaskCreationOptions.LongRunning,
+                    TaskScheduler.Default)
+                .Unwrap();
+        }
+
+        var registeredDuringBurst = 0;
+        var publisher = Task.Factory.StartNew(
+                async () =>
+                {
+                    // Release the subscribers and start publishing in the same breath. Everything the
+                    // window needs is already in place: 32 live threads, each one instruction away from
+                    // SubscribeAsync.
+                    subscribersReady.Wait(cts.Token);
+                    go.Set();
+
+                    // Publishes STRAIGHT THROUGH, never parking, and this is the whole mechanism. Parking
+                    // releases `_replayLock`, so a publisher that waited mid-stream for the subscribers
+                    // would meet every one of them idle. The wait that remains is below, and it gates only
+                    // the run's COMPLETION.
+                    for (var i = 0; i < total; i++)
+                    {
+                        await agent.PublishForTest(CompleteText(runId, genId, i.ToString()));
+                    }
+
+                    registeredDuringBurst = registered.Count(r => r.Task.IsCompleted);
+
+                    // RunCompletedMessage clears the replay buffer, so it must not be published until every
+                    // subscriber has registered — otherwise a late one snapshots nothing and waits forever
+                    // on a run that will never publish again, which is a timeout rather than an assertion. A
+                    // subscriber that registers after the burst still replays the whole buffered run, so
+                    // this costs the test nothing.
+                    await Task.WhenAll(registered.Select(r => r.Task));
+                    await agent.PublishForTest(
+                        new RunCompletedMessage { CompletedRunId = runId, ThreadId = "thread-1" });
+                },
+                cts.Token,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default)
+            .Unwrap();
+
+        await publisher;
+        var results = await Task.WhenAll(collectors);
+
+        registeredDuringBurst.Should()
+            .BeGreaterThan(
+                0,
+                "the invariant below is only about the lock if at least one subscriber registered while the "
+                    + "publisher was mid-burst; every subscriber arriving after the last publish means the "
+                    + "window was never entered and the run proved nothing");
+
+        for (var s = 0; s < results.Length; s++)
+        {
+            var received = results[s];
+            received.Should()
+                .OnlyHaveUniqueItems(
+                    $"subscriber {s} must never be handed the same message twice — a message buffered AND sent "
+                        + "live is what registering outside the lock produces");
+            received.Should().BeInAscendingOrder($"subscriber {s} saw a single serial publisher");
+            received.Should()
+                .HaveCount(
+                    total,
+                    $"subscriber {s} must end up with the WHOLE run: replay covers it from the assignment "
+                        + "onwards, so a short count is a message that fell between the snapshot and the "
+                        + "registration rather than a late join");
+        }
+    }
+
+    /// <summary>Drains one subscription to the end of the run, signalling once it has registered — which the
+    /// arrival of any message proves, since registration happens inside the first MoveNextAsync.</summary>
+    private static async Task<List<int>> CollectRunAsync(
+        ReplayTestAgent agent,
+        TaskCompletionSource registered,
+        CancellationToken ct)
+    {
+        var seen = new List<int>();
+        await foreach (var m in agent.SubscribeAsync(ct))
+        {
+            _ = registered.TrySetResult();
+
+            if (m is TextMessage t && int.TryParse(t.Text, out var n))
+            {
+                seen.Add(n);
+            }
+
+            if (m is RunCompletedMessage)
+            {
+                break;
+            }
+        }
+
+        return seen;
+    }
+
     [Fact]
     public async Task Replay_buffer_is_capped_so_a_huge_run_does_not_grow_unbounded()
     {
