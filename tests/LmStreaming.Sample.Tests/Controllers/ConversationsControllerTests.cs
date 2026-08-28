@@ -1034,6 +1034,143 @@ public class ConversationsControllerTests
         metadata.Properties[MultiTurnAgentPool.ModePropertyKey].Should().Be(SystemChatModes.DefaultModeId);
     }
 
+    [Fact]
+    public async Task Provision_PersistsTheCallerInstructions_AndTheAgentBuildReadsThemBack()
+    {
+        // The link that did not exist. The daemon's whole review methodology, output contract and
+        // sub-agent-dispatch protocol ride this one property, and for the entire life of the field it was
+        // stored at provision and read by nothing — so every S2S review ran under the bare mode prompt.
+        // The assertion deliberately goes through ReadAppendixAsync, the same call the agent build makes,
+        // because asserting only that the property was STORED is what passed all along.
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var workspaceStore = new Mock<IWorkspaceStore>();
+        workspaceStore.Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TestWorkspace("ws-1"));
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal();
+
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            workspaceStore: workspaceStore.Object,
+            providerRegistry: registry);
+
+        var result = await controller.Provision(
+            new ProvisionConversationRequest
+            {
+                WorkspaceId = "ws-1",
+                ProviderId = "test",
+                ModeId = SystemChatModes.DefaultModeId,
+                SystemPromptAppendix = "REVIEW METHODOLOGY",
+            },
+            CancellationToken.None);
+
+        var threadId = Assert
+            .IsType<ProvisionConversationResponse>(Assert.IsType<OkObjectResult>(result).Value)
+            .ThreadId;
+
+        var readBack = await SystemPromptAugmenter.ReadAppendixAsync(store, threadId, CancellationToken.None);
+        readBack.Should().Be("REVIEW METHODOLOGY");
+
+        // And it must land LAST, after the mode prompt — recency is the whole reason the augmenter appends
+        // rather than prepends, and a caller's task instructions losing to the generic mode prompt is the
+        // failure this is guarding. Asserted through ComposeAsync because that is the single call the agent
+        // factory makes; testing read and append separately would leave the join untested, and the join is
+        // what was missing.
+        var composed = await SystemPromptAugmenter.ComposeAsync(
+            store, threadId, "MODE PROMPT", ct: CancellationToken.None);
+        composed.Should().Be("MODE PROMPT\n\nREVIEW METHODOLOGY");
+    }
+
+    [Fact]
+    public async Task ComposedPrompt_PutsTheCallerInstructionsAfterEveryHostBuiltSection()
+    {
+        // Ordering is a property here, not a detail. The caller's instructions must come LAST — after the
+        // mode prompt, the workspace-path suffix and the discovered CLAUDE.md/AGENTS.md block — because
+        // recency is what gives a headless caller's task its pull against a generic mode prompt that is
+        // trying to be a chat agent. An ordering claim nobody asserts is how the previous one of these went
+        // wrong, so this pins the sequence rather than just the presence.
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var workspaceStore = new Mock<IWorkspaceStore>();
+        workspaceStore.Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TestWorkspace("ws-1"));
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal();
+
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            workspaceStore: workspaceStore.Object,
+            providerRegistry: registry);
+
+        var result = await controller.Provision(
+            new ProvisionConversationRequest
+            {
+                WorkspaceId = "ws-1",
+                ProviderId = "test",
+                ModeId = SystemChatModes.DefaultModeId,
+                SystemPromptAppendix = "CALLER-INSTRUCTIONS",
+            },
+            CancellationToken.None);
+
+        var threadId = Assert
+            .IsType<ProvisionConversationResponse>(Assert.IsType<OkObjectResult>(result).Value)
+            .ThreadId;
+
+        // The prompt as the host has it by the time the loop is built: mode, then workspace suffix, then
+        // the discovered-context block. ComposeAsync receives exactly this and may only append.
+        const string HostBuilt = "MODE-PROMPT\n\nWORKSPACE-SUFFIX\n\nDISCOVERED-CONTEXT";
+        var composed = await SystemPromptAugmenter.ComposeAsync(
+            store, threadId, HostBuilt, ct: CancellationToken.None);
+
+        composed.Should().StartWith(HostBuilt, "the host-built prompt must survive intact, not be replaced");
+        composed.Should().EndWith("CALLER-INSTRUCTIONS", "the caller's task has to be the last thing read");
+        composed.IndexOf("CALLER-INSTRUCTIONS", StringComparison.Ordinal)
+            .Should()
+            .BeGreaterThan(
+                composed.IndexOf("DISCOVERED-CONTEXT", StringComparison.Ordinal),
+                "the appendix goes after the discovered CLAUDE.md/AGENTS.md block, not before it");
+    }
+
+    [Fact]
+    public async Task Provision_WithoutCallerInstructions_LeavesTheModePromptAlone()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var workspaceStore = new Mock<IWorkspaceStore>();
+        workspaceStore.Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TestWorkspace("ws-1"));
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal();
+
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            workspaceStore: workspaceStore.Object,
+            providerRegistry: registry);
+
+        var result = await controller.Provision(
+            new ProvisionConversationRequest
+            {
+                WorkspaceId = "ws-1",
+                ProviderId = "test",
+                ModeId = SystemChatModes.DefaultModeId,
+            },
+            CancellationToken.None);
+
+        var threadId = Assert
+            .IsType<ProvisionConversationResponse>(Assert.IsType<OkObjectResult>(result).Value)
+            .ThreadId;
+
+        var readBack = await SystemPromptAugmenter.ReadAppendixAsync(store, threadId, CancellationToken.None);
+        readBack.Should().BeNull("every UI-created chat provisions without instructions");
+        var composed = await SystemPromptAugmenter.ComposeAsync(
+            store, threadId, "MODE PROMPT", ct: CancellationToken.None);
+        composed.Should().Be("MODE PROMPT");
+    }
+
     /// <summary>
     ///     A provisioned thread id must carry a parseable creation timestamp, so the <c>created</c>
     ///     ordering has an immutable key for every conversation the app makes.

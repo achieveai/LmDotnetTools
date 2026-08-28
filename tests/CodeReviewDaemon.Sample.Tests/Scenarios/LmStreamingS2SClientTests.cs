@@ -52,6 +52,12 @@ public sealed class LmStreamingS2SClientTests
             .And.Contain("\"modeId\":\"workspace-agent\"")
             // The review profile's system prompt is the ONLY channel for the daemon's methodology, sub-agent
             // dispatch instruction and output contract — provision carries no model or tool overrides.
+            // This asserts the daemon SENDS it; it does not assert the host APPLIES it. Those two claims
+            // were conflated for the whole life of the field, during which the host stored the value and
+            // read it back with nothing (#528). Application is proved by
+            // LmStreaming.Sample.E2E.Tests.SystemPromptCompositionTests, which reads the composed prompt
+            // off the outbound provider request. If that test is ever deleted, delete this assertion's
+            // claim to meaning with it rather than leaving it green.
             .And.Contain("\"systemPromptAppendix\":\"REVIEW METHODOLOGY\"");
         // The sandbox binds to whatever app id the daemon forwards — both passthrough headers must ride the call.
         recorded.SbxAppId.Should().Be("codereview-daemon");

@@ -1956,7 +1956,23 @@ subAgentFactory,
                         providerAgent,
                         filteredRegistry,
                         threadId,
-                        systemPrompt: effectiveMode.SystemPrompt,
+                        // The caller's own instructions (the code-review daemon's methodology, output
+                        // contract and sub-agent-dispatch protocol), recorded at provision and appended
+                        // LAST. Composed HERE, at the point of use, rather than where the workspace suffix
+                        // is built: the degraded-sandbox branch above rebuilds effectiveMode from the bare
+                        // `mode`, so anything folded in earlier is silently dropped on exactly the runs that
+                        // are already going wrong.
+                        systemPrompt: SystemPromptAugmenter
+                            .ComposeAsync(
+                                conversationStore,
+                                threadId,
+                                effectiveMode.SystemPrompt,
+                                logger: loggerFactory.CreateLogger(
+                                    "LmStreaming.Sample.SystemPromptCompose"
+                                )
+                            )
+                            .GetAwaiter()
+                            .GetResult(),
                         defaultOptions: outputTokenPolicy.ApplyPrimary(
                             new GenerateReplyOptions
                             {
@@ -2716,6 +2732,42 @@ public partial class Program
         return new AnthropicAgent("MockAnthropic", anthropicClient, loggerFactory.CreateLogger<AnthropicAgent>());
     }
 
+    /// <summary>
+    ///     The system prompt a CLI-provider agent actually runs with: the mode prompt this factory was
+    ///     handed — already carrying the workspace suffix and discovered CLAUDE.md/AGENTS.md block on the
+    ///     sandbox path, which passes the rebuilt <c>effectiveMode</c>, and the bare mode prompt
+    ///     elsewhere — plus the caller's provisioned appendix appended LAST. Same composition the generic
+    ///     <c>MultiTurnAgentLoop</c> path performs inline.
+    ///     <para>
+    ///     Applied in EVERY CLI provider factory, not just the one an S2S caller happens to use today.
+    ///     The provider is one config line (<c>LmStreamingProviderId</c>), and the appendix is the ONLY
+    ///     channel a headless caller has for its methodology and output contract (#528) — a factory that
+    ///     silently drops it turns a config edit into a silent regression, and the
+    ///     <c>AppendixChars</c> composition log that exists to catch that recurrence would be blind on
+    ///     exactly the path that regressed.
+    ///     </para>
+    ///     <para>
+    ///     Sync-over-async by necessity: the agent-factory delegate these run under is synchronous, so
+    ///     this follows the <c>GetAwaiter().GetResult()</c> pattern already used throughout it rather
+    ///     than introducing a second seam.
+    ///     </para>
+    /// </summary>
+    private static string ComposeCliProviderSystemPrompt(
+        IConversationStore conversationStore,
+        string threadId,
+        string? modeSystemPrompt,
+        ILoggerFactory loggerFactory
+    ) =>
+        SystemPromptAugmenter
+            .ComposeAsync(
+                conversationStore,
+                threadId,
+                modeSystemPrompt,
+                logger: loggerFactory.CreateLogger("LmStreaming.Sample.SystemPromptCompose")
+            )
+            .GetAwaiter()
+            .GetResult();
+
     private static CodexAgentLoop CreateCodexAgentLoop(
         string threadId,
         AgentProfile mode,
@@ -2773,7 +2825,12 @@ public partial class Program
             functionRegistry,
             enabledTools,
             threadId,
-            systemPrompt: mode.SystemPrompt,
+            systemPrompt: ComposeCliProviderSystemPrompt(
+                conversationStore,
+                threadId,
+                mode.SystemPrompt,
+                loggerFactory
+            ),
             defaultOptions: new GenerateReplyOptions
             {
                 ModelId = GetModelIdForProvider("codex"),
@@ -3589,7 +3646,12 @@ public partial class Program
             claudeOptions,
             mcpServers,
             threadId: threadId,
-            systemPrompt: mode.SystemPrompt,
+            systemPrompt: ComposeCliProviderSystemPrompt(
+                conversationStore,
+                threadId,
+                mode.SystemPrompt,
+                loggerFactory
+            ),
             defaultOptions: new GenerateReplyOptions
             {
                 ModelId = modelId,
@@ -3704,7 +3766,12 @@ public partial class Program
             functionRegistry,
             enabledTools,
             threadId,
-            systemPrompt: mode.SystemPrompt,
+            systemPrompt: ComposeCliProviderSystemPrompt(
+                conversationStore,
+                threadId,
+                mode.SystemPrompt,
+                loggerFactory
+            ),
             defaultOptions: new GenerateReplyOptions
             {
                 ModelId = GetModelIdForProvider("copilot"),
