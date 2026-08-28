@@ -5,6 +5,7 @@ import type {
   WorkspaceGateway,
   WorkspaceUpdate,
 } from '@/types/workspace';
+import { isWorkspaceSelectable } from '@/types/workspace';
 import {
   listWorkspaces,
   createWorkspace as apiCreateWorkspace,
@@ -100,17 +101,20 @@ export function useWorkspaces() {
       gateway.value = response.gateway ?? null;
       workspaces.value = Array.isArray(response.workspaces) ? response.workspaces : [];
 
+      // Reconciliation only ever drops a selection the catalog actively contradicts: the workspace
+      // is gone from the list, or it came back `incompatible` (checked, and refused). A catalog that
+      // could vouch for NOTHING — the gateway-less host, where every row is `unavailable` — must
+      // leave the selection exactly where it was, because "we could not check" and "you chose
+      // nothing" are different facts and only the second one may reach the write.
       const hasSelection =
         selectedWorkspaceId.value !== null &&
-        workspaces.value.some(
-          (w) => w.id === selectedWorkspaceId.value && w.compatibility === 'compatible'
-        );
+        workspaces.value.some((w) => w.id === selectedWorkspaceId.value && isWorkspaceSelectable(w));
       if (!hasSelection) {
         const initial =
           workspaces.value.find(
-            (w) => w.id === DEFAULT_WORKSPACE_ID && w.compatibility === 'compatible'
+            (w) => w.id === DEFAULT_WORKSPACE_ID && isWorkspaceSelectable(w)
           )?.id
-          ?? workspaces.value.find((w) => w.compatibility === 'compatible')?.id
+          ?? workspaces.value.find(isWorkspaceSelectable)?.id
           ?? null;
         selectedWorkspaceId.value = initial;
       }
@@ -118,7 +122,13 @@ export function useWorkspaces() {
       if (generation !== loadGeneration) return;
       workspaces.value = [];
       gateway.value = null;
-      selectedWorkspaceId.value = null;
+      // The SELECTION deliberately survives. A request that failed told us nothing about the
+      // workspace the user picked — it is not evidence that it is gone, and it is certainly not the
+      // user deselecting it. Clearing it here looked harmless because the list went empty too, but
+      // `ChatLayout.provisionThread` reads a null selection as "no preference" and binds the next
+      // conversation to the default workspace instead: an empty picker silently rewriting a stored
+      // binding, which is the one thing this flow must never do. Keeping it means a stale id at
+      // worst, and the backend answers that honestly with a 404 naming the workspace.
       error.value = e instanceof Error ? e.message : 'Failed to load workspaces';
       console.error('Failed to load workspaces:', e);
     } finally {
@@ -157,12 +167,16 @@ export function useWorkspaces() {
   /**
    * Selects a workspace for new conversations. No-op for unknown ids so the UI
    * can defensively pass user input without leaving the dropdown stale.
+   *
+   * Deliberately NOT gated on `gateway.available`. That flag means "the marketplace catalog could be
+   * read", and requiring it made a gateway-less host's picker inert: every row was unverifiable, so
+   * every row was unselectable, so the user could express no preference at all. What the flag
+   * cannot say is that a workspace is wrong — only an `incompatible` verdict says that, and that is
+   * what {@link isWorkspaceSelectable} tests. Membership of the list stays required: an id nobody
+   * listed is not a choice, whatever the gateway is doing.
    */
   function selectWorkspace(id: string): void {
-    if (
-      !gateway.value?.available
-      || !workspaces.value.some((w) => w.id === id && w.compatibility === 'compatible')
-    ) {
+    if (!workspaces.value.some((w) => w.id === id && isWorkspaceSelectable(w))) {
       return;
     }
     selectedWorkspaceId.value = id;

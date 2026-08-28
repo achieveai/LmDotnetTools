@@ -64,6 +64,60 @@ public class WorkspacesControllerTests
         response.Workspaces[1].Name.Should().Be("Mine");
     }
 
+    /// <summary>
+    /// #459 wire contract: an unreachable catalog serializes as <c>"unavailable"</c>, not
+    /// <c>"unknown"</c> and not <c>"incompatible"</c>. The literal is asserted because it is the
+    /// value the SPA branches on — an enum rename that did not reach the wire would leave the picker
+    /// reading a state it has no case for.
+    /// </summary>
+    [Fact]
+    public async Task List_UnreachableCatalog_ReportsUnavailableRatherThanIncompatible()
+    {
+        var (controller, store) = Build(catalog: new OfflineCatalogClient());
+        _ = await store.CreateAsync(new WorkspaceCreate { Name = "Mine", Marketplaces = ["x"] });
+
+        var result = await controller.List();
+        var ok = result.Should().BeOfType<OkObjectResult>().Subject;
+        var response = ok.Value.Should().BeOfType<WorkspaceListResponse>().Subject;
+
+        response.Workspaces.Should().NotBeEmpty();
+        response.Workspaces.Select(w => w.Compatibility).Should().AllBe("unavailable");
+        response.Workspaces.Should().NotContain(w => w.Compatibility == "incompatible");
+
+        // The gateway envelope still says "unavailable" — the split does not pretend the catalog is
+        // readable, it only stops that fact being spelled as a per-workspace refusal.
+        response.Gateway.Available.Should().BeFalse();
+        response.Gateway.Error.Should().Contain("offline");
+    }
+
+    /// <summary>
+    /// The distinguishing case for the test above: a catalog that ANSWERS and does not offer the
+    /// alias serializes as <c>"incompatible"</c> and leaves the gateway marked available. Without
+    /// this pair, an implementation that emitted one string for both states would still be green.
+    /// </summary>
+    [Fact]
+    public async Task List_ReachableCatalogMissingTheAlias_ReportsIncompatibleAndAvailableGateway()
+    {
+        var (controller, store) = Build();
+        _ = await store.CreateAsync(new WorkspaceCreate { Name = "Mine", Marketplaces = ["nope"] });
+
+        var result = await controller.List();
+        var ok = result.Should().BeOfType<OkObjectResult>().Subject;
+        var response = ok.Value.Should().BeOfType<WorkspaceListResponse>().Subject;
+
+        response.Workspaces.Should().Contain(w => w.Compatibility == "incompatible");
+        response.Workspaces.Should().NotContain(w => w.Compatibility == "unavailable");
+
+        // Corroborating, NOT distinguishing, and the difference is worth writing down. `available` is
+        // derived from the FIRST workspace only, and that is always the seeded default, whose empty
+        // marketplace list is compatible against any readable catalog — so this assertion holds under
+        // any predicate that spares Compatible, including a mutant reading `is not Incompatible`.
+        // What actually pins the predicate is the unreachable-catalog test above, where the probe IS
+        // Unavailable. Reaching this branch with an incompatible probe is not constructible here at
+        // all: the seeded default cannot be given marketplaces to fail on.
+        response.Gateway.Available.Should().BeTrue();
+    }
+
     [Fact]
     public async Task Get_Unknown_ReturnsNotFound()
     {
@@ -610,6 +664,17 @@ public class WorkspacesControllerTests
     }
 
     #endregion
+
+    /// <summary>A gateway that cannot be reached at all — the gateway-less host of #459.</summary>
+    private sealed class OfflineCatalogClient : IMarketplaceCatalogClient
+    {
+        public Task<MarketplaceCatalog> GetCatalogAsync(
+            IReadOnlyList<string>? marketplaces = null,
+            CancellationToken ct = default) =>
+            Task.FromException<MarketplaceCatalog>(
+                new MarketplaceCatalogUnavailableException("gateway offline")
+            );
+    }
 
     private sealed class SupportedCatalogClient(bool? pluginFiltering = null, params string[] pluginsUnderX)
         : IMarketplaceCatalogClient

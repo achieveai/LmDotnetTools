@@ -9,7 +9,10 @@ const response = (body: unknown, ok = true) =>
   Promise.resolve({ ok, status: ok ? 200 : 502, statusText: ok ? 'OK' : 'Bad Gateway', json: async () => body });
 
 const gateway = { canonicalBaseUrl: 'http://remote:3000', appId: 'sample', available: true, error: null };
-const workspace = (id: string, compatibility: 'compatible' | 'incompatible' | 'unknown' = 'compatible') => ({
+const workspace = (
+  id: string,
+  compatibility: 'compatible' | 'incompatible' | 'unavailable' | 'unknown' = 'compatible'
+) => ({
   id,
   name: id,
   directoryRelPath: id,
@@ -76,7 +79,12 @@ describe('useWorkspaces gateway-scoped state', () => {
     expect(state.gateway.value?.appId).toBe('other');
   });
 
-  it('clears stale list and selection when the API fails', async () => {
+  /**
+   * The list and the gateway envelope are cleared because they are now known to be stale. The
+   * SELECTION is not: a request that failed reported nothing about the workspace the user picked.
+   * See the constraint-3 block below for why keeping it matters at the write.
+   */
+  it('clears stale list but keeps the selection when the API fails', async () => {
     fetchMock
       .mockReturnValueOnce(response({ gateway, workspaces: [workspace('default'), workspace('old')] }))
       .mockRejectedValueOnce(new Error('network down'));
@@ -87,21 +95,132 @@ describe('useWorkspaces gateway-scoped state', () => {
 
     expect(state.workspaces.value).toEqual([]);
     expect(state.gateway.value).toBeNull();
-    expect(state.selectedWorkspaceId.value).toBeNull();
+    expect(state.selectedWorkspaceId.value).toBe('default');
     expect(state.error.value).toContain('network down');
   });
 
-  it('does not select incompatible or unavailable workspaces', async () => {
+  it('refuses to select a workspace the catalog checked and rejected', async () => {
     fetchMock.mockReturnValue(response({
-      gateway: { ...gateway, available: false },
-      workspaces: [workspace('default', 'unknown'), workspace('bad', 'incompatible')],
+      gateway,
+      workspaces: [workspace('default'), workspace('bad', 'incompatible')],
     }));
     const state = useWorkspaces();
 
     await state.loadWorkspaces();
     state.selectWorkspace('bad');
 
-    expect(state.selectedWorkspaceId.value).toBeNull();
+    expect(state.selectedWorkspaceId.value).toBe('default');
+  });
+});
+
+/**
+ * #459. `unavailable` (and the retired `unknown` spelling an older backend still sends) means the
+ * gateway catalog could not be read, so NOTHING about the workspace was checked. That is not a
+ * refusal, and the picker must stay usable on a host where it is the permanent answer — a
+ * gateway-less runner, where `/api/marketplaces` returns 503 forever.
+ */
+describe('useWorkspaces unavailable-vs-incompatible', () => {
+  beforeEach(resetFetch);
+
+  it.each(['unavailable', 'unknown'] as const)(
+    'selects and keeps a %s workspace, because nothing was checked',
+    async (compatibility) => {
+      fetchMock.mockReturnValue(response({
+        gateway: { ...gateway, available: false, error: 'gateway offline' },
+        workspaces: [workspace('default', compatibility), workspace('repo', compatibility)],
+      }));
+      const state = useWorkspaces();
+
+      await state.loadWorkspaces();
+      expect(state.selectedWorkspaceId.value).toBe('default');
+
+      state.selectWorkspace('repo');
+      expect(state.selectedWorkspaceId.value).toBe('repo');
+    }
+  );
+
+  it('still withholds a workspace the catalog checked and rejected', async () => {
+    fetchMock.mockReturnValue(response({
+      gateway,
+      workspaces: [workspace('bad', 'incompatible'), workspace('repo', 'unavailable')],
+    }));
+    const state = useWorkspaces();
+
+    await state.loadWorkspaces();
+
+    // The reconciliation skipped `bad` and landed on the unverified row instead — which is the whole
+    // point: only `incompatible` is a reason to pass a workspace over.
+    expect(state.selectedWorkspaceId.value).toBe('repo');
+
+    state.selectWorkspace('bad');
+    expect(state.selectedWorkspaceId.value).toBe('repo');
+  });
+});
+
+/**
+ * #459 binding constraint: no flow may erase an existing workspace binding because the picker had no
+ * rows. An empty picker and an explicit "not this one" must stay distinguishable all the way to the
+ * write — `ChatLayout.provisionThread` reads a null `selectedWorkspaceId` as "no preference" and
+ * binds the new conversation to the default workspace, so a selection silently dropped here is a
+ * stored binding silently rewritten there.
+ *
+ * The cases are asserted TOGETHER on purpose. Any one alone is satisfied by an implementation that
+ * never clears, or by one that always clears; only the set pins that the difference between "could
+ * not check" and "checked and refused" is what drives the decision.
+ */
+describe('useWorkspaces empty picker cannot clobber a stored workspace binding', () => {
+  beforeEach(resetFetch);
+
+  it('keeps the binding when the catalog can vouch for nothing', async () => {
+    fetchMock
+      .mockReturnValueOnce(response({ gateway, workspaces: [workspace('default'), workspace('repo')] }))
+      .mockReturnValueOnce(response({
+        gateway: { ...gateway, available: false, error: 'gateway offline' },
+        workspaces: [workspace('default', 'unavailable'), workspace('repo', 'unavailable')],
+      }));
+    const state = useWorkspaces();
+
+    await state.loadWorkspaces();
+    state.selectWorkspace('repo');
+    expect(state.selectedWorkspaceId.value).toBe('repo');
+
+    // The gateway goes away underneath the user: every row is now unverifiable.
+    await state.loadWorkspaces();
+
+    expect(state.selectedWorkspaceId.value).toBe('repo');
+  });
+
+  it('drops the binding when the catalog checked that workspace and refused it', async () => {
+    fetchMock
+      .mockReturnValueOnce(response({ gateway, workspaces: [workspace('default'), workspace('repo')] }))
+      .mockReturnValueOnce(response({
+        gateway,
+        workspaces: [workspace('default'), workspace('repo', 'incompatible')],
+      }));
+    const state = useWorkspaces();
+
+    await state.loadWorkspaces();
+    state.selectWorkspace('repo');
+    expect(state.selectedWorkspaceId.value).toBe('repo');
+
+    await state.loadWorkspaces();
+
+    expect(state.selectedWorkspaceId.value).toBe('default');
+  });
+
+  it('drops the binding when the workspace is gone from the catalog entirely', async () => {
+    fetchMock
+      .mockReturnValueOnce(response({ gateway, workspaces: [workspace('default'), workspace('repo')] }))
+      .mockReturnValueOnce(response({ gateway, workspaces: [workspace('default')] }));
+    const state = useWorkspaces();
+
+    await state.loadWorkspaces();
+    state.selectWorkspace('repo');
+    expect(state.selectedWorkspaceId.value).toBe('repo');
+
+    await state.loadWorkspaces();
+
+    expect(state.selectedWorkspaceId.value).toBe('default');
   });
 });
 
