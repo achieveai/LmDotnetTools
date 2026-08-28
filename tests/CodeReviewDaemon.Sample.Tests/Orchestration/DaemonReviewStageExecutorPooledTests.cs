@@ -1557,6 +1557,35 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task Posted_commits_the_finding_disposition_reconciliation_against_the_review_that_shipped()
+    {
+        // The reconciler is only worth having if it runs on the path that actually commits. Two separable
+        // wirings have to hold, and each has its own assertion below, because a mutation to either one is
+        // silent: the builder must EMIT the artifact into the committed notes dir, and the commit gate must
+        // hand it the review body that shipped. Passing null there still produces a file — one that says the
+        // comparison never ran — which is exactly the shape a broken wiring would leave behind.
+        using var fixture = Fixture.Create();
+        fixture.HostRunner.OnArgvContains(
+            $"rev-parse --verify {Branch}", new SandboxCommandResult(1, string.Empty, "unknown revision"));
+        fixture.HostRunner.OnArgvContains(
+            $"rev-parse {Branch}", new SandboxCommandResult(0, "f00dcafef00dcafe\n", string.Empty));
+        var run = fixture.SeedRun();
+
+        await RunAllStagesAsync(fixture, run);
+
+        var reconciliation = fixture.HostFileSystem.Writes
+            .Should().ContainSingle(
+                p => p.Contains($"/{NotesRelPath}/", StringComparison.Ordinal)
+                    && p.EndsWith("PR_Reconciliation_01.md", StringComparison.Ordinal),
+                "the disposition record is committed beside review.md, not left in the daemon's log")
+            .Subject;
+
+        fixture.HostFileSystem.Files[reconciliation].Should().NotContain(
+            "## Not compared",
+            "the commit gate hands the builder the review body it is committing, so the comparison ran");
+    }
+
+    [Fact]
     public async Task Posted_returns_the_leased_slot_on_the_terminal_stage()
     {
         using var fixture = Fixture.Create();

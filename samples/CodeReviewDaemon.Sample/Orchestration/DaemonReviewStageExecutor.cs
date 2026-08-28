@@ -49,6 +49,33 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     public const int ReviewArtifactSchemaVersion = 1;
 
     /// <summary>
+    /// Artifact kind for the round's specialist findings AS DATA — one row per finding, carrying its
+    /// severity tokens and what the shipped review did with it.
+    /// <para>
+    /// Its own kind, and specifically not a field on <see cref="ReviewArtifactKind"/>, because this is
+    /// written at the Posted stage, long after the review payload is final, and folding it in would mean
+    /// appending a second review row per run. It is also written LAST and best-effort — the review, the
+    /// verdict and the author's prose all exist without it, so a failure here must cost the measurement and
+    /// nothing else.
+    /// </para>
+    /// <para>
+    /// Why it is stored at all: the reconciliation markdown records the same facts, but in a form only a
+    /// human reading one PR can use. Every question that would tell us whether a change to the reviewer
+    /// helped — finding count per round, severity distribution, what fraction of specialist findings reach
+    /// the shipped review — needs those facts across many runs at once. Prose cannot answer a question with
+    /// a denominator.
+    /// </para>
+    /// <para>
+    /// No migration backs it. <c>review_artifact.artifact_kind</c> is unconstrained TEXT, so this is an
+    /// additional free-text kind rather than a schema change.
+    /// </para>
+    /// </summary>
+    public const string FindingsArtifactKind = "review-findings";
+
+    /// <summary>Schema version of the <c>review-findings</c> payload (append-compatible).</summary>
+    public const int FindingsArtifactSchemaVersion = 1;
+
+    /// <summary>
     /// Artifact kind for the PROVISIONAL review turn — the checkpoint that lets a Reviewed stage interrupted
     /// by a daemon restart resume mid-lifecycle instead of re-reviewing the PR from scratch. It records the
     /// hosted conversation the review is running on, the identity of the lifecycle that conversation belongs
@@ -4218,7 +4245,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// <see cref="ReviewPoster"/>, whose 3-tier check (outbox replay → provider backstop scan → post) guarantees
     /// exactly-once across re-polls and restarts. The body is prefixed with the configured bot name; when
     /// <paramref name="deepLink"/> is set (the S2S path) a single "Full review conversation" line is appended so
-    /// the reader can open the hosted conversation + its sub-agent tree. Requires a publisher for
+    /// the reader can open the hosted conversation + its sub-agent tree. The body is first run through
+    /// <see cref="InfraNarrationFilter"/> (#113) so daemon-infrastructure narration never reaches the author;
+    /// what that filter moves is logged to the operator channel here, and the persisted <c>review.md</c>/DB
+    /// artifact keeps the raw unfiltered text. Returns <c>null</c> — no post attempted, no outbox row, the
+    /// same disposition as the no-new-findings sentinel — when the filtered body is empty, which means the
+    /// review said nothing but infrastructure narration. Requires a publisher for
     /// <paramref name="provider"/> to be registered; throws if none matches so a misconfiguration is loud, not a
     /// silent no-post. Returns the <see cref="PostOutcome"/> so the caller can hold the terminal stage open when
     /// a post-mode review demonstrably never reached the PR.
@@ -4229,7 +4261,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// suppressed while the gate still demanded proof of it.
     /// </para>
     /// </summary>
-    private async Task<PostOutcome> PostReviewCommentHostSideAsync(
+    private async Task<PostOutcome?> PostReviewCommentHostSideAsync(
         ReviewRun run, RepoIdentity repo, string provider, string reviewText, string? deepLink,
         bool dedupContextLost,
         CancellationToken cancellationToken)
@@ -4238,9 +4270,57 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             ?? throw new InvalidOperationException(
                 $"No review-comment publisher registered for provider '{provider}'; cannot post the review for run {run.Id}.");
         var poster = new ReviewPoster(publisher, _store, _loggerFactory.CreateLogger<ReviewPoster>());
-        var postedBody = string.IsNullOrWhiteSpace(deepLink)
-            ? $"[{_options.BotName}]\n\n{reviewText}"
-            : $"[{_options.BotName}]\n\n{reviewText}\n\n🔎 Full review conversation: {deepLink}";
+
+        // Structural, composition-time filter (#113): strips/relocates daemon-infrastructure narration (sandbox
+        // tooling gaps, provider/HTTP failures, posting-state noise) that measured 0/48 under a severity-tagged
+        // finding heading in the live store — none of it is a review finding, and the PR author has no channel to
+        // act on it. Main only ASKS the model not to narrate via prompt text; this makes it structural.
+        // Deliberately placed HERE rather than on the caller's `reviewText` local: that same local is what
+        // CommitPooledNotesAsync/PublishToReviewBotAsync write to review.md, and the persisted artifact must stay
+        // the raw, unfiltered audit trail. This method is the only site the author-visible string is composed, so
+        // filtering here covers every posted body and nothing else. It also sits strictly downstream of the
+        // IsNoNewFindingsSentinel gate, which classifies the unfiltered text, so it cannot change that outcome.
+        var (authorVisibleText, movedNotes) = InfraNarrationFilter.Filter(reviewText);
+        foreach (var note in movedNotes)
+        {
+            _logger.LogInformation(
+                "Run {RunId}: held back {SubTag} infra narration from the posted comment (heading {Heading}): {Text}",
+                run.Id,
+                note.SubTag,
+                note.Heading ?? "(none)",
+                note.Text);
+        }
+
+        // A review that was ENTIRELY infra narration filters down to its section headings and nothing else.
+        // Posting it anyway delivered a comment whose whole content was the bot-name prefix, a bare heading,
+        // and (on the live profiles) a deep link — and it looked like a successful delivery all the way down,
+        // because the caller's `hasContent` reads the RAW text and ReviewPoster's null/whitespace guard sees
+        // the prefix, not the review. Emptiness therefore has to be judged on what the AUTHOR can read rather
+        // than on whitespace, which is what HasAuthorFacingContent decides. The outbox row
+        // then went terminal Posted, so the empty comment was never retried or corrected. Treat it as the
+        // deliberate no-post it is: the same disposition as the no-new-findings sentinel, which returns no
+        // outcome at all, leaves no outbox row to misread as evidence, and lets the run complete as a success.
+        // The withheld text is already on the operator log above, so nothing is lost — only the author is
+        // spared an empty comment.
+        if (!InfraNarrationFilter.HasAuthorFacingContent(authorVisibleText))
+        {
+            _logger.LogInformation(
+                "Run {RunId}: the review was entirely daemon-infrastructure narration and filtered down to "
+                    + "nothing, so no {Provider} comment was posted; the withheld text is on this log above.",
+                run.Id,
+                provider);
+            return null;
+        }
+
+        // One reference to the filtered text, deliberately. Composing the two arms separately meant the
+        // deep-link arm — the one every live profile actually takes — could be reverted to the raw text on
+        // its own and no test would notice.
+        var postedBody = $"[{_options.BotName}]\n\n{authorVisibleText}";
+        if (!string.IsNullOrWhiteSpace(deepLink))
+        {
+            postedBody += $"\n\n🔎 Full review conversation: {deepLink}";
+        }
+
         var key = new IdempotencyKeyComponents(
             Provider: provider,
             OrgOrOwner: repo.OrgOrOwner,
@@ -4283,7 +4363,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var reviewFile = $"{lease.NotesRelPath}/review.md";
         var reqFiles = new List<ReviewArtifactFile> { new(reviewFile, reviewBody) };
         reqFiles.AddRange(
-            await BuildDaemonNotesArtifactsAsync(run, repo, lease.NotesRelPath, cancellationToken)
+            await BuildDaemonNotesArtifactsAsync(
+                    run, repo, provider, lease.NotesRelPath, reviewBody, cancellationToken)
                 .ConfigureAwait(false));
         var request = BuildNotesRequest(repo, run, reqFiles);
 
@@ -4333,7 +4414,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// </para>
     /// </summary>
     private async Task<IReadOnlyList<ReviewArtifactFile>> BuildDaemonNotesArtifactsAsync(
-        ReviewRun run, RepoIdentity repo, string notesRelPath, CancellationToken cancellationToken)
+        ReviewRun run, RepoIdentity repo, string provider, string notesRelPath, string reviewBody,
+        CancellationToken cancellationToken)
     {
         if (!_artifactContexts.TryRemove(run.Id, out var context))
         {
@@ -4349,9 +4431,16 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         {
             var builder = new ReviewNotesArtifactBuilder(
                 _transcriptSource, _loggerFactory.CreateLogger<ReviewNotesArtifactBuilder>());
-            return await builder
-                .BuildAsync(run, repo, notesRelPath, context, cancellationToken)
+            var built = await builder
+                .BuildAsync(
+                    run, repo, notesRelPath, context, cancellationToken,
+                    // The review that actually shipped. Without it the builder can record what each
+                    // specialist SAID but not what became of it, which is the gap the reconciliation
+                    // artifact exists to close.
+                    reviewBody)
                 .ConfigureAwait(false);
+            StoreFindings(run, provider, built.Findings);
+            return built.Files;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -4360,6 +4449,48 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 "Run {RunId}: notes-artifact building failed; committing review.md only.",
                 run.Id);
             return [];
+        }
+    }
+
+    /// <summary>
+    /// Persists the round's findings as a <see cref="FindingsArtifactKind"/> row.
+    /// <para>
+    /// Best-effort by design, with its own catch rather than the caller's. The review, the verdict and the
+    /// author's prose are all already committed by the time this runs, so a store failure must cost the
+    /// measurement copy and nothing else — and it must say THAT, not "notes-artifact building failed",
+    /// which is a different and much worse event. Logged at Warning because a missing row is a hole in a
+    /// series that nothing later can backfill: the transcripts it was derived from are not kept.
+    /// </para>
+    /// </summary>
+    private void StoreFindings(ReviewRun run, string provider, ReviewFindingsArtifactPayload findings)
+    {
+        try
+        {
+            var stored = _store.AddArtifact(new ReviewArtifact
+            {
+                ReviewRunId = run.Id,
+                ArtifactSchemaVersion = FindingsArtifactSchemaVersion,
+                ArtifactKind = FindingsArtifactKind,
+                Provider = provider,
+                Payload = JsonSerializer.Serialize(findings),
+            });
+
+            // Logged on every write including the empty one. "0 findings recorded" and "no line at all" are
+            // different facts about a round, and only the first one has a denominator.
+            _logger.LogInformation(
+                "Run {RunId}: recorded {Recorded} finding(s) for round {Round} as artifact {ArtifactId} "
+                    + "({Parsed} extracted, compared against the shipped review: {Compared}).",
+                run.Id, findings.RecordedCount, findings.Round, stored.Id, findings.ParsedCount,
+                findings.Compared);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Run {RunId}: round {Round} produced {Recorded} structured finding(s) but they could not be "
+                    + "stored. The review and its notes are unaffected; this round is missing from the "
+                    + "findings series and cannot be reconstructed later.",
+                run.Id, findings.Round, findings.RecordedCount);
         }
     }
 
@@ -4413,7 +4544,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var notesRelPath = $"PRs/{ReviewBotRepoManagerSlug(repo)}-{run.PrId}";
         var files = new List<ReviewArtifactFile> { new($"{notesRelPath}/review.md", reviewBody) };
         files.AddRange(
-            await BuildDaemonNotesArtifactsAsync(run, repo, notesRelPath, cancellationToken).ConfigureAwait(false));
+            await BuildDaemonNotesArtifactsAsync(
+                    run, repo, provider, notesRelPath, reviewBody, cancellationToken)
+                .ConfigureAwait(false));
         var request = new ReviewBotPublishRequest(
             repo,
             PrNumber: int.Parse(run.PrId, CultureInfo.InvariantCulture),
