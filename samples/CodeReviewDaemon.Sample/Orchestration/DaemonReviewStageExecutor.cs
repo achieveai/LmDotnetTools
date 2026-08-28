@@ -4025,7 +4025,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var reviewFile = $"{lease.NotesRelPath}/review.md";
         var reqFiles = new List<ReviewArtifactFile> { new(reviewFile, reviewBody) };
         reqFiles.AddRange(
-            await BuildDaemonNotesArtifactsAsync(run, repo, lease.NotesRelPath, cancellationToken)
+            await BuildDaemonNotesArtifactsAsync(run, repo, lease.NotesRelPath, reviewBody, cancellationToken)
                 .ConfigureAwait(false));
         var request = BuildNotesRequest(repo, run, reqFiles);
 
@@ -4075,7 +4075,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// </para>
     /// </summary>
     private async Task<IReadOnlyList<ReviewArtifactFile>> BuildDaemonNotesArtifactsAsync(
-        ReviewRun run, RepoIdentity repo, string notesRelPath, CancellationToken cancellationToken)
+        ReviewRun run, RepoIdentity repo, string notesRelPath, string reviewBody,
+        CancellationToken cancellationToken)
     {
         if (!_artifactContexts.TryRemove(run.Id, out var context))
         {
@@ -4092,7 +4093,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             var builder = new ReviewNotesArtifactBuilder(
                 _transcriptSource, _loggerFactory.CreateLogger<ReviewNotesArtifactBuilder>());
             return await builder
-                .BuildAsync(run, repo, notesRelPath, context, cancellationToken)
+                .BuildAsync(
+                    run, repo, notesRelPath, context, cancellationToken,
+                    // The review that actually shipped. Without it the builder can record what each
+                    // specialist SAID but not what became of it, which is the gap the reconciliation
+                    // artifact exists to close.
+                    reviewBody)
                 .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -4155,7 +4161,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var notesRelPath = $"PRs/{ReviewBotRepoManagerSlug(repo)}-{run.PrId}";
         var files = new List<ReviewArtifactFile> { new($"{notesRelPath}/review.md", reviewBody) };
         files.AddRange(
-            await BuildDaemonNotesArtifactsAsync(run, repo, notesRelPath, cancellationToken).ConfigureAwait(false));
+            await BuildDaemonNotesArtifactsAsync(run, repo, notesRelPath, reviewBody, cancellationToken)
+                .ConfigureAwait(false));
         var request = new ReviewBotPublishRequest(
             repo,
             PrNumber: int.Parse(run.PrId, CultureInfo.InvariantCulture),
