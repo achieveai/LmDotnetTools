@@ -155,12 +155,14 @@ internal sealed class ReviewStore : IDisposable
                 repo_id, pr_id, head_sha, base_sha, trigger_watermark, review_kind, variant_id, mode,
                 merge_sha, model_provider, model_id, prompt_template_hash, policy_bundle_version,
                 feature_flag_snapshot, stage, workflow_status, pr_lifecycle_state,
-                is_fork_pr, is_target_repo_public, pr_author, created_at, updated_at)
+                is_fork_pr, is_target_repo_public, pr_author,
+                pr_title, pr_description, created_at, updated_at)
             VALUES (
                 $repoId, $prId, $head, $base, $watermark, $kind, $variant, $mode,
                 $merge, $modelProvider, $modelId, $promptHash, $policyVersion,
                 $flags, $stage, $workflow, $prState,
-                $isForkPr, $isTargetRepoPublic, $prAuthor, $now, $now);
+                $isForkPr, $isTargetRepoPublic, $prAuthor,
+                $prTitle, $prDescription, $now, $now);
             """;
         _ = insert.Parameters.AddWithValue("$repoId", run.RepoId);
         _ = insert.Parameters.AddWithValue("$prId", run.PrId);
@@ -182,6 +184,8 @@ internal sealed class ReviewStore : IDisposable
         _ = insert.Parameters.AddWithValue("$isForkPr", run.IsForkPr);
         _ = insert.Parameters.AddWithValue("$isTargetRepoPublic", run.IsTargetRepoPublic);
         _ = insert.Parameters.AddWithValue("$prAuthor", (object?)run.PrAuthor ?? DBNull.Value);
+        _ = insert.Parameters.AddWithValue("$prTitle", (object?)run.PrTitle ?? DBNull.Value);
+        _ = insert.Parameters.AddWithValue("$prDescription", (object?)run.PrDescription ?? DBNull.Value);
         _ = insert.Parameters.AddWithValue("$now", now);
         _ = insert.ExecuteNonQuery();
 
@@ -1274,6 +1278,8 @@ internal sealed class ReviewStore : IDisposable
         IsForkPr = reader.GetBoolean(reader.GetOrdinal("is_fork_pr")),
         IsTargetRepoPublic = reader.GetBoolean(reader.GetOrdinal("is_target_repo_public")),
         PrAuthor = GetNullableString(reader, "pr_author"),
+        PrTitle = GetNullableString(reader, "pr_title"),
+        PrDescription = GetNullableString(reader, "pr_description"),
     };
 
     private static OutboxEntry MapOutbox(SqliteDataReader reader) => new()

@@ -306,6 +306,46 @@ public sealed class ReviewStoreTests
         store.GetReviewRun(withoutAuthor.Id)!.PrAuthor.Should().BeNull();
     }
 
+    // ── pr_title / pr_description (the prose half of the knowledge-retrieval key) ─────────────────
+
+    /// <summary>
+    /// The PR's own prose is captured at POLL time and read at the Reviewed stage, which on a resumed run
+    /// is a different process entirely — so the store round trip is the whole mechanism. A column that
+    /// writes and reads back null would leave ranking permanently keyed on changed paths alone while every
+    /// unit test of the ranker still passed.
+    /// </summary>
+    [Fact]
+    public void The_pr_prose_round_trips_and_stays_null_when_the_provider_gave_none()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+
+        var described = store.CreateOrGetReviewRun(
+            SampleRun(repoId) with
+            {
+                PrTitle = "Remove the stale featureflag entry",
+                PrDescription = "The ECS task definition still carries the flag.",
+            });
+        var bare = store.CreateOrGetReviewRun(
+            SampleRun(repoId) with
+            {
+                PrId = "300",
+                HeadSha = "sha-y",
+                PrTitle = null,
+                PrDescription = null,
+            });
+
+        var reloaded = store.GetReviewRun(described.Id)!;
+        reloaded.PrTitle.Should().Be("Remove the stale featureflag entry");
+        reloaded.PrDescription.Should().Be("The ECS task definition still carries the flag.");
+
+        // Null must reload as null rather than "": the ranker tokenizes whatever it is handed, and an
+        // empty string is the value a pre-migration row carries.
+        store.GetReviewRun(bare.Id)!.PrTitle.Should().BeNull();
+        store.GetReviewRun(bare.Id)!.PrDescription.Should().BeNull();
+    }
+
     [Fact]
     public async Task ListReviewedPrsAsync_keeps_one_row_per_pr_and_prefers_the_known_author()
     {

@@ -18,15 +18,75 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// </summary>
 internal static class KnowledgeDigest
 {
-    /// <summary>Weight of a tag hit. Tags are curated, so they are stronger evidence than title prose.</summary>
-    private const int TagWeight = 2;
+    /// <summary>Weight of a tag hit against a CHANGED PATH. Tags are curated, so they are stronger evidence
+    /// than title prose; a path is stronger evidence than the PR's own prose, so this is the heaviest term.
+    /// <para>
+    /// All four weights below are the historical 2/1 pair scaled by <see cref="ProseScale"/>, and the two path
+    /// weights are WRITTEN as that product rather than as the numbers it comes to, so the 2:1 ratio is computed
+    /// instead of coincidental. Spelled as literals, one edit collapses the ratio to 1:1 and a fixture whose
+    /// tie-break happens to reproduce the same order goes on passing — the ratio then holds only by agreement
+    /// between two constants nothing relates.
+    /// </para>
+    /// <para>
+    /// What the scaling buys is a statement about SCORES AND ORDER, and only that: a query carrying no prose
+    /// scores every entry exactly as it did before prose existed, so the ranking is unchanged. It does NOT
+    /// follow that the same entries are DELIVERED. <see cref="ReserveScopeBreadth"/> runs whenever the
+    /// candidate set exceeds the cap — the shipped case, since 35 of 35 measured briefs saturated the 24-entry
+    /// cap — and spends up to a <see cref="ScopeReserveDivisor"/>th of the budget (8 slots of 24) on the best
+    /// entry of each distinct scope, admitting entries the raw ranking would have cut and dropping entries it
+    /// would have kept. Digest MEMBERSHIP therefore changes with no prose in play at all.
+    /// </para></summary>
+    private const int PathTagWeight = 2 * ProseScale;
+
+    /// <summary>Weight of a title-token hit against a changed path — half <see cref="PathTagWeight"/>, written
+    /// as the same product so the pair cannot be collapsed by editing one number.</summary>
+    private const int PathTitleWeight = 1 * ProseScale;
 
     /// <summary>
-    /// Weight of an entry whose <see cref="KnowledgeEntryMeta.Scope"/> is the repository under review.
-    /// Set above <see cref="TagWeight"/> so a repo-specific lesson outranks a generic one that matched on
-    /// a single tag — locality beats vocabulary overlap.
+    /// Weight of a tag hit against the PR's TITLE or DESCRIPTION — half its path-hit weight.
+    /// <para>
+    /// Half, not equal, because the two are different grades of evidence. A changed path is a fact about what
+    /// the PR does; the title and description are the author's account of it, and an account can be generic,
+    /// stale, templated, or simply long. Measured on a real run whose title named no pattern, adding prose at
+    /// full strength pushed the CORRECT entry from rank 15 to 18: its own score stayed 0 while other entries
+    /// absorbed the added generic vocabulary and overtook it. Prose can therefore DEMOTE a right answer, and
+    /// this weight is what bounds how far.
+    /// </para></summary>
+    private const int ProseTagWeight = 2;
+
+    /// <summary>Weight of a title-token hit against the PR's title or description.</summary>
+    private const int ProseTitleWeight = 1;
+
+    /// <summary>The factor the historical weights were scaled by to make room for a half-weight prose tier.
+    /// <see cref="PathTagWeight"/> and <see cref="PathTitleWeight"/> are expressed in terms of it, so this is
+    /// the single place the scaling is stated and not a comment standing beside two independent numbers.
     /// </summary>
-    private const int ScopeBonus = 3;
+    private const int ProseScale = 2;
+
+    /// <summary>
+    /// How much of the PR's title + description is tokenized for ranking.
+    /// <para>
+    /// A bound on INFLUENCE, not a tuning knob. Description text is unbounded author prose, and every token
+    /// it contributes is another chance for an unrelated entry to tie with or overtake a relevant one — the
+    /// rank 15 -> 18 demotion above, scaled by length. Past some size prose stops being a signal and becomes
+    /// a flood.
+    /// </para>
+    /// <para>
+    /// <b>The threshold itself is NOT measured.</b> I had no distribution of PR description lengths to place
+    /// it against, so it sits well above a normal title + summary and should be re-derived from real data
+    /// before anyone treats it as tuned.
+    /// </para></summary>
+    private const int MaxProseCharsScored = 2048;
+
+    /// <summary>
+    /// The fraction of the retrieval budget spent on scope breadth: one slot for the best entry of each
+    /// distinct scope, until a <c>1/ScopeReserveDivisor</c> share is used up.
+    /// <para>
+    /// A minority share on purpose. Relevance stays the main signal; this only guarantees that being
+    /// second-best in an unpopular topic beats being twentieth-best in a popular one. At the shipped cap of 24
+    /// that reserves 8 slots and leaves 16 to the raw ranking.
+    /// </para></summary>
+    private const int ScopeReserveDivisor = 3;
 
     /// <summary>Shortest token worth matching; below this, path noise ("cs", "lm") dominates.</summary>
     private const int MinTokenLength = 3;
@@ -188,9 +248,23 @@ internal static class KnowledgeDigest
     }
 
     /// <summary>
-    /// Ranks <paramref name="entries"/> against <paramref name="changedPaths"/> and returns at most
-    /// <paramref name="maxEntries"/> of them, best first. An entry scores on tag and title tokens shared
-    /// with the changed paths, plus a bonus when its scope is <paramref name="repoScope"/>.
+    /// Ranks <paramref name="entries"/> against what the PR touches and says, and returns at most
+    /// <paramref name="maxEntries"/> of them, best first. An entry scores on tag and title tokens shared with
+    /// the changed paths, and at half weight on tokens shared with <paramref name="prTitle"/> /
+    /// <paramref name="prDescription"/>.
+    /// <para>
+    /// The prose half exists because sibling PRs on one architectural pattern frequently share NO path tokens
+    /// at all — different files, same mistake — while the pattern is named in the title. Keyed on paths alone,
+    /// the same defect retrieved different knowledge on each sibling and was blocked on one PR and declined as
+    /// out of scope on the other, five times against six inside a single 11.3-hour window.
+    /// </para>
+    /// <para>
+    /// Prose is NOT free. On a run whose title named no pattern, adding it demoted the correct entry from rank
+    /// 15 to 18 — the gain depends on incidental vocabulary overlap, and a generic description can lift
+    /// unrelated entries past a relevant one that matched nothing. <see cref="ProseTagWeight"/> and
+    /// <see cref="MaxProseCharsScored"/> bound that, and the scope reserve below is what stops it from
+    /// deciding the whole result.
+    /// </para>
     /// <para>
     /// Entries that match nothing are ranked last but are <b>not</b> dropped: the tag vocabulary is coarse
     /// and the Knowledge Base is small, so returning nothing on a miss would reproduce exactly the
@@ -202,7 +276,8 @@ internal static class KnowledgeDigest
     public static IReadOnlyList<KnowledgeEntryMeta> SelectRelevant(
         IReadOnlyList<KnowledgeEntryMeta> entries,
         IReadOnlyList<string> changedPaths,
-        string? repoScope,
+        string? prTitle,
+        string? prDescription,
         int maxEntries)
     {
         ArgumentNullException.ThrowIfNull(entries);
@@ -219,15 +294,114 @@ internal static class KnowledgeDigest
             AddTokens(path, pathTokens);
         }
 
-        return
-        [
-            .. entries
-                .OrderByDescending(entry => Score(entry, pathTokens, repoScope))
-                .ThenByDescending(entry => entry.Updated, StringComparer.Ordinal)
-                .ThenBy(entry => entry.File, StringComparer.Ordinal)
-                .Take(maxEntries),
-        ];
+        var proseTokens = new HashSet<string>(StringComparer.Ordinal);
+        AddTokens(Clamp(prTitle), proseTokens);
+        AddTokens(Clamp(prDescription), proseTokens);
+
+        // A token the PR both TOUCHES and TALKS ABOUT is paid at the path rate, once. Leaving it in both sets
+        // would pay 1.5x for the strongest possible evidence and quietly re-tune every existing weight.
+        proseTokens.ExceptWith(pathTokens);
+
+        var byScore = entries
+            .OrderByDescending(entry => Score(entry, pathTokens, proseTokens))
+            .ThenByDescending(entry => entry.Updated, StringComparer.Ordinal)
+            .ThenBy(entry => entry.File, StringComparer.Ordinal)
+            .ToList();
+
+        return [.. ReserveScopeBreadth(byScore, maxEntries)];
     }
+
+    /// <summary>The prefix of <paramref name="text"/> that is worth tokenizing — see
+    /// <see cref="MaxProseCharsScored"/>.</summary>
+    private static string? Clamp(string? text) =>
+        text is { Length: > MaxProseCharsScored } ? text[..MaxProseCharsScored] : text;
+
+    /// <summary>
+    /// Takes <paramref name="maxEntries"/> from <paramref name="byScore"/> (already best-first), but spends
+    /// the first <see cref="ScopeReserveDivisor"/>th of the budget on the best entry of each DISTINCT scope
+    /// before letting the raw ranking fill the rest.
+    /// <para>
+    /// Keyed on scope and not on tags, and that is the whole reason it can work. The tag vocabulary is
+    /// free-form — 105 distinct tags across 34 entries, 80 of them appearing exactly once — so there is no
+    /// stable set of buckets to reserve slots for. <c>scope</c> is a controlled vocabulary of 13 topic values,
+    /// which is what makes "one slot each, best first" a statement about coverage rather than about whichever
+    /// words the last extraction happened to invent.
+    /// </para>
+    /// <para>
+    /// It matters because retrieval is SATURATED: 35 of 35 measured briefs rendered 23-24 entries against a
+    /// 24-entry cap, on all five repositories. At saturation the tail is always being cut, so a single
+    /// dominant topic can hold every slot and the reviewer never sees the one lesson from elsewhere that
+    /// would have settled the question. Raising the cap does not fix that — it is a keying problem wearing a
+    /// capacity symptom, and the index cap it would push against is nowhere near hit.
+    /// </para>
+    /// <para>
+    /// Breadth is bought with a MINORITY of the budget on purpose. Relevance is still the main signal; this
+    /// only guarantees that being second-best in an unpopular topic beats being twentieth-best in a popular
+    /// one. Entries with a blank scope share the single "unscoped" bucket rather than each counting as their
+    /// own topic, which would otherwise turn an unscoped KB into pure round-robin.
+    /// </para>
+    /// </summary>
+    private static List<KnowledgeEntryMeta> ReserveScopeBreadth(
+        List<KnowledgeEntryMeta> byScore,
+        int maxEntries)
+    {
+        if (byScore.Count <= maxEntries)
+        {
+            return byScore;
+        }
+
+        var reserve = maxEntries / ScopeReserveDivisor;
+        if (reserve == 0)
+        {
+            return [.. byScore.Take(maxEntries)];
+        }
+
+        var seenScopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var reserved = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var entry in byScore)
+        {
+            if (reserved.Count == reserve)
+            {
+                break;
+            }
+
+            var scope = string.IsNullOrWhiteSpace(entry.Scope) ? UnscopedBucket : entry.Scope;
+            if (seenScopes.Add(scope))
+            {
+                _ = reserved.Add(entry.File);
+            }
+        }
+
+        // One pass in RANK order, keeping a slot back for every reserved entry not yet taken. The reserved
+        // entries therefore keep their rank position instead of being promoted to the front: this decides
+        // membership, not order, and reshuffling the digest would move entries for a reason no reader could
+        // see from the rendered block.
+        var outstanding = reserved.Count;
+        var selected = new List<KnowledgeEntryMeta>(maxEntries);
+        foreach (var entry in byScore)
+        {
+            if (selected.Count == maxEntries)
+            {
+                break;
+            }
+
+            if (reserved.Contains(entry.File))
+            {
+                selected.Add(entry);
+                outstanding--;
+            }
+            else if (maxEntries - selected.Count > outstanding)
+            {
+                selected.Add(entry);
+            }
+        }
+
+        return selected;
+    }
+
+    /// <summary>The bucket a blank-scoped entry falls in. Shared by all of them, so an unscoped Knowledge Base
+    /// reserves ONE slot rather than turning the whole selection into round-robin.</summary>
+    private const string UnscopedBucket = "(unscoped)";
 
     /// <summary>
     /// Collapses entries that name the SAME Knowledge Base file down to one record each, keyed on the
@@ -1776,16 +1950,11 @@ internal static class KnowledgeDigest
         return Encoding.UTF8.GetString([.. bytes]);
     }
 
-    private static int Score(KnowledgeEntryMeta entry, HashSet<string> pathTokens, string? repoScope)
+    private static int Score(KnowledgeEntryMeta entry, HashSet<string> pathTokens, HashSet<string> proseTokens)
     {
-        var score = !string.IsNullOrWhiteSpace(repoScope)
-            && string.Equals(entry.Scope, repoScope, StringComparison.OrdinalIgnoreCase)
-                ? ScopeBonus
-                : 0;
-
-        if (pathTokens.Count == 0)
+        if (pathTokens.Count == 0 && proseTokens.Count == 0)
         {
-            return score;
+            return 0;
         }
 
         var tagTokens = new HashSet<string>(StringComparer.Ordinal);
@@ -1794,13 +1963,16 @@ internal static class KnowledgeDigest
             AddTokens(tag, tagTokens);
         }
 
-        score += TagWeight * tagTokens.Count(pathTokens.Contains);
+        var score = (PathTagWeight * tagTokens.Count(pathTokens.Contains))
+            + (ProseTagWeight * tagTokens.Count(proseTokens.Contains));
 
         var titleTokens = new HashSet<string>(StringComparer.Ordinal);
         AddTokens(entry.EffectiveTitle, titleTokens);
         titleTokens.ExceptWith(tagTokens); // A word already counted as a tag must not be paid for twice.
 
-        return score + titleTokens.Count(pathTokens.Contains);
+        return score
+            + (PathTitleWeight * titleTokens.Count(pathTokens.Contains))
+            + (ProseTitleWeight * titleTokens.Count(proseTokens.Contains));
     }
 
     /// <summary>

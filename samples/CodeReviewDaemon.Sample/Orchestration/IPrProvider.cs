@@ -130,4 +130,22 @@ internal sealed record PullRequestDescriptor
     /// </para>
     /// </summary>
     public string? Author { get; init; }
+
+    /// <summary>
+    /// What the PR SAYS it does (GitHub <c>title</c>, ADO <c>title</c>). Captured at poll time and carried
+    /// on the run, because sibling PRs applying one architectural pattern frequently touch entirely
+    /// different files — the pattern is named here and nowhere in the changed-path listing.
+    /// <para>
+    /// Null whenever the provider payload omits it. Consumers must degrade to path-only behaviour rather
+    /// than substituting a placeholder.
+    /// </para>
+    /// </summary>
+    public string? Title { get; init; }
+
+    /// <summary>
+    /// The PR's description body (GitHub <c>body</c>, ADO <c>description</c>). Fully author-controlled
+    /// prose: any consumer that renders it into an agent prompt must frame it as quoted UNTRUSTED DATA.
+    /// Null when the provider payload omits it.
+    /// </summary>
+    public string? Description { get; init; }
 }

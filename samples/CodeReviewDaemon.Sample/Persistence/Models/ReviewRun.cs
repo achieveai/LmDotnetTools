@@ -68,4 +68,27 @@ internal sealed record ReviewRun
     /// </para>
     /// </summary>
     public string? PrAuthor { get; init; }
+
+    // ── What the PR says it does ─────────────────────────────────────────────────────────────────
+    /// <summary>
+    /// The PR's title (GitHub <c>title</c>, ADO <c>title</c>), captured at poll time so retrieval can rank
+    /// prior knowledge on what the change CLAIMS to do rather than only on which files it touched.
+    /// <para>
+    /// Null on rows written before this was captured, and on any provider payload that omits it. A null
+    /// title is not an error — the ranking simply falls back to changed paths alone, which is exactly how it
+    /// behaved before this field existed. It is not part of the run's identity tuple.
+    /// </para>
+    /// </summary>
+    public string? PrTitle { get; init; }
+
+    /// <summary>
+    /// The PR's description body (GitHub <c>body</c>, ADO <c>description</c>) as written by its author.
+    /// <para>
+    /// This is fully author-controlled prose and therefore an untrusted, prompt-injection-bearing input:
+    /// every consumer that renders it into an agent prompt must frame it as quoted UNTRUSTED DATA, the same
+    /// as a diff or an existing comment. Ranking only TOKENIZES it, which is why the ranking may read it
+    /// directly. Null when absent; not part of the run's identity tuple.
+    /// </para>
+    /// </summary>
+    public string? PrDescription { get; init; }
 }
