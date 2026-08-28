@@ -226,6 +226,22 @@ public sealed class WorkItemBriefRenderingTests : LoggingTestBase
             "the brief must hand the reviewer the exact sentence this test then proves is deliverable — a "
                 + "disclosure the filter passes is worth nothing if the reviewer is never told to write it");
 
+        // The two prompt-side guardrails. The filter-survival assertions below pin the MECHANISM — that this
+        // particular wording gets through — but a reviewer only emits that wording if the block both asks for
+        // it verbatim and does not hand it the vendor's name to reach for instead. Drop either guardrail and
+        // the mechanism still passes while the composition that reaches the author quietly regresses.
+        brief.Should().NotContain(
+            "Azure DevOps",
+            "naming the vendor anywhere in the FAILED arm primes the reviewer to echo it into the disclosure, "
+                + "and a disclosure naming the provider next to the failure is moved off the author's copy "
+                + "(scoped to this arm on purpose: the NoneLinked arm still says 'Azure DevOps returned', "
+                + "where it is reporting a SUCCESSFUL read and carries no failure vocabulary to pair with)");
+        brief.Should().Contain(
+            "Do not reword it",
+            "'include this sentence VERBATIM' is only half the instruction — without the prohibition, a "
+                + "reviewer that paraphrases the disclosure in its own words can reintroduce the provider "
+                + "name and lose the very caveat this arm exists to deliver");
+
         // A Failed-arm review as the reviewer would compose it: the disclosure sits in the summary, under a
         // heading that names no severity, so nothing exempts it and the classifier actually runs on it.
         var body =
