@@ -1058,7 +1058,13 @@ builder.Services.AddHostedService(sp => new PrPollingService(
         ("PR-lifecycle", sp.GetService<PrLifecycleSweeper>() is { } lifecycleSweeper ? lifecycleSweeper.SweepAsync : null),
         ("deep-link retention", sp.GetService<DeepLinkRetentionSweeper>() is { } retentionSweeper ? retentionSweeper.SweepAsync : null),
         ("stranded-run", sp.GetService<StrandedRunReconciler>() is { } strandedReconciler ? strandedReconciler.SweepAsync : null),
-        ("eval-corpus", sp.GetService<EvalCorpusSweepSchedule>() is { } evalCorpusSweep ? evalCorpusSweep.SweepAsync : null))));
+        ("eval-corpus", sp.GetService<EvalCorpusSweepSchedule>() is { } evalCorpusSweep ? evalCorpusSweep.SweepAsync : null)),
+    // The reporter is passed so the startup no-change-on-a-first-review rate reaches the CONSOLE, which is
+    // filtered to Warning for every category except this one. GetRequiredService, not GetService: a missing
+    // registration must fail at startup rather than leave the standing check silently inert, which is the
+    // exact failure mode — a control that is present and does nothing — this check exists to catch.
+    progress: sp.GetRequiredService<ReviewProgressReporter>(),
+    firstReviewLookbackDays: daemonOptions.FirstReviewSentinelLookbackDays));
 
 // Chains the optional maintenance sweeps into the poller's single seam, in the order they were introduced:
 // the lifecycle sweep first, so its today's-semantics timing is unchanged by the sweeps landing behind it.

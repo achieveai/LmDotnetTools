@@ -2102,6 +2102,10 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // publish it as a PR comment) — otherwise the post-nothing contract is violated and re-review noise
         // reappears via the host path even when the agent correctly posted nothing.
         using var fixture = Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true });
+        // An earlier round that actually reviewed something, because the sentinel is a claim ABOUT one and the
+        // Reviewed stage refuses it otherwise. What this test is about is the disposition of the sentinel at the
+        // host fallback, not whether the run was entitled to produce it.
+        _ = fixture.SeedPriorReviewedRound();
         fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] = "No new findings since the last review.";
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
@@ -2345,6 +2349,9 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             ? Fixture.Ado(LoggerFactory, options)
             : Fixture.GitHub(LoggerFactory, options);
         var publisher = provider == "azure-devops" ? fixture.AdoPublisher! : fixture.GitHubPublisher;
+        // See the host-fallback case above: the sentinel is a claim about an earlier round, so this run needs
+        // one to be entitled to it.
+        _ = fixture.SeedPriorReviewedRound();
         fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] = "No new findings since the last review.";
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z", mode: "post");
 
@@ -2754,6 +2761,48 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
                 PrAuthor = prAuthor,
                 ModelId = modelId,
             });
+        }
+
+        /// <summary>
+        /// An earlier PRIMARY round on the same PR that reached <see cref="ReviewStage.Posted"/> holding a real
+        /// review body — the state that entitles a later round to answer "no new findings since the last
+        /// review". The body comes with the row deliberately: the sentinel guard asks for the BODY rather than
+        /// the row, because a run discovered and then dead leaves a row and no review.
+        /// </summary>
+        public ReviewRun SeedPriorReviewedRound(
+            string reviewText = "## Review\nMust: null check missing in Foo.cs:10.")
+        {
+            var prior = Store.CreateOrGetReviewRun(new ReviewRun
+            {
+                RepoId = Store.EnsureRepo(new RepoIdentity
+                {
+                    Provider = _repoProvider,
+                    OrgOrOwner = "achieveai",
+                    Project = _repoProvider == "azure-devops" ? "Platform" : null,
+                    RepoName = "LmDotnetTools",
+                    RepoStableId = "repo-stable-1",
+                }),
+                PrId = "118",
+                HeadSha = "head-sha-round-1",
+                BaseSha = "base-sha",
+                TriggerWatermark = "wm-0",
+                ReviewKind = "full",
+                VariantId = "primary",
+                Mode = "collect-only",
+                Stage = ReviewStage.Posted,
+                WorkflowStatus = WorkflowStatus.Running,
+                PrLifecycleState = PrLifecycleState.Open,
+            });
+            _ = Store.AddArtifact(new ReviewArtifact
+            {
+                ReviewRunId = prior.Id,
+                ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
+                ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
+                Provider = _repoProvider == "azure-devops" ? "ado" : "github",
+                Payload = JsonSerializer.Serialize(
+                    new ReviewArtifactPayload(reviewText, "prior-run", "primary")),
+            });
+            return prior;
         }
 
         public void Dispose()

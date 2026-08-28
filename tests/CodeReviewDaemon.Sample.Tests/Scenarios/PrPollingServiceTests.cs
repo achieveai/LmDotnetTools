@@ -1,9 +1,11 @@
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Time.Testing;
 using Xunit.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
@@ -339,6 +341,103 @@ public sealed class PrPollingServiceTests : LoggingTestBase
 
         kept.Should().BeFalse("the caller's loop has to stop");
         logger.CountAtLevel(LogLevel.Error, "maintenance sweep failed").Should().Be(0);
+    }
+
+    // ── the standing first-review sentinel check, reported once per start ────────────────────────────
+    // The per-run guard in DaemonReviewStageExecutor makes one false "no new findings since the last review"
+    // impossible; it cannot say whether the fleet is healthy, because a guard only ever speaks about the run
+    // it refused. These two pin the WIRING of the population view — that it is measured at all, on every
+    // start, healthy case included — which is the half that would rot silently: a check nobody calls and a
+    // fleet nobody is watching produce exactly the same log.
+
+    [Fact]
+    public async Task Startup_warns_when_a_recent_first_review_claimed_nothing_had_changed()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        SeedFirstReview(store, "No new findings since the last review.");
+        var progress = new CapturingLogger<ReviewProgressReporter>();
+        var poller = BuildPoller(store, new MockPrProvider(Provider, [], NextCursor()), new ReviewProgressReporter(progress));
+
+        await poller.StartAsync(CancellationToken.None);
+        await poller.StopAsync(CancellationToken.None);
+
+        progress.CountAtLevel(LogLevel.Warning, "on a PR that had no last review").Should().Be(
+            1, "a first-ever review cannot have findings to be new since, so a non-zero count is the alarm");
+    }
+
+    [Fact]
+    public async Task Startup_reports_the_healthy_value_too_so_nobody_looked_cannot_pass_for_nothing_wrong()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        SeedFirstReview(store, "## Review\nMust: null check missing in Foo.cs:10.");
+        var progress = new CapturingLogger<ReviewProgressReporter>();
+        var poller = BuildPoller(store, new MockPrProvider(Provider, [], NextCursor()), new ReviewProgressReporter(progress));
+
+        await poller.StartAsync(CancellationToken.None);
+        await poller.StopAsync(CancellationToken.None);
+
+        progress.CountAtLevel(LogLevel.Information, "That is the healthy value.").Should().Be(1);
+        progress.CountAtLevel(LogLevel.Warning, "on a PR that had no last review").Should().Be(
+            0, "a real review is not the sentinel and must not be counted as one");
+    }
+
+    /// <summary>
+    /// The lookback is a real term, and the option that sets it has to reach the query. Driven from the far
+    /// side of the window: the seeded first review is a sentinel, so the ONLY thing keeping the warning quiet
+    /// is that it fell outside the window the configured value asked for.
+    /// </summary>
+    [Fact]
+    public async Task Startup_ignores_a_first_review_sentinel_from_before_the_lookback_window()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        SeedFirstReview(store, "No new findings since the last review.");
+        // Two days past a one-day window, so the artifact the store just stamped is outside it.
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow.AddDays(2));
+        var progress = new CapturingLogger<ReviewProgressReporter>();
+        var poller = BuildPoller(
+            store, new MockPrProvider(Provider, [], NextCursor()), new ReviewProgressReporter(progress),
+            timeProvider: clock, lookbackDays: 1);
+
+        await poller.StartAsync(CancellationToken.None);
+        await poller.StopAsync(CancellationToken.None);
+
+        progress.CountAtLevel(LogLevel.Warning, "on a PR that had no last review").Should().Be(
+            0, "a sentinel from before the window is history, not a statement about the fleet now");
+        progress.CountAtLevel(LogLevel.Information, "nothing to report yet").Should().Be(
+            1, "and the empty window says so rather than reporting a healthy count it did not measure");
+    }
+
+    /// <summary>A PR whose one and only review carries <paramref name="reviewText"/>, on the primary variant,
+    /// so the startup check sees exactly one first review.</summary>
+    private static void SeedFirstReview(ReviewStore store, string reviewText)
+    {
+        var repoId = store.EnsureRepo(SampleRepo());
+        var run = store.CreateOrGetReviewRun(SeedFor(repoId, "118"));
+        _ = store.AddArtifact(new ReviewArtifact
+        {
+            ReviewRunId = run.Id,
+            ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
+            ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
+            Provider = Provider,
+            Payload = JsonSerializer.Serialize(new ReviewArtifactPayload(reviewText, "run-1", "primary")),
+        });
+    }
+
+    private PrPollingService BuildPoller(
+        ReviewStore store,
+        IPrProvider provider,
+        ReviewProgressReporter progress,
+        TimeProvider? timeProvider = null,
+        int? lookbackDays = null)
+    {
+        var orchestrator = new PrOrchestrator(store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
+        var target = new PrPollTarget { Provider = Provider, Repo = SampleRepo(), Scope = Scope };
+        return new PrPollingService(
+            [target], [provider], store, orchestrator, LoggerFactory.CreateLogger<PrPollingService>(),
+            timeProvider: timeProvider, progress: progress, firstReviewLookbackDays: lookbackDays);
     }
 
     private PrPollingService BuildPoller(

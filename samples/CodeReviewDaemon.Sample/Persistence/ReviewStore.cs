@@ -506,6 +506,126 @@ internal sealed class ReviewStore : IDisposable
     private const string PrimaryVariantId = "primary";
 
     /// <summary>
+    /// The persisted review payload of every EARLIER primary round on this PR, oldest first, so a caller can
+    /// answer the only question that authorizes the "no new findings since the last review" exit: did an
+    /// earlier round actually produce a review to have had findings since?
+    /// </summary>
+    /// <remarks>
+    /// Deliberately NOT "does a prior RUN exist". A run that was discovered and then died before reviewing
+    /// anything leaves a <c>review_run</c> row and no review, and that is not a hypothetical shape: of the 57
+    /// live runs that emitted the sentinel with no earlier review, 6 had one or two prior runs, all of them
+    /// parked at Discovered or ContextReady. Counting those rows as a prior review authorizes the precise
+    /// claim this query exists to refuse.
+    /// <para>
+    /// The stage filter is the one <see cref="GetPriorReviewSummary"/> applies, for the same reasons, but it is
+    /// NOT sufficient alone — a run can reach a review-producing stage and still persist no body, or persist
+    /// the sentinel — so this returns the payloads and lets the caller test what is inside them. The
+    /// persistence layer does not know what a sentinel is and must not learn.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<string> GetPriorReviewPayloads(
+        long repoId,
+        string prId,
+        long excludeRunId,
+        string artifactKind)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(prId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(artifactKind);
+
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        // The run's LATEST artifact of the kind — the same "latest wins" rule TryGetLatestArtifact defines —
+        // because a run that retried its review stage holds more than one.
+        command.CommandText = """
+            SELECT ra.payload AS payload
+            FROM review_run rr
+            JOIN review_artifact ra ON ra.id = (
+                SELECT id FROM review_artifact
+                WHERE review_run_id = rr.id AND artifact_kind = $kind
+                ORDER BY id DESC LIMIT 1)
+            WHERE rr.repo_id = $repoId AND rr.pr_id = $prId AND rr.variant_id = $variant
+              AND rr.id != $excludeRunId
+              AND rr.stage IN ('Reviewed', 'Judged', 'Posted')
+            ORDER BY rr.id;
+            """;
+        _ = command.Parameters.AddWithValue("$repoId", repoId);
+        _ = command.Parameters.AddWithValue("$prId", prId);
+        _ = command.Parameters.AddWithValue("$variant", PrimaryVariantId);
+        _ = command.Parameters.AddWithValue("$excludeRunId", excludeRunId);
+        _ = command.Parameters.AddWithValue("$kind", artifactKind);
+
+        var payloads = new List<string>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            payloads.Add(reader.GetString(reader.GetOrdinal("payload")));
+        }
+
+        return payloads;
+    }
+
+    /// <summary>
+    /// The FIRST review payload of every PR whose first review landed at or after <paramref name="since"/>,
+    /// so a caller can measure how often a first-ever review answered that nothing had changed.
+    /// </summary>
+    /// <remarks>
+    /// This is the population-level counterpart to the per-run guard in <c>DaemonReviewStageExecutor</c>. The
+    /// guard makes one false no-change claim impossible; this measures whether the fleet as a whole is still
+    /// healthy, which the guard cannot tell you.
+    /// <para>
+    /// Before the 2026-08-07T16:12:17Z rebuild, 57 of 115 first reviews (49.6%) came back as the
+    /// no-new-findings sentinel — a claim about a previous review that never happened — and 0 of 104 did
+    /// afterwards. <b>The cause of that recovery is not in the record</b>: the daemon runs from an uncommitted
+    /// tree, and the one committed fix that would be credited for it post-dates the drop by two days. A defect
+    /// whose repair is unexplained can return without anything announcing it, so the rate is measured
+    /// continuously rather than assumed to stay at zero.
+    /// </para>
+    /// <para>
+    /// "First" is by artifact id within (repo, PR) on the primary variant, so a legitimate later-round sentinel
+    /// cannot inflate the rate. The caller counts sentinels; the persistence layer does not know what one is.
+    /// </para>
+    /// <para>
+    /// <paramref name="since"/> is an INSTANT, not a pre-formatted string, so the one "O"-shaped rendering that
+    /// makes <c>created_at</c> comparable lexicographically lives in <see cref="Utc"/> beside the writer —
+    /// exactly as <see cref="ListStrandedRuns"/> and <see cref="ListRetryPendingRuns"/> take theirs. A caller
+    /// formatting its own cutoff would be a second copy of that contract, agreeing today and pinned by nothing.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<string> GetFirstReviewPayloadsSince(DateTimeOffset since, string artifactKind)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(artifactKind);
+
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT ra.payload AS payload
+            FROM review_artifact ra
+            JOIN review_run rr ON rr.id = ra.review_run_id
+            WHERE ra.artifact_kind = $kind AND rr.variant_id = $variant
+              AND ra.created_at >= $since
+              AND ra.id IN (
+                SELECT MIN(ra2.id)
+                FROM review_artifact ra2
+                JOIN review_run rr2 ON rr2.id = ra2.review_run_id
+                WHERE ra2.artifact_kind = $kind AND rr2.variant_id = $variant
+                GROUP BY rr2.repo_id, rr2.pr_id)
+            ORDER BY ra.id;
+            """;
+        _ = command.Parameters.AddWithValue("$kind", artifactKind);
+        _ = command.Parameters.AddWithValue("$variant", PrimaryVariantId);
+        _ = command.Parameters.AddWithValue("$since", Utc(since));
+
+        var payloads = new List<string>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            payloads.Add(reader.GetString(reader.GetOrdinal("payload")));
+        }
+
+        return payloads;
+    }
+
+    /// <summary>
     /// Returns one row per PR that has at least one <c>review_run</c> (grouped over the reviewed
     /// (repo, pr) pairs — multiple runs, variants, or head shas for the same PR collapse to a single
     /// row). Consumed by the PR-lifecycle sweeper to enumerate the PRs it must re-poll for close/merge
