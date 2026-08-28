@@ -870,4 +870,23 @@ public sealed class ReviewNotesArtifactBuilderTests
         Reconciliation(files).Content.Should()
             .Contain("The shipped review stated no disposition anywhere outside the findings above.");
     }
+
+    [Fact]
+    public async Task The_disposition_tally_is_logged_on_a_build_that_reconciled_nothing()
+    {
+        // The denominator is the point. A tally that only appears once there is something to report cannot
+        // answer "is this rising?" — "0 severity-changed out of 0 reconciled" and "0 out of 40" are not the
+        // same review, and a line that goes quiet on the empty case is indistinguishable from one that broke.
+        // Zero roster nodes is the emptiest possible build, so it is the one that pins the claim.
+        var logs = new CapturingLogger<object>();
+        var builder = new ReviewNotesArtifactBuilder(
+            new FakeTranscripts(descendant: [], root: [Entry("TextMessage", "reviewed alone")]),
+            logs);
+
+        await BuildAsync(builder, NewContext(), shippedReviewBody: "## Review\nNothing worth reporting.\n");
+
+        logs.MessagesAtLevel(LogLevel.Information).Should().ContainSingle(
+            m => m.Contains("reconciled 0 specialist finding(s)", StringComparison.Ordinal),
+            "the tally is logged on every build, including the one where there was nothing to tally");
+    }
 }
