@@ -125,15 +125,17 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
         return Decorate(agent, threadId, resumeHostedThreadId);
     }
 
-    /// <summary>Mirrors production's discard when <see cref="EffectiveModelIdOverride"/> is set, and
-    /// honours the request otherwise.</summary>
+    /// <summary>Models a transport that substitutes its own selection when <see cref="EffectiveModelIdOverride"/>
+    /// is set, and one that answers with the request otherwise. Note the real S2S factory does neither exactly:
+    /// it forwards the request but answers a <c>lmstreaming:</c>-prefixed id, so a test that turns on the exact
+    /// string production returns belongs against the real factory rather than here.</summary>
     public string? ResolveEffectiveModelId(string? requestedModelId) =>
         EffectiveModelIdOverride ?? requestedModelId;
 
     /// <summary>
     /// Whether <see cref="Create"/> is modelled as RUNNING the model id it is handed. Default <c>true</c> —
-    /// a transport that can select per call — while the only production factory answers <c>false</c>, so a
-    /// test about attribution has to say which it is exercising.
+    /// a transport that can select per call, which is what the production S2S factory now is — so a test
+    /// about attribution has to say which of the two it is exercising.
     /// <para>
     /// Deliberately a knob of its own rather than derived from <see cref="EffectiveModelIdOverride"/>: the
     /// interface keeps "does Create run what it was asked for?" separate from "what identity can the

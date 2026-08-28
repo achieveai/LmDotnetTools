@@ -335,27 +335,27 @@ internal sealed class DaemonCorpusReader : ICorpusReader
     /// The model the daemon <b>selected for</b> the primary arm's review, which is not always the
     /// model the run was seeded with.
     /// <para>
-    /// Selected for, not demonstrably run — and stamped only where the transport was told. On the S2S
-    /// path — which <c>Program</c> makes a boot invariant, refusing to start without
-    /// <c>UseS2SReviewAgent</c> — the review host owns model selection:
-    /// <c>S2SReviewAgentLoopFactory.Create</c> takes a per-call <c>modelId</c> and never forwards it,
-    /// building the agent from <c>LmStreamingProviderId</c> alone (the
-    /// <c>_KnowledgeModelId_comment</c> in <c>appsettings.s2s.json</c> states the same fact from the
-    /// other side: provision carries no model field). That factory therefore answers
-    /// <c>IReviewAgentLoopFactory.HonoursRequestedModelId</c> with <c>false</c>, and the executor
-    /// stamps an escalation target only where the answer is <c>true</c>: an escalated S2S run records
-    /// the run's own seeded id, so this preference returns exactly what the fallback below would have.
+    /// Selected for, not demonstrably run — and stamped only where the transport was told. The executor
+    /// stamps an escalation target only where <c>IReviewAgentLoopFactory.HonoursRequestedModelId</c> is
+    /// <c>true</c>, and on the S2S path — which <c>Program</c> makes a boot invariant, refusing to start
+    /// without <c>UseS2SReviewAgent</c> — that answer is now <c>true</c>:
+    /// <c>S2SReviewAgentLoopFactory.Create</c> provisions the conversation with the per-call
+    /// <c>modelId</c> as its <c>ProviderId</c>, which on that host selects the model, falling back to
+    /// <c>LmStreamingProviderId</c> only when no id is named.
     /// </para>
     /// <para>
-    /// The two ids differ on escalated runs and nowhere else, and on those runs an
-    /// unforwarded escalation target would name a model the review host was never asked for, while the
-    /// seeded id still names the configuration the run was launched under. The gate sits on the write
-    /// side because only the executor knows which transport carried a given attempt; this reader walks
-    /// history across configurations and could only re-decide that from today's settings, which is a
-    /// guess wearing the clothes of a correction. The day a transport carries a model field its factory
-    /// answers <c>true</c>, the checkpoint starts moving with escalation, and nothing here changes. The
-    /// blast radius then is aggregates keyed on <c>ModelId</c>; <c>GeneratorFamily</c> is derived from
-    /// the same id, and <see cref="ModelFamilies.Of"/> answers null for a bare slug either way.
+    /// <b>So this column is not uniform across history, and a reader must not assume it is.</b> Rows
+    /// checkpointed while the factory still discarded the id carry the run's own seeded id even on an
+    /// escalated attempt — the escalation target was withheld precisely because it would have named a
+    /// model the review host was never asked for — while rows written since carry the escalation target,
+    /// which the host really did run. Both are the honest answer for their era, and nothing here
+    /// back-fills: the gate sits on the write side because only the executor knows which transport
+    /// carried a given attempt, and this reader walks history across configurations and could only
+    /// re-decide that from today's settings, which is a guess wearing the clothes of a correction. What
+    /// this means downstream is that the two ids now diverge on escalated runs where they used to agree,
+    /// so an aggregate keyed on <c>ModelId</c> that spans the change will split an escalated population
+    /// that previously grouped under the seeded id. <c>GeneratorFamily</c> is derived from the same id,
+    /// and <see cref="ModelFamilies.Of"/> answers null for a bare slug either way.
     /// </para>
     /// <para>
     /// <c>review_run.model_id</c> is written once, on INSERT, and no <c>UPDATE</c> in

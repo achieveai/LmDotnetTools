@@ -2943,11 +2943,12 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
     /// <summary>
     /// The judge model the daemon ASKS for and the model the transport actually runs is not the same
-    /// thing: S2S provision carries no model field, so the only production factory discards the per-call
-    /// id entirely. Recording what was asked for would put a model id in the artifact that never graded
-    /// anything and, worse, a <c>SelfGraded: false</c> — an affirmative claim of independence the
-    /// transport did not deliver, on a run where judge and generator were in fact the same model. Both
-    /// the recorded provenance and the warning are therefore derived from what the factory resolves.
+    /// thing, and it stays not the same thing now that the S2S factory forwards the request: a transport
+    /// may still substitute its own selection, which is the case this test scripts. Recording what was
+    /// asked for would put a model id in the artifact that never graded anything and, worse, a
+    /// <c>SelfGraded: false</c> — an affirmative claim of independence the transport did not deliver, on a
+    /// run where judge and generator were in fact the same model. Both the recorded provenance and the
+    /// warning are therefore derived from what the factory resolves, never from what was requested.
     /// </summary>
     [Fact]
     public async Task Judged_records_the_model_the_transport_resolved_not_the_one_that_was_requested()

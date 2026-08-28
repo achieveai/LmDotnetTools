@@ -3470,13 +3470,14 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         }
 
         // WHICH model this checkpoint claims ran, gated on whether the transport can actually be told. The
-        // escalation ladder passes a modelOverride, but only a factory that FORWARDS a per-call id runs it:
-        // the S2S provision request carries no model field, so its hosted conversation resolves the model from
-        // the configured provider. The claim is not idle — this is
-        // the field DaemonCorpusReader prefers over review_run.model_id when attributing an eval candidate — so
-        // stamping an unforwarded override would credit every escalated candidate to a model nothing ran, and
-        // do it silently, a wrong id being indistinguishable from a right one downstream. Where the override is
-        // not honoured the run's own seeded id is kept instead.
+        // escalation ladder passes a modelOverride, but only a factory that FORWARDS a per-call id runs it.
+        // The S2S factory now does — it provisions the conversation with that id as its ProviderId, which on
+        // the review host selects the model — so the override is stamped and the checkpoint names the model
+        // that really ran. The gate stays because the claim is not idle: this is the field
+        // DaemonCorpusReader prefers over review_run.model_id when attributing an eval candidate, so against
+        // a factory that discards the id it would credit every escalated candidate to a model nothing ran,
+        // and do it silently, a wrong id being indistinguishable from a right one downstream. Where the
+        // override is not honoured the run's own seeded id is kept instead.
         var identity = BuildLifecycleIdentity(
             run,
             threadId,
@@ -4057,10 +4058,15 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // model-tier rules of §7.1. What is no longer left implicit is WHICH model graded — the
         // artifact records both sides, because §3.2's axis cannot be recovered retrospectively.
         //
-        // Below: what we ASK for, then what the transport will actually run. The two differ on the S2S path,
-        // which discards the per-call id entirely, so every claim below is derived from the effective id:
-        // recording the requested one would put a model that graded nothing into the artifact, and — worse
-        // — a SelfGraded:false asserting an independence the transport never delivered.
+        // Below: what we ASK for, then what the transport will actually run. Every claim below is derived
+        // from the EFFECTIVE id rather than the requested one, and that stays true now that the S2S factory
+        // forwards the request: the two strings still differ (S2S answers a `lmstreaming:`-prefixed id), a
+        // transport may still substitute its own selection, and recording the requested one would put a
+        // model that graded nothing into the artifact — or, worse, a SelfGraded:false asserting an
+        // independence the transport never delivered. What the forwarding changes is that a configured
+        // JudgeModelId now resolves APART from the generator, so this comparison can finally come out
+        // false; before, both sides resolved to the same configured provider and every grade was
+        // self-graded by construction.
         var requestedJudgeModelId = string.IsNullOrWhiteSpace(_options.JudgeModelId)
             ? run.ModelId
             : _options.JudgeModelId;

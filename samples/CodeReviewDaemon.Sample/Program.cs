@@ -309,21 +309,19 @@ if (string.IsNullOrWhiteSpace(daemonOptions.LmStreamingBaseUrl))
         + "host base URL (e.g. http://localhost:5051).");
 }
 
-// JudgeModelId is a PER-CALL model id and S2S provision carries no model field
-// (ProvisionConversationRequest is {WorkspaceId, ProviderId, ModeId}), so S2SReviewAgentLoopFactory
-// discards it — the same hazard appsettings.s2s.json documents for KnowledgeModelId. Accepting it here
-// would read as "the judge runs on opus" while the judge kept running on whatever LmStreamingProviderId
-// resolves: the review's own model. That is not a silent no-op, it is a silent REVERSAL of the setting's
-// entire purpose, so refuse it at boot rather than let the operator believe the bias is gone.
-if (!string.IsNullOrWhiteSpace(daemonOptions.JudgeModelId))
-{
-    throw new InvalidOperationException(
-        "CodeReviewDaemon:JudgeModelId cannot be honoured while UseS2SReviewAgent is on: provision carries "
-        + "no model field, so the review host resolves the judge's model from LmStreamingProviderId exactly "
-        + "as it does the review's. Unset JudgeModelId (the judge then grades on the review's own model, "
-        + "which the judge stage warns about and the judge artifact records), or run the judge against a "
-        + "review host whose provider resolves a different model.");
-}
+// JudgeModelId is deliberately NOT validated here. It used to be refused outright on this path, because
+// S2SReviewAgentLoopFactory discarded its per-call modelId and the judge would have gone on grading with
+// the reviewer's own model while the operator believed the bias was gone — a silent reversal of the
+// setting, not a silent no-op. The factory now provisions the judge conversation with the requested id as
+// its ProviderId (a Copilot-discovered provider id IS a model id on the review host), so the setting does
+// what it says: DaemonReviewStageExecutor passes JudgeModelId into Create, and the judge artifact's
+// SelfGraded/JudgeModelId are derived from the effective id, which now differs from the generator's. An
+// id the review host cannot resolve fails that conversation's provision loudly, which is an ordinary
+// misconfiguration rather than the quiet wrong answer this guard existed to prevent — but loudly is not
+// cheaply: Judged runs before Posted, and PrOrchestrator.IsGovernedFailure answers false for Judged, so
+// the throw aborts the stage loop short of Posted while charging nothing to the retry budget. An
+// unresolvable judge id therefore blocks the review from ever posting and retries unbounded instead of
+// parking. Set this key to an id the host's discovered catalog actually carries.
 if (string.IsNullOrWhiteSpace(effectiveWorkspaceBase))
 {
     throw new InvalidOperationException(

@@ -1,9 +1,11 @@
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
@@ -27,17 +29,41 @@ public sealed class S2SReviewAgentLoopFactoryTests
     private static S2SReviewAgentLoopFactory NewFactory(
         FakeHttpMessageHandler handler,
         HttpClient http,
-        string subAgentModelId = "") =>
+        string subAgentModelId = "",
+        ILoggerFactory? loggerFactory = null,
+        string providerId = "openai",
+        string reviewModelId = "openai") =>
         new(
             new LmStreamingS2SClient(http, "s", "id", "key"),
             new CodeReviewDaemonOptions
             {
                 UseS2SReviewAgent = true,
-                LmStreamingProviderId = "openai",
+                LmStreamingProviderId = providerId,
                 LmStreamingModeId = "workspace-agent",
+                ReviewModelId = reviewModelId,
                 SubAgentModelId = subAgentModelId,
             },
-            NullLoggerFactory.Instance);
+            loggerFactory ?? NullLoggerFactory.Instance);
+
+    /// <summary>A handler that answers the whole provision → send → status turn, so a test can read the
+    /// PROVISION body — the only place the conversation's model (its provider id) is stated.</summary>
+    private static FakeHttpMessageHandler ProvisioningHandler() =>
+        new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities()
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
+            .OnJson(HttpMethod.Put, "/metadata", "{}")
+            .OnJson(
+                HttpMethod.Get,
+                "/status",
+                "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"answer\"}}")
+            .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-fresh\"}");
+
+    /// <summary>The <c>providerId</c> the daemon named on the provision request — i.e. the model the hosted
+    /// conversation will run on, since a Copilot-discovered provider id IS a model id on the review host.</summary>
+    private static string? ProvisionedProviderId(FakeHttpMessageHandler handler) =>
+        handler.Requests
+            .Where(r => r.Body is not null && r.Body.Contains("\"modeId\"", StringComparison.Ordinal))
+            .Select(r => JsonDocument.Parse(r.Body!).RootElement.GetProperty("providerId").GetString())
+            .SingleOrDefault();
 
     private static async Task<List<IMessage>> DriveAsync(
         AchieveAi.LmDotnetTools.LmMultiTurn.IMultiTurnAgent agent, string userText)
@@ -53,19 +79,29 @@ public sealed class S2SReviewAgentLoopFactoryTests
     }
 
     /// <summary>
-    /// The fake factory the executor tests run against can honour a per-call model id. THIS one cannot —
-    /// provision carries no model field — so the executor's provenance recording is only as honest as this
-    /// answer. Asserted against the real factory rather than the double, because a double that quietly
-    /// diverges here is exactly how a false independence claim reaches a persisted artifact.
+    /// What the executor persists as the model that ran. The requested id IS the answer now, because
+    /// <c>Create</c> provisions the conversation with it as the provider id and a Copilot-discovered provider
+    /// id is a model id on the review host. Asserted against the real factory rather than the double, because
+    /// a double that quietly diverges here is exactly how a false provenance claim reaches a persisted
+    /// artifact.
+    /// <para>
+    /// Both arms are pinned: a named model resolves to itself, and only an unnamed one falls back to the
+    /// configured provider. Asserting the fallback alone would stay green against a factory that had gone
+    /// back to discarding the request.
+    /// </para>
     /// </summary>
     [Fact]
-    public void The_effective_model_is_the_configured_provider_never_the_requested_id()
+    public void The_effective_model_is_the_requested_id_and_falls_back_only_when_none_is_named()
     {
         using var http = new HttpClient(new FakeHttpMessageHandler()) { BaseAddress = new Uri("http://host/") };
         var factory = NewFactory(new FakeHttpMessageHandler(), http);
 
-        factory.ResolveEffectiveModelId("anthropic/claude-opus-4").Should().Be("lmstreaming:openai");
+        factory.ResolveEffectiveModelId("anthropic/claude-opus-4").Should().Be(
+            "lmstreaming:anthropic/claude-opus-4",
+            "the requested id is what the conversation is provisioned on, so it is what ran");
         factory.ResolveEffectiveModelId(null).Should().Be("lmstreaming:openai");
+        factory.ResolveEffectiveModelId("   ").Should().Be(
+            "lmstreaming:openai", "blank is not a model, and Create falls back on it too");
     }
 
     /// <summary>
@@ -85,14 +121,18 @@ public sealed class S2SReviewAgentLoopFactoryTests
     }
 
     /// <summary>
-    /// The half the executor gates its persisted model provenance on: this factory does not run the model it
-    /// is handed, whatever the configuration, because <c>Create</c> has nowhere to put it. Pinned on the real
-    /// factory since the executor's checkpoint would otherwise credit an escalated run to a model the review
-    /// host was never asked for — and note it answers <c>false</c> even where <c>ResolveEffectiveModelId</c>
-    /// answers a non-null selector, which is the whole reason the two are separate questions.
+    /// The half the executor gates its persisted model provenance on (<c>DaemonReviewStageExecutor</c>:
+    /// <c>HonoursRequestedModelId ? modelOverride ?? run.ModelId : run.ModelId</c>). It answers <c>true</c>
+    /// because <c>Create</c> forwards the id as the provisioned provider, so an escalated run is now
+    /// checkpointed against the model that actually ran instead of the one it had already overflowed.
+    /// <para>
+    /// Answered the same either way the provider is configured: the property is about what <c>Create</c> does
+    /// with the argument, not about whether a fallback exists. An unconfigured provider makes <c>Create</c>
+    /// throw rather than run something else.
+    /// </para>
     /// </summary>
     [Fact]
-    public void The_per_call_model_id_is_never_honoured_even_when_the_provider_names_one()
+    public void The_per_call_model_id_is_honoured_because_the_provider_id_is_the_model()
     {
         using var http = new HttpClient(new FakeHttpMessageHandler()) { BaseAddress = new Uri("http://host/") };
         var configured = NewFactory(new FakeHttpMessageHandler(), http);
@@ -101,10 +141,39 @@ public sealed class S2SReviewAgentLoopFactoryTests
             new CodeReviewDaemonOptions { UseS2SReviewAgent = true, LmStreamingModeId = "workspace-agent" },
             NullLoggerFactory.Instance);
 
-        configured.ResolveEffectiveModelId("anthropic/claude-opus-4").Should().NotBeNull(
-            "non-vacuity: this factory DOES name an identity — it just does not honour the request");
-        configured.HonoursRequestedModelId.Should().BeFalse();
-        unconfigured.HonoursRequestedModelId.Should().BeFalse();
+        configured.HonoursRequestedModelId.Should().BeTrue();
+        unconfigured.HonoursRequestedModelId.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// <c>CodeReviewDaemon:JudgeModelId</c> was refused at boot on this path, and the reason given was a real
+    /// one: the factory dropped the per-call id, so the judge conversation and the review's resolved to the
+    /// same configured provider and the judge graded the review's own output while the operator believed the
+    /// bias was gone. This pins the fact that ended that — a judge id and a generator id now resolve to
+    /// DIFFERENT effective models, which is what <c>DaemonReviewStageExecutor</c> compares to decide
+    /// <c>SelfGraded</c>. Asserted against the real factory, since the refusal was removed on the strength of
+    /// this behaviour and a double could assert it without production doing it.
+    /// <para>
+    /// The inequality is the whole point, so it is asserted directly rather than left to be inferred from two
+    /// separate value checks: before the forwarding both sides returned <c>lmstreaming:openai</c> and every
+    /// grade was self-graded by construction, which is a state this test must go red in.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void A_configured_judge_model_resolves_apart_from_the_generator()
+    {
+        using var http = new HttpClient(new FakeHttpMessageHandler()) { BaseAddress = new Uri("http://host/") };
+        var factory = NewFactory(new FakeHttpMessageHandler(), http);
+
+        var judge = factory.ResolveEffectiveModelId("anthropic/claude-opus-4");
+        var generator = factory.ResolveEffectiveModelId("openai/gpt-5");
+
+        judge.Should().NotBe(
+            generator,
+            "the judge is only independent if the transport runs it on another model — the boot refusal of "
+                + "JudgeModelId was removed on exactly this basis");
+        judge.Should().Be("lmstreaming:anthropic/claude-opus-4");
+        generator.Should().Be("lmstreaming:openai/gpt-5");
     }
 
     [Fact]
@@ -231,5 +300,103 @@ public sealed class S2SReviewAgentLoopFactoryTests
             .ContainSingle(r => r.Body != null && r.Body.Contains("\"modeId\"", StringComparison.Ordinal))
             .Subject;
         provision.Body.Should().Contain("\"subAgentModelId\":null");
+    }
+
+    /// <summary>
+    /// The escalation fix. A Copilot-discovered <c>providerId</c> IS the model id on the review host — it
+    /// registers each discovered model as its own provider keyed by its raw id, persists the provisioned
+    /// provider as thread metadata, and builds that thread's agent with
+    /// <c>GenerateReplyOptions.ModelId = copilotModelInfo.Id</c> — so the model a caller names must reach the
+    /// PROVISION request or it reaches nothing. It previously did not: the factory passed
+    /// <c>LmStreamingProviderId</c> regardless, which is why the overflow-escalation ladder re-ran the very
+    /// model it had just overflowed and called it an escalation.
+    /// </summary>
+    [Fact]
+    public async Task Create_provisions_the_conversation_on_the_model_the_caller_named()
+    {
+        var handler = ProvisioningHandler();
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5051/") };
+
+        await using var agent = NewFactory(handler, http, providerId: "gpt-5.6-luna").Create(
+            Profile, modelId: "gpt-5.6-terra", threadId: "review-run-7-a-esc", reviewWorkspace: Workspace);
+
+        _ = await DriveAsync(agent, "review this PR");
+
+        ProvisionedProviderId(handler).Should().Be(
+            "gpt-5.6-terra",
+            "an escalation that does not change the model is not an escalation");
+    }
+
+    /// <summary>
+    /// The spend-neutrality half, and the reason the fix is a null-coalesce rather than a rewrite: a caller
+    /// that names no model still provisions on the configured provider, exactly as before. Every shipped S2S
+    /// profile sets ReviewModelId == LmStreamingProviderId == gpt-5.6-luna, so the ordinary review is
+    /// unchanged and only a deliberately different model (the escalation rung) can move it.
+    /// </summary>
+    [Fact]
+    public async Task Create_falls_back_to_the_configured_provider_when_the_caller_names_no_model()
+    {
+        var handler = ProvisioningHandler();
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5051/") };
+
+        await using var agent = NewFactory(handler, http, providerId: "gpt-5.6-luna").Create(
+            Profile, modelId: null, threadId: "review-run-7-a", reviewWorkspace: Workspace);
+
+        _ = await DriveAsync(agent, "review this PR");
+
+        ProvisionedProviderId(handler).Should().Be("gpt-5.6-luna");
+    }
+
+    /// <summary>Blank is not a model. A whitespace-only id must fall back rather than reach the host, which
+    /// rejects an empty provider id outright — that would turn an unset config into a failed review.</summary>
+    [Fact]
+    public async Task Create_falls_back_when_the_caller_names_a_blank_model()
+    {
+        var handler = ProvisioningHandler();
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5051/") };
+
+        await using var agent = NewFactory(handler, http, providerId: "gpt-5.6-luna").Create(
+            Profile, modelId: "   ", threadId: "review-run-7-a", reviewWorkspace: Workspace);
+
+        _ = await DriveAsync(agent, "review this PR");
+
+        ProvisionedProviderId(handler).Should().Be("gpt-5.6-luna");
+    }
+
+    /// <summary>
+    /// Two configuration strings mean "the review model" and nothing made them agree: <c>ReviewModelId</c>
+    /// becomes the run's ModelId and is what <c>ReviewProgressReporter</c> prints on the live
+    /// <c>reviewing ({model})</c> line, while <c>LmStreamingProviderId</c> is what the conversation falls
+    /// back to. They are equal in every shipped profile, so that line has told the truth by coincidence. It
+    /// can no longer diverge quietly.
+    /// </summary>
+    [Fact]
+    public void Constructing_the_factory_warns_when_the_two_review_model_settings_disagree()
+    {
+        var handler = ProvisioningHandler();
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5051/") };
+        using var logs = new CapturingLoggerFactory();
+
+        _ = NewFactory(
+            handler, http, loggerFactory: logs, providerId: "gpt-5.6-luna", reviewModelId: "claude-opus-5");
+
+        // ONE line must carry BOTH ids: an operator reading "these disagree" needs to see which two.
+        logs.Capturing.MessagesAtLevel(LogLevel.Warning).Should().ContainSingle()
+            .Which.Should().Contain("gpt-5.6-luna").And.Contain("claude-opus-5");
+    }
+
+    /// <summary>The control: the shipped configuration agrees, so booting it must stay silent. Without this,
+    /// a warning that fired unconditionally would pass the test above and cry wolf on every daemon.</summary>
+    [Fact]
+    public void Constructing_the_factory_is_silent_when_the_two_review_model_settings_agree()
+    {
+        var handler = ProvisioningHandler();
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5051/") };
+        using var logs = new CapturingLoggerFactory();
+
+        _ = NewFactory(
+            handler, http, loggerFactory: logs, providerId: "gpt-5.6-luna", reviewModelId: "gpt-5.6-luna");
+
+        logs.Capturing.MessagesAtLevel(LogLevel.Warning).Should().BeEmpty();
     }
 }
