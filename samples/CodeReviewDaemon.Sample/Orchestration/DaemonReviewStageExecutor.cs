@@ -2760,6 +2760,22 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             "Run {RunId}: review input {Chars} chars (~{Tokens} tokens est), tool-assisted={ToolAssisted}, model={Model}.",
             run.Id, reviewInput.Length, reviewInput.Length / 4, toolContext is not null, run.ModelId ?? "(default)");
 
+        // Provenance, recorded HERE — the moment the review is dispatched — and deliberately not at creation.
+        // prompt_template_hash has existed since v1 of the schema and had never been written: every row in the
+        // live store carried NULL, so no prompt change the daemon has ever shipped could be attributed to the
+        // reviews it changed. Creation cannot supply it. The INSERT runs in the POLLER at discovery, before any
+        // prompt is rendered, and on an identity match CreateOrGetReviewRun returns the existing row untouched
+        // — so a run discovered under one prompt and dispatched under another after a deploy (the ordinary fate
+        // of everything sitting in RetryPending) would be filed under a prompt it never ran. The dispatch is
+        // the event worth recording, and this is it.
+        //
+        // SCOPE: this hash describes the PRIMARY arm only. The A/B comparison arm ReviewAsync may run after
+        // this one is a different prompt entirely — ComparisonVariantPrompt, the C# constant above, which is
+        // not in daemon-prompts.yaml and has no synthesis turn — and nothing digests it. The column is
+        // per-run, so it cannot hold both; DaemonCorpusReader is where that is reconciled, and it withholds
+        // this value from the B candidate rather than stamping it with a prompt that arm never ran.
+        _store.RecordRunProvenance(run.Id, DaemonAgentFactory.ReviewPromptTemplateHash);
+
         ReviewAgentResult result;
         // ONE absolute budget for the whole stage, resumed from the checkpoint of an interrupted lifecycle or
         // started fresh. It is computed once HERE rather than per attempt: the escalation ladder below can run

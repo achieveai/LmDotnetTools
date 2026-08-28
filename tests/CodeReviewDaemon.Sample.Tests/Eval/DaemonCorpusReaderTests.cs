@@ -2,12 +2,15 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmEval.Corpus;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Agents;
+using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Eval;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
+using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Eval;
 
@@ -39,7 +42,10 @@ public sealed class DaemonCorpusReaderTests : IDisposable
         string prId,
         ReviewStage stage = ReviewStage.Reviewed,
         string variantId = "primary",
-        string? modelId = "openai/gpt-5"
+        string? modelId = "openai/gpt-5",
+        // Merged is the ordinary corpus case — a review whose PR is settled. A case that DRIVES the stage
+        // executor has to say Open instead: the executor abandons a review whose PR closed under it.
+        PrLifecycleState prLifecycleState = PrLifecycleState.Merged
     )
     {
         var repoId = _store.EnsureRepo(
@@ -67,7 +73,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
                     ModelId = modelId,
                     Stage = stage,
                     WorkflowStatus = WorkflowStatus.Completed,
-                    PrLifecycleState = PrLifecycleState.Merged,
+                    PrLifecycleState = prLifecycleState,
                 }
             )
             .Id;
@@ -140,6 +146,123 @@ public sealed class DaemonCorpusReaderTests : IDisposable
         candidate.TaskType.Should().Be(DaemonCorpusReader.CodeReviewTaskType);
         candidate.VariantId.Should().Be("primary");
         candidate.ModelId.Should().Be("openai/gpt-5");
+    }
+
+    /// <summary>
+    /// End-to-end for the provenance column: a real review DISPATCH through
+    /// <see cref="DaemonReviewStageExecutor"/> writes <c>prompt_template_hash</c>, the store's row mapper
+    /// reads it back, and it reaches the candidate metadata this corpus ships to an eval run. Every hop is the
+    /// production one — the only fakes are the sandbox and the agent loop, neither of which touches the
+    /// column. Before this producer existed the assertion below read <c>string.Empty</c> on every candidate
+    /// the daemon had ever produced.
+    /// </summary>
+    [Fact]
+    public async Task A_dispatched_review_carries_its_prompt_template_hash_into_the_corpus()
+    {
+        var runId = CreateRun("118", prLifecycleState: PrLifecycleState.Open);
+        var run = _store.GetReviewRun(runId)!;
+        run.PromptTemplateHash.Should().BeNull("the poller's INSERT cannot know a prompt that is not rendered yet");
+
+        var sandbox = new FakeSandboxCommandRunner()
+            .OnArgvContains(
+                "rev-parse --is-inside-work-tree",
+                new SandboxCommandResult(1, string.Empty, "not a git repo")
+            )
+            .OnArgvContains(
+                "diff",
+                new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ var x = bar;", string.Empty)
+            );
+        var executor = new DaemonReviewStageExecutor(
+            _store,
+            new FakeReviewAgentLoopFactory(),
+            sandbox,
+            new FakeSandboxFileSystem(),
+            new CodeReviewDaemonOptions(),
+            [new FakeReviewCommentPublisher("github")],
+            NullLoggerFactory.Instance
+        );
+
+        // The executor writes both artifacts the corpus pairs, so this run reaches the reader the same way a
+        // live one does rather than through hand-seeded rows.
+        await executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var snapshot = await SnapshotAsync(Reader());
+
+        var candidate = Assert.Single(snapshot.Items);
+        candidate
+            .Metadata[DaemonCorpusReader.PromptTemplateHashMetadataKey]
+            .Should()
+            .Be(
+                DaemonAgentFactory.ReviewPromptTemplateHash,
+                "the corpus consumer reads this column, so the value the dispatch recorded has to survive the "
+                    + "store round-trip and the candidate projection"
+            );
+    }
+
+    /// <summary>
+    /// The negative half: a run whose review was never dispatched through the producer has nothing to say
+    /// about its prompt, and the reader reports that absence as an empty string rather than inventing a
+    /// plausible one. This is also what makes the test above non-vacuous — the metadata key is present either
+    /// way, so only its value distinguishes a recorded run from an unrecorded one.
+    /// </summary>
+    [Fact]
+    public async Task A_run_with_no_recorded_prompt_hash_reports_absence_rather_than_a_guess()
+    {
+        var runId = CreateRun("118");
+        AddContext(runId, "diff --git a/Foo.cs b/Foo.cs");
+        AddReview(runId, "[Blocker] src/Foo.cs:1 is wrong.");
+
+        var snapshot = await SnapshotAsync(Reader());
+
+        Assert.Single(snapshot.Items)
+            .Metadata[DaemonCorpusReader.PromptTemplateHashMetadataKey]
+            .Should()
+            .BeEmpty();
+    }
+
+    /// <summary>
+    /// The A/B arms run DIFFERENT prompts, so one run row's hash cannot describe both candidates. The primary
+    /// arm runs the <c>review</c> and <c>synthesis</c> templates that
+    /// <see cref="DaemonAgentFactory.ReviewPromptTemplateHash"/> digests; the B arm runs
+    /// <c>DaemonReviewStageExecutor.ComparisonVariantPrompt</c>, a C# constant that is not in
+    /// <c>daemon-prompts.yaml</c> and has no synthesis turn, and nothing digests it.
+    /// <para>
+    /// Stamping the run's hash on the B candidate would be wrong in both directions: editing the comparison
+    /// prompt would move nothing, and editing the review or synthesis template would move the B candidate's
+    /// provenance while its actual prompt was untouched. That is the same "filed under a prompt it never ran"
+    /// failure that put this write at dispatch rather than at discovery, so the B candidate reports absence.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task The_b_arm_candidate_does_not_borrow_the_primary_arms_prompt_template_hash()
+    {
+        var runId = CreateRun("118");
+        _store.RecordRunProvenance(runId, DaemonAgentFactory.ReviewPromptTemplateHash);
+        AddContext(runId, "the shared diff");
+        AddReview(runId, "the A review");
+        AddArtifact(
+            runId,
+            VariantReviewer.VariantReviewArtifactKind,
+            new VariantReviewArtifactPayload("b", "anthropic/claude", "the B review", "run-2")
+        );
+
+        var snapshot = await SnapshotAsync(Reader());
+
+        var primary = snapshot.Items.Single(c => c.Content == "the A review");
+        var comparison = snapshot.Items.Single(c => c.Content == "the B review");
+
+        // Non-vacuity: the same run row backs both candidates, so the primary arm proves the value was
+        // available to be copied onto the B one and was withheld rather than merely missing.
+        primary
+            .Metadata[DaemonCorpusReader.PromptTemplateHashMetadataKey]
+            .Should()
+            .Be(DaemonAgentFactory.ReviewPromptTemplateHash);
+
+        comparison
+            .Metadata[DaemonCorpusReader.PromptTemplateHashMetadataKey]
+            .Should()
+            .BeEmpty("the comparison arm's prompt is not the one this digest covers");
     }
 
     [Fact]
