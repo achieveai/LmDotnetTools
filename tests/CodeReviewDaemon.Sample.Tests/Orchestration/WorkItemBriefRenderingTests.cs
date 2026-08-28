@@ -198,6 +198,69 @@ public sealed class WorkItemBriefRenderingTests : LoggingTestBase
     }
 
     /// <summary>
+    /// The Failed arm tells the reviewer to disclose the failure to the AUTHOR, and that disclosure has to
+    /// survive the last thing that touches a review body on its way out — <see cref="InfraNarrationFilter"/>,
+    /// which MOVEs any sentence that names a provider next to a failure off the PR and into the operator
+    /// channel. The filter is right about every other such sentence and is not changed here; this arm's
+    /// disclosure is instead worded to state the same fact without naming the provider, so it needs no
+    /// exemption.
+    /// <para>
+    /// Without this, the two features compose into precisely the failure the three-way split exists to
+    /// prevent: the reviewer dutifully writes the caveat, the filter silently deletes it, and the author is
+    /// handed a review that reads as grounded in an intent nobody was ever able to read.
+    /// </para>
+    /// <para>
+    /// The disclosure is taken from the RENDERED brief, not retyped here, so the assertion is about the
+    /// sentence the reviewer is actually handed. The control at the end is what makes that meaningful: the
+    /// naive provider-naming phrasing of the same fact, in the same body position, IS moved — so a green
+    /// result above is the wording surviving the filter, not the filter being inert in this test.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void The_failed_arms_disclosure_survives_the_infra_narration_filter()
+    {
+        var brief = Render(AdoWorkItemContext.Failed);
+
+        brief.Should().Contain(
+            DaemonReviewStageExecutor.FailedLookupDisclosure,
+            "the brief must hand the reviewer the exact sentence this test then proves is deliverable — a "
+                + "disclosure the filter passes is worth nothing if the reviewer is never told to write it");
+
+        // A Failed-arm review as the reviewer would compose it: the disclosure sits in the summary, under a
+        // heading that names no severity, so nothing exempts it and the classifier actually runs on it.
+        var body =
+            "## Summary\n\n"
+                + DaemonReviewStageExecutor.FailedLookupDisclosure
+                + "\n\nThe change adds a retry budget to the delivery path.\n\n"
+                + "## Verification\n\n"
+                + "- The PR's own CI run is green (1585 passed, 0 failed).\n\n"
+                + "## Findings\n\n"
+                + "### 1. MEDIUM — the budget is not reset between attempts\n\n"
+                + "The counter carries over, so the second call starts already spent.\n";
+
+        var (filtered, moved) = InfraNarrationFilter.Filter(body);
+
+        filtered.Should().Contain(
+            DaemonReviewStageExecutor.FailedLookupDisclosure,
+            "the author must still be told the intent was never established");
+        moved.Should().NotContain(
+            note => note.Text.Contains("work items linked to this pull request", StringComparison.Ordinal),
+            "routing the caveat to the operator leaves the author with an apparently-grounded review");
+
+        // Control — the same fact, worded the way the block's old instruction invited. This one is moved,
+        // which is what proves the assertions above are about the wording and not about a dormant filter.
+        const string ProviderNamed =
+            "The Azure DevOps work-item lookup failed, so what the change was asked to do is unknown.";
+        var (naiveFiltered, naiveMoved) = InfraNarrationFilter.Filter(
+            "## Summary\n\n" + ProviderNamed + "\n");
+
+        naiveFiltered.Should().NotContain(
+            ProviderNamed,
+            "the filter really does delete a provider-naming failure sentence from the author's copy");
+        naiveMoved.Should().ContainSingle().Which.Text.Should().Be(ProviderNamed);
+    }
+
+    /// <summary>
     /// The walk is bounded, and a bounded walk must say when the bound bit. A chain reported as ending at a
     /// Feature, when in truth the walk simply stopped there, tells the reviewer the Epic does not exist.
     /// </summary>

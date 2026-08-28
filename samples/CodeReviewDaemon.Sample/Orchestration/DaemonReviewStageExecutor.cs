@@ -2860,12 +2860,42 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         string.IsNullOrWhiteSpace(value) ? null : value.Replace("«", "<").Replace("»", ">");
 
     /// <summary>
+    /// The exact sentence the <see cref="AdoWorkItemLookup.Failed"/> arm tells the reviewer to copy into its
+    /// review, so that the author — not just the operator — learns the intent was never established.
+    /// <para>
+    /// It names no tracker and no vendor ON PURPOSE, and that is not a style preference.
+    /// <see cref="InfraNarrationFilter"/> MOVEs any sentence off the author-facing body when it both names a
+    /// provider (<c>Azure DevOps</c>, <c>ADO</c>, ...) and reports a failure (<c>failed</c>,
+    /// <c>could not</c>, ...) — correctly, because such a sentence is normally the daemon narrating its own
+    /// plumbing at an author who can do nothing about it. This disclosure is the one case where the same
+    /// shape carries something the author must see: it is the caveat that keeps "I could not tell" from
+    /// reading as "I checked". Phrased with the provider named, it is routed to the operator channel and the
+    /// author is left an apparently-grounded review with no caveat at all — the exact outcome the three-way
+    /// split exists to prevent. Phrased as below it states the same fact and survives, using no exemption
+    /// and no special case in the filter.
+    /// </para>
+    /// <para>
+    /// Pinned by
+    /// <c>WorkItemBriefRenderingTests.The_failed_arms_disclosure_survives_the_infra_narration_filter</c>,
+    /// which runs this sentence through the real filter. Reword it to name the provider and that test fails.
+    /// </para>
+    /// </summary>
+    internal const string FailedLookupDisclosure =
+        "This review could not read the work items linked to this pull request, so what the change was "
+            + "asked to do is unknown and nothing below judges it against a stated intent.";
+
+    /// <summary>
     /// Renders the work-item block, or null when nobody asked and there is therefore nothing to report.
     /// <para>
     /// THREE outcomes, three visibly different blocks, and never a bare empty one. "This PR links no work
     /// item" is a fact about the pull request; "the lookup failed" is a fact about the daemon; and rendering
     /// them the same way turns the second into the first, which is the reviewer concluding a change had no
     /// stated intent when in truth nobody could read it.
+    /// </para>
+    /// <para>
+    /// The <see cref="AdoWorkItemLookup.Failed"/> arm dictates its disclosure sentence rather than asking for
+    /// one in the reviewer's own words, and avoids handing the reviewer the vendor's name to echo: see
+    /// <see cref="FailedLookupDisclosure"/> for why a freely-worded one does not reach the author.
     /// </para>
     /// </summary>
     private static string? DescribeWorkItemContext(AdoWorkItemContext context)
@@ -2881,13 +2911,19 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         {
             case AdoWorkItemLookup.Failed:
                 _ = sb.Append(
-                    "The work-item lookup FAILED. The daemon asked Azure DevOps for this pull request's linked "
-                        + "work items and could not read the answer, so what this change was asked to do is "
-                        + "UNKNOWN.\n\n"
+                    "The work-item lookup FAILED. The daemon asked the work-item tracker for this pull "
+                        + "request's linked work items and could not read the answer, so what this change was "
+                        + "asked to do is UNKNOWN.\n\n"
                         + "This is NOT the same as the pull request having no work items — nobody established "
                         + "either way. Do not conclude the change has no stated intent, and do not infer that "
                         + "intent from the diff and present it as context. Review against the PR's own title "
-                        + "and description, and say in your review that the work-item lookup failed.\n");
+                        + "and description, and tell the author the lookup failed by including this sentence "
+                        + "VERBATIM in your review:\n\n"
+                        + FailedLookupDisclosure
+                        + "\n\nDo not reword it, and do not name the tracker or its vendor anywhere in it. A "
+                        + "disclosure that names the provider next to the failure is routed to the daemon's "
+                        + "operators rather than shown to the author, and the author is the one who must see "
+                        + "it.\n");
                 return sb.ToString();
 
             case AdoWorkItemLookup.NoneLinked:
