@@ -2,7 +2,7 @@
 
 * Status: Accepted
 * Date: 2026-08-10
-* Related issues, PRs, or commits: epic #526 item 14 (issue #47); commit `448dfaa0` (#539, #560);
+* Related issues, PRs, or commits: epic #526 item 14 (issue #547); commit `448dfaa0` (#539, #560);
   ported under issue #553 from PR #451
 
 > **Status note (2026-08-28, on porting into `main` under issue #553).** Accepted but not yet
@@ -10,11 +10,11 @@
 > this record, so it is worth stating precisely.
 >
 > **The exposure seam the Decision names is live on `main` and already exercised.**
-> `ReviewSubAgentNode` carries both fields the Decision keys on — `Status` and `Template` —
-> at `samples/CodeReviewDaemon.Sample/Agents/ReviewSubAgentCompletion.cs:39` (`:44`, `:46`), and the
-> `ReviewSubAgentStatus` enum (`:22-29`) includes the `Completed` value the Decision reads exposure
-> from. The settled roster is reachable at review time: `ReviewSubAgentTreeSnapshot` (`:128`), its
-> `AllSettled`/`IsSettled` predicates (`:371`, `:379`), and
+> `ReviewSubAgentNode`, at `samples/CodeReviewDaemon.Sample/Agents/ReviewSubAgentCompletion.cs:39`,
+> carries both fields the Decision keys on — `Status` (`:45`) and `Template` (`:47`) — and the
+> `ReviewSubAgentStatus` enum (`:22-29`) includes the `Completed` value (`:25`) the Decision reads
+> exposure from. The settled roster is reachable at review time: `ReviewSubAgentTreeSnapshot`
+> (`:128`), its `AllSettled`/`IsSettled` predicates (`:371`, `:379`), and
 > `DaemonReviewStageExecutor.AwaitSubAgentSettlementAsync`, which by contract returns the settled
 > roster itself rather than only its rendered inventory. An implementation should build on that seam,
 > not re-derive one.
@@ -24,7 +24,7 @@
 > and no smoothing, resolution-probability or cohort-guard code does either: `laplace`, `smooth`,
 > `cohort` and `unjudgeable` have zero `.cs` hits repository-wide. Nor does the `DeveloperLearnings`
 > subtree that would hold the per-pattern history these rates are computed over (epic #526 item 14,
-> issue #47).
+> issue #547).
 >
 > **Two citations were corrected on the way in, because as authored neither resolved from `main`.**
 > The reconciler commit in the Decision was cited by its sha on

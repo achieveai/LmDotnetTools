@@ -2,7 +2,7 @@
 
 * Status: Accepted
 * Date: 2026-08-10
-* Related issues, PRs, or commits: epic #526 item 14 (issue #47); ported under issue #553 from
+* Related issues, PRs, or commits: epic #526 item 14 (issue #547); ported under issue #553 from
   PR #451
 
 > **Status note (2026-08-28, on porting into `main` under issue #553).** The decision stands, but the
@@ -12,7 +12,7 @@
 > `EnableReviewFeedbackAgent` option — still default-`false` and still set in zero appsettings
 > profiles, so the loop still has never run. `AtCloseExtractionSeam.Combine` is present with its
 > `Wrote > Failed > Declined` precedence unchanged. Read this as an accepted decision awaiting
-> execution alongside epic #526 item 14 (issue #47), not as a description of the current tree.
+> execution alongside epic #526 item 14 (issue #547), not as a description of the current tree.
 >
 > One citation was corrected on the way in: this record's sole "Related" reference was
 > `scratchPad/developer-learnings-spec.md` §14 — a local working file that was never committed to any

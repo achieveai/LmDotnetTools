@@ -2,7 +2,7 @@
 
 * Status: Accepted
 * Date: 2026-08-10
-* Related issues, PRs, or commits: epic #526 item 14 (issue #47); commit `448dfaa0` (#539, #560);
+* Related issues, PRs, or commits: epic #526 item 14 (issue #547); commit `448dfaa0` (#539, #560);
   ported under issue #553 from PR #451
 
 > **Status note (2026-08-28, on porting into `main` under issue #553).** The repository-wide rule in
@@ -10,7 +10,7 @@
 > outcome (`Kept`, `SeverityChanged`, `Reframed`, `MergedInto`, `Dropped`) in code from text the
 > daemon already holds, and the commit cited below for that corrective — `448dfaa0` — is on `main`.
 > The DeveloperLearnings specifics named below are forward-looking — that subtree is not implemented
-> on `main` (epic #526 item 14, issue #47).
+> on `main` (epic #526 item 14, issue #547).
 >
 > **Two citations were corrected on the way in, because as authored neither resolved from `main`.**
 > The reconciler commit was cited by its sha on `daemon/review-reliability-and-pr-coverage`, which is

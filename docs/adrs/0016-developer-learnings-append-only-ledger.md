@@ -2,12 +2,12 @@
 
 * Status: Accepted
 * Date: 2026-08-10
-* Related issues, PRs, or commits: epic #526 item 14 (issue #47); ported under issue #553 from
+* Related issues, PRs, or commits: epic #526 item 14 (issue #547); ported under issue #553 from
   PR #451
 
 > **Status note (2026-08-28, on porting into `main` under issue #553).** Accepted but not yet
 > implemented: no `DeveloperLearnings/` tree, `observations/`, `patterns/` or rendered views exist on
-> `main` (epic #526 item 14, issue #47). Two citations below are stale against `main`: the
+> `main` (epic #526 item 14, issue #547). Two citations below are stale against `main`: the
 > reviewer-context exclusion is not the `KnowledgeAgent.cs:845-852` name comparison the Context
 > describes — it is `KnowledgeIndexRegenerator.IsDevelopersDirectory`, called from
 > `KnowledgeAgent.cs:467` and `:510`; and `MergeToDefaultAsync` lives on `ReviewBranchManager`, used
