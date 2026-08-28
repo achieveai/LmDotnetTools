@@ -191,7 +191,7 @@ public sealed class DaemonCorpusReaderTests : IDisposable
 
         var candidate = Assert.Single(snapshot.Items);
         candidate
-            .Metadata["promptTemplateHash"]
+            .Metadata[DaemonCorpusReader.PromptTemplateHashMetadataKey]
             .Should()
             .Be(
                 DaemonAgentFactory.ReviewPromptTemplateHash,
@@ -215,7 +215,54 @@ public sealed class DaemonCorpusReaderTests : IDisposable
 
         var snapshot = await SnapshotAsync(Reader());
 
-        Assert.Single(snapshot.Items).Metadata["promptTemplateHash"].Should().BeEmpty();
+        Assert.Single(snapshot.Items)
+            .Metadata[DaemonCorpusReader.PromptTemplateHashMetadataKey]
+            .Should()
+            .BeEmpty();
+    }
+
+    /// <summary>
+    /// The A/B arms run DIFFERENT prompts, so one run row's hash cannot describe both candidates. The primary
+    /// arm runs the <c>review</c> and <c>synthesis</c> templates that
+    /// <see cref="DaemonAgentFactory.ReviewPromptTemplateHash"/> digests; the B arm runs
+    /// <c>DaemonReviewStageExecutor.ComparisonVariantPrompt</c>, a C# constant that is not in
+    /// <c>daemon-prompts.yaml</c> and has no synthesis turn, and nothing digests it.
+    /// <para>
+    /// Stamping the run's hash on the B candidate would be wrong in both directions: editing the comparison
+    /// prompt would move nothing, and editing the review or synthesis template would move the B candidate's
+    /// provenance while its actual prompt was untouched. That is the same "filed under a prompt it never ran"
+    /// failure that put this write at dispatch rather than at discovery, so the B candidate reports absence.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task The_b_arm_candidate_does_not_borrow_the_primary_arms_prompt_template_hash()
+    {
+        var runId = CreateRun("118");
+        _store.RecordRunProvenance(runId, DaemonAgentFactory.ReviewPromptTemplateHash);
+        AddContext(runId, "the shared diff");
+        AddReview(runId, "the A review");
+        AddArtifact(
+            runId,
+            VariantReviewer.VariantReviewArtifactKind,
+            new VariantReviewArtifactPayload("b", "anthropic/claude", "the B review", "run-2")
+        );
+
+        var snapshot = await SnapshotAsync(Reader());
+
+        var primary = snapshot.Items.Single(c => c.Content == "the A review");
+        var comparison = snapshot.Items.Single(c => c.Content == "the B review");
+
+        // Non-vacuity: the same run row backs both candidates, so the primary arm proves the value was
+        // available to be copied onto the B one and was withheld rather than merely missing.
+        primary
+            .Metadata[DaemonCorpusReader.PromptTemplateHashMetadataKey]
+            .Should()
+            .Be(DaemonAgentFactory.ReviewPromptTemplateHash);
+
+        comparison
+            .Metadata[DaemonCorpusReader.PromptTemplateHashMetadataKey]
+            .Should()
+            .BeEmpty("the comparison arm's prompt is not the one this digest covers");
     }
 
     [Fact]

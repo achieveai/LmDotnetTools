@@ -74,6 +74,9 @@ internal static class DaemonAgentFactory
         var subject = new StringBuilder();
         foreach (var template in templates)
         {
+            // A null element would NRE on .Length one line down. Refuse it by name instead: a caller that
+            // could not read a template must not be handed a digest that silently means "that one was blank".
+            ArgumentNullException.ThrowIfNull(template, nameof(templates));
             _ = subject.Append(template.Length).Append(':').Append(template).Append('\u001F');
         }
 

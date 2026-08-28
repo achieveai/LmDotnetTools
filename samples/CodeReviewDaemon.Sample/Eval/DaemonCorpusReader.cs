@@ -57,6 +57,13 @@ internal sealed class DaemonCorpusReader : ICorpusReader
     /// </summary>
     public const string ReviewRunIdMetadataKey = "reviewRunId";
 
+    /// <summary>
+    /// The <see cref="Candidate.Metadata"/> key carrying the digest of the prompt templates the review was
+    /// dispatched under. Empty when the producing arm's prompt is not covered by that digest, or when the run
+    /// predates the producer — an eval that groups by this key must read empty as "unknown", never as a group.
+    /// </summary>
+    public const string PromptTemplateHashMetadataKey = "promptTemplateHash";
+
     /// <summary>Variant label for the primary arm when the run recorded none.</summary>
     private const string PrimaryVariantFallback = "primary";
 
@@ -159,7 +166,10 @@ internal sealed class DaemonCorpusReader : ICorpusReader
                         variantId: Blank(review.VariantId) ?? Blank(run.VariantId)
                             ?? PrimaryVariantFallback,
                         modelId: EffectiveGeneratorModelId(artifacts, run),
-                        content: review.ReviewText
+                        content: review.ReviewText,
+                        // The primary arm is the one the recorded hash describes: it is what
+                        // RunPrimaryReviewAsync dispatched, and what wrote the column at dispatch.
+                        promptTemplateHash: run.PromptTemplateHash
                     )
                 );
             }
@@ -182,7 +192,11 @@ internal sealed class DaemonCorpusReader : ICorpusReader
                         context.Diff,
                         variantId: Blank(variant.VariantId) ?? "b",
                         modelId: variant.ModelId,
-                        content: variant.ReviewText
+                        content: variant.ReviewText,
+                        // NOT run.PromptTemplateHash. The B arm runs ComparisonVariantPrompt, which that
+                        // digest does not cover; nothing records a digest for it, so this candidate says so
+                        // rather than borrowing the primary arm's.
+                        promptTemplateHash: null
                     )
                 );
             }
@@ -239,12 +253,21 @@ internal sealed class DaemonCorpusReader : ICorpusReader
         );
     }
 
+    // promptTemplateHash is the digest of the templates THIS arm ran, or null when no digest covers them. It
+    // is passed in rather than read off `run` because the run row holds ONE hash and the run can yield two
+    // candidates from two different prompts: the primary arm runs the `review` and `synthesis` templates that
+    // DaemonAgentFactory.ReviewPromptTemplateHash digests, while the B arm runs
+    // DaemonReviewStageExecutor.ComparisonVariantPrompt — a C# constant that is not in daemon-prompts.yaml
+    // and has no synthesis turn at all. Stamping the run's hash on the B candidate would file it under a
+    // prompt it never ran, and would move its provenance whenever the primary templates were edited and its
+    // own prompt was not.
     private Candidate Build(
         ReviewRun run,
         string diff,
         string variantId,
         string? modelId,
-        string content
+        string content,
+        string? promptTemplateHash
     ) =>
         new()
         {
@@ -269,7 +292,7 @@ internal sealed class DaemonCorpusReader : ICorpusReader
                 ["baseSha"] = run.BaseSha,
                 ["reviewKind"] = run.ReviewKind,
                 ["prLifecycleState"] = run.PrLifecycleState.ToString(),
-                ["promptTemplateHash"] = run.PromptTemplateHash ?? string.Empty,
+                [PromptTemplateHashMetadataKey] = promptTemplateHash ?? string.Empty,
             },
         };
 

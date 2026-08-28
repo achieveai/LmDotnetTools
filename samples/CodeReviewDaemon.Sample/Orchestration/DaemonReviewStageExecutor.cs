@@ -2759,9 +2759,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // prompt is rendered, and on an identity match CreateOrGetReviewRun returns the existing row untouched
         // — so a run discovered under one prompt and dispatched under another after a deploy (the ordinary fate
         // of everything sitting in RetryPending) would be filed under a prompt it never ran. The dispatch is
-        // the event worth recording, and this is it: every review of a run reaches the model through this
-        // method, including the A/B variant arm, which ReviewAsync runs only after this one and under the same
-        // templates.
+        // the event worth recording, and this is it.
+        //
+        // SCOPE: this hash describes the PRIMARY arm only. The A/B comparison arm ReviewAsync may run after
+        // this one is a different prompt entirely — ComparisonVariantPrompt, the C# constant above, which is
+        // not in daemon-prompts.yaml and has no synthesis turn — and nothing digests it. The column is
+        // per-run, so it cannot hold both; DaemonCorpusReader is where that is reconciled, and it withholds
+        // this value from the B candidate rather than stamping it with a prompt that arm never ran.
         _store.RecordRunProvenance(run.Id, DaemonAgentFactory.ReviewPromptTemplateHash);
 
         ReviewAgentResult result;
