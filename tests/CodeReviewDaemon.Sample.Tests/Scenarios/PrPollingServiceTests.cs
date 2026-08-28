@@ -80,6 +80,39 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         store.CreateOrGetReviewRun(SeedFor(repoId, "119")).Stage.Should().Be(ReviewStage.Posted);
     }
 
+    /// <summary>
+    /// The prose half of the knowledge-retrieval key (#544) has exactly one hop to survive: the poll payload
+    /// into the seed, and the seed into the persisted <c>review_run</c> row. The Reviewed stage ranks off the
+    /// stored row and not off the page, which by then is long gone — so if the two assignments in
+    /// <see cref="PrPollingService"/> stopped copying <c>Title</c>/<c>Description</c>, retrieval would fall
+    /// back to exactly the path-only ranking that existed before the feature, in production, with the whole
+    /// suite still green. Asserted off the STORE rather than off the seed object, because the store is what
+    /// the consumer reads and a seed-level assertion would pass on a column that was never written.
+    /// </summary>
+    [Fact]
+    public async Task A_discovered_prs_title_and_description_reach_the_persisted_run()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var provider = new MockPrProvider(
+            Provider,
+            [DescribedDescriptor("118", "Rank knowledge on what the PR says", "Siblings share no path token.")],
+            NextCursor());
+        var poller = BuildPoller(store, provider);
+
+        await poller.PollOnceAsync(CancellationToken.None);
+
+        var repoId = store.EnsureRepo(SampleRepo());
+        var run = store.CreateOrGetReviewRun(SeedFor(repoId, "118"));
+        run.PrTitle.Should().Be(
+            "Rank knowledge on what the PR says",
+            "the title is captured at poll time because the Reviewed stage runs after the poll page is gone, "
+                + "and possibly in a different process");
+        run.PrDescription.Should().Be(
+            "Siblings share no path token.",
+            "the description is the other half of the same retrieval key and rides the same hop");
+    }
+
     [Fact]
     public async Task A_target_with_no_registered_provider_is_skipped_not_thrown()
     {
@@ -477,6 +510,19 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         TriggerWatermark = "wm-1",
         LifecycleState = PrLifecycleState.Open,
     };
+
+    /// <summary>A discovered PR carrying the author's prose — the ranking input schema v7 persists.</summary>
+    private static PullRequestDescriptor DescribedDescriptor(
+        string prId, string? title, string? description) => new()
+        {
+            PrId = prId,
+            HeadSha = $"head-{prId}",
+            BaseSha = "base-sha",
+            TriggerWatermark = "wm-1",
+            LifecycleState = PrLifecycleState.Open,
+            Title = title,
+            Description = description,
+        };
 
     private static PullRequestDescriptor DatedDescriptor(
         string prId, DateTimeOffset? updatedAt, DateTimeOffset? createdAt = null) => new()

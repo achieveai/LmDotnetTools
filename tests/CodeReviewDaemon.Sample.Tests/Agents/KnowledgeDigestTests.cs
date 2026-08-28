@@ -264,6 +264,14 @@ public class KnowledgeDigestTests
     /// must rank exactly as it did before prose existed. Pinned because "I only added a term" is the easiest
     /// possible thing to be wrong about: a rescale that changed relative order would silently re-rank every
     /// review whose PR has no description, and nothing else in the suite would notice.
+    /// <para>
+    /// <c>title-only.md</c> carries a NEWER <c>Updated</c> than the entries above it, and that is what makes
+    /// this test able to see the failure it is named for. The tag/title ratio collapsing to 1:1 ties it with
+    /// <c>one-tag.md</c>, and a tie falls through to <c>Updated</c> descending — so with every entry stamped
+    /// the same day the tie broke on <c>File</c> ordinal, which reproduces the correct order by coincidence
+    /// and left the collapse green. The newer stamp makes the tie order the entries the other way round, so
+    /// the ratio is pinned by this assertion rather than by the fixture's alphabet.
+    /// </para>
     /// </summary>
     [Fact]
     public void SelectRelevant_WithoutProseRanksExactlyAsPathOnlyScoringDid()
@@ -272,7 +280,7 @@ public class KnowledgeDigestTests
         {
             Entry("system/two-tags.md", "Nothing in common", ["runner", "callbacks"]),
             Entry("system/one-tag.md", "Nothing in common", ["runner"]),
-            Entry("system/title-only.md", "Runner lesson", ["zzz"]),
+            Entry("system/title-only.md", "Runner lesson", ["zzz"], updated: "2026-07-02"),
             Entry("system/nothing.md", "Nothing in common", ["zzz"]),
         };
 

@@ -21,14 +21,26 @@ internal static class KnowledgeDigest
     /// <summary>Weight of a tag hit against a CHANGED PATH. Tags are curated, so they are stronger evidence
     /// than title prose; a path is stronger evidence than the PR's own prose, so this is the heaviest term.
     /// <para>
-    /// All four weights below are the historical 2/1 pair scaled by <see cref="ProseScale"/>, so a query with
-    /// no prose ranks byte-identically to how it ranked before prose existed. That is deliberate: it makes
-    /// the prose feature's effect on an existing corpus provable rather than asserted.
+    /// All four weights below are the historical 2/1 pair scaled by <see cref="ProseScale"/>, and the two path
+    /// weights are WRITTEN as that product rather than as the numbers it comes to, so the 2:1 ratio is computed
+    /// instead of coincidental. Spelled as literals, one edit collapses the ratio to 1:1 and a fixture whose
+    /// tie-break happens to reproduce the same order goes on passing — the ratio then holds only by agreement
+    /// between two constants nothing relates.
+    /// </para>
+    /// <para>
+    /// What the scaling buys is a statement about SCORES AND ORDER, and only that: a query carrying no prose
+    /// scores every entry exactly as it did before prose existed, so the ranking is unchanged. It does NOT
+    /// follow that the same entries are DELIVERED. <see cref="ReserveScopeBreadth"/> runs whenever the
+    /// candidate set exceeds the cap — the shipped case, since 35 of 35 measured briefs saturated the 24-entry
+    /// cap — and spends up to a <see cref="ScopeReserveDivisor"/>th of the budget (8 slots of 24) on the best
+    /// entry of each distinct scope, admitting entries the raw ranking would have cut and dropping entries it
+    /// would have kept. Digest MEMBERSHIP therefore changes with no prose in play at all.
     /// </para></summary>
-    private const int PathTagWeight = 4;
+    private const int PathTagWeight = 2 * ProseScale;
 
-    /// <summary>Weight of a title-token hit against a changed path.</summary>
-    private const int PathTitleWeight = 2;
+    /// <summary>Weight of a title-token hit against a changed path — half <see cref="PathTagWeight"/>, written
+    /// as the same product so the pair cannot be collapsed by editing one number.</summary>
+    private const int PathTitleWeight = 1 * ProseScale;
 
     /// <summary>
     /// Weight of a tag hit against the PR's TITLE or DESCRIPTION — half its path-hit weight.
@@ -45,7 +57,10 @@ internal static class KnowledgeDigest
     /// <summary>Weight of a title-token hit against the PR's title or description.</summary>
     private const int ProseTitleWeight = 1;
 
-    /// <summary>The factor the historical weights were scaled by to make room for a half-weight prose tier.</summary>
+    /// <summary>The factor the historical weights were scaled by to make room for a half-weight prose tier.
+    /// <see cref="PathTagWeight"/> and <see cref="PathTitleWeight"/> are expressed in terms of it, so this is
+    /// the single place the scaling is stated and not a comment standing beside two independent numbers.
+    /// </summary>
     private const int ProseScale = 2;
 
     /// <summary>
