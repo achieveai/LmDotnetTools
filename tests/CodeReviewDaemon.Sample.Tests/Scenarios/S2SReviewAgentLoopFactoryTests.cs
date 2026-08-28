@@ -145,6 +145,37 @@ public sealed class S2SReviewAgentLoopFactoryTests
         unconfigured.HonoursRequestedModelId.Should().BeTrue();
     }
 
+    /// <summary>
+    /// <c>CodeReviewDaemon:JudgeModelId</c> was refused at boot on this path, and the reason given was a real
+    /// one: the factory dropped the per-call id, so the judge conversation and the review's resolved to the
+    /// same configured provider and the judge graded the review's own output while the operator believed the
+    /// bias was gone. This pins the fact that ended that — a judge id and a generator id now resolve to
+    /// DIFFERENT effective models, which is what <c>DaemonReviewStageExecutor</c> compares to decide
+    /// <c>SelfGraded</c>. Asserted against the real factory, since the refusal was removed on the strength of
+    /// this behaviour and a double could assert it without production doing it.
+    /// <para>
+    /// The inequality is the whole point, so it is asserted directly rather than left to be inferred from two
+    /// separate value checks: before the forwarding both sides returned <c>lmstreaming:openai</c> and every
+    /// grade was self-graded by construction, which is a state this test must go red in.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void A_configured_judge_model_resolves_apart_from_the_generator()
+    {
+        using var http = new HttpClient(new FakeHttpMessageHandler()) { BaseAddress = new Uri("http://host/") };
+        var factory = NewFactory(new FakeHttpMessageHandler(), http);
+
+        var judge = factory.ResolveEffectiveModelId("anthropic/claude-opus-4");
+        var generator = factory.ResolveEffectiveModelId("openai/gpt-5");
+
+        judge.Should().NotBe(
+            generator,
+            "the judge is only independent if the transport runs it on another model — the boot refusal of "
+                + "JudgeModelId was removed on exactly this basis");
+        judge.Should().Be("lmstreaming:anthropic/claude-opus-4");
+        generator.Should().Be("lmstreaming:openai/gpt-5");
+    }
+
     [Fact]
     public async Task Create_seeds_the_persisted_hosted_thread_and_never_provisions_on_resume()
     {

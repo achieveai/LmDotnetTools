@@ -42,8 +42,9 @@ internal interface IReviewAgentLoopFactory
 
     /// <summary>
     /// What <see cref="Create"/> will ACTUALLY run on given <paramref name="requestedModelId"/> — which is
-    /// not always what was asked for. The S2S factory discards the per-call id (provision carries no model
-    /// field), so a caller that wants to record or reason about the model has to ask instead of assume.
+    /// not always what was asked for. An implementation may substitute its own selection, or name an
+    /// identity in a form the caller did not supply (the S2S factory answers a <c>lmstreaming:</c>-prefixed
+    /// id), so a caller that wants to record or reason about the model has to ask instead of assume.
     /// <para>
     /// Returns <c>null</c> when the transport exposes no model identity at all. Null is <b>unknown</b>, not
     /// a value: a caller comparing two nulls must not conclude the two runs shared a model, and one
@@ -68,11 +69,13 @@ internal interface IReviewAgentLoopFactory
     /// </para>
     /// <para>
     /// Deliberately NOT derivable from <see cref="ResolveEffectiveModelId"/>. That answers a different
-    /// question — what identity the transport can NAME — and the two come apart in both directions: this
-    /// factory's only production implementation honours nothing yet names a selector, and a factory could
-    /// honour the request while naming nothing at all (<c>null</c> is unknown, not "no model"). Comparing the
-    /// resolved id against the requested one would read that second factory as discarding, and quietly drop
-    /// the escalation attribution this flag exists to protect.
+    /// question — what identity the transport can NAME — and the two come apart in both directions: a
+    /// factory can honour nothing yet still name a selector (which the S2S factory did before it forwarded
+    /// the id, and which any transport that picks its own model still does), and a factory could honour the
+    /// request while naming nothing at all (<c>null</c> is unknown, not "no model"). Comparing the resolved
+    /// id against the requested one would read that second factory as discarding, and quietly drop the
+    /// escalation attribution this flag exists to protect. Note the S2S factory answers a PREFIXED id, so
+    /// even where it honours the request the two strings are never equal.
     /// </para>
     /// <para>
     /// A property, not a per-call predicate: an implementation either wires the argument through or does not,
