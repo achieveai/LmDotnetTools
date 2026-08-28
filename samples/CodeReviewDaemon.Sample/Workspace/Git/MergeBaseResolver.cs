@@ -95,11 +95,13 @@ internal sealed class MergeBaseResolver
 
     private readonly GitRunner _git;
     private readonly ILogger _logger;
+    private readonly bool _enableObjectStoreMaintenance;
 
-    public MergeBaseResolver(GitRunner git, ILogger logger)
+    public MergeBaseResolver(GitRunner git, ILogger logger, bool enableObjectStoreMaintenance = false)
     {
         _git = git ?? throw new ArgumentNullException(nameof(git));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _enableObjectStoreMaintenance = enableObjectStoreMaintenance;
     }
 
     /// <summary>
@@ -312,6 +314,11 @@ internal sealed class MergeBaseResolver
 
             everFetched = true;
 
+            // Collapse the near-copy this round just landed, BEFORE the next round lands another. Doing it
+            // here rather than once at the end is what bounds the peak: the climb can issue four fetches, and
+            // on the live NOVA store that meant four packs of 7.2-7.7 GB coexisting.
+            await CompactObjectStoreAsync(repoRoot, run, depth, cancellationToken).ConfigureAwait(false);
+
             var answer = await MergeBaseAnswerAsync(repoRoot, run, cancellationToken).ConfigureAwait(false);
             if (answer == GitAnswer.Unknown)
             {
@@ -346,6 +353,66 @@ internal sealed class MergeBaseResolver
             MergeBaseDepthCeiling);
 
         return MergeBaseOutcome.DepthCeilingReached;
+    }
+
+    /// <summary>
+    /// Collapses the near-duplicate pack the round that just finished wrote, before the next round writes
+    /// another. Best-effort: a failure here leaves the store larger and the review proceeds.
+    /// </summary>
+    /// <remarks>
+    /// A <c>--depth</c> fetch re-asks from the TIP rather than from the current boundary, so each round of the
+    /// climb brings down the tip's tree closure again instead of only the boundary commits it still lacks —
+    /// and that closure, not the extra depth, is the bulk. The fingerprint is unambiguous on the live NOVA
+    /// store: four packs of 7.2-7.7 GB holding 4,967,095 objects between them but only 1,034,930 distinct
+    /// ones, i.e. the same object set roughly four times over, 30 GB of the store's 31.
+    /// <para>
+    /// <c>--keep-unreachable</c> is not tidiness — it is required for correctness, and a plain
+    /// <c>repack -a -d</c> here would break every review. The PR's base and head arrive by raw SHA, so nothing
+    /// but <c>FETCH_HEAD</c> points at them, and repack's reachability walk does not treat FETCH_HEAD as a
+    /// root. Measured on a lab repo built to this shape: <c>repack -a -d</c> left the store at 144 KB with the
+    /// base commit DROPPED, discarding the deepening that had just been paid for; the same repack with
+    /// <c>--keep-unreachable</c> kept base and head, preserved the merge base and the shallow boundary, left
+    /// the reviewed worktree's HEAD resolvable, passed <c>fsck</c>, and still collapsed four packs into one
+    /// for a 53% saving. Deepening the store again afterwards still worked.
+    /// </para>
+    /// <para>
+    /// Gated off by default. See <c>CodeReviewDaemonOptions.EnableObjectStoreMaintenance</c> — what the flag
+    /// governs is not whether this work is correct but whether it is ours to do.
+    /// </para>
+    /// </remarks>
+    private async Task CompactObjectStoreAsync(
+        string repoRoot, ReviewRun run, int depth, CancellationToken cancellationToken)
+    {
+        if (!_enableObjectStoreMaintenance)
+        {
+            // The store keeps the duplicate pack this round just wrote. That is the accepted cost of the
+            // instruction not to touch local packs — see CodeReviewDaemonOptions.EnableObjectStoreMaintenance.
+            return;
+        }
+
+        var repack = await _git
+            .RunAsync(
+                ["-C", repoRoot, "repack", "-a", "-d", "--keep-unreachable"], repoRoot, cancellationToken)
+            .ConfigureAwait(false);
+        if (!repack.Succeeded)
+        {
+            _logger.LogWarning(
+                "Run {RunId}: repacking '{Repo}' after the depth {Depth} fetch failed (exit {Exit}): "
+                    + "{Stderr}. The review proceeds; the near-duplicate pack this round wrote stays on disk.",
+                run.Id,
+                repoRoot,
+                depth,
+                repack.ExitCode,
+                repack.Stderr);
+            return;
+        }
+
+        _logger.LogInformation(
+            "Run {RunId}: repacked '{Repo}' after deepening to {Depth}, collapsing the pack that fetch "
+                + "duplicated.",
+            run.Id,
+            repoRoot,
+            depth);
     }
 
     /// <summary>

@@ -666,7 +666,12 @@ if (daemonOptions.EnableToolAssistedReview
         }
 
         // The store is a GitHub superproject (AchieveAiReviews); its submodule URLs resolve under "github".
-        var hostPreparer = new ReviewSlotPreparer(new GitRunner(hostRunner), hostFileSystem, "github", loggerFactory);
+        var hostPreparer = new ReviewSlotPreparer(
+            new GitRunner(hostRunner),
+            hostFileSystem,
+            "github",
+            loggerFactory,
+            enableObjectStoreMaintenance: daemonOptions.EnableObjectStoreMaintenance);
         return new ReviewSlotWorkspace(
             pool,
             hostPreparer,
@@ -675,7 +680,8 @@ if (daemonOptions.EnableToolAssistedReview
                 session.FileSystem,
                 provider,
                 loggerFactory,
-                requireSdkOwnershipMarker: true),
+                requireSdkOwnershipMarker: true,
+                enableObjectStoreMaintenance: daemonOptions.EnableObjectStoreMaintenance),
             hostRunner,
             hostFileSystem);
     });

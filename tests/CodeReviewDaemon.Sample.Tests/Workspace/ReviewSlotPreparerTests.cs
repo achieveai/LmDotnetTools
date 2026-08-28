@@ -1217,6 +1217,113 @@ public sealed class ReviewSlotPreparerTests : IDisposable
             "the question was already answered, so no history needed buying");
     }
 
+    /// <summary>
+    /// The runner shape the object-store-maintenance pair shares: a shallow checkout whose base sits on the
+    /// graft root, so the climb issues exactly one deepening fetch and then resolves on the re-ask. Extracted
+    /// so the ONLY difference between the two tests below is the flag passed to the preparer.
+    /// </summary>
+    private static FakeSandboxCommandRunner ShallowCloneResolvingAfterOneDeepening(
+        string target, ReviewRun run) =>
+        new FakeSandboxCommandRunner()
+            .OnArgvContainsSequence(
+                $"-C {target} merge-base",
+                new SandboxCommandResult(1, string.Empty, string.Empty),
+                new SandboxCommandResult(0, "d34db33f\n", string.Empty))
+            .OnArgvContains(
+                $"-C {target} rev-parse --is-shallow-repository",
+                new SandboxCommandResult(0, "true\n", string.Empty))
+            .OnArgvContains(
+                $"-C {target} rev-list --count {run.BaseSha}", new SandboxCommandResult(0, "1\n", string.Empty))
+            .OnArgvContains(
+                $"-C {target} rev-list --count {run.HeadSha}",
+                new SandboxCommandResult(0, "34579\n", string.Empty));
+
+    /// <summary>
+    /// A <c>--depth</c> fetch re-asks from the TIP, so each round of the climb brings the tip's whole tree
+    /// closure down again — measured live as four packs of 7.2-7.7 GB holding the same object set four times
+    /// over. The repack that collapses it must run INSIDE the loop, between this round's fetch and the next
+    /// one, or the peak it is meant to bound has already been reached by the time it runs.
+    /// <para>
+    /// <c>--keep-unreachable</c> is the correctness half and is asserted literally. The PR's base and head
+    /// arrive by raw SHA with nothing but <c>FETCH_HEAD</c> pointing at them, and repack's reachability walk
+    /// does not treat <c>FETCH_HEAD</c> as a root — a plain <c>repack -a -d</c> here DELETES the base commit
+    /// the deepening was just paid for, and every subsequent review of that store fails to diff.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task PrepareAsync_RepacksKeepingUnreachableBetweenTheDeepeningFetchAndTheReAsk()
+    {
+        var slot = CreateSlot();
+        var run = CreateRun();
+        var target = $"{slot.StorePath}/{SubmoduleRelPath}";
+        var runner = ShallowCloneResolvingAfterOneDeepening(target, run);
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner),
+            SeedGitmodules(slot.StorePath),
+            "github",
+            NullLoggerFactory.Instance,
+            enableObjectStoreMaintenance: true);
+
+        var prepared = await preparer.PrepareAsync(
+            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
+            CancellationToken.None);
+
+        prepared.MergeBase.Should().Be(MergeBaseOutcome.Resolved);
+        var argv = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+
+        var repackIndex = argv.FindIndex(
+            a => a.Contains($"-C {target} repack -a -d --keep-unreachable", StringComparison.Ordinal));
+        repackIndex.Should().BeGreaterThan(
+            -1,
+            "without --keep-unreachable the repack drops the PR's base commit outright, so the flag is not a "
+                + "tuning detail that may drift — it is the whole reason this command is safe to issue");
+
+        var fetchIndex = argv.FindIndex(
+            a => a.Contains($"-C {target} fetch --depth=100", StringComparison.Ordinal));
+        fetchIndex.Should().BeGreaterThan(-1, "the fixture is a shallow clone that needs one deepening round");
+        repackIndex.Should().BeGreaterThan(
+            fetchIndex, "there is nothing to collapse until the fetch that duplicated the pack has run");
+
+        var reAskIndex = argv.FindIndex(
+            fetchIndex + 1, a => a.Contains($"-C {target} merge-base", StringComparison.Ordinal));
+        reAskIndex.Should().BeGreaterThan(-1, "the climb re-asks after every deepening round");
+        repackIndex.Should().BeLessThan(
+            reAskIndex,
+            "the collapse belongs inside the round that created the duplicate — hoisted out to after the "
+                + "climb it would run only once the four coexisting packs it exists to prevent are already "
+                + "on disk");
+    }
+
+    /// <summary>
+    /// The default, and the one that is not a tuning choice: the owner of these machines instructed that local
+    /// git packs not be touched, and <c>repack</c> rewrites an object store in place under a directory the
+    /// daemon does not own. Off means no repack is issued at all — not a smaller one.
+    /// </summary>
+    [Fact]
+    public async Task PrepareAsync_DoesNotTouchLocalPacksWhenObjectStoreMaintenanceIsOff()
+    {
+        var slot = CreateSlot();
+        var run = CreateRun();
+        var target = $"{slot.StorePath}/{SubmoduleRelPath}";
+        var runner = ShallowCloneResolvingAfterOneDeepening(target, run);
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+
+        var prepared = await preparer.PrepareAsync(
+            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(),
+            CancellationToken.None);
+
+        var argv = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        argv.Should().Contain(
+            a => a.Contains($"-C {target} fetch --depth=100", StringComparison.Ordinal),
+            "the deepening itself is not gated — only the housekeeping that follows it is, so this asserts "
+                + "the absence below is a decision rather than a path that never ran");
+        prepared.MergeBase.Should().Be(MergeBaseOutcome.Resolved);
+        argv.Should().NotContain(
+            a => a.Contains("repack", StringComparison.Ordinal),
+            "default-off is the requirement, and the accepted cost is that the store keeps the duplicate pack");
+    }
+
     private ReviewSlot CreateSlot(bool withGitDir = true)
     {
         var hostPath = Path.Combine(_hostRoot, "slot-0");

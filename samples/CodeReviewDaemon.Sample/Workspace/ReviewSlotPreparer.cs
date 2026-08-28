@@ -83,13 +83,15 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<ReviewSlotPreparer> _logger;
     private readonly bool _requireSdkOwnershipMarker;
+    private readonly bool _enableObjectStoreMaintenance;
 
     public ReviewSlotPreparer(
         GitRunner git,
         ISandboxFileSystem fileSystem,
         string provider,
         ILoggerFactory loggerFactory,
-        bool requireSdkOwnershipMarker = false)
+        bool requireSdkOwnershipMarker = false,
+        bool enableObjectStoreMaintenance = false)
     {
         _git = git ?? throw new ArgumentNullException(nameof(git));
         _fileSystem = fileSystem ?? throw new ArgumentNullException(nameof(fileSystem));
@@ -98,6 +100,7 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
         _logger = loggerFactory.CreateLogger<ReviewSlotPreparer>();
         _requireSdkOwnershipMarker = requireSdkOwnershipMarker;
+        _enableObjectStoreMaintenance = enableObjectStoreMaintenance;
     }
 
     public async Task EnsureStoreAsync(string storeRoot, string storeUrl, CancellationToken cancellationToken)
@@ -335,7 +338,7 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         // outcome is threaded onto the returned checkout rather than thrown on, because "no merge base" has
         // several causes and only one of them is a fact about the pull request — see
         // <see cref="MergeBaseOutcome"/>. Preparation is not the place that decides what to tell an author.
-        var mergeBase = await new MergeBaseResolver(_git, _logger)
+        var mergeBase = await new MergeBaseResolver(_git, _logger, _enableObjectStoreMaintenance)
             .ResolveAsync(targetDir, run, cancellationToken)
             .ConfigureAwait(false);
 
