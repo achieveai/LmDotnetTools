@@ -27,9 +27,26 @@ public static class ConversationSubAgentModel
     /// Reads the conversation's configured sub-agent model, or <c>null</c> when the thread was provisioned
     /// without one (every conversation created before this field existed, and every UI-created chat).
     /// <para>
-    /// Never throws: a missing thread, a missing property, or a non-string value all mean "no conversation
-    /// default", which is the pre-existing behavior. Sub-agent routing is not worth failing an agent build
-    /// over — a conversation that cannot read this should still run, with every child on the parent model.
+    /// <b>Absence</b> never throws: a missing thread, a missing property or a non-string value all mean
+    /// "no conversation default", which is the pre-existing behavior. Sub-agent routing is not worth
+    /// failing an agent build over — a conversation with no recorded default should still run, with every
+    /// child on the parent model.
+    /// </para>
+    /// <para>
+    /// <b>Failure</b> does throw, and deliberately so — this is not a catch-all. A null
+    /// <paramref name="store"/> is a wiring bug and throws <see cref="ArgumentNullException"/>, and
+    /// whatever the store's own <c>LoadMetadataAsync</c> raises propagates unchanged:
+    /// <c>FileConversationStore</c> swallows only <c>JsonException</c> around its read, so IO and access
+    /// failures — and any backing-store failure from another implementation — reach the caller. This
+    /// matches <see cref="SystemPromptAugmenter.ReadAppendixAsync"/>, the sibling reader on the same path;
+    /// keep the two claims consistent.
+    /// </para>
+    /// <para>
+    /// The value is extracted with <see cref="ThreadPropertyValue.AsString"/> and NOT with a bare
+    /// <c>raw is string</c> test. The production store round-trips the property bag through JSON, so a
+    /// string written at provision is read back as a <c>JsonElement</c>; a plain type test therefore
+    /// returns null for every value that has actually been persisted, while every in-memory-store unit
+    /// test still passes. See <see cref="ThreadPropertyValue"/>.
     /// </para>
     /// </summary>
     public static async Task<string?> ReadAsync(
@@ -51,6 +68,6 @@ public static class ConversationSubAgentModel
             return null;
         }
 
-        return raw is string modelId && !string.IsNullOrWhiteSpace(modelId) ? modelId : null;
+        return ThreadPropertyValue.AsString(raw);
     }
 }

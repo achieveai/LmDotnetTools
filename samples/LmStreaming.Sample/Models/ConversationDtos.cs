@@ -212,6 +212,13 @@ public record ProvisionConversationRequest
     /// because the templates live in a workspace the caller does not author and cannot read — see
     /// <c>SubAgentOptions.DefaultSubAgentModelId</c> for the full ordering.
     /// </para>
+    /// <para>
+    /// One documented exclusion: workflow-controller delegates. Those spawn through the separate options
+    /// built by <c>BuildControllerOptions</c> in <c>Program.cs</c>, which deliberately leaves
+    /// <c>DefaultSubAgentModelId</c> unset so a delegate runs on the controller's own model and keeps its
+    /// already-transport-shaped inherited reasoning. So "every sub-agent in this conversation" means every
+    /// sub-agent the thread's own agent spawns, not the delegates a workflow controller spawns beneath it.
+    /// </para>
     /// </summary>
     public string? SubAgentModelId { get; init; }
 }

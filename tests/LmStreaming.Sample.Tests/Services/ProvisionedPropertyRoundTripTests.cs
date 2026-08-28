@@ -100,6 +100,24 @@ public sealed class ProvisionedPropertyRoundTripTests : IDisposable
     }
 
     [Fact]
+    public async Task SubAgentModelId_survives_the_production_stores_json_round_trip()
+    {
+        const string ModelId = "gpt-5.6-sol";
+        var threadId = $"thread-{Guid.NewGuid():N}";
+        var store = await SeedAsync(threadId, (ConversationSubAgentModel.PropertyKey, ModelId));
+
+        var read = await ConversationSubAgentModel.ReadAsync(store, threadId);
+
+        read.Should()
+            .Be(
+                ModelId,
+                "the conversation's sub-agent model is written at provision and read back as a "
+                    + "JsonElement; a reader that misses that hands every review sub-agent the "
+                    + "orchestrator's model and the whole field is inert in production"
+            );
+    }
+
+    [Fact]
     public async Task Absent_properties_still_read_as_null_after_a_round_trip()
     {
         var threadId = $"thread-{Guid.NewGuid():N}";
@@ -109,5 +127,6 @@ public sealed class ProvisionedPropertyRoundTripTests : IDisposable
         (await SystemPromptAugmenter.ComposeAsync(store, threadId, "MODE PROMPT"))
             .Should()
             .Be("MODE PROMPT");
+        (await ConversationSubAgentModel.ReadAsync(store, threadId)).Should().BeNull();
     }
 }
