@@ -158,8 +158,10 @@ internal sealed class AdoWorkItemContextReader
     /// </summary>
     public const int MaxWorkItems = 20;
 
-    /// <summary>Cap on each title carried into the brief. A work item title is usually a line; nothing stops
-    /// it being a paragraph, and one of those would crowd out the rest of the chain.</summary>
+    /// <summary>Cap on each tracker-supplied string carried into the brief. A work item title is usually a
+    /// line; nothing stops it being a paragraph, and one of those would crowd out the rest of the chain. The
+    /// type and state are conventionally short words, but nothing in the API promises that either — an
+    /// unbounded one would put the block's size back in the hands of whoever edits the item.</summary>
     public const int MaxTitleChars = 200;
 
     private readonly HttpClient _httpClient;
@@ -454,9 +456,15 @@ internal sealed class AdoWorkItemContextReader
                 new AdoWorkItem
                 {
                     Id = id,
-                    WorkItemType = FieldOf(value, "System.WorkItemType"),
+                    // ALL THREE are condensed, not just the title. Type and state are conventionally short
+                    // words, which is a convention of how the tracker is used and not a rule the API enforces:
+                    // on ADO the pull request author can edit the linked work item, and a type carrying line
+                    // endings forges list entries and notices in a block whose structure the reviewer reads as
+                    // the daemon's own. Condensing here rather than at the render also keeps the newlines out
+                    // of the structured log line below, which joins these types raw.
+                    WorkItemType = Condense(FieldOf(value, "System.WorkItemType")),
                     Title = Condense(FieldOf(value, "System.Title")),
-                    State = FieldOf(value, "System.State"),
+                    State = Condense(FieldOf(value, "System.State")),
                     ParentId = parentId,
 
                     // Overwritten by the caller, which is the only place that knows the level. Required
@@ -520,18 +528,21 @@ internal sealed class AdoWorkItemContextReader
         workItem.TryGetProperty("fields", out var fields) ? StringOf(fields, field) : null;
 
     /// <summary>
-    /// Collapses a title to one truncated line. The line collapse is not cosmetic: these are rendered as list
-    /// items in a brief whose structure the reviewer reads as fact, and a multi-line title would forge entries
-    /// the daemon never wrote.
+    /// Collapses one tracker-supplied string to a single truncated line. Applied to EVERY field of a work item
+    /// that reaches the brief — title, type and state alike — because the line collapse is not cosmetic: these
+    /// are rendered as list items in a brief whose structure the reviewer reads as fact, and any of the three
+    /// carrying a line ending would forge entries the daemon never wrote. The renderer's guillemet escaping is
+    /// the other half and cannot substitute for this one: it stops a value closing its delimiter, not a value
+    /// starting a new line outside it.
     /// </summary>
-    private static string? Condense(string? title)
+    private static string? Condense(string? value)
     {
-        if (title is null)
+        if (value is null)
         {
             return null;
         }
 
-        var line = title.ReplaceLineEndings(" ").Trim();
+        var line = value.ReplaceLineEndings(" ").Trim();
         return line.Length <= MaxTitleChars ? line : line[..(MaxTitleChars - 1)] + "…";
     }
 

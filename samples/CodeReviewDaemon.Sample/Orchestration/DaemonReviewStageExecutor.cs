@@ -2908,6 +2908,11 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 // exactly as PrependExistingCommentsAsync does for a comment body: content that cannot break
                 // the delimiter cannot forge the daemon's own framing, and this block is rendered FIRST, ahead
                 // of every other trust boundary in the brief.
+                //
+                // That escaping is only half of it, and the half this method owns. The other half is the
+                // reader's Condense, which collapses all three to a single line: a delimiter stops a value
+                // ending its own quotation, and nothing more — a value carrying a line ending starts a fresh
+                // line OUTSIDE it, where the reviewer reads whatever follows as the daemon's own list.
                 _ = sb.Append(indent)
                     .Append("- ")
                     .Append(indent.Length == 0 ? string.Empty : "parent ")
