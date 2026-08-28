@@ -19,6 +19,7 @@ internal static class SchemaMigrations
         new Migration(3, V3Sql),
         new Migration(4, V4Sql),
         new Migration(5, V5Sql),
+        new Migration(6, V6Sql),
     ];
 
     // ── v1: initial orchestration schema ─────────────────────────────────────────────────────────
@@ -186,5 +187,49 @@ internal static class SchemaMigrations
     private const string V5Sql = """
         ALTER TABLE review_run ADD COLUMN last_posted_review_at TEXT NULL;
         ALTER TABLE review_run ADD COLUMN dedup_context_lost    INTEGER NOT NULL DEFAULT 0;
+        """;
+
+    // ── v6: the refusal ledger — what the daemon's capability gates actually stopped ──────────────
+    // The only recorded evidence that a collect-only run posted nothing was the ABSENCE of a Posted row
+    // in review_outbox. That evidence is structurally blind to the event it was being read as proof
+    // against: a review sub-agent posting straight to the provider REST API over the sandbox egress
+    // proxy never touches review_outbox at all, so a posting-capable template dispatched on a
+    // collect-only run leaves that table looking exactly like a quiet week.
+    //
+    // A gate that denies and says nothing is the same shape of problem one level down: nothing
+    // distinguishes "the daemon refused a write" from "no write was ever attempted", and those two are
+    // the whole question. Hence a positive record per refusal.
+    //
+    // NOT a child of review_run, and it carries no run id at all — deliberately. The two enforcement
+    // points that write here do not both have a run in hand: the outbound HTTP seam is a singleton shared
+    // with the poller, whose calls belong to no run. An FK (or even a plain run column) would force either
+    // a fabricated id or a silently dropped record at exactly the site that must never drop one. A refusal
+    // that was not written is recoverable from nothing, which is the trade being made.
+    //
+    // The consequence, stated plainly rather than waved at: a writer that HAS a run must put the run id in
+    // `target` itself, because nothing else here will. The spawn gate does (`run {id} thread {…}`); the HTTP
+    // seam records the request URI, which names the PR route but not the run, and no table maps a thread id
+    // or a URI back to a run. So an egress refusal is attributable to a PR and an interval, not to a run.
+    //
+    // at_utc is a fixed-width UTC round-trip ("O") string like every other timestamp in this schema, so
+    // lexicographic comparison is chronological.
+    //
+    // Numbered v6 against main's v5 head. It was authored as v7 on the source branch, where a lease
+    // migration this fix does not carry had already taken v6; re-using that number here would have left
+    // one statement running under a version another change also claims.
+    private const string V6Sql = """
+        CREATE TABLE policy_refusal (
+            id       INTEGER PRIMARY KEY,
+            at_utc   TEXT NOT NULL,
+            kind     TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            subject  TEXT NOT NULL,
+            method   TEXT NOT NULL,
+            target   TEXT NOT NULL,
+            reason   TEXT NOT NULL
+        );
+
+        CREATE INDEX ix_policy_refusal_at_utc ON policy_refusal (at_utc);
+        CREATE INDEX ix_policy_refusal_kind   ON policy_refusal (kind);
         """;
 }

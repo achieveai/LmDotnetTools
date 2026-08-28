@@ -296,6 +296,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// </summary>
     private readonly IReadOnlyList<IPrProvider> _prProviders;
 
+    /// <summary>
+    /// Where the spawn gate writes its refusals (#536). Optional: without it the gate still refuses and
+    /// still names the template in the log, it just leaves no durable row.
+    /// </summary>
+    private readonly IPolicyRefusalRecorder? _refusals;
+
     public DaemonReviewStageExecutor(
         ReviewStore store,
         IReviewAgentLoopFactory loopFactory,
@@ -315,7 +321,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         IGatewaySkillProbe? skillProbe = null,
         IReviewSubAgentCompletionSource? completionSource = null,
         IReviewAgentTranscriptSource? transcriptSource = null,
-        IEnumerable<IPrProvider>? prProviders = null)
+        IEnumerable<IPrProvider>? prProviders = null,
+        IPolicyRefusalRecorder? refusals = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _loopFactory = loopFactory ?? throw new ArgumentNullException(nameof(loopFactory));
@@ -337,6 +344,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _completionSource = completionSource;
         _transcriptSource = transcriptSource;
         _prProviders = prProviders is null ? [] : [.. prProviders];
+        _refusals = refusals;
         _comparisonVariant = new ReviewVariant(
             VariantId: "b",
             ModelId: _options.VariantModelId,
@@ -3281,6 +3289,21 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         {
             return new ReviewSubAgentTreeSnapshot([]);
         }
+
+        // The spawn gate rides the barrier's polling path, which is the earliest the daemon sees a child at
+        // all. On a collect-only run a posting-capable template is refused here — named in the log and
+        // written to the refusal ledger — instead of running unremarked. With EnableCommentPosting on it
+        // refuses nothing, so this narrows the collect-only case only.
+        //
+        // It does not stop the spawn: on S2S the review host owns spawning, and no host call refuses one
+        // template while permitting another. See SpawnGatedSubAgentCompletionSource for why the snapshot is
+        // forwarded unchanged rather than filtered.
+        source = new SpawnGatedSubAgentCompletionSource(
+            source,
+            new ReviewSpawnGate(
+                _options.EnableCommentPosting,
+                _loggerFactory.CreateLogger<ReviewSpawnGate>(),
+                _refusals));
 
         var barrier = new ReviewSubAgentCompletionBarrier(
             source,

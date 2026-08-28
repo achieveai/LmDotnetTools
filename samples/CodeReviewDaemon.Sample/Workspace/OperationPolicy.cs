@@ -110,17 +110,56 @@ internal sealed class OperationPolicy
     /// <b>hard capability denial</b> regardless of host/path (plan §5) — and because
     /// <see cref="ShouldInjectCredential"/> mirrors <see cref="Decide"/>, the B variant is also never
     /// handed a write credential (fail closed both ways).
+    /// <para>
+    /// The same flag also carries the daemon's COLLECT-ONLY posture (<c>EnableCommentPosting</c>): a run the
+    /// operator has not authorized to post gets <c>false</c> here, which is what turns "the daemon declines
+    /// to call the publisher" into "the daemon cannot make a provider write at all". The two meanings
+    /// coincide deliberately — both are "this policy has no write capability" — so there is one switch to
+    /// reason about rather than two that can disagree.
+    /// </para>
+    /// <para>
+    /// The default is <c>false</c>: a caller that says nothing about write capability gets none. The grant
+    /// is what has to be spelled out, because the failure mode of the opposite default is silent — a new
+    /// construction site inherits full write capability and nothing in the code reads as wrong.
+    /// </para>
     /// </param>
-    public OperationPolicy(ReviewScope scope, bool allowWriteOperations = true)
+    public OperationPolicy(ReviewScope scope, bool allowWriteOperations = false)
     {
         _scope = scope ?? throw new ArgumentNullException(nameof(scope));
         _allowWriteOperations = allowWriteOperations;
     }
 
+    /// <summary>Whether this policy grants provider-API / ReviewBot write operations at all.</summary>
+    public bool AllowsWriteOperations => _allowWriteOperations;
+
     /// <summary>Evaluates an outbound request. Unknown shapes fall through to a deny.</summary>
     public PolicyDecision Decide(OperationRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        // The collect-only METHOD gate, evaluated before the operation is dispatched at all.
+        //
+        // The per-operation arms below already deny PostReviewComment without the capability, so for the
+        // operations that exist today this is belt over braces. It is here because the failure it guards is
+        // not "PostReviewComment was allowed" — it is "a request that mutates the PR arrived under some
+        // OTHER classification". ReadProviderMetadata is the live example: it is reachable from the
+        // read-only project/CI/work-item route exceptions, and its own arm rejects a non-GET only because
+        // DecideApi is told to expect GET. A future operation added to this enum inherits nothing from that
+        // — it would reach the provider API with whatever method its author passed, and a collect-only run
+        // would be silently write-capable again.
+        //
+        // Scoped to the provider-API operations on purpose: git transport legitimately POSTs
+        // (git-upload-pack is a POST), so a blanket method ban would break every fetch. The distinction is
+        // the operation's ARM, not the host — on ADO the API host and the git host are the same name.
+        if (!_allowWriteOperations
+            && IsProviderApiOperation(request.Operation)
+            && IsMutatingMethod(request.Method))
+        {
+            return PolicyDecision.Deny(
+                $"this policy is collect-only and has no provider-API write capability; refusing "
+                    + $"{request.Method.ToUpperInvariant()} '{StripQuery(request.Path)}' "
+                    + $"({request.Operation})");
+        }
 
         return request.Operation switch
         {
@@ -158,6 +197,32 @@ internal sealed class OperationPolicy
     /// both ways, plan §4).
     /// </summary>
     public bool ShouldInjectCredential(OperationRequest request) => Decide(request).IsAllowed;
+
+    /// <summary>
+    /// The operations that address the provider REST API (as opposed to git transport). Enumerated
+    /// positively so adding a case to <see cref="SandboxOperation"/> forces a decision here rather than
+    /// defaulting into "not an API operation, therefore ungated".
+    /// </summary>
+    private static bool IsProviderApiOperation(SandboxOperation operation) => operation switch
+    {
+        SandboxOperation.PostReviewComment or SandboxOperation.ReadProviderMetadata => true,
+        SandboxOperation.FetchTarget
+            or SandboxOperation.FetchForkHead
+            or SandboxOperation.FetchSubmodule
+            or SandboxOperation.PushReviewBot => false,
+        // An operation nobody classified is treated as API-addressing, which is the conservative side of
+        // this predicate: it only ever makes the collect-only gate FIRE, never makes it stand down.
+        _ => true,
+    };
+
+    /// <summary>
+    /// Whether <paramref name="method"/> mutates provider-side state. Anything that is not one of the
+    /// read methods counts, so an unfamiliar verb is treated as a write.
+    /// </summary>
+    public static bool IsMutatingMethod(string method) =>
+        !string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase)
+        && !string.Equals(method, "HEAD", StringComparison.OrdinalIgnoreCase)
+        && !string.Equals(method, "OPTIONS", StringComparison.OrdinalIgnoreCase);
 
     private PolicyDecision DecideUploadPack(
         OperationRequest request,

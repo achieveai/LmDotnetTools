@@ -63,12 +63,18 @@ internal static class DaemonOperationPolicy
     /// <param name="allowWriteOperations">
     /// <c>true</c> for the primary variant (may post + push); <c>false</c> for a collect-only A/B
     /// variant, which is denied both writes regardless of route.
+    /// <para>
+    /// Defaults to <c>false</c> — absence of an explicit grant means no writes. It defaulted to <c>true</c>
+    /// until #536, which is how <see cref="PolicyEnforcedHttpClientFactory"/> came to hand every provider
+    /// client full write capability on a collect-only run without a single line of code saying so. A
+    /// write-capable policy is now something a caller has to ask for by name.
+    /// </para>
     /// </param>
     /// <param name="allowedSubmodules">Per-run allow-listed submodules (empty by default).</param>
     public static OperationPolicy BuildForRun(
         RepoIdentity repo,
         string? reviewBotRepoUrl,
-        bool allowWriteOperations = true,
+        bool allowWriteOperations = false,
         IReadOnlyList<SubmoduleAllowRule>? allowedSubmodules = null)
     {
         ArgumentNullException.ThrowIfNull(repo);
