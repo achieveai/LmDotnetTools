@@ -753,8 +753,14 @@ self-judged, only that the code path in force at the time does it. Historical ro
 > `GeneratorModelId` / `SelfGraded`. It still **defaults** to the reviewer's own model, because
 > changing what a recorded score means belongs with #322's tier rules — but the run now warns and the
 > row now says so, so from v2 onward this axis is measured rather than argued. On the S2S transport
-> the effective id is the configured `LmStreamingProviderId` (provision carries no per-call model
-> field), and a `JudgeModelId` set there is refused at boot rather than silently discarded.
+> the effective id is the **requested** id, answered `lmstreaming:`-prefixed: the factory provisions
+> the hosted conversation with that id as its provider id, and a Copilot-discovered provider id is a
+> model id on the review host. `JudgeModelId` is therefore honoured there rather than refused at
+> boot — it was refused while the factory still dropped the per-call id — and is left unset by
+> choice, because changing the judge model changes what every score already recorded means and #322
+> owns that. One consequence for §5: the column is not uniform across history, since rows written
+> before the forwarding carry the run's own seeded id on escalated attempts where later rows carry
+> the escalation target, and nothing back-fills.
 
 This is an independent argument for the schema v2 of §6.3: without a persisted judge model, the
 self-preference axis is unmeasurable retrospectively, and no amount of later analysis recovers it.

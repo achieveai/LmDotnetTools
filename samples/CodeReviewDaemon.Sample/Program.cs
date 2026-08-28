@@ -317,7 +317,11 @@ if (string.IsNullOrWhiteSpace(daemonOptions.LmStreamingBaseUrl))
 // what it says: DaemonReviewStageExecutor passes JudgeModelId into Create, and the judge artifact's
 // SelfGraded/JudgeModelId are derived from the effective id, which now differs from the generator's. An
 // id the review host cannot resolve fails that conversation's provision loudly, which is an ordinary
-// misconfiguration rather than the quiet wrong answer this guard existed to prevent.
+// misconfiguration rather than the quiet wrong answer this guard existed to prevent — but loudly is not
+// cheaply: Judged runs before Posted, and PrOrchestrator.IsGovernedFailure answers false for Judged, so
+// the throw aborts the stage loop short of Posted while charging nothing to the retry budget. An
+// unresolvable judge id therefore blocks the review from ever posting and retries unbounded instead of
+// parking. Set this key to an id the host's discovered catalog actually carries.
 if (string.IsNullOrWhiteSpace(effectiveWorkspaceBase))
 {
     throw new InvalidOperationException(
