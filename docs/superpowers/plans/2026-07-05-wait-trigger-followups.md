@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - **.NET SDK** 8.0+ (`Directory.Build.props`); the sample host + its test project target **net9.0**.
-- **Formatting:** CSharpier (`.csharpierrc.json`) + `.editorconfig`. Do not script-fix build errors/warnings — autofix or fix manually.
+- **Formatting:** CSharpier (`.csharpierrc.json` — since replaced by `.csharpierrc`, which was always the file CSharpier actually read; see #550) + `.editorconfig`. Do not script-fix build errors/warnings — autofix or fix manually.
 - **No AI/Claude signature** in any commit message.
 - **Never create v2/-enhanced/-improved files** — modify existing files in place.
 - **Block mode is frozen:** every #140 change is scoped strictly to the notify branch. Block-mode waits keep today's exact one-shot latch (`Pending → Fired|TimedOut|Cancelled|Failed`), zero behavior change.

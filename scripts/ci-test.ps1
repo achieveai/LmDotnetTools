@@ -54,11 +54,17 @@ Invoke-CiStep "dotnet info" {
     dotnet --info
 }
 
-if (-not $SkipRestore) {
-    Invoke-CiStep "restore tools" {
-        dotnet tool restore
-    }
+# Deliberately OUTSIDE the -SkipRestore guard. -SkipRestore exists to skip the expensive NuGet
+# package restore, but the format gate below invokes CSharpier as a LOCAL tool, so a tree that
+# never ran `dotnet tool restore` fails that gate with a missing-command error rather than a
+# formatting verdict. Restoring the manifest is two tools and is idempotent, so it costs a
+# skipped run almost nothing and keeps `./scripts/ci-test.ps1 -SkipRestore` -- the command
+# CONTRIBUTING.md tells contributors to use -- working.
+Invoke-CiStep "restore tools" {
+    dotnet tool restore
+}
 
+if (-not $SkipRestore) {
     Invoke-CiStep "restore solution" {
         dotnet restore $solution
     }
@@ -74,9 +80,9 @@ if (-not $SkipRestore) {
 # building. It checks every tracked .cs file, not just the solution's, because the pre-commit
 # hook only ever sees staged files -- a file changed by a merge, a revert, or a --no-verify
 # commit reaches main unchecked, and this is the step that catches it. CSharpier is pinned in
-# .config/dotnet-tools.json (restored above), so the hook, the editor and this gate all format
-# identically. Pairs with the centralized TreatWarningsAsErrors flag so the build step below
-# catches any analyzer warning as an error.
+# .config/dotnet-tools.json and restored unconditionally above, so the hook, the editor and this
+# gate all format identically. Pairs with the centralized TreatWarningsAsErrors flag so the build
+# step below catches any analyzer warning as an error.
 Invoke-CiStep "csharpier format verify" {
     dotnet csharpier check .
 }
